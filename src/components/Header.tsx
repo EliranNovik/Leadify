@@ -3249,6 +3249,35 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     window.location.assign('/');
   };
 
+  const renderClockInApprovalButton = (className = '') => {
+    if (!isSuperUser) return null;
+
+    return (
+      <button
+        type="button"
+        className={`relative btn btn-ghost border-0 min-h-0 h-9 w-9 p-0 overflow-visible rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70 ${className}`}
+        title="Approve clock-ins"
+        aria-label={
+          pendingClockInApprovalCount > 0
+            ? `Approve clock-ins, ${pendingClockInApprovalCount} pending`
+            : 'Approve clock-ins'
+        }
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsClockInApprovalModalOpen(true);
+        }}
+      >
+        <ClipboardDocumentCheckIcon className="w-6 h-6" />
+        {pendingClockInApprovalCount > 0 && (
+          <span className="absolute -top-1.5 -right-1.5 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+            {pendingClockInApprovalCount > 99 ? '99+' : pendingClockInApprovalCount}
+          </span>
+        )}
+      </button>
+    );
+  };
+
   const renderAdminBypassControls = (className = '') => {
     if (!showAdminBypassBadge || !adminProfileBypass) return null;
 
@@ -4434,6 +4463,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               document.body
             )}
           </div>
+          {renderClockInApprovalButton('md:hidden shrink-0')}
           {renderMailboxReconnectButton('md:hidden ml-1 shrink-0')}
 
           {renderAdminBypassControls('md:hidden ml-1 shrink-0')}
@@ -4629,6 +4659,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </div>
               )}
             </div>
+            {renderClockInApprovalButton('ml-1 shrink-0')}
           </div>
 
           {/* Desktop: overlay + left-side panel when hamburger menu is open */}
@@ -5704,7 +5735,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                       <span className="text-gray-900">.</span>
                                     </p>
                                     {notification.createdAt ? (
-                                      <p className="text-xs text-gray-500 shrink-0">
+                                      <p className="text-xs font-semibold text-yellow-600 shrink-0">
                                         {formatMessageTime(notification.createdAt)}
                                       </p>
                                     ) : null}
@@ -5880,7 +5911,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                     {renderNotificationStackedAction(whatsappName, whatsappAction.verb, whatsappAction.body)}
                                   </div>
                                   <div className="flex flex-col items-end shrink-0">
-                                    <p className="text-xs text-gray-500">
+                                    <p className="text-xs font-semibold text-green-600">
                                       {new Date(message.latest_message_time).toLocaleTimeString([], {
                                         hour: '2-digit',
                                         minute: '2-digit'
@@ -5950,7 +5981,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                     )}
                                   </div>
                                   <div className="flex flex-col items-end shrink-0">
-                                    <p className="text-xs text-gray-500">
+                                    <p className={`text-xs font-semibold ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`}>
                                       {new Date(message.latest_sent_at).toLocaleTimeString([], {
                                         hour: '2-digit',
                                         minute: '2-digit'
@@ -6061,7 +6092,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                       )}
                                     </div>
                                     <div className="flex flex-col items-end shrink-0">
-                                      <p className="text-xs text-gray-500">
+                                      <p className={`text-xs font-semibold ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`}>
                                         {formatMessageTime(message.sent_at)}
                                       </p>
                                       {count > 0 && (

@@ -341,6 +341,34 @@ export type DailyClockInSummary = {
   hasAutomatic: boolean;
 };
 
+/** Prefer `sessions`; fall back to joined clock-in/out strings if older in-memory rows lack them. */
+export function clockSessionsForDisplay(
+  clock: DailyClockInSummary | null | undefined,
+): ClockSessionSummary[] {
+  if (!clock) return [];
+  if (Array.isArray(clock.sessions)) return clock.sessions;
+
+  const ins = (clock.clockIns || '').split(', ').filter(Boolean);
+  const outs = (clock.clockOuts || '').split(', ').filter(Boolean);
+  const workplaces = (clock.workplacesIn && clock.workplacesIn !== '—')
+    ? clock.workplacesIn.split(', ').filter(Boolean)
+    : [];
+  const count = Math.max(ins.length, outs.length);
+  const sessions: ClockSessionSummary[] = [];
+  for (let i = 0; i < count; i++) {
+    const workplace = workplaces[i] ?? workplaces[0] ?? '';
+    sessions.push({
+      clockIn: ins[i] || '—',
+      clockOut: outs[i] || '—',
+      workplaceIn: workplace,
+      workplaceOut: workplace,
+      gpsIn: '—',
+      gpsOut: '—',
+    });
+  }
+  return sessions;
+}
+
 function msToDurationLabel(totalMs: number): string {
   const hours = Math.floor(totalMs / (1000 * 60 * 60));
   const minutes = Math.floor((totalMs % (1000 * 60 * 60)) / (1000 * 60));

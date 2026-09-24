@@ -698,8 +698,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [selectedSendInvoicePaymentKeys, setSelectedSendInvoicePaymentKeys] = useState<Set<string>>(new Set());
   const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  const sendingInvoiceRef = useRef(false);
   const [sentToFinancePayment, setSentToFinancePayment] = useState<PaymentPlan | null>(null);
   const [sendingReadyToPayInvoice, setSendingReadyToPayInvoice] = useState(false);
+  const sendingReadyToPayInvoiceRef = useRef(false);
 
   // Add state for paid date modal
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -1205,6 +1207,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const handleSentToFinanceSendInvoice = async (language: ProformaSendLanguage) => {
     if (!sentToFinancePayment || !client?.id) return;
+    if (sendingReadyToPayInvoiceRef.current) return;
+    sendingReadyToPayInvoiceRef.current = true;
 
     let payment = sentToFinancePayment;
     let proformasForSend = legacyProformas;
@@ -1300,6 +1304,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         toast.error(message);
       }
     } finally {
+      sendingReadyToPayInvoiceRef.current = false;
       setSendingReadyToPayInvoice(false);
     }
   };
@@ -6564,6 +6569,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const handleSendInvoiceConfirm = async (language: ProformaSendLanguage) => {
     if (!client?.id || selectedSendInvoicePayments.length === 0) return;
+    if (sendingInvoiceRef.current) return;
+    sendingInvoiceRef.current = true;
 
     setSendingInvoice(true);
     const isLegacyLead =
@@ -6642,6 +6649,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       console.error('handleSendInvoiceConfirm:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to send invoice');
     } finally {
+      sendingInvoiceRef.current = false;
       setSendingInvoice(false);
     }
   };

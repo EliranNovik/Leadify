@@ -1098,21 +1098,19 @@ const PublicContractView: React.FC<{
       const filledContent = fillClientFieldsInContent(resolveContractBodyContent(contract, template));
       const { data: sessionData } = await supabase.auth.getSession();
       const hasStaffSession = Boolean(sessionData?.session?.user);
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'K',location:'PublicContractView.tsx:handleSubmitContract:auth',message:'public sign auth context',data:{hasStaffSession,hasPublicToken:Boolean(token)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
 
       let signQuery = supabase.from('contracts').update({
         custom_content: filledContent,
+        // Keep the placeholder body: custom_content below is overwritten with the
+        // substituted version, so this is the only way to later clone an amended
+        // draft without the signature and date.
+        pre_sign_content: (contract as any).pre_sign_content ?? sourceContent,
         client_inputs: clientFields, // Save the actual client input values
         status: 'signed',
         signed_at: new Date().toISOString(),
       }).eq('id', contract.id);
       if (token) signQuery = signQuery.eq('public_token', token);
       const { data: signedRows, error: signError, count: signCount } = await signQuery.select('id, status, signed_at, client_id, legacy_id, contact_id, public_token');
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'B',location:'PublicContractView.tsx:handleSubmitContract:sign',message:'contract status update result',data:{signError:signError?.message||null,signCode:signError?.code||null,signedRowCount:Array.isArray(signedRows)?signedRows.length:0,signCount:signCount??null,status:signedRows?.[0]?.status||null,hasSignedAt:Boolean(signedRows?.[0]?.signed_at),hasClientId:Boolean(signedRows?.[0]?.client_id),hasLegacyId:Boolean(signedRows?.[0]?.legacy_id),hasContactId:signedRows?.[0]?.contact_id!=null,hasPublicToken:Boolean(signedRows?.[0]?.public_token||contract.public_token)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       if (signError || !signedRows?.length) {
         throw signError || new Error('Contract sign update returned 0 rows');
       }
@@ -1129,9 +1127,6 @@ const PublicContractView: React.FC<{
         (updatedContract.employee_id || updatedContract.external_firm_id || updatedContract.user_id)
       ) {
         console.log('📝 Public non-client contract signing: skipping lead stage update');
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:skip',message:'skipped lead stage update',data:{hasEmployeeId:Boolean(updatedContract.employee_id),hasExternalFirmId:Boolean(updatedContract.external_firm_id),hasUserId:Boolean(updatedContract.user_id)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
       } else if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
 
@@ -1147,9 +1142,6 @@ const PublicContractView: React.FC<{
         );
         const rpcPayload = rpcData && typeof rpcData === 'object' ? (rpcData as { success?: boolean; error?: string; stage?: number }) : null;
         const rpcOk = !rpcError && rpcPayload?.success === true;
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'M',location:'PublicContractView.tsx:handleSubmitContract:new-lead-rpc',message:'public stage rpc (new lead)',data:{hasStaffSession,rpcOk,rpcError:rpcError?.message||null,rpcSuccess:rpcPayload?.success??null,rpcStage:rpcPayload?.stage??null,rpcFail:rpcPayload?.error??null},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
 
         let stageInsertError: { message?: string; code?: string } | null = rpcOk ? null : (rpcError || { message: rpcPayload?.error || 'rpc failed' });
         let leadUpdateError: { message?: string; code?: string } | null = stageInsertError;
@@ -1192,9 +1184,6 @@ const PublicContractView: React.FC<{
             leadAfterError = leadAfterResult.error;
           }
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:new-lead-stage',message:'new lead stage write',data:{branch:'new',usedRpc:rpcOk,hasStaffSession,stageInsertError:stageInsertError?.message||null,stageInsertCode:stageInsertError?.code||null,leadUpdateError:leadUpdateError?.message||null,leadUpdateCode:leadUpdateError?.code||null,leadUpdatedCount:Array.isArray(leadUpdatedRows)?leadUpdatedRows.length:0,writtenStage:leadUpdatedRows?.[0]?.stage??null,readBackStage:leadAfter?.stage??null,leadAfterError:leadAfterError?.message||null,clientIdType:typeof updatedContract.client_id,stageIdType:typeof stageId},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         if (!rpcOk && stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);
           alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
@@ -1231,9 +1220,6 @@ const PublicContractView: React.FC<{
         );
         const rpcPayload = rpcData && typeof rpcData === 'object' ? (rpcData as { success?: boolean; error?: string; stage?: number }) : null;
         const rpcOk = !rpcError && rpcPayload?.success === true;
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'M',location:'PublicContractView.tsx:handleSubmitContract:legacy-lead-rpc',message:'public stage rpc (legacy lead)',data:{hasStaffSession,rpcOk,rpcError:rpcError?.message||null,rpcSuccess:rpcPayload?.success??null,rpcStage:rpcPayload?.stage??null,rpcFail:rpcPayload?.error??null},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
 
         let stageInsertError: { message?: string; code?: string } | null = rpcOk ? null : (rpcError || { message: rpcPayload?.error || 'rpc failed' });
         let leadUpdateError: { message?: string; code?: string } | null = stageInsertError;
@@ -1272,9 +1258,6 @@ const PublicContractView: React.FC<{
           leadAfter = leadAfterResult.data;
           leadAfterError = leadAfterResult.error;
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'PublicContractView.tsx:handleSubmitContract:legacy-lead-stage',message:'legacy lead stage write',data:{branch:'legacy',usedRpc:rpcOk,hasStaffSession,stageInsertError:stageInsertError?.message||null,stageInsertCode:stageInsertError?.code||null,leadUpdateError:leadUpdateError?.message||null,leadUpdateCode:leadUpdateError?.code||null,leadUpdatedCount:Array.isArray(leadUpdatedRows)?leadUpdatedRows.length:0,writtenStage:leadUpdatedRows?.[0]?.stage??null,readBackStage:leadAfter?.stage??null,leadAfterError:leadAfterError?.message||null,legacyIdType:typeof legacyId,stageIdType:typeof stageId},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
 
         if (!rpcOk && stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);

@@ -16,6 +16,7 @@ export type ProfileBottomSheetModalProps = {
   saving?: boolean;
   saveDisabled?: boolean;
   saveLabel?: React.ReactNode;
+  saveTooltip?: string;
   cancelLabel?: string;
   cancelDisabled?: boolean;
   hideFooter?: boolean;
@@ -23,6 +24,8 @@ export type ProfileBottomSheetModalProps = {
   closeOnOverlayClick?: boolean;
   mobileFullHeight?: boolean;
   sheetClassName?: string;
+  headerClassName?: string;
+  footerClassName?: string;
   headerRight?: React.ReactNode;
   confirmVariant?: 'primary' | 'success' | 'error';
 };
@@ -38,6 +41,7 @@ export default function ProfileBottomSheetModal({
   saving = false,
   saveDisabled = false,
   saveLabel = 'Save',
+  saveTooltip,
   cancelLabel = 'Cancel',
   cancelDisabled = false,
   hideFooter = false,
@@ -45,6 +49,8 @@ export default function ProfileBottomSheetModal({
   closeOnOverlayClick = true,
   mobileFullHeight = false,
   sheetClassName = '',
+  headerClassName = '',
+  footerClassName = '',
   headerRight,
   confirmVariant = 'primary',
 }: ProfileBottomSheetModalProps) {
@@ -55,12 +61,13 @@ export default function ProfileBottomSheetModal({
           <ModalActionFooter
             onCancel={onClose}
             onConfirm={onSave}
-            saving={saving}
+            loading={saving}
             disabled={saveDisabled}
             cancelDisabled={cancelDisabled || saving}
-            saveLabel={saveLabel}
+            confirmLabel={saveLabel}
             cancelLabel={cancelLabel}
             confirmVariant={confirmVariant}
+            confirmTooltip={saveTooltip}
           />
         ) : undefined
       );
@@ -79,7 +86,8 @@ export default function ProfileBottomSheetModal({
       overlayClassName={DESKTOP_CENTER_MODAL_PROPS.overlayClassName}
       sheetClassName={`${DESKTOP_CENTER_MODAL_PROPS.sheetClassName} ${sheetClassName}`.trim()}
       contentClassName={DESKTOP_CENTER_MODAL_PROPS.contentClassName}
-      footerClassName={DESKTOP_CENTER_MODAL_PROPS.footerClassName}
+      headerClassName={headerClassName}
+      footerClassName={`${DESKTOP_CENTER_MODAL_PROPS.footerClassName} ${footerClassName}`.trim()}
       footer={resolvedFooter}
     >
       {children}

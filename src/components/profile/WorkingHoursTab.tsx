@@ -4,7 +4,6 @@ import {
   CalendarDaysIcon,
   CheckIcon,
   ClockIcon,
-  FunnelIcon,
   ChevronDownIcon,
   PencilSquareIcon,
   PlusIcon,
@@ -14,11 +13,6 @@ import {
   XMarkIcon,
   ArrowUturnLeftIcon,
 } from '@heroicons/react/24/outline';
-import {
-  CheckBadgeIcon,
-  ClockIcon as ClockSolidIcon,
-  XCircleIcon,
-} from '@heroicons/react/24/solid';
 import { toast } from 'react-hot-toast';
 import { FaFileExcel } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -28,9 +22,11 @@ import CompactAvailabilityCalendar, {
 import {
   aggregateClockInRecordsByDay,
   buildMergedTimeAndUnavailabilityExportRows,
+  clockSessionsForDisplay,
   exportMergedTimeAndUnavailabilitiesToExcel,
   sumCountedClockDurationsMs,
   type DailyClockInSummary,
+  type ClockSessionSummary,
 } from '../../lib/workingHoursExport';
 import {
   buildMonthWeekNumberLookup,
@@ -71,6 +67,7 @@ import {
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
 import DocumentViewerModal from '../DocumentViewerModal';
 import { DocumentFileGlyph } from '../../lib/documentFileGlyphs';
+import { CLOCK_IN_OVERTIME_APPROVAL_BUCKET } from '../../lib/employeeClockInOvertimeApproval';
 import UnavailabilityDayEditModal from './UnavailabilityDayEditModal';
 import ManualClockInModal from './ManualClockInModal';
 import BulkManualClockInModal from './BulkManualClockInModal';
@@ -114,7 +111,29 @@ type ClockInRow = {
   manually: boolean;
   approved: boolean;
   declined: boolean;
+  overtime_approval_storage_path?: string | null;
+  overtime_approval_file_name?: string | null;
+  overtime_approval_mime_type?: string | null;
 };
+
+function collectDayOvertimeDocuments(dayRecords: ClockInRow[]) {
+  const seen = new Set<string>();
+  const docs: { path: string; name: string; uploadedAt: string }[] = [];
+  for (const record of dayRecords) {
+    const path = record.overtime_approval_storage_path?.trim();
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    docs.push({
+      path,
+      name:
+        record.overtime_approval_file_name?.trim()
+        || documentNameFromUrl(path)
+        || 'Overtime approval screenshot',
+      uploadedAt: record.clock_in_time,
+    });
+  }
+  return docs;
+}
 
 interface WorkingHoursTabProps {
   employeeId: number;
@@ -132,7 +151,7 @@ const MONTH_NAMES = [
 ];
 
 const MERGED_COL_SPAN = 8;
-const WH_PLACEHOLDER_HINT_COL_SPAN = MERGED_COL_SPAN - 2;
+const WH_PLACEHOLDER_HINT_COL_SPAN = MERGED_COL_SPAN - 3;
 
 type WorkingHoursWeekRowMeta = {
   weekNum: number;
@@ -204,29 +223,77 @@ function getWeekAccentColor(weekNum: number): string {
   return WEEK_SIDE_COLORS[(weekNum - 1) % WEEK_SIDE_COLORS.length];
 }
 
-function WorkingHoursWeekBetweenRow({
-  weekNum,
-  columnCount,
-}: {
-  weekNum: number;
-  columnCount: number;
-}) {
+function WorkingHoursWeekHeading({ weekNum }: { weekNum: number }) {
   const accent = getWeekAccentColor(weekNum);
   return (
-    <tr className="wh-week-between-row">
-      <td
-        colSpan={columnCount}
-        className="wh-week-between-cell"
-        style={{ '--wh-week-accent': accent } as React.CSSProperties}
-      >
-        <span className="wh-week-between-label">Week {weekNum}</span>
-      </td>
-    </tr>
+    <div
+      className="wh-week-between-label px-0.5 pb-2"
+      style={{ '--wh-week-accent': accent } as React.CSSProperties}
+    >
+      Week {weekNum}
+    </div>
   );
 }
 
-const WH_DATA_CELL = 'wh-data-cell text-[0.875rem] md:text-[1rem] leading-snug';
-const WH_DATE_CELL = 'wh-data-date-cell text-sm md:text-[0.875rem]';
+function WorkingHoursColGroup({ bulkSelectMode }: { bulkSelectMode: boolean }) {
+  return (
+    <colgroup>
+      {bulkSelectMode ? <col className="wh-col-select" /> : null}
+      <col className="wh-col-date" />
+      <col className="wh-col-status" />
+      <col className="wh-col-unavailability" />
+      <col className="wh-col-clock-in" />
+      <col className="wh-col-clock-out" />
+      <col className="wh-col-total" />
+      <col className="wh-col-notes" />
+      <col className="wh-col-document" />
+    </colgroup>
+  );
+}
+
+function WorkingHoursColumnHead({ bulkSelectMode }: { bulkSelectMode: boolean }) {
+  return (
+    <thead className="sticky top-0 z-10 bg-transparent text-sm uppercase tracking-wide text-gray-400">
+      <tr>
+        {bulkSelectMode && (
+          <th
+            className="w-10 py-3 px-2 text-left"
+            aria-label="Select"
+          />
+        )}
+        <th className="py-3 px-2 text-left">
+          Date
+        </th>
+        <th className="py-3 px-2 text-left">
+          Status
+        </th>
+        <th className="py-3 px-2 text-left">
+          Unavailability
+        </th>
+        <th className="py-3 px-2 text-left">
+          Clock in
+        </th>
+        <th className="py-3 px-2 text-left">
+          Clock out
+        </th>
+        <th className="py-3 px-2 text-left">
+          Total
+        </th>
+        <th className="py-3 px-2 text-left">
+          Notes
+        </th>
+        <th className="py-3 px-2 text-left">
+          Document
+        </th>
+      </tr>
+    </thead>
+  );
+}
+
+const WH_DATA_CELL =
+  'wh-data-cell px-2 py-3.5 border-b border-gray-100 text-[0.875rem] md:text-[1rem] leading-snug';
+const WH_DATE_CELL =
+  'wh-data-date-cell px-2 py-3.5 border-b border-gray-100 text-sm md:text-[0.875rem]';
 
 function dayHasSavedNotes(dayRecords: ClockInRow[]): boolean {
   return dayRecords.some((record) => Boolean(record.notes?.trim()));
@@ -240,10 +307,11 @@ function WorkingHoursDateLabel({
   muted?: boolean;
 }) {
   return (
-    <span className={`whitespace-nowrap ${muted ? 'text-base-content/45' : ''}`}>
-      <span className="font-semibold text-base-content/50">{formatWorkingHoursWeekday(dateKey)}</span>
-      <span className="mx-1.5 text-base-content/30" aria-hidden>·</span>
-      {formatWorkingHoursDateLabel(dateKey)}
+    <span className={`flex flex-col items-start leading-snug ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
+      <span className="wh-weekday font-semibold" style={{ color: 'var(--wh-week-accent)' }}>
+        {formatWorkingHoursWeekday(dateKey)}
+      </span>
+      <span>{formatWorkingHoursDateLabel(dateKey)}</span>
     </span>
   );
 }
@@ -253,26 +321,9 @@ function workingHoursDateCellStyle(weekNum?: number): React.CSSProperties | unde
   return { '--wh-week-accent': getWeekAccentColor(weekNum) } as React.CSSProperties;
 }
 
-function WorkingHoursClockEntryBadges({
-  hasManual,
-}: {
-  hasManual: boolean;
-}) {
-  if (!hasManual) return null;
+type DayApprovalDisplayStatus = 'approved' | 'pending' | 'declined' | 'auto-approved';
 
-  return (
-    <span
-      className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0"
-      title="Manual entry"
-    >
-      <PencilSquareIcon className="w-4 h-4" />
-    </span>
-  );
-}
-
-type DayApprovalDisplayStatus = 'approved' | 'pending' | 'declined';
-
-const DAY_APPROVAL_ORDER: DayApprovalDisplayStatus[] = ['declined', 'pending', 'approved'];
+const DAY_APPROVAL_ORDER: DayApprovalDisplayStatus[] = ['declined', 'pending', 'approved', 'auto-approved'];
 
 function WorkingHoursApprovalStatusLabel({
   status,
@@ -284,27 +335,27 @@ function WorkingHoursApprovalStatusLabel({
       ? 'Waiting for approval'
       : status === 'declined'
         ? 'Declined'
-        : 'Approved';
+        : status === 'auto-approved'
+          ? 'Auto approved'
+          : 'Approved';
   const colorClass =
     status === 'pending'
       ? 'text-sky-700'
       : status === 'declined'
         ? 'text-red-700'
-        : 'text-emerald-700';
-  const Icon =
-    status === 'pending' ? ClockSolidIcon : status === 'declined' ? XCircleIcon : CheckBadgeIcon;
+        : status === 'auto-approved'
+          ? 'text-gray-500'
+          : 'text-emerald-700';
 
   return (
-    <span
-      className={`inline-flex items-center gap-1 text-xs font-medium leading-none whitespace-nowrap ${colorClass}`}
-    >
-      <Icon className="h-5 w-5 shrink-0" aria-hidden />
+    <span className={`whitespace-nowrap ${colorClass}`}>
       {label}
     </span>
   );
 }
 
 function collectDayApprovalStatuses(params: {
+  hasClock: boolean;
   hasManualClock: boolean;
   clockApprovalStatus: ReturnType<typeof getDayClockInApprovalStatus>;
   unavailabilities: EmployeeUnavailabilityDayRow[];
@@ -315,6 +366,9 @@ function collectDayApprovalStatuses(params: {
     if (clockInApprovalWatermarkLabel(params.clockApprovalStatus)) {
       found.add(params.clockApprovalStatus);
     }
+  } else if (params.hasClock) {
+    if (params.clockApprovalStatus === 'declined') found.add('declined');
+    else found.add('auto-approved');
   }
 
   for (const unavail of params.unavailabilities) {
@@ -334,7 +388,7 @@ const SUBMIT_HOURS_BTN_CLASS =
 const CANCEL_SUBMISSION_BTN_CLASS =
   'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-amber-50 text-amber-900 hover:bg-amber-100 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
 
-type WorkingHoursRowFilter = 'approved' | 'declined' | 'pending' | 'unavailability' | 'clock';
+type WorkingHoursRowFilter = 'approved' | 'declined' | 'pending' | 'unavailability' | 'clock' | 'no-entry';
 
 const ROW_FILTER_OPTIONS: {
   id: WorkingHoursRowFilter;
@@ -345,6 +399,7 @@ const ROW_FILTER_OPTIONS: {
   { id: 'pending', label: 'Waiting for approval' },
   { id: 'unavailability', label: 'Unavailabilities' },
   { id: 'clock', label: 'Clock in & out' },
+  { id: 'no-entry', label: 'No entry' },
 ];
 
 type MergedWorkingHoursDayRow = {
@@ -416,9 +471,12 @@ function rowMatchesWorkingHoursFilters(
   dayRecords: ClockInRow[],
   activeFilters: Set<WorkingHoursRowFilter>,
 ): boolean {
-  if (row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isWeekendPlaceholder) return false;
   if (activeFilters.size === 0) return true;
 
+  const isNoEntryRow =
+    row.isMissingPlaceholder === true
+    || row.isHolidayPlaceholder === true
+    || row.isWeekendPlaceholder === true;
   const hasClock = row.clock != null;
   const hasUnavail = row.unavailabilities.length > 0;
   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
@@ -430,6 +488,7 @@ function rowMatchesWorkingHoursFilters(
       dayRecords.some(
         (record) => isManualClockInRecord(record) && getClockInApprovalStatus(record) === 'approved',
       ) ||
+      (hasClock && row.clock?.hasManual !== true && approvalStatus === 'approved') ||
       row.unavailabilities.some(
         (u) => !isGeneralUnavailability(u) && getUnavailabilityApprovalStatus(u) === 'approved',
       ),
@@ -445,6 +504,7 @@ function rowMatchesWorkingHoursFilters(
       ),
     unavailability: hasUnavail,
     clock: hasClock,
+    'no-entry': isNoEntryRow,
   };
 
   for (const filter of activeFilters) {
@@ -515,22 +575,39 @@ function MissingDaysBadge({ count, loading }: { count: number; loading: boolean 
   );
 }
 
-function TimeListCell({ value }: { value: string }) {
-  const parts = value.split(', ').filter(Boolean);
-  if (parts.length === 0) return <span className="text-gray-400">—</span>;
-  const showIndex = parts.length > 1;
+function sessionWorkplaceName(session: ClockSessionSummary): string {
+  if (session.workplaceIn && session.workplaceIn !== '—') return session.workplaceIn;
+  if (session.workplaceOut && session.workplaceOut !== '—') return session.workplaceOut;
+  return '';
+}
+
+function TimeListCell({
+  sessions,
+  field,
+}: {
+  sessions?: ClockSessionSummary[] | null;
+  field: 'clockIn' | 'clockOut';
+}) {
+  const list = sessions ?? [];
+  if (list.length === 0) return <span className="text-gray-400">—</span>;
+  const showIndex = list.length > 1;
   return (
     <div className="flex flex-col gap-0.5">
-      {parts.map((part, i) => (
-        <span key={`${part}-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-          {showIndex ? (
-            <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-100 px-1.5 text-[11px] font-semibold tabular-nums text-gray-600">
-              {i + 1}
-            </span>
-          ) : null}
-          {part}
-        </span>
-      ))}
+      {list.map((session, i) => {
+        const time = field === 'clockIn' ? session.clockIn : session.clockOut;
+        const workplace = sessionWorkplaceName(session);
+        return (
+          <span key={`${field}-${time}-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            {showIndex ? (
+              <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-100 px-1.5 text-[11px] font-semibold tabular-nums text-gray-600">
+                {i + 1}
+              </span>
+            ) : null}
+            {time}
+            {workplace ? <span className="text-gray-400 font-normal">{workplace}</span> : null}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -777,6 +854,35 @@ function WorkingHoursRowActionsMenu({
   );
 }
 
+function capturePageScroll(fromEl?: HTMLElement | null): { el: HTMLElement | Window; top: number } {
+  let node: HTMLElement | null = fromEl?.parentElement ?? null;
+  while (node) {
+    const style = window.getComputedStyle(node);
+    const canScroll = style.overflowY === 'auto' || style.overflowY === 'scroll';
+    if (canScroll && node.scrollHeight > node.clientHeight + 1) {
+      return { el: node, top: node.scrollTop };
+    }
+    node = node.parentElement;
+  }
+  const main = document.querySelector('main');
+  if (main instanceof HTMLElement && main.scrollHeight > main.clientHeight + 1) {
+    return { el: main, top: main.scrollTop };
+  }
+  return { el: window, top: window.scrollY };
+}
+
+function restorePageScroll(saved: { el: HTMLElement | Window; top: number }) {
+  const apply = () => {
+    if (saved.el === window) window.scrollTo(0, saved.top);
+    else (saved.el as HTMLElement).scrollTop = saved.top;
+  };
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
 const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   employeeId,
   employeeName = '',
@@ -786,6 +892,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 }) => {
   const { user } = useAuthContext();
   const calendarRef = useRef<CompactAvailabilityCalendarRef>(null);
+  const hoursShellRef = useRef<HTMLDivElement>(null);
+  const hasLoadedOnceRef = useRef(false);
   const now = useMemo(() => new Date(), []);
   const [year, setYear] = useState(() =>
     initialYear != null && Number.isFinite(initialYear) ? initialYear : now.getFullYear(),
@@ -808,8 +916,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const [unavailabilities, setUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
   const [employeeMinHours, setEmployeeMinHours] = useState(8);
   const [loading, setLoading] = useState(true);
-  const [isClockedIn, setIsClockedIn] = useState(false);
-  const [sessionDuration, setSessionDuration] = useState('');
   const [exporting, setExporting] = useState(false);
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
   const [monthSubmission, setMonthSubmission] = useState<EmployeeWorkingHoursSubmission | null>(null);
@@ -836,6 +942,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     name: string;
     reason: string;
     uploadedAt: string;
+    bucketName?: string;
   } | null>(null);
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
   const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
@@ -891,45 +998,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     });
   }, []);
 
-  const updateSessionDuration = useCallback((clockInTime: string) => {
-    const diffMs = Math.max(0, Date.now() - new Date(clockInTime).getTime());
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    setSessionDuration(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
-  }, []);
-
-  const fetchClockInStatus = useCallback(async () => {
-    if (!employeeId) {
-      setIsClockedIn(false);
-      setSessionDuration('');
-      return;
-    }
-    try {
-      const { data, error } = await supabase
-        .from('employee_clock_in')
-        .select('clock_in_time, clock_out_time')
-        .eq('employee_id', employeeId)
-        .eq('is_active', true)
-        .order('clock_in_time', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (error && error.code !== 'PGRST116') throw error;
-
-      if (data) {
-        setIsClockedIn(true);
-        updateSessionDuration(data.clock_in_time);
-      } else {
-        setIsClockedIn(false);
-        setSessionDuration('');
-      }
-    } catch (err) {
-      console.error('WorkingHoursTab status:', err);
-      setIsClockedIn(false);
-      setSessionDuration('');
-    }
-  }, [employeeId, updateSessionDuration]);
-
   const fetchRecords = useCallback(async () => {
     if (!employeeId) {
       setRecords([]);
@@ -937,10 +1005,19 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       setLoading(false);
       return;
     }
+    const keepPlace = hasLoadedOnceRef.current;
+    const savedScroll = keepPlace ? capturePageScroll(hoursShellRef.current) : null;
+    if (!keepPlace) setLoading(true);
     const range = monthRange(year, month);
-    setLoading(true);
     try {
       const { start, end } = dateRangeToIsoBounds(range.from, range.to);
+      const clockSelectWithOvertime = `id, employee_id, clock_in_time, clock_out_time, is_active, manually,
+             approved, declined, decline_note,
+             clock_in_location_id, clock_out_location_id,
+             clock_in_place:clock_in_locations!clock_in_location_id ( name ),
+             clock_out_place:clock_in_locations!clock_out_location_id ( name ),
+             notes,
+             overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type`;
       const clockSelectWithApproval = `id, employee_id, clock_in_time, clock_out_time, is_active, manually,
              approved, declined, decline_note,
              clock_in_location_id, clock_out_location_id,
@@ -955,11 +1032,24 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
       let clockResult = await supabase
         .from('employee_clock_in')
-        .select(clockSelectWithApproval)
+        .select(clockSelectWithOvertime)
         .eq('employee_id', employeeId)
         .gte('clock_in_time', start)
         .lte('clock_in_time', end)
         .order('clock_in_time', { ascending: false });
+
+      if (clockResult.error) {
+        const msg = clockResult.error.message?.toLowerCase() ?? '';
+        if (msg.includes('overtime_approval')) {
+          clockResult = await supabase
+            .from('employee_clock_in')
+            .select(clockSelectWithApproval)
+            .eq('employee_id', employeeId)
+            .gte('clock_in_time', start)
+            .lte('clock_in_time', end)
+            .order('clock_in_time', { ascending: false });
+        }
+      }
 
       if (clockResult.error) {
         const msg = clockResult.error.message?.toLowerCase() ?? '';
@@ -995,7 +1085,13 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       setUnavailabilities([]);
     } finally {
       setLoading(false);
+      hasLoadedOnceRef.current = true;
+      if (savedScroll) restorePageScroll(savedScroll);
     }
+  }, [employeeId, year, month]);
+
+  useEffect(() => {
+    hasLoadedOnceRef.current = false;
   }, [employeeId, year, month]);
 
   useEffect(() => {
@@ -1022,14 +1118,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   useEffect(() => {
     void loadMonthSubmission();
   }, [loadMonthSubmission]);
-
-  useEffect(() => {
-    void fetchClockInStatus();
-    const interval = window.setInterval(() => {
-      void fetchClockInStatus();
-    }, 60_000);
-    return () => window.clearInterval(interval);
-  }, [fetchClockInStatus]);
 
   const dailyRows = useMemo(() => aggregateClockInRecordsByDay(records), [records]);
   const periodTotal = sumClockDurations(filterCountedClockInRecords(records));
@@ -1159,6 +1247,20 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () => MERGED_COL_SPAN + (bulkSelectMode ? 1 : 0),
     [bulkSelectMode],
   );
+
+  const weekSections = useMemo(() => {
+    const sections: Array<{ weekNum: number; rows: typeof filteredMergedDayRows }> = [];
+    filteredMergedDayRows.forEach((row) => {
+      const weekNum = weekRowMeta.get(row.dateKey)?.weekNum ?? 1;
+      const last = sections[sections.length - 1];
+      if (!last || last.weekNum !== weekNum) {
+        sections.push({ weekNum, rows: [row] });
+      } else {
+        last.rows.push(row);
+      }
+    });
+    return sections;
+  }, [filteredMergedDayRows, weekRowMeta]);
 
   const handleCalendarMonthChange = useCallback((viewYear: number, viewMonth: number) => {
     setCalendarViewYear(viewYear);
@@ -1446,7 +1548,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       await deleteClockInSessions(daySessions.map((s) => s.id));
       toast.success('Clock-in entries removed');
       await fetchRecords();
-      void fetchClockInStatus();
     } catch (err) {
       console.error('WorkingHoursTab delete clock-in:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to remove clock-in entries');
@@ -1456,54 +1557,82 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   };
 
   return (
-    <div
-      className={[
-        'my-profile-hours-shell w-full max-w-full min-w-0 space-y-4',
-        embedded ? 'my-profile-hours-shell--flat' : '',
-      ]
-        .filter(Boolean)
-        .join(' ')}
-    >
-      {!embedded && (
-      <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between w-full min-w-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-            <ClockIcon className="w-5 h-5 text-primary" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-xl md:text-2xl font-bold text-gray-800">Working Hours</h2>
-            <p className="text-sm text-gray-500">Unavailabilities and clock-in/out history</p>
-          </div>
-        </div>
-        <div className="shrink-0 self-start sm:self-auto max-w-full">
-          {isClockedIn ? (
-            <span className="inline-flex flex-wrap items-center px-4 py-2 rounded-full text-sm md:text-base font-semibold bg-green-100/90 text-green-800 border border-green-200/70 max-w-full">
-              {sessionDuration
-                ? `clocked in since ${sessionDuration}`
-                : 'clocked in'}
-            </span>
-          ) : (
-            <span className="inline-flex items-center px-4 py-2 rounded-full text-sm md:text-base font-semibold bg-gray-100 text-gray-600 border border-gray-200/80">
-              Clocked Out
+    <div ref={hoursShellRef} className="my-profile-hours-shell w-full max-w-full min-w-0 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1 w-full min-w-0">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
+          {!embedded && (
+            <div className="flex items-center gap-3 min-w-0 mr-1">
+              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                <ClockIcon className="w-5 h-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-xl md:text-2xl font-bold text-gray-800">Working Hours</h2>
+                <p className="text-sm text-gray-500">Unavailabilities and clock-in/out history</p>
+              </div>
+            </div>
+          )}
+          {monthSubmission && (
+            <span
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-100 text-green-800 border border-green-200"
+              title={`Submitted on ${new Date(monthSubmission.submitted_at).toLocaleString('en-GB')}`}
+            >
+              <CheckIcon className="w-4 h-4 shrink-0" />
+              Submitted
             </span>
           )}
+          {submitBlockedByApproval && !isMonthSubmitted && monthSubmitBlockMessage && (
+            <span className="text-xs text-red-700 max-w-md">{monthSubmitBlockMessage}</span>
+          )}
+          {!isMonthSubmitted && (
+            <button
+              type="button"
+              className={SUBMIT_HOURS_BTN_CLASS}
+              onClick={() => {
+                if (submitBlockedByApproval && monthSubmitBlockMessage) {
+                  toast.error(monthSubmitBlockMessage);
+                  return;
+                }
+                setSubmitModalOpen(true);
+              }}
+              disabled={!user?.id || loadingMonthSubmission || submitBlockedByApproval}
+              title={monthSubmitBlockMessage ?? undefined}
+            >
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
+                <CheckIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
+              </span>
+              Submit {MONTH_NAMES[month - 1]} {year}
+            </button>
+          )}
+          {isMonthSubmitted && (
+            <button
+              type="button"
+              className={CANCEL_SUBMISSION_BTN_CLASS}
+              onClick={() => void handleCancelSubmission()}
+              disabled={!user?.id || cancellingSubmission || loadingMonthSubmission}
+              title="Withdraw submission so you can add or edit entries again"
+            >
+              {cancellingSubmission ? (
+                <span className="loading loading-spinner loading-sm" />
+              ) : (
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-200/60">
+                  <ArrowUturnLeftIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
+                </span>
+              )}
+              Cancel submission
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <span className="text-base font-semibold text-primary">
+            Period total: {periodTotal}
+          </span>
+          <MissingDaysBadge count={periodMissingDays} loading={loading} />
         </div>
       </div>
-      )}
 
-      {/* Filters */}
-      <div
-        className={
-          embedded
-            ? 'space-y-4'
-            : 'rounded-[18px] bg-white px-4 py-4 md:px-5 shadow-sm space-y-4'
-        }
-      >
-        <div className="flex items-center gap-2 text-base font-semibold text-gray-700">
-          <FunnelIcon className="w-5 h-5" />
-          Filters
-        </div>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:gap-5">
+      <div className="px-1">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between xl:gap-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-5 min-w-0">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl shrink-0">
             <div className="form-control w-full">
               <YearWheelPicker
@@ -1525,56 +1654,56 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
               </select>
             </label>
           </div>
-          <div className="min-w-0 flex-1 flex flex-col sm:flex-row sm:items-end gap-3">
-            <div className="min-w-0 w-full sm:max-w-xs shrink-0">
-              <span className="label-text text-sm text-gray-600 mb-1.5 font-medium block">Show</span>
-              <div className="dropdown w-full">
-                <button
-                  type="button"
-                  tabIndex={0}
-                  className="btn btn-outline border-gray-200 bg-white hover:bg-gray-50 w-full h-12 min-h-12 justify-between font-normal text-base text-gray-800 rounded-full px-4"
-                >
-                  <span className="truncate">{rowFilterSummary}</span>
-                  <ChevronDownIcon className="w-4 h-4 shrink-0 text-gray-400" aria-hidden />
-                </button>
-                <ul
-                  tabIndex={0}
-                  className="dropdown-content menu z-30 mt-2 w-full min-w-[16rem] rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
-                >
-                  {ROW_FILTER_OPTIONS.map((option) => {
-                    const active = rowFilters.has(option.id);
-                    return (
-                      <li key={option.id}>
-                        <label className="flex items-center gap-3 cursor-pointer rounded-lg px-3 py-2.5">
-                          <input
-                            type="checkbox"
-                            className="checkbox checkbox-sm checkbox-primary"
-                            checked={active}
-                            onChange={() => toggleRowFilter(option.id)}
-                          />
-                          <span className="text-sm text-gray-800">{option.label}</span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                  {hasActiveRowFilters && (
-                    <>
-                      <div className="border-t border-gray-100 my-1" />
-                      <li>
-                        <button
-                          type="button"
-                          className="text-sm text-gray-500 justify-center"
-                          onClick={() => setRowFilters(new Set())}
-                        >
-                          Clear filters
-                        </button>
-                      </li>
-                    </>
-                  )}
-                </ul>
-              </div>
+          <div className="min-w-0 w-full sm:max-w-xs shrink-0">
+            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium block">Show</span>
+            <div className="dropdown w-full">
+              <button
+                type="button"
+                tabIndex={0}
+                className="btn btn-outline border-gray-200 bg-white hover:bg-gray-50 w-full h-12 min-h-12 justify-between font-normal text-base text-gray-800 rounded-full px-4"
+              >
+                <span className="truncate">{rowFilterSummary}</span>
+                <ChevronDownIcon className="w-4 h-4 shrink-0 text-gray-400" aria-hidden />
+              </button>
+              <ul
+                tabIndex={0}
+                className="dropdown-content menu z-30 mt-2 w-full min-w-[16rem] rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
+              >
+                {ROW_FILTER_OPTIONS.map((option) => {
+                  const active = rowFilters.has(option.id);
+                  return (
+                    <li key={option.id}>
+                      <label className="flex items-center gap-3 cursor-pointer rounded-lg px-3 py-2.5">
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-sm checkbox-primary"
+                          checked={active}
+                          onChange={() => toggleRowFilter(option.id)}
+                        />
+                        <span className="text-sm text-gray-800">{option.label}</span>
+                      </label>
+                    </li>
+                  );
+                })}
+                {hasActiveRowFilters && (
+                  <>
+                    <div className="border-t border-gray-100 my-1" />
+                    <li>
+                      <button
+                        type="button"
+                        className="text-sm text-gray-500 justify-center"
+                        onClick={() => setRowFilters(new Set())}
+                      >
+                        Clear filters
+                      </button>
+                    </li>
+                  </>
+                )}
+              </ul>
             </div>
-            <div className="flex flex-wrap items-center gap-2 pb-0.5">
+          </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2 pb-0.5 shrink-0">
               <button
                 type="button"
                 className="btn btn-sm btn-outline btn-primary gap-2 h-10 min-h-10 rounded-full"
@@ -1582,12 +1711,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                 disabled={isMonthSubmitted}
                 title={isMonthSubmitted ? monthLockedMessage : undefined}
               >
-                <CalendarDaysIcon className="w-4 h-4" />
+                <CalendarDaysIcon className="w-6 h-6" />
                 Add unavailability
               </button>
               <button
                 type="button"
-                className="btn btn-sm rounded-full gap-2 border-0 bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-emerald-600/50 h-10 min-h-10"
+                className="btn btn-sm btn-outline btn-primary gap-2 h-10 min-h-10 rounded-full"
                 onClick={handleExportExcel}
                 disabled={exporting || loading || mergedDayRows.length === 0}
                 title="Download this employee's working hours as Excel"
@@ -1595,7 +1724,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                 {exporting ? (
                   <span className="loading loading-spinner loading-sm" />
                 ) : (
-                  <FaFileExcel className="w-4 h-4" />
+                  <FaFileExcel className="w-6 h-6" />
                 )}
                 Export to Excel
               </button>
@@ -1614,7 +1743,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       : 'Select table rows to add clock-in in bulk'
                 }
               >
-                <SquaresPlusIcon className="w-4 h-4" />
+                <SquaresPlusIcon className="w-6 h-6" />
                 {bulkSelectMode ? 'Cancel selection' : 'Add multiple clock-in'}
               </button>
               <button
@@ -1631,78 +1760,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                 disabled={!user?.id || isMonthSubmitted}
                 title={isMonthSubmitted ? monthLockedMessage : undefined}
               >
-                <PlusIcon className="w-4 h-4" />
+                <PlusIcon className="w-6 h-6" />
                 Add clock-in
               </button>
             </div>
-          </div>
         </div>
       </div>
 
       {/* Working hours & unavailabilities */}
       <div className="w-full">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 px-1">
-          <div className="flex flex-wrap items-center gap-2 min-w-0">
-            <ClockIcon className="w-5 h-5 text-primary shrink-0" />
-            <h3 className="text-base font-semibold text-gray-800">Working hours</h3>
-            {monthSubmission && (
-              <span
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-100 text-green-800 border border-green-200"
-                title={`Submitted on ${new Date(monthSubmission.submitted_at).toLocaleString('en-GB')}`}
-              >
-                <CheckIcon className="w-4 h-4 shrink-0" />
-                Submitted
-              </span>
-            )}
-            {submitBlockedByApproval && !isMonthSubmitted && monthSubmitBlockMessage && (
-              <span className="text-xs text-red-700 max-w-md">{monthSubmitBlockMessage}</span>
-            )}
-            {!isMonthSubmitted && (
-              <button
-                type="button"
-                className={SUBMIT_HOURS_BTN_CLASS}
-                onClick={() => {
-                  if (submitBlockedByApproval && monthSubmitBlockMessage) {
-                    toast.error(monthSubmitBlockMessage);
-                    return;
-                  }
-                  setSubmitModalOpen(true);
-                }}
-                disabled={!user?.id || loadingMonthSubmission || submitBlockedByApproval}
-                title={monthSubmitBlockMessage ?? undefined}
-              >
-                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
-                  <CheckIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
-                </span>
-                Submit {MONTH_NAMES[month - 1]} {year}
-              </button>
-            )}
-            {isMonthSubmitted && (
-              <button
-                type="button"
-                className={CANCEL_SUBMISSION_BTN_CLASS}
-                onClick={() => void handleCancelSubmission()}
-                disabled={!user?.id || cancellingSubmission || loadingMonthSubmission}
-                title="Withdraw submission so you can add or edit entries again"
-              >
-                {cancellingSubmission ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : (
-                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-200/60">
-                    <ArrowUturnLeftIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
-                  </span>
-                )}
-                Cancel submission
-              </button>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
-            <span className="text-base font-semibold text-primary">
-              Period total: {periodTotal}
-            </span>
-            <MissingDaysBadge count={periodMissingDays} loading={loading} />
-          </div>
-        </div>
         {bulkSelectMode && (
           <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 mb-3 flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-gray-800">
@@ -1777,127 +1843,56 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
           onViewDocument={setSelectedDocument}
         />
-        <div
-          className={
-            embedded
-              ? 'hidden md:block w-full overflow-x-auto'
-              : 'hidden md:block w-full overflow-x-auto rounded-[18px] bg-[#ececec] px-1 py-2 pb-4'
-          }
-        >
-          <table
-            className={
-              embedded
-                ? 'table my-profile-hours-table w-full min-w-[52rem] text-base'
-                : 'table my-profile-hours-table w-full min-w-[52rem] table-fixed'
-            }
-          >
-            <thead>
-              <tr
-                className={
-                  embedded ? 'text-sm uppercase tracking-wider text-gray-500' : undefined
-                }
-              >
-                {bulkSelectMode && (
-                  <th
-                    className={
-                      embedded
-                        ? 'w-10 min-w-[2.5rem] px-2 py-3.5 bg-transparent'
-                        : 'w-10 min-w-[2.5rem] px-2 py-3.5 bg-[#ececec]'
-                    }
-                    aria-label="Select"
-                  />
-                )}
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left min-w-[9.5rem]'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec] min-w-[9.5rem]'
-                  }
-                >
-                  Date
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Unavailability
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Clock in
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Clock out
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Total duration
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Workplace
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Notes
-                </th>
-                <th
-                  className={
-                    embedded
-                      ? 'bg-transparent font-semibold text-left'
-                      : 'px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]'
-                  }
-                >
-                  Document
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={tableColSpan} className="text-center py-12">
-                    <span className="loading loading-spinner loading-md text-primary" />
-                  </td>
-                </tr>
-              ) : filteredMergedDayRows.length === 0 ? (
-                <tr>
-                  <td colSpan={tableColSpan} className="text-center py-12 text-gray-400">
-                    {hasActiveRowFilters
-                      ? 'No entries match the selected filters.'
-                      : 'No working hours or unavailabilities for this period.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredMergedDayRows.flatMap((row) => {
+        <div className="hidden md:block w-full">
+          {loading ? (
+            <div className="overflow-x-auto rounded-2xl">
+              <table className="pipeline-flat-table my-profile-hours-table w-full min-w-[64rem] table-fixed border-separate border-spacing-0 text-base">
+                <WorkingHoursColGroup bulkSelectMode={bulkSelectMode} />
+                <WorkingHoursColumnHead bulkSelectMode={bulkSelectMode} />
+                <tbody>
+                  <tr>
+                    <td colSpan={tableColSpan} className="bg-white text-center py-12">
+                      <span className="loading loading-spinner loading-md text-primary" />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : filteredMergedDayRows.length === 0 ? (
+            <div className="overflow-x-auto rounded-2xl">
+              <table className="pipeline-flat-table my-profile-hours-table w-full min-w-[64rem] table-fixed border-separate border-spacing-0 text-base">
+                <WorkingHoursColGroup bulkSelectMode={bulkSelectMode} />
+                <WorkingHoursColumnHead bulkSelectMode={bulkSelectMode} />
+                <tbody>
+                  <tr>
+                    <td colSpan={tableColSpan} className="bg-white text-center py-12 text-gray-400">
+                      {hasActiveRowFilters
+                        ? 'No entries match the selected filters.'
+                        : 'No working hours or unavailabilities for this period.'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <div className="min-w-[64rem] flex flex-col gap-12">
+              {weekSections.map((section) => (
+                <div key={`wh-week-${section.weekNum}`}>
+                  <WorkingHoursWeekHeading weekNum={section.weekNum} />
+                  <div className="rounded-2xl">
+                    <table
+                      className="pipeline-flat-table my-profile-hours-table w-full table-fixed border-separate border-spacing-0 text-base"
+                      style={
+                        {
+                          '--wh-week-accent': getWeekAccentColor(section.weekNum),
+                        } as React.CSSProperties
+                      }
+                    >
+                      <WorkingHoursColGroup bulkSelectMode={bulkSelectMode} />
+                      <WorkingHoursColumnHead bulkSelectMode={bulkSelectMode} />
+                      <tbody>
+                        {section.rows.map((row) => {
                   const isPlaceholder =
                     row.isMissingPlaceholder ||
                     row.isHolidayPlaceholder ||
@@ -1910,14 +1905,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                     !isMonthSubmitted;
                   const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
                   const weekMeta = weekRowMeta.get(row.dateKey);
-                  const weekBetweenRow =
-                    weekMeta?.isFirstInWeek ? (
-                      <WorkingHoursWeekBetweenRow
-                        key={`wh-week-between-${weekMeta.weekNum}`}
-                        weekNum={weekMeta.weekNum}
-                        columnCount={tableColSpan}
-                      />
-                    ) : null;
 
                   if (isPlaceholder) {
                     const isWeekend = row.isWeekendPlaceholder === true;
@@ -1929,22 +1916,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       : isHoliday
                         ? 'wh-holiday-placeholder'
                         : 'wh-missing-placeholder';
-                    const hintText = isWeekend
-                      ? 'Weekend — optional overtime'
-                      : isHoliday
-                        ? holidayLabel
-                          ? `${holidayLabel} — no entry yet`
-                          : 'Holiday — no entry yet'
-                        : 'No entry yet';
-                    return [
-                      weekBetweenRow,
+                    return (
                       <tr
                         key={row.dateKey}
                         id={`wh-row-${row.dateKey}`}
                         className={[
+                          'pipeline-flat-row [&>td]:border-b [&>td]:border-gray-100',
                           rowClass,
                           placeholderInteractive && !bulkSelectMode ? 'wh-placeholder-interactive' : '',
-                          isBulkSelected ? 'wh-bulk-selected' : '',
+                          isBulkSelected ? 'wh-bulk-selected pipeline-flat-row-selected' : '',
                         ].filter(Boolean).join(' ')}
                         onClick={
                           isBulkSelectable
@@ -1953,7 +1933,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                         }
                       >
                         {bulkSelectMode && (
-                          <td className="w-10 min-w-[2.5rem] px-2 py-3 align-middle">
+                          <td className="w-10 px-2 py-3 align-middle">
                             {isBulkSelectable ? (
                               <input
                                 type="checkbox"
@@ -1967,20 +1947,32 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           </td>
                         )}
                         <td
-                          className={`relative whitespace-nowrap font-medium wh-data-date-cell wh-date-week-accent ${WH_DATE_CELL}`}
+                          className={`relative font-medium wh-data-date-cell wh-date-week-accent ${WH_DATE_CELL}`}
                           style={workingHoursDateCellStyle(weekMeta?.weekNum)}
                         >
                           <div className="relative z-10 flex flex-col items-start gap-1.5 min-w-0">
                             <WorkingHoursDateLabel dateKey={row.dateKey} muted />
                           </div>
                         </td>
+                        <td className={WH_DATA_CELL}>
+                          <span className="text-gray-400">No entry</span>
+                        </td>
                         <td
                           colSpan={WH_PLACEHOLDER_HINT_COL_SPAN}
-                          className={`${WH_DATA_CELL} wh-placeholder-hint ${isWeekend ? '' : 'italic'}`}
+                          className={`${WH_DATA_CELL} wh-placeholder-hint ${isWeekend || isHoliday ? '' : 'italic'}`}
                         >
-                          {hintText}
+                          {isWeekend ? (
+                            'Weekend'
+                          ) : isHoliday ? (
+                            <span className="flex flex-col items-start leading-snug">
+                              <span>{holidayLabel || 'Holiday'}</span>
+                              <span className="italic">no entry yet</span>
+                            </span>
+                          ) : (
+                            'No entry yet'
+                          )}
                         </td>
-                        <td className="relative px-2 py-3 whitespace-nowrap align-middle min-w-[10.5rem] lg:min-w-[6rem]">
+                        <td className="relative px-2 py-3.5 border-b border-gray-100 whitespace-nowrap align-middle">
                           {placeholderInteractive && !bulkSelectMode ? (
                             <div className="wh-placeholder-row-actions flex flex-row flex-nowrap items-center justify-end gap-1.5 lg:absolute lg:right-2 lg:top-1/2 lg:z-10 lg:-translate-y-1/2">
                               <button
@@ -2006,8 +1998,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                             <span className="text-gray-400 text-xs">—</span>
                           )}
                         </td>
-                      </tr>,
-                    ];
+                      </tr>
+                    );
                   }
 
                   const hasClock = row.clock != null;
@@ -2016,43 +2008,48 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                     hasManualClockSummary: row.clock?.hasManual === true,
                   });
                   const declineNotes = formatDayDeclineNotes(dayRecords);
-                  return [
-                    weekBetweenRow,
+                  const overtimeDocs = collectDayOvertimeDocuments(dayRecords);
+                  const approvalStatuses = collectDayApprovalStatuses({
+                    hasClock,
+                    hasManualClock: row.clock?.hasManual === true,
+                    clockApprovalStatus: approvalStatus,
+                    unavailabilities: row.unavailabilities,
+                  });
+                  return (
                     <tr
                       key={row.dateKey}
                       id={`wh-row-${row.dateKey}`}
-                      className={`wh-data-row ${clockInApprovalRowClass(approvalStatus)}`}
+                      className={`pipeline-flat-row wh-data-row [&>td]:border-b [&>td]:border-gray-100 ${clockInApprovalRowClass(approvalStatus)}`}
                     >
-                      {bulkSelectMode && <td className="w-10 min-w-[2.5rem] px-2" aria-hidden />}
+                      {bulkSelectMode && <td className="w-10 px-2" aria-hidden />}
                       <td
-                        className={`relative font-medium min-w-[9.5rem] wh-data-date-cell wh-date-week-accent ${WH_DATE_CELL}`}
+                        className={`relative font-medium wh-data-date-cell wh-date-week-accent ${WH_DATE_CELL}`}
                         style={workingHoursDateCellStyle(weekMeta?.weekNum)}
                       >
                         <div className="relative z-10 flex flex-col items-start gap-1.5 min-w-0">
                           <WorkingHoursDateLabel dateKey={row.dateKey} />
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {row.clock?.hasManual ? (
-                              <WorkingHoursClockEntryBadges hasManual={row.clock.hasManual} />
-                            ) : null}
-                            {collectDayApprovalStatuses({
-                              hasManualClock: row.clock?.hasManual === true,
-                              clockApprovalStatus: approvalStatus,
-                              unavailabilities: row.unavailabilities,
-                            }).map((status) => (
-                              <WorkingHoursApprovalStatusLabel key={status} status={status} />
-                            ))}
-                          </div>
-                          {declineNotes && (
-                            <p
-                              className="text-xs font-medium leading-snug text-red-700 max-w-[14rem]"
-                              title={declineNotes}
-                            >
-                              {declineNotes}
-                            </p>
-                          )}
                         </div>
                       </td>
-                      <td className={`min-w-[160px] ${WH_DATA_CELL}`}>
+                      <td className={WH_DATA_CELL}>
+                        {approvalStatuses.length === 0 && !declineNotes ? (
+                          <span className="text-gray-400">—</span>
+                        ) : (
+                          <div className="flex flex-col items-start gap-1.5 min-w-0">
+                            {approvalStatuses.map((status) => (
+                              <WorkingHoursApprovalStatusLabel key={status} status={status} />
+                            ))}
+                            {declineNotes && (
+                              <p
+                                className="text-xs font-medium leading-snug text-red-700 max-w-[14rem]"
+                                title={declineNotes}
+                              >
+                                {declineNotes}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                      <td className={WH_DATA_CELL}>
                         {row.unavailabilities.length > 0 ? (
                           <div className="flex flex-col gap-2">
                             {row.unavailabilities.map((unavail) => (
@@ -2074,14 +2071,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       </td>
                       <td className={WH_DATA_CELL}>
                         {hasClock ? (
-                          <TimeListCell value={row.clock!.clockIns} />
+                          <TimeListCell sessions={clockSessionsForDisplay(row.clock)} field="clockIn" />
                         ) : (
                           <span className="text-gray-400">—</span>
                         )}
                       </td>
                       <td className={WH_DATA_CELL}>
                         {hasClock ? (
-                          <TimeListCell value={row.clock!.clockOuts} />
+                          <TimeListCell sessions={clockSessionsForDisplay(row.clock)} field="clockOut" />
                         ) : (
                           <span className="text-gray-400">—</span>
                         )}
@@ -2099,10 +2096,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           <span className="text-gray-400">—</span>
                         )}
                       </td>
-                      <td className={`max-w-[160px] ${WH_DATA_CELL}`}>
-                        {hasClock ? row.clock!.workplacesIn : <span className="text-gray-400">—</span>}
-                      </td>
-                      <td className={`max-w-[180px] ${WH_DATA_CELL}`}>
+                      <td className={WH_DATA_CELL}>
                         {dayHasSavedNotes(dayRecords) ? (
                           <button
                             type="button"
@@ -2119,33 +2113,56 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       <td className={WH_DATA_CELL}>
                         <div className="flex items-center gap-2 min-w-0">
                           <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
-                            {row.unavailabilities.some((u) => u.document_url) ? (
-                              row.unavailabilities
-                                .filter((u) => u.document_url)
-                                .map((unavail) => {
-                                  const docName = documentNameFromUrl(unavail.document_url!);
-                                  return (
-                                    <button
-                                      key={`doc-${unavail.id}-${unavail.date}`}
-                                      type="button"
-                                      className="btn btn-ghost btn-sm btn-circle min-h-10 min-w-10 h-10 w-10 hover:bg-base-200"
-                                      title={docName}
-                                      aria-label={`View ${docName}`}
-                                      onClick={() =>
-                                        setSelectedDocument({
-                                          url: unavail.document_url!,
-                                          name: docName,
-                                          reason: unavailabilityReasonText(unavail),
-                                          uploadedAt: unavail.created_at,
-                                        })
-                                      }
-                                    >
-                                      <DocumentFileGlyph fileName={docName} className="h-7 w-7" />
-                                    </button>
-                                  );
-                                })
-                            ) : (
+                            {overtimeDocs.length === 0
+                            && !row.unavailabilities.some((u) => u.document_url) ? (
                               <span className="text-gray-400">—</span>
+                            ) : (
+                              <>
+                                {row.unavailabilities
+                                  .filter((u) => u.document_url)
+                                  .map((unavail) => {
+                                    const docName = documentNameFromUrl(unavail.document_url!);
+                                    return (
+                                      <button
+                                        key={`doc-${unavail.id}-${unavail.date}`}
+                                        type="button"
+                                        className="btn btn-ghost btn-sm btn-circle min-h-10 min-w-10 h-10 w-10 hover:bg-base-200"
+                                        title={docName}
+                                        aria-label={`View ${docName}`}
+                                        onClick={() =>
+                                          setSelectedDocument({
+                                            url: unavail.document_url!,
+                                            name: docName,
+                                            reason: unavailabilityReasonText(unavail),
+                                            uploadedAt: unavail.created_at,
+                                          })
+                                        }
+                                      >
+                                        <DocumentFileGlyph fileName={docName} className="h-7 w-7" />
+                                      </button>
+                                    );
+                                  })}
+                                {overtimeDocs.map((doc) => (
+                                  <button
+                                    key={`ot-doc-${doc.path}`}
+                                    type="button"
+                                    className="btn btn-ghost btn-sm btn-circle min-h-10 min-w-10 h-10 w-10 hover:bg-base-200"
+                                    title={`${doc.name} (overtime approval)`}
+                                    aria-label={`View overtime approval ${doc.name}`}
+                                    onClick={() =>
+                                      setSelectedDocument({
+                                        url: doc.path,
+                                        name: doc.name,
+                                        reason: 'Overtime approval screenshot',
+                                        uploadedAt: doc.uploadedAt,
+                                        bucketName: CLOCK_IN_OVERTIME_APPROVAL_BUCKET,
+                                      })
+                                    }
+                                  >
+                                    <DocumentFileGlyph fileName={doc.name} className="h-7 w-7" />
+                                  </button>
+                                ))}
+                              </>
                             )}
                           </div>
                           <div className="shrink-0">
@@ -2177,12 +2194,17 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           </div>
                         </div>
                       </td>
-                    </tr>,
-                  ];
-                })
-              )}
-            </tbody>
-          </table>
+                    </tr>
+                  );
+                        }) }
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2192,44 +2214,70 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           border: none !important;
           box-shadow: none !important;
           border-collapse: separate !important;
-          border-spacing: 0 10px !important;
+          border-spacing: 0 !important;
           table-layout: fixed !important;
           width: 100% !important;
         }
 
-        .my-profile-hours-shell .table tbody tr:hover {
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-select { width: 2.5rem; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-date { width: 8%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-status { width: 12%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-unavailability { width: 11%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-in { width: 17%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-out { width: 17%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-total { width: 7%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-notes { width: 12%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-document { width: 16%; }
+
+        .my-profile-hours-shell table.my-profile-hours-table thead,
+        .my-profile-hours-shell table.my-profile-hours-table thead tr,
+        .my-profile-hours-shell table.my-profile-hours-table thead th {
           background-color: transparent !important;
+          background-image: none !important;
+          border-bottom: none !important;
+          color: #9ca3af !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table thead th:first-child {
+          border-top-left-radius: 1rem !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table thead th:last-child {
+          border-top-right-radius: 1rem !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:first-child > td:first-child {
+          border-top-left-radius: 1rem !important;
+          overflow: hidden !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:first-child > td:last-child {
+          border-top-right-radius: 1rem !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:last-child > td:first-child {
+          border-bottom-left-radius: 1rem !important;
+          overflow: hidden !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:last-child > td:last-child {
+          border-bottom-right-radius: 1rem !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr {
           background: transparent !important;
-          border-radius: 18px !important;
-          overflow: visible !important;
           box-shadow: none !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody td {
-          border: none !important;
           box-shadow: none !important;
           vertical-align: middle;
-          padding: 1rem 1.1rem !important;
+          overflow: hidden;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-data-row td {
-          background: #ffffff !important;
-        }
-
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.pipeline-flat-row:hover > td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-data-row:hover td {
-          background: #f1f5f9 !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row td,
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row:hover td {
-          background: transparent !important;
-          box-shadow: none !important;
-          padding: 0.5rem 0.85rem 0.2rem !important;
-          border: none !important;
-          border-radius: 0 !important;
+          background-color: #ffffff !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.approval-row-declined td {
@@ -2243,8 +2291,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder:hover td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:hover td {
-          background: #f3f4f6 !important;
-          box-shadow: none !important;
+          background: #f9fafb !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td.wh-placeholder-hint {
@@ -2259,7 +2306,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder:hover td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:hover td {
           background: #f5f3ff !important;
-          box-shadow: none !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td.wh-placeholder-hint {
@@ -2273,8 +2319,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder:hover td,
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive:hover td {
-          background: #f1f5f9 !important;
-          box-shadow: none !important;
+          background: #f8fafc !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder td.wh-placeholder-hint {
@@ -2285,6 +2330,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-weekend-placeholder.wh-placeholder-interactive {
           cursor: pointer;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-bulk-selected td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.pipeline-flat-row-selected td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.pipeline-flat-row-selected:hover td {
+          background: rgb(239 246 255) !important;
         }
 
         @media (min-width: 1024px) {
@@ -2310,94 +2361,45 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell {
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
           vertical-align: top !important;
           position: relative;
-          padding-left: 1.1rem !important;
+          padding-left: 0.85rem !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-          overflow: visible !important;
+        .my-profile-hours-shell table.my-profile-hours-table tbody td:first-child {
+          position: relative;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-bulk-selected td {
-          box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.45) !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell.wh-date-week-accent::before {
+        .my-profile-hours-shell table.my-profile-hours-table tbody td:first-child::before {
           content: '';
           position: absolute;
-          left: 0.35rem;
-          top: 0.45rem;
-          bottom: 0.45rem;
+          left: 0;
+          top: 0;
+          bottom: 0;
           width: 3px;
-          border-radius: 999px;
           background: var(--wh-week-accent, #94a3b8);
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody .wh-week-between-label {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:first-child td:first-child::before {
+          border-top-left-radius: 1rem;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:last-child td:first-child::before {
+          border-bottom-left-radius: 1rem;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td:last-child {
+          overflow: visible !important;
+        }
+
+        .my-profile-hours-shell .wh-week-between-label {
           display: block;
-          font-size: 12px;
-          font-weight: 600;
-          letter-spacing: 0.06em;
+          font-size: 15px;
+          font-weight: 700;
+          letter-spacing: 0.04em;
           text-transform: uppercase;
           color: var(--wh-week-accent, #64748b);
           white-space: nowrap;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table thead,
-        .my-profile-hours-shell table.my-profile-hours-table thead tr,
-        .my-profile-hours-shell table.my-profile-hours-table thead th {
-          background-color: #ececec !important;
-          background-image: none !important;
-          border-bottom: none !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table {
-          border-collapse: collapse !important;
-          border-spacing: 0 !important;
-          table-layout: auto !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table thead,
-        .my-profile-hours-shell--flat table.my-profile-hours-table thead tr,
-        .my-profile-hours-shell--flat table.my-profile-hours-table thead th {
-          background-color: transparent !important;
-          color: #6b7280 !important;
-          font-size: 0.875rem !important;
-          font-weight: 600 !important;
-          letter-spacing: 0.05em !important;
-          text-transform: uppercase !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr {
-          border-radius: 0 !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody td {
-          padding: 0.75rem 0.85rem !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr.wh-data-row td {
-          background: transparent !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr.wh-data-row:hover td {
-          background: #f3f4f6 !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr.wh-missing-placeholder td,
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr.wh-missing-placeholder:hover td,
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:hover td {
-          background: #f9fafb !important;
-        }
-
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody td.wh-data-date-cell,
-        .my-profile-hours-shell--flat table.my-profile-hours-table tbody td:last-child {
-          border-radius: 0 !important;
         }
       `}</style>
 
@@ -2447,18 +2449,17 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         onClose={() => setEditingNotesDay(null)}
         onSaved={() => {
           void fetchRecords();
-          void fetchClockInStatus();
         }}
       />
 
       <ClockInDayEditModal
         isOpen={!!editingClockInDay}
+        employeeId={employeeId}
         dateKey={editingClockInDay ?? ''}
         sessions={editingClockInSessions}
         onClose={() => setEditingClockInDay(null)}
         onSaved={() => {
           void fetchRecords();
-          void fetchClockInStatus();
         }}
       />
 
@@ -2512,6 +2513,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           employeeName={employeeName}
           uploadedAt={selectedDocument.uploadedAt}
           sickDaysReason={selectedDocument.reason}
+          bucketName={selectedDocument.bucketName}
         />
       )}
     </div>

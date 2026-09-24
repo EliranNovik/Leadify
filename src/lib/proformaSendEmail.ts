@@ -80,7 +80,7 @@ const parseTemplateContent = (rawContent: string | null | undefined): string => 
 
   const cleanHtml = (input: string) => {
     let text = input;
-    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    const htmlMatch = text.match(/html\s*:\s*(.*?)(?=(?:,\s*)?delta\s*:|$)/is);
     if (htmlMatch) text = htmlMatch[1];
     text = text
       .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')

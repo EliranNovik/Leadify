@@ -199,6 +199,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
   const queryRef = useRef(query.trim());
   const lastFetchedQueryRef = useRef('');
   const inFlightRef = useRef(false);
+  const inFlightQueryRef = useRef('');
   const pendingQueryRef = useRef('');
   resultsRef.current = results;
   queryRef.current = query.trim();
@@ -276,7 +277,12 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       return;
     }
 
-    if (inFlightRef.current) return;
+    if (inFlightRef.current) {
+      // The typed query moved on: cancel the stale request so the loop picks up
+      // `trimmed` now instead of waiting out its full timeout budget.
+      if (inFlightQueryRef.current !== trimmed) abortRef.current?.abort();
+      return;
+    }
     inFlightRef.current = true;
 
     try {
@@ -287,6 +293,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
         const requestId = ++requestIdRef.current;
         const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
         abortRef.current = controller;
+        inFlightQueryRef.current = q;
         clearEmptySettle();
         if (resultsRef.current.length === 0) setLoading(true);
 
@@ -317,6 +324,7 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       }
     } finally {
       inFlightRef.current = false;
+      inFlightQueryRef.current = '';
       if (resultsRef.current.length > 0 || pendingQueryRef.current.length < minLength) {
         setLoading(false);
       }

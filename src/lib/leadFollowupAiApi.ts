@@ -847,8 +847,8 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     : supabase.from('payment_plans').select('id, value, due_date, paid, paid_at, cancel_date, public_token, proforma').eq('lead_id', rawId).is('cancel_date', null).order('due_date', { ascending: true }).limit(12);
 
   const contractQuery = isLegacy
-    ? supabase.from('contracts').select('id, status, signed_at, public_token, total_amount').eq('legacy_id', rawId).order('created_at', { ascending: false }).limit(8)
-    : supabase.from('contracts').select('id, status, signed_at, public_token, total_amount').eq('client_id', rawId).order('created_at', { ascending: false }).limit(8);
+    ? supabase.from('contracts').select('id, status, signed_at, public_token, total_amount').eq('legacy_id', rawId).is('archived_at', null).order('created_at', { ascending: false }).limit(8)
+    : supabase.from('contracts').select('id, status, signed_at, public_token, total_amount').eq('client_id', rawId).is('archived_at', null).order('created_at', { ascending: false }).limit(8);
 
   const legacyContactContractQuery = isLegacy
     ? supabase.from('lead_leadcontact').select('id, public_token, signed_contract_html, contract_html, main').eq('lead_id', rawId).limit(8)

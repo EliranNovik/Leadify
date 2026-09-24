@@ -746,7 +746,12 @@ async function searchNewLeads(intent: SearchIntent, opts: ResolvedSearchOptions)
   const executeStartTime = performance.now();
   // Use longer timeout for lead searches (they can be more complex)
   const timeoutForLeadSearch = intent.kind === "lead" ? opts.timeoutMs * 1.5 : opts.timeoutMs;
-  const { data, error } = await withTimeout(qb.limit(opts.leadsLimit), timeoutForLeadSearch, "new leads search timeout").catch(
+  const { data, error } = await withTimeout(
+    attachAbortSignal(qb.limit(opts.leadsLimit), opts.signal),
+    timeoutForLeadSearch,
+    "new leads search timeout",
+    opts.signal,
+  ).catch(
     (err) => {
       // Return empty array instead of throwing to allow search to continue
       return { data: [], error: err };
@@ -795,7 +800,12 @@ async function searchLegacyLeads(intent: SearchIntent, opts: ResolvedSearchOptio
     }
   }
 
-  const { data, error } = await withTimeout(qb.limit(opts.legacyLimit), opts.timeoutMs, "legacy leads search timeout").catch(
+  const { data, error } = await withTimeout(
+    attachAbortSignal(qb.limit(opts.legacyLimit), opts.signal),
+    opts.timeoutMs,
+    "legacy leads search timeout",
+    opts.signal,
+  ).catch(
     (err) => {
       return { data: [], error: err };
     },
@@ -836,7 +846,12 @@ async function searchContacts(intent: SearchIntent, opts: ResolvedSearchOptions)
   }
 
   const executeStartTime = performance.now();
-  const { data, error } = await withTimeout(qb.limit(opts.contactsLimit), opts.timeoutMs, "contacts search timeout").catch(
+  const { data, error } = await withTimeout(
+    attachAbortSignal(qb.limit(opts.contactsLimit), opts.signal),
+    opts.timeoutMs,
+    "contacts search timeout",
+    opts.signal,
+  ).catch(
     (err) => {
       return { data: [], error: err };
     },

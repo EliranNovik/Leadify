@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { fetchStageNames, getStageName, getStageColour } from '../lib/stageUtils';
+import { openLeadFromRowClick } from '../lib/leadNavigation';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -80,6 +82,7 @@ const renderStageBadge = (stageValue: string | number | null | undefined) => {
 };
 
 const DoubleLeadsPage: React.FC = () => {
+  const navigate = useNavigate();
   const [doubleLeads, setDoubleLeads] = useState<DoubleLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState<number | null>(null);
@@ -409,6 +412,23 @@ const DoubleLeadsPage: React.FC = () => {
     }
   };
 
+  const getExistingLeadNavId = (doubleLead: DoubleLead): string | null => {
+    const existing = doubleLead.existing_lead;
+    const navId =
+      existing?.lead_number ||
+      existing?.manual_id ||
+      existing?.id ||
+      doubleLead.existing_lead_id;
+    const trimmed = navId != null ? String(navId).trim() : '';
+    return trimmed || null;
+  };
+
+  const openExistingLead = (event: React.MouseEvent, doubleLead: DoubleLead) => {
+    const navId = getExistingLeadNavId(doubleLead);
+    if (!navId) return;
+    openLeadFromRowClick(event, navId, navigate);
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString();
   };
@@ -663,12 +683,30 @@ const DoubleLeadsPage: React.FC = () => {
                   </div>
 
                   {/* Existing Lead */}
-                  <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+                  <div
+                    className={`bg-white rounded-xl shadow-lg border border-gray-200 p-6 ${
+                      getExistingLeadNavId(doubleLead)
+                        ? 'cursor-pointer transition-shadow hover:border-primary/40 hover:shadow-xl'
+                        : ''
+                    }`}
+                    onClick={(e) => openExistingLead(e, doubleLead)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) openExistingLead(e, doubleLead);
+                    }}
+                    title={
+                      getExistingLeadNavId(doubleLead)
+                        ? 'Open lead · Ctrl/⌘-click for a new tab'
+                        : undefined
+                    }
+                  >
                     <div className="flex items-center gap-3 mb-4">
                       <div className="p-2 bg-gray-100 rounded-lg">
                         <UserGroupIcon className="w-5 h-5 text-gray-600" />
                       </div>
                       <h3 className="text-lg font-semibold text-gray-900">Existing Lead</h3>
+                      {getExistingLeadNavId(doubleLead) ? (
+                        <span className="text-xs font-medium text-primary">Open</span>
+                      ) : null}
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       {getRelevantFields(doubleLead.existing_lead, false).map(([key, value]) => {
@@ -717,7 +755,9 @@ const DoubleLeadsPage: React.FC = () => {
                               renderStageBadge(value)
                             ) : (
                               <span className={`text-sm font-medium ${
-                                isDuplicate ? 'text-yellow-900 font-semibold' : 'text-gray-900'
+                                key === 'lead_number'
+                                  ? 'text-primary font-semibold'
+                                  : isDuplicate ? 'text-yellow-900 font-semibold' : 'text-gray-900'
                               }`}>
                                 {value === null || value === undefined || value === '' ? '---' : String(value)}
                               </span>

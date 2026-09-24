@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon, ExclamationTriangleIcon, Squares2X2Icon as MasterChainIcon } from '@heroicons/react/24/outline';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { getCurrencySymbol } from '../lib/currencyConversion';
@@ -18,6 +18,7 @@ import {
   applySubcontractorFeeTotalsToLeads,
   fetchSubcontractorFeeTotalsByLeadIds,
 } from '../lib/leadSubcontractorFees';
+import { fetchLeadConnectionCounts, isNonSelfLinkedMasterLead } from '../lib/masterLeadApi';
 
 type EmployeeOption = {
   id: string;
@@ -51,7 +52,41 @@ type SignedLeadRow = {
   hasPaymentPlan?: boolean;
   subcontractorFee?: number;
   subcontractorFeeNIS?: number;
+  masterId?: string | null;
+  linkedMasterLead?: string | null;
+  connectedLeadCount?: number;
+  masterPageId?: string | null;
 };
+
+function attachSignedLeadConnection(
+  row: SignedLeadRow,
+  connection?: { count: number; masterPageId: string } | null,
+): SignedLeadRow {
+  const rawId = row.leadType === 'legacy' ? row.id.replace(/^legacy-/, '') : row.id;
+  const linkedMasterPage = isNonSelfLinkedMasterLead(row.linkedMasterLead, row.leadNumber, rawId)
+    ? String(row.linkedMasterLead).trim()
+    : null;
+  const traditionalMasterPage =
+    row.masterId && String(row.masterId).trim() !== '' && String(row.masterId).trim() !== String(rawId)
+      ? String(row.masterId).trim()
+      : null;
+  const masterPageId =
+    traditionalMasterPage ||
+    linkedMasterPage ||
+    connection?.masterPageId ||
+    (connection && connection.count > 1 ? row.leadIdentifier : null);
+  const connectedLeadCount =
+    connection?.count && connection.count > 1
+      ? connection.count
+      : masterPageId
+        ? 2
+        : undefined;
+  return {
+    ...row,
+    connectedLeadCount,
+    masterPageId,
+  };
+}
 
 type RoleKey = 'scheduler' | 'manager' | 'closer' | 'expert' | 'handler';
 
@@ -453,6 +488,8 @@ const NEW_LEAD_SELECT = `
   proposal_currency,
   subcontractor_fee,
   language,
+  master_id,
+  linked_master_lead,
   misc_category!category_id(
     id,
     name,
@@ -470,6 +507,7 @@ const LEGACY_LEAD_SELECT = `
   lead_number,
   manual_id,
   master_id,
+  linked_master_lead,
   name,
   stage,
   cdate,
@@ -1556,6 +1594,11 @@ const resolveLegacyLanguage = (lead: any) => {
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
           subcontractorFee,
           subcontractorFeeNIS,
+          masterId: lead.master_id != null && String(lead.master_id).trim() !== '' ? String(lead.master_id).trim() : null,
+          linkedMasterLead:
+            lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== ''
+              ? String(lead.linked_master_lead).trim()
+              : null,
         };
       }));
 
@@ -1624,6 +1667,11 @@ const resolveLegacyLanguage = (lead: any) => {
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
           subcontractorFee,
           subcontractorFeeNIS,
+          masterId: lead.master_id != null && String(lead.master_id).trim() !== '' ? String(lead.master_id).trim() : null,
+          linkedMasterLead:
+            lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== ''
+              ? String(lead.linked_master_lead).trim()
+              : null,
         };
       }));
 
@@ -1664,6 +1712,26 @@ const resolveLegacyLanguage = (lead: any) => {
         combinedRows = combinedRows.filter((row) => !row.hasPaymentPlan);
       } else if (paymentPlanFilter === 'has') {
         combinedRows = combinedRows.filter((row) => row.hasPaymentPlan);
+      }
+
+      try {
+        const connectionCounts = await fetchLeadConnectionCounts(
+          combinedRows.map((row) => ({
+            key: row.id,
+            id: row.leadType === 'legacy' ? row.id.replace(/^legacy-/, '') : row.id,
+            isLegacy: row.leadType === 'legacy',
+            leadNumber: row.leadNumber,
+            masterId: row.masterId,
+            linkedMasterLead: row.linkedMasterLead,
+          })),
+        );
+        combinedRows = combinedRows.map((row) => {
+          const connection = connectionCounts.get(row.id);
+          return attachSignedLeadConnection(row, connection);
+        });
+      } catch (connectionError) {
+        console.warn('Signed sales: lead connection counts failed', connectionError);
+        combinedRows = combinedRows.map((row) => attachSignedLeadConnection(row));
       }
 
       console.log(`✅ Final result: ${combinedRows.length} unique signed leads (${newLeadRows.length} new + ${legacyLeadRows.length} legacy)`);
@@ -2131,12 +2199,40 @@ const resolveLegacyLanguage = (lead: any) => {
                     <tr key={`${row.leadType}-${row.id}`}>
                       <td>
                         <div className="flex flex-col">
-                          <Link
-                            to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
-                            className="font-semibold text-primary no-underline hover:text-primary/80"
-                          >
-                            {row.leadNumber}
-                          </Link>
+                          <div className="flex items-center gap-1.5">
+                            <Link
+                              to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
+                              className="font-semibold text-primary no-underline hover:text-primary/80"
+                            >
+                              {row.leadNumber}
+                            </Link>
+                            {row.connectedLeadCount && row.connectedLeadCount > 1 && row.masterPageId ? (
+                              <button
+                                type="button"
+                                className="btn btn-square btn-ghost btn-sm relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                title={`View master dashboard (${row.connectedLeadCount} total leads)`}
+                                aria-label={`Open master lead dashboard (${row.connectedLeadCount} connected leads)`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const path = `/clients/${encodeURIComponent(row.masterPageId!)}/master`;
+                                  if (e.metaKey || e.ctrlKey) {
+                                    window.open(path, '_blank', 'noopener');
+                                    return;
+                                  }
+                                  navigate(path);
+                                }}
+                              >
+                                <MasterChainIcon className="h-6 w-6" />
+                                <span
+                                  className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                  style={{ backgroundColor: '#3a3a3a' }}
+                                >
+                                  {row.connectedLeadCount}
+                                </span>
+                              </button>
+                            ) : null}
+                          </div>
                           <span className="text-xs text-gray-500">{row.leadName}</span>
                         </div>
                       </td>

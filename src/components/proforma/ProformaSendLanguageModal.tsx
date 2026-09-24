@@ -96,7 +96,10 @@ const ProformaSendLanguageModal: React.FC<ProformaSendLanguageModalProps> = ({
             type="button"
             className="btn btn-primary gap-2"
             disabled={sending}
-            onClick={() => onConfirm(language)}
+            onClick={() => {
+              if (sending) return;
+              onConfirm(language);
+            }}
           >
             {sending ? (
               <>

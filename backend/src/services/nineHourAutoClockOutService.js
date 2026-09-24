@@ -3,10 +3,7 @@ const nineHourOvertimeWhatsAppService = require('./nineHourOvertimeWhatsAppServi
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
-const OVERTIME_PROMPT_MS = 10 * 60 * 1000;
-const OVERTIME_FINAL_COUNTDOWN_MS = 20 * 1000;
-/** Same deadline as the in-browser prompt (9h + 10m + 20s without a response). */
-const AUTO_ENFORCE_MS = NINE_HOURS_MS + OVERTIME_PROMPT_MS + OVERTIME_FINAL_COUNTDOWN_MS;
+const DEFAULT_MIN_HOURS = 8;
 const PRESENCE_STALE_MS = Number(process.env.CLOCK_IN_PRESENCE_STALE_MS || 90_000);
 const WORKDAY_END_HOUR_JERUSALEM = Number(process.env.CLOCK_IN_WORKDAY_END_HOUR_JERUSALEM || 23);
 
@@ -65,6 +62,26 @@ function parseExternFlag(extern) {
   );
 }
 
+function normalizeMinHours(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MIN_HOURS;
+  return parsed;
+}
+
+/**
+ * End-of-day auto clock-out stores remaining base hours (min_hours minus
+ * already-closed sessions today), not the wall-clock span until 23:00.
+ * Never writes a time after `now` or before clock-in.
+ */
+function computeBaseHoursClockOutIso(clockInIso, minHours, closedMs = 0, nowMs = Date.now()) {
+  const startMs = new Date(clockInIso).getTime();
+  if (!Number.isFinite(startMs)) return new Date(nowMs).toISOString();
+  const remainingMs = Math.max(0, normalizeMinHours(minHours) * 60 * 60 * 1000 - closedMs);
+  const targetMs = startMs + remainingMs;
+  const endMs = Math.min(Math.max(targetMs, startMs), nowMs);
+  return new Date(endMs).toISOString();
+}
+
 async function isExternalAuthUser(userId) {
   const { data, error } = await supabase
     .from('users')
@@ -96,6 +113,45 @@ async function hasOvertimeOptIn(employeeId, workDate) {
   return data != null;
 }
 
+async function fetchEmployeeMinHours(employeeId) {
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select('min_hours')
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[NineHourAutoClockOut] min_hours lookup failed:', error.message);
+    return DEFAULT_MIN_HOURS;
+  }
+
+  return normalizeMinHours(data?.min_hours);
+}
+
+async function fetchTodayClosedDurationMs(employeeId, excludeRecordId, now = Date.now()) {
+  const dateKey = jerusalemDateKey(new Date(now));
+  const todayStart = buildJerusalemStartOfDayIso(dateKey);
+  const todayEnd = buildJerusalemEndOfDayIso(dateKey);
+
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select('id, clock_in_time, clock_out_time')
+    .eq('employee_id', employeeId)
+    .gte('clock_in_time', todayStart)
+    .lte('clock_in_time', todayEnd);
+
+  if (error) throw error;
+
+  let totalMs = 0;
+  for (const record of data ?? []) {
+    if (record.id === excludeRecordId || !record.clock_out_time) continue;
+    const start = new Date(record.clock_in_time).getTime();
+    const end = new Date(record.clock_out_time).getTime();
+    totalMs += Math.max(0, end - start);
+  }
+  return totalMs;
+}
+
 async function fetchTodayClockedMs(employeeId, now = Date.now()) {
   const dateKey = jerusalemDateKey(new Date(now));
   const todayStart = buildJerusalemStartOfDayIso(dateKey);
@@ -121,8 +177,7 @@ async function fetchTodayClockedMs(employeeId, now = Date.now()) {
   return totalMs;
 }
 
-async function clockOutActiveRecord(record, notes = 'Auto clock-out: 9-hour limit') {
-  const clockOutTime = new Date().toISOString();
+async function clockOutActiveRecord(record, notes, clockOutTime = new Date().toISOString()) {
   const baseUpdate = {
     clock_out_time: clockOutTime,
     is_active: false,
@@ -149,86 +204,15 @@ async function clockOutActiveRecord(record, notes = 'Auto clock-out: 9-hour limi
   if (fallbackError) throw fallbackError;
 }
 
-async function fetchLastPresenceAt(employeeId) {
-  const { data, error } = await supabase
-    .from('employee_clock_in_presence')
-    .select('last_seen_at')
-    .eq('employee_id', employeeId)
-    .maybeSingle();
-
-  if (error) {
-    console.error('[NineHourAutoClockOut] presence lookup failed:', error.message);
-    return null;
-  }
-
-  if (!data?.last_seen_at) return null;
-  return new Date(data.last_seen_at).getTime();
-}
-
-function hasRecentPresence(lastSeenAt, now = Date.now()) {
-  if (lastSeenAt == null) return false;
-  return now - lastSeenAt < PRESENCE_STALE_MS;
-}
-
-/**
- * Server enforcement rules:
- * - Below 9h: never
- * - At/above full client deadline (9h + 10m + 20s): always (safety backup)
- * - Between 9h and deadline with recent browser heartbeat: skip (client shows friendly UI)
- * - At/above 9h without recent heartbeat: enforce (user left without clocking out)
- */
 function isPastJerusalemWorkdayEnd(now = new Date()) {
   const { hour } = jerusalemTimeParts(now);
   return hour >= WORKDAY_END_HOUR_JERUSALEM;
-}
-
-function shouldServerEnforce(totalMs, lastSeenAt, now = Date.now()) {
-  if (totalMs < NINE_HOURS_MS) return false;
-  if (totalMs >= AUTO_ENFORCE_MS) return true;
-  return !hasRecentPresence(lastSeenAt, now);
 }
 
 function shouldSendNineHourWhatsApp(totalMs, overtimeOptIn, now = new Date()) {
   if (isPastJerusalemWorkdayEnd(now)) return false;
   if (overtimeOptIn) return false;
   return totalMs >= NINE_HOURS_MS;
-}
-
-function shouldEnforceNineHourLimit(totalMs, lastSeenAt, hasOvertimeOptInFlag, now = Date.now()) {
-  if (hasOvertimeOptInFlag) return false;
-  return shouldServerEnforce(totalMs, lastSeenAt, now);
-}
-
-async function hasWorkdayEndOptIn(employeeId, workDate) {
-  const { data, error } = await supabase
-    .from('employee_clock_in_workday_end_opt_in')
-    .select('employee_id')
-    .eq('employee_id', employeeId)
-    .eq('work_date', workDate)
-    .maybeSingle();
-
-  if (error) {
-    console.error('[NineHourAutoClockOut] workday-end opt-in lookup failed:', error.message);
-    return false;
-  }
-
-  return data != null;
-}
-
-function isPastWorkdayEndClientDeadline(now = new Date()) {
-  const { hour, minute, second } = jerusalemTimeParts(now);
-  if (hour > WORKDAY_END_HOUR_JERUSALEM) return true;
-  if (hour < WORKDAY_END_HOUR_JERUSALEM) return false;
-  if (minute > 2) return true;
-  if (minute < 2) return false;
-  return second >= 20;
-}
-
-function shouldEnforceWorkdayEnd(lastSeenAt, hasWorkdayEndOptIn, now = Date.now()) {
-  if (!isPastJerusalemWorkdayEnd(new Date(now))) return false;
-  if (hasWorkdayEndOptIn) return false;
-  if (isPastWorkdayEndClientDeadline(new Date(now))) return true;
-  return !hasRecentPresence(lastSeenAt, now);
 }
 
 async function runNineHourAutoClockOut() {
@@ -251,6 +235,7 @@ async function runNineHourAutoClockOut() {
   };
 
   const pastWorkdayEnd = isPastJerusalemWorkdayEnd();
+  const nowMs = Date.now();
 
   for (const record of activeRecords ?? []) {
     try {
@@ -264,25 +249,25 @@ async function runNineHourAutoClockOut() {
         continue;
       }
 
-      const lastPresenceAt = await fetchLastPresenceAt(record.employee_id);
-
       if (pastWorkdayEnd) {
-        const workdayEndOptIn = await hasWorkdayEndOptIn(record.employee_id, workDate);
-        if (!shouldEnforceWorkdayEnd(lastPresenceAt, workdayEndOptIn)) {
-          summary.skipped += 1;
-          continue;
-        }
-
+        const minHours = await fetchEmployeeMinHours(record.employee_id);
+        const closedMs = await fetchTodayClosedDurationMs(record.employee_id, record.id, nowMs);
+        const clockOutTime = computeBaseHoursClockOutIso(
+          record.clock_in_time,
+          minHours,
+          closedMs,
+          nowMs,
+        );
         await clockOutActiveRecord(
           record,
-          `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem)`,
+          `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem); duration set to base hours (${minHours}h)`,
+          clockOutTime,
         );
         summary.clockedOut += 1;
         summary.endOfDayClockOuts += 1;
 
-        // Keep auth session — client gate blocks CRM until next clock-in.
         console.log(
-          `[NineHourAutoClockOut] employee=${record.employee_id} end-of-day clock out (session kept)`,
+          `[NineHourAutoClockOut] employee=${record.employee_id} end-of-day clock out at ${clockOutTime} (base hours ${minHours}h, session kept)`,
         );
         continue;
       }
@@ -307,18 +292,8 @@ async function runNineHourAutoClockOut() {
         }
       }
 
-      if (!shouldEnforceNineHourLimit(totalMs, lastPresenceAt, overtimeOptIn)) {
-        summary.skipped += 1;
-        continue;
-      }
-
-      await clockOutActiveRecord(record);
-      summary.clockedOut += 1;
-
-      // Keep auth session — client gate blocks CRM until next clock-in.
-      console.log(
-        `[NineHourAutoClockOut] employee=${record.employee_id} totalMs=${totalMs} clocked out (session kept)`,
-      );
+      // 9h is a CRM reminder only — never auto clock-out. 23:00 sets base hours.
+      summary.skipped += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       summary.errors.push({ employeeId: record.employee_id, message });
@@ -334,19 +309,17 @@ async function runNineHourAutoClockOut() {
 
 module.exports = {
   runNineHourAutoClockOut,
-  AUTO_ENFORCE_MS,
   NINE_HOURS_MS,
   PRESENCE_STALE_MS,
   WORKDAY_END_HOUR_JERUSALEM,
+  DEFAULT_MIN_HOURS,
   _internal: {
     jerusalemDateKey,
     fetchTodayClockedMs,
-    shouldServerEnforce,
-    shouldEnforceNineHourLimit,
     shouldSendNineHourWhatsApp,
-    shouldEnforceWorkdayEnd,
-    hasRecentPresence,
     isPastJerusalemWorkdayEnd,
-    isPastWorkdayEndClientDeadline,
+    fetchTodayClosedDurationMs,
+    computeBaseHoursClockOutIso,
+    normalizeMinHours,
   },
 };

@@ -1,4 +1,5 @@
 /** Help contacts shown on clock-in gate + entry kiosk carousel. Keep in sync with backend. */
+/** First ID is the top person on the clock-in gate Contact button (Michael Decker). */
 export const CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS = [1, 3] as const;
 
 export const CLOCK_IN_HELP_CONTACT_PHONE_OVERRIDES: Record<number, string> = {

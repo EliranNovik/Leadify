@@ -154,7 +154,10 @@ const SentToFinanceChoiceModal: React.FC<SentToFinanceChoiceModalProps> = ({
                 type="button"
                 className="btn btn-primary gap-2"
                 disabled={sending}
-                onClick={() => onSendInvoice(language)}
+                onClick={() => {
+                  if (sending) return;
+                  onSendInvoice(language);
+                }}
               >
                 {sending ? (
                   <>

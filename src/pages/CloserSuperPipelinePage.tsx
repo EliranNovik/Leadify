@@ -17,6 +17,20 @@ import {
   flagTypeLabel,
   type FlagTypeRow,
 } from '../lib/userContentFlags';
+import { upsertUserFollowUp } from '../lib/upsertUserFollowUp';
+import PipelineFollowUpButton from '../components/pipeline/PipelineFollowUpButton';
+import {
+  PIPELINE_ROW_CLASS,
+  PIPELINE_TABLE_CLASS,
+  PIPELINE_TABLE_SHELL,
+  PIPELINE_THEAD_CLASS,
+} from '../components/pipeline/pipelineUi';
+import {
+  FILTER_INPUT_BORDERED_CLASS,
+  FilterDropdown,
+  FilterSelectionMeta,
+  FloatingFilterField,
+} from '../components/filters/FloatingFilterField';
 
 const RESCHEDULED_STAGE_ID = '21';
 
@@ -58,20 +72,22 @@ const EmployeeNameWithPhoto: React.FC<{
   name: string;
   photoUrl?: string | null;
   size?: 'sm' | 'xs';
+  layout?: 'row' | 'stack';
   className?: string;
-}> = ({ name, photoUrl, size = 'sm', className = '' }) => {
+}> = ({ name, photoUrl, size = 'sm', layout = 'stack', className = '' }) => {
   const [imgErr, setImgErr] = useState(false);
   const display = (name || '').trim();
   if (!display || display === '---') {
     return <span className={className}>---</span>;
   }
 
-  const dim = size === 'xs' ? 'h-10 w-10 text-xs' : 'h-12 w-12 text-sm';
+  const dim = size === 'xs' ? 'h-6 w-6 text-[9px]' : 'h-9 w-9 text-[11px]';
   const url = (photoUrl || '').trim();
   const showPhoto = url.length > 0 && !imgErr;
+  const stacked = layout === 'stack';
 
   return (
-    <span className={`inline-flex flex-col items-center gap-0.5 min-w-0 ${className}`}>
+    <span className={`inline-flex min-w-0 ${stacked ? 'flex-col items-start gap-1' : 'items-center gap-1.5'} ${className}`}>
       {showPhoto ? (
         <img
           src={url}
@@ -87,7 +103,9 @@ const EmployeeNameWithPhoto: React.FC<{
           {initialsFromName(display)}
         </span>
       )}
-      <span className="truncate max-w-[6.5rem] text-center leading-tight text-gray-500">{display}</span>
+      <span className={`truncate max-w-[7.5rem] text-left leading-tight text-gray-600 ${stacked ? 'text-sm' : 'text-xs'}`}>
+        {display}
+      </span>
     </span>
   );
 };
@@ -163,6 +181,7 @@ const CloserSuperPipelinePage = () => {
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
   const [showCountryDropdown, setShowCountryDropdown] = useState<boolean>(false);
   const [showFlagTypeDropdown, setShowFlagTypeDropdown] = useState<boolean>(false);
+  const [employeeFocused, setEmployeeFocused] = useState(false);
   const [probabilityExpanded, setProbabilityExpanded] = useState<boolean>(false);
   const [meetingRolesTooltip, setMeetingRolesTooltip] = useState<{
     top: number;
@@ -323,9 +342,9 @@ const CloserSuperPipelinePage = () => {
   const [loadingInteractions, setLoadingInteractions] = useState<Set<string>>(new Set());
   const [selectedLeadForInteractions, setSelectedLeadForInteractions] = useState<any | null>(null);
   const [selectedExpertOpinionLead, setSelectedExpertOpinionLead] = useState<{ name: string; opinion: string } | null>(null);
-  const [editingFollowUpDate, setEditingFollowUpDate] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
+  const [editingFollowUpLead, setEditingFollowUpLead] = useState<any | null>(null);
   const [editingFollowUpNotes, setEditingFollowUpNotes] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
-  const [followUpDate, setFollowUpDate] = useState<string>('');
+  const [followUpDraft, setFollowUpDraft] = useState<string>('');
   const [followUpNotes, setFollowUpNotes] = useState<string>('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
   const [showRescheduledModal, setShowRescheduledModal] = useState(false);
@@ -1409,11 +1428,16 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
-  const handleEditFollowUpDate = (lead: any) => {
-    const leadId = lead.id;
-    const leadType = lead.lead_type || (leadId.toString().startsWith('legacy_') ? 'legacy' : 'new');
-    setEditingFollowUpDate({ leadId, leadType });
-    setFollowUpDate(lead.follow_up_date || '');
+  const openFollowUpModal = (lead: any, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setEditingFollowUpLead(lead);
+    setFollowUpDraft(lead.follow_up_date ? String(lead.follow_up_date).slice(0, 10) : '');
+  };
+
+  const closeFollowUpModal = () => {
+    if (savingFollowUp) return;
+    setEditingFollowUpLead(null);
+    setFollowUpDraft('');
   };
 
   const handleEditFollowUpNotes = (lead: any) => {
@@ -1435,7 +1459,7 @@ const CloserSuperPipelinePage = () => {
       const { data } = await supabase
         .from('follow_ups')
         .select('id')
-        .eq('user_id', userId)
+        .eq('user_id', String(userId))
         .eq('lead_id', Number(actualLeadId))
         .is('new_lead_id', null)
         .order('date', { ascending: false })
@@ -1447,7 +1471,7 @@ const CloserSuperPipelinePage = () => {
     const { data } = await supabase
       .from('follow_ups')
       .select('id')
-      .eq('user_id', userId)
+      .eq('user_id', String(userId))
       .eq('new_lead_id', actualLeadId)
       .is('lead_id', null)
       .order('date', { ascending: false })
@@ -1457,89 +1481,41 @@ const CloserSuperPipelinePage = () => {
   };
 
   const handleSaveFollowUpDate = async () => {
-    if (!editingFollowUpDate) return;
+    if (!editingFollowUpLead) return;
+
+    const userId = await resolveCurrentUserId();
+    if (!userId) {
+      toast.error('User not authenticated');
+      return;
+    }
 
     setSavingFollowUp(true);
     try {
-      const userId = await resolveCurrentUserId();
-      if (!userId) {
-        toast.error('User not authenticated');
-        return;
-      }
-      const { leadId, leadType } = editingFollowUpDate;
-      const { existingFollowUp, isLegacyLead, actualLeadId } = await getExistingFollowUp(leadId, leadType, userId);
-      const hasDate = !!(followUpDate && followUpDate.trim() !== '');
-      const dateValue = hasDate ? `${followUpDate}T00:00:00Z` : null;
+      const leadId = String(editingFollowUpLead.id);
+      const isLegacy = editingFollowUpLead.lead_type === 'legacy' || leadId.startsWith('legacy_');
+      const actualLeadId = leadId.replace(/^legacy_/, '');
+      const hasDate = Boolean(followUpDraft.trim());
 
-      if (hasDate) {
-        if (existingFollowUp) {
-          const { error } = await supabase
-            .from('follow_ups')
-            .update({ date: dateValue })
-            .eq('id', existingFollowUp.id);
+      await upsertUserFollowUp({
+        userId: String(userId),
+        isLegacy,
+        leadId: actualLeadId,
+        dateYmd: hasDate ? followUpDraft : null,
+      });
 
-          if (error) {
-            console.error('Error updating follow-up:', error);
-            toast.error('Failed to update follow-up date');
-          } else {
-            toast.success('Follow-up date updated');
-            setEditingFollowUpDate(null);
-            setFollowUpDate('');
-            handleSearch(false);
-          }
-        } else {
-          const insertData: any = {
-            user_id: userId,
-            date: dateValue,
-            created_at: new Date().toISOString()
-          };
-
-          if (isLegacyLead) {
-            insertData.lead_id = Number(actualLeadId);
-            insertData.new_lead_id = null;
-          } else {
-            insertData.new_lead_id = actualLeadId;
-            insertData.lead_id = null;
-          }
-
-          const { error } = await supabase
-            .from('follow_ups')
-            .insert(insertData);
-
-          if (error) {
-            console.error('Error creating follow-up:', error);
-            toast.error('Failed to save follow-up date');
-          } else {
-            toast.success('Follow-up date saved');
-            setEditingFollowUpDate(null);
-            setFollowUpDate('');
-            handleSearch(false);
-          }
-        }
-      } else {
-        if (existingFollowUp) {
-          const { error } = await supabase
-            .from('follow_ups')
-            .delete()
-            .eq('id', existingFollowUp.id);
-
-          if (error) {
-            console.error('Error deleting follow-up:', error);
-            toast.error('Failed to delete follow-up');
-          } else {
-            toast.success('Follow-up removed');
-            setEditingFollowUpDate(null);
-            setFollowUpDate('');
-            handleSearch(false);
-          }
-        } else {
-          setEditingFollowUpDate(null);
-          setFollowUpDate('');
-        }
-      }
+      setResults((prev) =>
+        prev.map((lead) =>
+          String(lead.id) === leadId
+            ? { ...lead, follow_up_date: hasDate ? followUpDraft : null }
+            : lead,
+        ),
+      );
+      toast.success(hasDate ? 'Follow-up date saved' : 'Follow-up date cleared');
+      setEditingFollowUpLead(null);
+      setFollowUpDraft('');
     } catch (error) {
-      console.error('Error saving follow-up:', error);
-      toast.error('Failed to save follow-up');
+      console.error('Failed to save follow-up date:', error);
+      toast.error('Failed to save follow-up date');
     } finally {
       setSavingFollowUp(false);
     }
@@ -2253,7 +2229,7 @@ const CloserSuperPipelinePage = () => {
         const { data: followUpsData } = await supabase
           .from('follow_ups')
           .select('new_lead_id, date')
-          .eq('user_id', effectiveCurrentUserId)
+          .eq('user_id', String(effectiveCurrentUserId))
           .in('new_lead_id', newLeadIds)
           .is('lead_id', null)
           .order('date', { ascending: false });
@@ -3052,7 +3028,7 @@ const CloserSuperPipelinePage = () => {
         const { data: legacyFollowUpsData } = await supabase
           .from('follow_ups')
           .select('lead_id, date')
-          .eq('user_id', effectiveCurrentUserId)
+          .eq('user_id', String(effectiveCurrentUserId))
           .in('lead_id', legacyLeadIdsForFollowUps)
           .is('new_lead_id', null)
           .order('date', { ascending: false });
@@ -3603,6 +3579,33 @@ const CloserSuperPipelinePage = () => {
 
   // Tags now handled by chips display - search input is only for filtering dropdown options
 
+  const renderFilterChips = (
+    items: Array<{ id: string; label: string }>,
+    onRemove: (id: string) => void,
+  ) => {
+    if (items.length === 0) return null;
+    return (
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {items.map((item) => (
+          <span key={item.id} className="badge badge-primary badge-sm flex max-w-full items-center gap-1">
+            <span className="truncate text-xs">{item.label}</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRemove(item.id);
+              }}
+              className="ml-0.5 rounded-full p-0.5 hover:bg-primary-focus"
+              aria-label={`Remove ${item.label}`}
+            >
+              <XMarkIcon className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-[calc(100dvh-3.5rem)] bg-gray-100">
       <div className="px-4 py-6">
@@ -3624,114 +3627,94 @@ const CloserSuperPipelinePage = () => {
         </button>
       </div>
 
-      {/* Filters — white card separated from results */}
-      <div className="mb-6 rounded-2xl border border-gray-200/80 bg-white p-5 shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-10 gap-4">
+      {/* Filters — white card, floating labels like Lead Search */}
+      <div className="relative z-20 mb-6 rounded-2xl border border-gray-200/80 bg-white p-5 shadow-sm">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-10 gap-x-3 gap-y-2">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Meeting Date)</label>
-            <input
-              type="date"
-              value={filters.fromDate}
-              onChange={(e) => handleFilterChange('fromDate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <FloatingFilterField label="Meeting from" floated>
+              <input
+                type="date"
+                value={filters.fromDate}
+                onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+                className={FILTER_INPUT_BORDERED_CLASS}
+                aria-label="Meeting from date"
+              />
+            </FloatingFilterField>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">To Date (Meeting Date)</label>
-            <input
-              type="date"
-              value={filters.toDate}
-              onChange={(e) => handleFilterChange('toDate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <FloatingFilterField label="Meeting to" floated>
+              <input
+                type="date"
+                value={filters.toDate}
+                onChange={(e) => handleFilterChange('toDate', e.target.value)}
+                className={FILTER_INPUT_BORDERED_CLASS}
+                aria-label="Meeting to date"
+              />
+            </FloatingFilterField>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Created Date)</label>
-            <input
-              type="date"
-              value={filters.createdFromDate}
-              onChange={(e) => handleFilterChange('createdFromDate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <FloatingFilterField label="Created from" floated>
+              <input
+                type="date"
+                value={filters.createdFromDate}
+                onChange={(e) => handleFilterChange('createdFromDate', e.target.value)}
+                className={FILTER_INPUT_BORDERED_CLASS}
+                aria-label="Created from date"
+              />
+            </FloatingFilterField>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">To Date (Created Date)</label>
-            <input
-              type="date"
-              value={filters.createdToDate}
-              onChange={(e) => handleFilterChange('createdToDate', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            <FloatingFilterField label="Created to" floated>
+              <input
+                type="date"
+                value={filters.createdToDate}
+                onChange={(e) => handleFilterChange('createdToDate', e.target.value)}
+                className={FILTER_INPUT_BORDERED_CLASS}
+                aria-label="Created to date"
+              />
+            </FloatingFilterField>
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search categories..."
-              value={categorySearch}
-              onChange={(e) => {
-                setCategorySearch(e.target.value);
-                if (!showCategoryDropdown) {
-                  setShowCategoryDropdown(true);
-                }
-              }}
-              onFocus={() => setShowCategoryDropdown(true)}
-            />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowCategoryDropdown(true)}
+            <FloatingFilterField
+              label="Category"
+              floated={showCategoryDropdown || categorySearch.length > 0 || (filters.categories?.length ?? 0) > 0}
             >
-              {filters.categories && filters.categories.length > 0 ? (
-                filters.categories.map((categoryId) => {
-                  const category = categories.find(c => c.id.toString() === categoryId.toString());
-                  if (!category) return null;
-                  return (
-                    <div
-                      key={categoryId}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
-                    >
-                      <span>{category.name}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleCategorySelection(categoryId.toString());
-                        }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
-                      >
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select categories...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={categorySearch}
+                onChange={(e) => {
+                  setCategorySearch(e.target.value);
+                  if (!showCategoryDropdown) setShowCategoryDropdown(true);
+                }}
+                onFocus={() => setShowCategoryDropdown(true)}
+                aria-label="Category"
+              />
+            </FloatingFilterField>
             {showCategoryDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowCategoryDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown>
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters(prev => ({ ...prev, categories: [] }));
+                      setFilters((prev) => ({ ...prev, categories: [] }));
                       setCategorySearch('');
                     }}
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredCategories.map((cat) => {
                     const isSelected = filters.categories?.includes(cat.id.toString()) || false;
                     return (
                       <div
                         key={cat.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleCategorySelection(cat.id.toString());
@@ -3748,32 +3731,58 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
+            )}
+            <FilterSelectionMeta
+              count={filters.categories?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, categories: [] }));
+                setCategorySearch('');
+              }}
+            />
+            {renderFilterChips(
+              (filters.categories || [])
+                .map((id) => {
+                  const category = categories.find((c) => c.id.toString() === id.toString());
+                  return category ? { id: id.toString(), label: category.name } : null;
+                })
+                .filter((item): item is { id: string; label: string } => item != null),
+              (id) => toggleCategorySelection(id),
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search employee..."
-              value={employeeSearch}
-              onChange={(e) => {
-                setEmployeeSearch(e.target.value);
-                setShowEmployeeDropdown(true);
-                if (!e.target.value) {
-                  handleFilterChange('employee', '');
-                }
-              }}
-              onFocus={() => setShowEmployeeDropdown(true)}
-              onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
-            />
+            <FloatingFilterField
+              label="Employee"
+              floated={employeeFocused || showEmployeeDropdown || employeeSearch.length > 0 || !!filters.employee}
+            >
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={employeeSearch}
+                onChange={(e) => {
+                  setEmployeeSearch(e.target.value);
+                  setShowEmployeeDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('employee', '');
+                  }
+                }}
+                onFocus={() => {
+                  setEmployeeFocused(true);
+                  setShowEmployeeDropdown(true);
+                }}
+                onBlur={() => {
+                  setEmployeeFocused(false);
+                  setTimeout(() => setShowEmployeeDropdown(false), 200);
+                }}
+                aria-label="Employee"
+              />
+            </FloatingFilterField>
             {showEmployeeDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+              <FilterDropdown>
                 <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                  onClick={() => {
+                  className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
+                  onMouseDown={() => {
                     handleFilterChange('employee', '');
                     setEmployeeSearch('');
                     setShowEmployeeDropdown(false);
@@ -3782,8 +3791,8 @@ const CloserSuperPipelinePage = () => {
                   All Employees
                 </div>
                 <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold text-gray-600"
-                  onClick={() => {
+                  className="cursor-pointer px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100"
+                  onMouseDown={() => {
                     handleFilterChange('employee', '--');
                     setEmployeeSearch('--');
                     setShowEmployeeDropdown(false);
@@ -3794,8 +3803,8 @@ const CloserSuperPipelinePage = () => {
                 {filteredEmployees.map((emp) => (
                   <div
                     key={emp.id}
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
+                    onMouseDown={() => {
                       handleFilterChange('employee', emp.id.toString());
                       setEmployeeSearch(emp.name);
                       setShowEmployeeDropdown(false);
@@ -3804,78 +3813,50 @@ const CloserSuperPipelinePage = () => {
                     {emp.name}
                   </div>
                 ))}
-              </div>
+              </FilterDropdown>
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Language (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search languages..."
-              value={languageSearch}
-              onChange={(e) => {
-                setLanguageSearch(e.target.value);
-                if (!showLanguageDropdown) {
-                  setShowLanguageDropdown(true);
-                }
-              }}
-              onFocus={() => setShowLanguageDropdown(true)}
-            />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowLanguageDropdown(true)}
+            <FloatingFilterField
+              label="Language"
+              floated={showLanguageDropdown || languageSearch.length > 0 || (filters.languages?.length ?? 0) > 0}
             >
-              {filters.languages && filters.languages.length > 0 ? (
-                filters.languages.map((languageId) => {
-                  const language = languages.find(l => l.id.toString() === languageId.toString());
-                  if (!language) return null;
-                  return (
-                    <div
-                      key={languageId}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
-                    >
-                      <span>{language.name}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleLanguageSelection(languageId.toString());
-                        }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
-                      >
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select languages...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={languageSearch}
+                onChange={(e) => {
+                  setLanguageSearch(e.target.value);
+                  if (!showLanguageDropdown) setShowLanguageDropdown(true);
+                }}
+                onFocus={() => setShowLanguageDropdown(true)}
+                aria-label="Language"
+              />
+            </FloatingFilterField>
             {showLanguageDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowLanguageDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown>
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters(prev => ({ ...prev, languages: [] }));
+                      setFilters((prev) => ({ ...prev, languages: [] }));
                       setLanguageSearch('');
                     }}
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredLanguages.map((lang) => {
                     const isSelected = filters.languages?.includes(lang.id.toString()) || false;
                     return (
                       <div
                         key={lang.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleLanguageSelection(lang.id.toString());
@@ -3892,79 +3873,67 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
+            )}
+            <FilterSelectionMeta
+              count={filters.languages?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, languages: [] }));
+                setLanguageSearch('');
+              }}
+            />
+            {renderFilterChips(
+              (filters.languages || [])
+                .map((id) => {
+                  const language = languages.find((l) => l.id.toString() === id.toString());
+                  return language ? { id: id.toString(), label: language.name } : null;
+                })
+                .filter((item): item is { id: string; label: string } => item != null),
+              (id) => toggleLanguageSelection(id),
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Country (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search countries..."
-              value={countrySearch}
-              onChange={(e) => {
-                setCountrySearch(e.target.value);
-                if (!showCountryDropdown) {
-                  setShowCountryDropdown(true);
-                }
-              }}
-              onFocus={() => setShowCountryDropdown(true)}
-            />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowCountryDropdown(true)}
+            <FloatingFilterField
+              label="Country"
+              floated={showCountryDropdown || countrySearch.length > 0 || (filters.countries?.length ?? 0) > 0}
             >
-              {filters.countries && filters.countries.length > 0 ? (
-                filters.countries.map((countryId) => {
-                  const country = countries.find(c => c.id.toString() === countryId.toString());
-                  if (!country) return null;
-                  return (
-                    <div
-                      key={countryId}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
-                    >
-                      <span>{country.name}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleCountrySelection(countryId.toString());
-                        }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
-                      >
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select countries...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={countrySearch}
+                onChange={(e) => {
+                  setCountrySearch(e.target.value);
+                  if (!showCountryDropdown) setShowCountryDropdown(true);
+                }}
+                onFocus={() => setShowCountryDropdown(true)}
+                aria-label="Country"
+              />
+            </FloatingFilterField>
             {showCountryDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowCountryDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown>
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters(prev => ({ ...prev, countries: [] }));
+                      setFilters((prev) => ({ ...prev, countries: [] }));
                       setCountrySearch('');
                     }}
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredCountries.map((country) => {
                     const isSelected = filters.countries?.includes(country.id.toString()) || false;
                     return (
                       <div
                         key={country.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleCountrySelection(country.id.toString());
@@ -3981,79 +3950,67 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
+            )}
+            <FilterSelectionMeta
+              count={filters.countries?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, countries: [] }));
+                setCountrySearch('');
+              }}
+            />
+            {renderFilterChips(
+              (filters.countries || [])
+                .map((id) => {
+                  const country = countries.find((c) => c.id.toString() === id.toString());
+                  return country ? { id: id.toString(), label: country.name } : null;
+                })
+                .filter((item): item is { id: string; label: string } => item != null),
+              (id) => toggleCountrySelection(id),
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search stages..."
-              value={stageSearch}
-              onChange={(e) => {
-                setStageSearch(e.target.value);
-                if (!showStageDropdown) {
-                  setShowStageDropdown(true);
-                }
-              }}
-              onFocus={() => setShowStageDropdown(true)}
-            />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowStageDropdown(true)}
+            <FloatingFilterField
+              label="Stage"
+              floated={showStageDropdown || stageSearch.length > 0 || (filters.stages?.length ?? 0) > 0}
             >
-              {filters.stages && filters.stages.length > 0 ? (
-                filters.stages.map((stageId) => {
-                  const stage = stages.find(s => s.id.toString() === stageId.toString());
-                  if (!stage) return null;
-                  return (
-                    <div
-                      key={stageId}
-                      className="badge badge-primary badge-sm flex items-center gap-1 max-w-full"
-                    >
-                      <span className="truncate text-xs">{stage.name}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleStageSelection(stageId.toString());
-                        }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5 flex-shrink-0"
-                      >
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select stages...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={stageSearch}
+                onChange={(e) => {
+                  setStageSearch(e.target.value);
+                  if (!showStageDropdown) setShowStageDropdown(true);
+                }}
+                onFocus={() => setShowStageDropdown(true)}
+                aria-label="Stage"
+              />
+            </FloatingFilterField>
             {showStageDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowStageDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown>
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters(prev => ({ ...prev, stages: [] }));
+                      setFilters((prev) => ({ ...prev, stages: [] }));
                       setStageSearch('');
                     }}
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredStages.map((stage) => {
                     const isSelected = filters.stages?.includes(stage.id.toString()) || false;
                     return (
                       <div
                         key={stage.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleStageSelection(stage.id.toString());
@@ -4070,75 +4027,67 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
+            )}
+            <FilterSelectionMeta
+              count={filters.stages?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, stages: [] }));
+                setStageSearch('');
+              }}
+            />
+            {renderFilterChips(
+              (filters.stages || [])
+                .map((id) => {
+                  const stage = stages.find((s) => s.id.toString() === id.toString());
+                  return stage ? { id: id.toString(), label: stage.name } : null;
+                })
+                .filter((item): item is { id: string; label: string } => item != null),
+              (id) => toggleStageSelection(id),
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Tags (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search tags..."
-              value={tagsSearch}
-              onChange={(e) => {
-                setTagsSearch(e.target.value);
-                if (!showTagsDropdown) {
-                  setShowTagsDropdown(true);
-                }
-              }}
-              onFocus={() => setShowTagsDropdown(true)}
-            />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowTagsDropdown(true)}
+            <FloatingFilterField
+              label="Tags"
+              floated={showTagsDropdown || tagsSearch.length > 0 || (filters.tags?.length ?? 0) > 0}
             >
-              {filters.tags && filters.tags.length > 0 ? (
-                filters.tags.map((tag) => (
-                  <div
-                    key={tag}
-                    className="badge badge-primary badge-sm flex items-center gap-1"
-                  >
-                    <span>{tag}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleTagSelection(tag);
-                      }}
-                      className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
-                    >
-                      <XMarkIcon className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select tags...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={tagsSearch}
+                onChange={(e) => {
+                  setTagsSearch(e.target.value);
+                  if (!showTagsDropdown) setShowTagsDropdown(true);
+                }}
+                onFocus={() => setShowTagsDropdown(true)}
+                aria-label="Tags"
+              />
+            </FloatingFilterField>
             {showTagsDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowTagsDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown align="end">
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setFilters(prev => ({ ...prev, tags: [] }));
+                      setFilters((prev) => ({ ...prev, tags: [] }));
                       setTagsSearch('');
                     }}
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredTags.map((tag, index) => {
                     const isSelected = filters.tags?.includes(tag) || false;
                     return (
                       <div
                         key={`${tag}-${index}`}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleTagSelection(tag);
@@ -4155,65 +4104,47 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
             )}
-          </div>
-          <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Flagged (Multi-select)</label>
-            <input
-              type="text"
-              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search flag types..."
-              value={flagTypeSearch}
-              onChange={(e) => {
-                setFlagTypeSearch(e.target.value);
-                if (!showFlagTypeDropdown) {
-                  setShowFlagTypeDropdown(true);
-                }
+            <FilterSelectionMeta
+              count={filters.tags?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, tags: [] }));
+                setTagsSearch('');
               }}
-              onFocus={() => setShowFlagTypeDropdown(true)}
             />
-            <div
-              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-              onClick={() => setShowFlagTypeDropdown(true)}
+            {renderFilterChips(
+              (filters.tags || []).map((tag) => ({ id: tag, label: tag })),
+              (id) => toggleTagSelection(id),
+            )}
+          </div>
+          <div className={`relative ${showFlagTypeDropdown ? 'z-30' : ''}`}>
+            <FloatingFilterField
+              label="Flagged"
+              floated={showFlagTypeDropdown || flagTypeSearch.length > 0 || (filters.flagTypes?.length ?? 0) > 0}
             >
-              {filters.flagTypes && filters.flagTypes.length > 0 ? (
-                filters.flagTypes.map((flagTypeId) => {
-                  const ft = flagTypes.find((t) => String(t.id) === String(flagTypeId));
-                  if (!ft) return null;
-                  return (
-                    <div
-                      key={flagTypeId}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
-                    >
-                      <span>{ft.label}</span>
-                      <button
-                        type="button"
-                        className="ml-1 hover:text-red-200"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleFlagTypeSelection(String(flagTypeId));
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })
-              ) : (
-                <span className="text-gray-400 text-sm">Click to select flag types...</span>
-              )}
-            </div>
+              <input
+                type="text"
+                className={FILTER_INPUT_BORDERED_CLASS}
+                value={flagTypeSearch}
+                onChange={(e) => {
+                  setFlagTypeSearch(e.target.value);
+                  if (!showFlagTypeDropdown) setShowFlagTypeDropdown(true);
+                }}
+                onFocus={() => setShowFlagTypeDropdown(true)}
+                aria-label="Flagged"
+              />
+            </FloatingFilterField>
             {showFlagTypeDropdown && (
               <>
                 <div
                   className="fixed inset-0 z-[5]"
                   onClick={() => setShowFlagTypeDropdown(false)}
                 />
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <FilterDropdown align="end">
                   <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    className="cursor-pointer px-4 py-2 text-sm hover:bg-gray-100"
                     onClick={(e) => {
                       e.stopPropagation();
                       setFilters((prev) => ({ ...prev, flagTypes: [] }));
@@ -4222,14 +4153,14 @@ const CloserSuperPipelinePage = () => {
                   >
                     Clear All
                   </div>
-                  <div className="border-t border-gray-200 my-1"></div>
+                  <div className="my-1 border-t border-gray-200"></div>
                   {filteredFlagTypes.map((ft) => {
                     const idStr = String(ft.id);
                     const isSelected = filters.flagTypes?.includes(idStr) || false;
                     return (
                       <div
                         key={ft.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleFlagTypeSelection(idStr);
@@ -4246,22 +4177,37 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     );
                   })}
-                </div>
+                </FilterDropdown>
               </>
             )}
+            <FilterSelectionMeta
+              count={filters.flagTypes?.length ?? 0}
+              onClearAll={() => {
+                setFilters((prev) => ({ ...prev, flagTypes: [] }));
+                setFlagTypeSearch('');
+              }}
+            />
+            {renderFilterChips(
+              (filters.flagTypes || [])
+                .map((flagTypeId) => {
+                  const ft = flagTypes.find((t) => String(t.id) === String(flagTypeId));
+                  return ft ? { id: String(flagTypeId), label: ft.label } : null;
+                })
+                .filter((item): item is { id: string; label: string } => item != null),
+              (id) => toggleFlagTypeSelection(id),
+            )}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Eligibility</label>
-            <div className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md flex items-center gap-3">
+          <div className="flex items-end pt-2">
+            <label className="inline-flex h-11 min-h-[44px] cursor-pointer select-none items-center gap-2.5">
               <input
                 type="checkbox"
                 className="toggle toggle-primary toggle-sm"
                 checked={filters.eligibilityDeterminedOnly}
                 onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+                aria-label="Eligible only"
               />
-              <span className="text-xs text-gray-600">
-              </span>
-            </div>
+              <span className="text-sm font-medium text-gray-700">Eligible</span>
+            </label>
           </div>
         </div>
         <div className="mt-4 flex flex-row items-center justify-between gap-4 w-full flex-wrap">
@@ -4289,25 +4235,22 @@ const CloserSuperPipelinePage = () => {
                   <XMarkIcon className="w-5 h-5" />
                 </button>
                 <div className="flex flex-col gap-3 w-full md:min-w-[200px] md:w-auto">
-                  <label className="block text-sm font-semibold text-gray-800">Min Probability</label>
-                  <div className="flex items-center gap-3">
-                    <div className="relative flex-shrink-0">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={filters.minProbability}
-                        onFocus={(e) => e.target.select()}
-                        onChange={(e) => {
-                          const newMin = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-                          handleFilterChange('minProbability', newMin);
-                        }}
-                        className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
-                        style={{ appearance: 'textfield' }}
-                      />
-                      <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
-                    </div>
-                  </div>
+                  <FloatingFilterField label="Min %" floated>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={filters.minProbability}
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => {
+                        const newMin = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                        handleFilterChange('minProbability', newMin);
+                      }}
+                      className={`${FILTER_INPUT_BORDERED_CLASS} max-w-[7.5rem] text-center font-semibold`}
+                      style={{ appearance: 'textfield' }}
+                      aria-label="Min probability"
+                    />
+                  </FloatingFilterField>
                   <Slider.Root
                     className="relative flex items-center select-none touch-none w-full h-7"
                     value={[filters.minProbability]}
@@ -4323,25 +4266,22 @@ const CloserSuperPipelinePage = () => {
                   </Slider.Root>
                 </div>
                 <div className="flex flex-col gap-3 w-full md:min-w-[200px] md:w-auto">
-                  <label className="block text-sm font-semibold text-gray-800">Max Probability</label>
-                  <div className="flex items-center gap-3">
-                    <div className="relative flex-shrink-0">
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={filters.maxProbability}
-                        onFocus={(e) => e.target.select()}
-                        onChange={(e) => {
-                          const newMax = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-                          handleFilterChange('maxProbability', newMax);
-                        }}
-                        className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
-                        style={{ appearance: 'textfield' }}
-                      />
-                      <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
-                    </div>
-                  </div>
+                  <FloatingFilterField label="Max %" floated>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={filters.maxProbability}
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => {
+                        const newMax = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                        handleFilterChange('maxProbability', newMax);
+                      }}
+                      className={`${FILTER_INPUT_BORDERED_CLASS} max-w-[7.5rem] text-center font-semibold`}
+                      style={{ appearance: 'textfield' }}
+                      aria-label="Max probability"
+                    />
+                  </FloatingFilterField>
                   <Slider.Root
                     className="relative flex items-center select-none touch-none w-full h-7"
                     value={[filters.maxProbability]}
@@ -4412,7 +4352,7 @@ const CloserSuperPipelinePage = () => {
       {/* Results */}
       {searchPerformed && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-gray-200/80 bg-white px-5 py-4 shadow-sm">
+          <div className="flex flex-wrap items-center gap-3">
             <h3 className="text-lg font-semibold text-gray-900">Total leads: {results.length}</h3>
             {rescheduledSearchActive && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold text-violet-800">
@@ -4465,9 +4405,9 @@ const CloserSuperPipelinePage = () => {
               No leads found
             </div>
           ) : (
-            <div className="overflow-x-auto pb-2">
-              <table className="min-w-full border-separate border-spacing-y-2">
-                <thead>
+            <div className={`${PIPELINE_TABLE_SHELL} pb-2`}>
+              <table className={PIPELINE_TABLE_CLASS}>
+                <thead className={PIPELINE_THEAD_CLASS}>
                   <tr>
                     <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Lead</div>
@@ -4516,7 +4456,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                      <div className="line-clamp-2 break-words">Flag<br />Type</div>
+                      <div className="line-clamp-2 break-words">Flag</div>
                     </th>
                     <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
                       <div className="line-clamp-2 break-words">Country</div>
@@ -4539,23 +4479,23 @@ const CloserSuperPipelinePage = () => {
                       onClick={() => handleSort('latest_interaction')}
                     >
                       <div className="line-clamp-2 break-words">
-                        Latest<br />Interaction {sortColumn === 'latest_interaction' && (
+                        L. Interactions {sortColumn === 'latest_interaction' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
-                      <div className="line-clamp-2 break-words">Follow Up Notes</div>
+                      <div className="line-clamp-2 break-words">Follow-up Notes</div>
                     </th>
                     <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
-                      <div className="line-clamp-2 break-words">Expert Opinion</div>
+                      <div className="line-clamp-2 break-words">E. Opinion</div>
                     </th>
                     <th
                       className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-800 select-none"
                       onClick={() => handleSort('total_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
-                        Total<br />Applicants {sortColumn === 'total_applicants' && (
+                        Total App. {sortColumn === 'total_applicants' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
@@ -4565,7 +4505,7 @@ const CloserSuperPipelinePage = () => {
                       onClick={() => handleSort('potential_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
-                        Potential<br />Applicants {sortColumn === 'potential_applicants' && (
+                        Potential App. {sortColumn === 'potential_applicants' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
@@ -4591,11 +4531,11 @@ const CloserSuperPipelinePage = () => {
                     const interactions = interactionsCache.get(leadKey) || [];
                     const isLoading = loadingInteractions.has(leadKey);
                     const isExpanded = false;
-                    const rowCellClass = 'px-3 py-3 text-sm text-gray-900 bg-white border-y border-gray-200/80 shadow-sm first:border-l first:rounded-l-xl last:border-r last:rounded-r-xl';
+                    const rowCellClass = 'px-2 py-3.5 text-sm text-gray-900 border-b border-gray-100';
                     return (
                       <React.Fragment key={lead.id || index}>
                         <tr
-                          className="group cursor-pointer transition-shadow hover:shadow-md"
+                          className={`${PIPELINE_ROW_CLASS} group relative [&>td]:border-b [&>td]:border-gray-100`}
                           onClick={() => handleOpenInteractions(lead)}
                         >
                           <td className={`${rowCellClass}`} style={{ maxWidth: '200px' }}>
@@ -4719,19 +4659,10 @@ const CloserSuperPipelinePage = () => {
                             </div>
                           </td>
                           <td className={`${rowCellClass} whitespace-nowrap`}>
-                            <div className="flex items-center gap-2 group">
-                              <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleEditFollowUpDate(lead);
-                                }}
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                                title="Edit follow-up date"
-                              >
-                                <PencilIcon className="w-4 h-4" />
-                              </button>
-                            </div>
+                            <PipelineFollowUpButton
+                              date={lead.follow_up_date}
+                              onClick={(e) => openFollowUpModal(lead, e)}
+                            />
                           </td>
                           <td className={`${rowCellClass} whitespace-nowrap`}>
                             {lead.latest_interaction ? new Date(lead.latest_interaction).toLocaleDateString() : '---'}
@@ -4805,7 +4736,7 @@ const CloserSuperPipelinePage = () => {
                         </tr>
                         {isExpanded && (
                           <tr>
-                            <td colSpan={14} className="rounded-xl border border-gray-200/80 bg-white px-4 py-3 shadow-sm">
+                            <td colSpan={14} className="border-b border-gray-100 bg-white px-4 py-3">
                               <div className="space-y-3">
                                 <div className="text-sm font-semibold text-gray-700 mb-2">Latest Interactions</div>
                                 {isLoading ? (
@@ -4937,49 +4868,66 @@ const CloserSuperPipelinePage = () => {
         opinionText={selectedExpertOpinionLead?.opinion || '---'}
       />
 
-      {/* Follow-up Date Edit Modal */}
-      {editingFollowUpDate && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold mb-4">Edit Follow-Up Date</h3>
-            <div className="space-y-4">
+      {/* Follow-up date editor — same personal follow_ups row as PipelinePage */}
+      {editingFollowUpLead && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+          onClick={closeFollowUpModal}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Follow-Up Date
-                </label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={followUpDate}
-                  onChange={(e) => setFollowUpDate(e.target.value)}
-                />
+                <h3 className="text-lg font-semibold text-gray-900">Follow-up date</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  {editingFollowUpLead.lead_number || editingFollowUpLead.id} · {editingFollowUpLead.name}
+                </p>
               </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setEditingFollowUpDate(null);
-                    setFollowUpDate('');
-                  }}
-                  disabled={savingFollowUp}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleSaveFollowUpDate}
-                  disabled={savingFollowUp}
-                >
-                  {savingFollowUp ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Saving...
-                    </>
-                  ) : (
-                    'Save'
-                  )}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={closeFollowUpModal}
+                disabled={savingFollowUp}
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <label className="mt-5 block text-sm font-medium text-gray-700" htmlFor="closer-follow-up-date">
+              Your follow-up date
+            </label>
+            <input
+              id="closer-follow-up-date"
+              type="date"
+              className="input input-bordered mt-2 w-full"
+              value={followUpDraft}
+              onChange={(e) => setFollowUpDraft(e.target.value)}
+              disabled={savingFollowUp}
+            />
+            <p className="mt-2 text-xs text-gray-400">
+              Leave empty and save to clear the date. Only you see this follow-up.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-ghost rounded-full"
+                onClick={closeFollowUpModal}
+                disabled={savingFollowUp}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary rounded-full"
+                onClick={() => void handleSaveFollowUpDate()}
+                disabled={savingFollowUp}
+              >
+                {savingFollowUp ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+              </button>
             </div>
           </div>
         </div>
@@ -5065,25 +5013,25 @@ const CloserSuperPipelinePage = () => {
             </div>
 
             <div className="space-y-4 px-5 py-5">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-sm font-medium text-gray-700">Stage from</span>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <FloatingFilterField label="Stage from" floated>
                   <input
                     type="date"
                     value={rescheduledStageFromDate}
                     onChange={(e) => setRescheduledStageFromDate(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#411CCF] focus:outline-none focus:ring-2 focus:ring-[#411CCF]/20"
+                    className={FILTER_INPUT_BORDERED_CLASS}
+                    aria-label="Stage from date"
                   />
-                </label>
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-sm font-medium text-gray-700">Stage to</span>
+                </FloatingFilterField>
+                <FloatingFilterField label="Stage to" floated>
                   <input
                     type="date"
                     value={rescheduledStageToDate}
                     onChange={(e) => setRescheduledStageToDate(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#411CCF] focus:outline-none focus:ring-2 focus:ring-[#411CCF]/20"
+                    className={FILTER_INPUT_BORDERED_CLASS}
+                    aria-label="Stage to date"
                   />
-                </label>
+                </FloatingFilterField>
               </div>
             </div>
 
@@ -5188,6 +5136,7 @@ const CloserSuperPipelinePage = () => {
                     name={roleName}
                     photoUrl={resolveEmployeePhoto(roleName)}
                     size="xs"
+                    layout="row"
                     className="text-xs"
                   />
                 </div>

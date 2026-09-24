@@ -4,11 +4,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 
 const LOG_PREFIX = '[nine-hour-auto-clock-out]';
 const JERUSALEM_TZ = 'Asia/Jerusalem';
-const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
-const OVERTIME_PROMPT_MS = 10 * 60 * 1000;
-const OVERTIME_FINAL_COUNTDOWN_MS = 20 * 1000;
-const AUTO_ENFORCE_MS = NINE_HOURS_MS + OVERTIME_PROMPT_MS + OVERTIME_FINAL_COUNTDOWN_MS;
-const PRESENCE_STALE_MS = Number(Deno.env.get('CLOCK_IN_PRESENCE_STALE_MS') || 90_000);
+const DEFAULT_MIN_HOURS = 8;
 const WORKDAY_END_HOUR_JERUSALEM = Number(Deno.env.get('CLOCK_IN_WORKDAY_END_HOUR_JERUSALEM') || 23);
 
 function jerusalemDateKey(date = new Date()) {
@@ -66,15 +62,24 @@ function parseExternFlag(extern: unknown) {
   );
 }
 
-function hasRecentPresence(lastSeenAt: number | null, now = Date.now()) {
-  if (lastSeenAt == null) return false;
-  return now - lastSeenAt < PRESENCE_STALE_MS;
+function normalizeMinHours(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MIN_HOURS;
+  return parsed;
 }
 
-function shouldServerEnforce(totalMs: number, lastSeenAt: number | null, now = Date.now()) {
-  if (totalMs < NINE_HOURS_MS) return false;
-  if (totalMs >= AUTO_ENFORCE_MS) return true;
-  return !hasRecentPresence(lastSeenAt, now);
+function computeBaseHoursClockOutIso(
+  clockInIso: string,
+  minHours: number,
+  closedMs = 0,
+  nowMs = Date.now(),
+) {
+  const startMs = new Date(clockInIso).getTime();
+  if (!Number.isFinite(startMs)) return new Date(nowMs).toISOString();
+  const remainingMs = Math.max(0, normalizeMinHours(minHours) * 60 * 60 * 1000 - closedMs);
+  const targetMs = startMs + remainingMs;
+  const endMs = Math.min(Math.max(targetMs, startMs), nowMs);
+  return new Date(endMs).toISOString();
 }
 
 function isPastJerusalemWorkdayEnd(now = new Date()) {
@@ -82,40 +87,11 @@ function isPastJerusalemWorkdayEnd(now = new Date()) {
   return hour >= WORKDAY_END_HOUR_JERUSALEM;
 }
 
-function shouldEnforceNineHourLimit(
-  totalMs: number,
-  lastSeenAt: number | null,
-  hasOvertimeOptIn: boolean,
-  now = Date.now(),
-) {
-  if (hasOvertimeOptIn) return false;
-  return shouldServerEnforce(totalMs, lastSeenAt, now);
-}
-
-function isPastWorkdayEndClientDeadline(now = new Date()) {
-  const { hour, minute, second } = jerusalemTimeParts(now);
-  if (hour > WORKDAY_END_HOUR_JERUSALEM) return true;
-  if (hour < WORKDAY_END_HOUR_JERUSALEM) return false;
-  if (minute > 2) return true;
-  if (minute < 2) return false;
-  return second >= 20;
-}
-
-function shouldEnforceWorkdayEnd(
-  lastSeenAt: number | null,
-  hasWorkdayEndOptIn: boolean,
-  now = Date.now(),
-) {
-  if (!isPastJerusalemWorkdayEnd(new Date(now))) return false;
-  if (hasWorkdayEndOptIn) return false;
-  if (isPastWorkdayEndClientDeadline(new Date(now))) return true;
-  return !hasRecentPresence(lastSeenAt, now);
-}
-
 type ActiveRecord = {
   id: number;
   employee_id: number;
   user_id: string;
+  clock_in_time: string;
   clock_in_location_id: number | null;
 };
 
@@ -146,7 +122,6 @@ serve(async (req) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const workDate = jerusalemDateKey();
   const now = Date.now();
   const summary = {
     checked: 0,
@@ -160,7 +135,7 @@ serve(async (req) => {
   try {
     const { data: activeRecords, error } = await admin
       .from('employee_clock_in')
-      .select('id, employee_id, user_id, clock_in_location_id')
+      .select('id, employee_id, user_id, clock_in_time, clock_in_location_id')
       .eq('is_active', true);
 
     if (error) throw error;
@@ -178,133 +153,77 @@ serve(async (req) => {
           continue;
         }
 
-        if (pastWorkdayEnd) {
-          const { data: workdayEndOptIn } = await admin
-            .from('employee_clock_in_workday_end_opt_in')
-            .select('employee_id')
-            .eq('employee_id', record.employee_id)
-            .eq('work_date', workDate)
-            .maybeSingle();
-
-          const { data: presenceRow } = await admin
-            .from('employee_clock_in_presence')
-            .select('last_seen_at')
-            .eq('employee_id', record.employee_id)
-            .maybeSingle();
-          const lastPresenceAt = presenceRow?.last_seen_at
-            ? new Date(presenceRow.last_seen_at).getTime()
-            : null;
-
-          if (!shouldEnforceWorkdayEnd(lastPresenceAt, workdayEndOptIn != null, now)) {
-            summary.skipped += 1;
-            continue;
-          }
-
-          const clockOutTime = new Date().toISOString();
-          const endOfDayUpdate = {
-            clock_out_time: clockOutTime,
-            is_active: false,
-            notes: `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem)`,
-          };
-
-          if (record.clock_in_location_id) {
-            const { error: updateError } = await admin
-              .from('employee_clock_in')
-              .update({ ...endOfDayUpdate, clock_out_location_id: record.clock_in_location_id })
-              .eq('id', record.id);
-            if (updateError) {
-              const { error: fallbackError } = await admin
-                .from('employee_clock_in')
-                .update(endOfDayUpdate)
-                .eq('id', record.id);
-              if (fallbackError) throw fallbackError;
-            }
-          } else {
-            const { error: updateError } = await admin
-              .from('employee_clock_in')
-              .update(endOfDayUpdate)
-              .eq('id', record.id);
-            if (updateError) throw updateError;
-          }
-
-          summary.clockedOut += 1;
-          summary.endOfDayClockOuts += 1;
-
-          // Keep auth session — gate blocks CRM until next clock-in.
-          console.log(LOG_PREFIX, `employee=${record.employee_id} end-of-day clocked out (session kept)`);
+        if (!pastWorkdayEnd) {
+          // 9h is a CRM reminder only — never auto clock-out before 23:00.
+          summary.skipped += 1;
           continue;
         }
 
-        const { data: optIn } = await admin
-          .from('employee_clock_in_overtime_opt_in')
-          .select('employee_id')
-          .eq('employee_id', record.employee_id)
-          .eq('work_date', workDate)
+        const { data: employeeRow } = await admin
+          .from('tenants_employee')
+          .select('min_hours')
+          .eq('id', record.employee_id)
           .maybeSingle();
-        const overtimeOptIn = optIn != null;
+        const minHours = normalizeMinHours(employeeRow?.min_hours);
 
+        const workDate = jerusalemDateKey(new Date(now));
         const todayStart = buildJerusalemStartOfDayIso(workDate);
         const todayEnd = buildJerusalemEndOfDayIso(workDate);
         const { data: dayRecords, error: dayError } = await admin
           .from('employee_clock_in')
-          .select('clock_in_time, clock_out_time')
+          .select('id, clock_in_time, clock_out_time')
           .eq('employee_id', record.employee_id)
           .gte('clock_in_time', todayStart)
           .lte('clock_in_time', todayEnd);
         if (dayError) throw dayError;
 
-        let totalMs = 0;
+        let closedMs = 0;
         for (const row of dayRecords ?? []) {
+          if (row.id === record.id || !row.clock_out_time) continue;
           const start = new Date(row.clock_in_time).getTime();
-          const end = row.clock_out_time ? new Date(row.clock_out_time).getTime() : now;
-          totalMs += Math.max(0, end - start);
+          const end = new Date(row.clock_out_time).getTime();
+          closedMs += Math.max(0, end - start);
         }
 
-        const { data: presenceRow } = await admin
-          .from('employee_clock_in_presence')
-          .select('last_seen_at')
-          .eq('employee_id', record.employee_id)
-          .maybeSingle();
-        const lastPresenceAt = presenceRow?.last_seen_at
-          ? new Date(presenceRow.last_seen_at).getTime()
-          : null;
-
-        if (!shouldEnforceNineHourLimit(totalMs, lastPresenceAt, overtimeOptIn, now)) {
-          summary.skipped += 1;
-          continue;
-        }
-
-        const clockOutTime = new Date().toISOString();
-        const baseUpdate = {
+        const clockOutTime = computeBaseHoursClockOutIso(
+          record.clock_in_time,
+          minHours,
+          closedMs,
+          now,
+        );
+        const endOfDayUpdate = {
           clock_out_time: clockOutTime,
           is_active: false,
-          notes: 'Auto clock-out: 9-hour limit',
+          notes: `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem); duration set to base hours (${minHours}h)`,
         };
 
         if (record.clock_in_location_id) {
           const { error: updateError } = await admin
             .from('employee_clock_in')
-            .update({ ...baseUpdate, clock_out_location_id: record.clock_in_location_id })
+            .update({ ...endOfDayUpdate, clock_out_location_id: record.clock_in_location_id })
             .eq('id', record.id);
           if (updateError) {
             const { error: fallbackError } = await admin
               .from('employee_clock_in')
-              .update(baseUpdate)
+              .update(endOfDayUpdate)
               .eq('id', record.id);
             if (fallbackError) throw fallbackError;
           }
         } else {
           const { error: updateError } = await admin
             .from('employee_clock_in')
-            .update(baseUpdate)
+            .update(endOfDayUpdate)
             .eq('id', record.id);
           if (updateError) throw updateError;
         }
 
         summary.clockedOut += 1;
+        summary.endOfDayClockOuts += 1;
 
-        // Keep auth session — gate blocks CRM until next clock-in.
-        console.log(LOG_PREFIX, `employee=${record.employee_id} clocked out (session kept)`);
+        console.log(
+          LOG_PREFIX,
+          `employee=${record.employee_id} end-of-day clocked out at ${clockOutTime} (base hours ${minHours}h, session kept)`,
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         summary.errors.push({ employeeId: record.employee_id, message });

@@ -12,7 +12,6 @@ import ClockInGateVideos from './ClockInGateVideos';
 import ClockInGateHeader from './ClockInGateHeader';
 import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
 import ClockInPresenceHeartbeat from './ClockInPresenceHeartbeat';
-import WorkdayEndMonitor from './WorkdayEndMonitor';
 import LeadAllocationReminderMonitor from './LeadAllocationReminderMonitor';
 
 const LazyCalendarPage = lazy(() => import('./CalendarPage'));
@@ -95,7 +94,6 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
         {children}
         <ClockInPresenceHeartbeat />
         <NineHourOvertimeMonitor />
-        <WorkdayEndMonitor />
         <LeadAllocationReminderMonitor />
       </>
     );

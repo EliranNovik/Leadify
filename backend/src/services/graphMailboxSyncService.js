@@ -789,6 +789,23 @@ const fetchGraphJsonWithRetry = async (url, options = {}, { maxAttempts = 6 } = 
 };
 
 /** Metadata only (no contentBytes) for UI + download-by-id. */
+// Emails whose attachments this process has already inspected for the Storage backfill.
+// "Does a stored row exist?" is not a usable completion test on its own: an email whose
+// attachments were all removed from the Scan Center queue, or whose Graph message is
+// gone, or that only carries inline signature images, never produces one and was
+// therefore re-inspected on every sync cycle forever.
+const attachmentBackfillChecked = new Set();
+const ATTACHMENT_BACKFILL_CHECKED_MAX = 5000;
+
+const markAttachmentBackfillChecked = (emailId) => {
+  if (attachmentBackfillChecked.size >= ATTACHMENT_BACKFILL_CHECKED_MAX) {
+    attachmentBackfillChecked.clear();
+  }
+  attachmentBackfillChecked.add(Number(emailId));
+};
+
+const attachmentBackfillWasChecked = (emailId) => attachmentBackfillChecked.has(Number(emailId));
+
 const normalizeAttachmentForStorage = (att) => {
   if (!att || !att.id) return null;
   const size =
@@ -881,9 +898,19 @@ const fetchMessageAttachmentsWithContent = async (accessToken, mailboxAddress, m
 
 const toGraphRecipients = (list = []) => {
   const normalized = Array.isArray(list) ? list : list != null && list !== '' ? [list] : [];
+  const seen = new Set();
   return normalized
-    .map((address) => (typeof address === 'string' ? address.trim() : ''))
-    .filter((address) => Boolean(address))
+    .flatMap((address) =>
+      typeof address === 'string'
+        ? address.split(/[;,]/).map((part) => part.trim()).filter(Boolean)
+        : [],
+    )
+    .filter((address) => {
+      const key = address.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .map((address) => ({
       emailAddress: {
         address,
@@ -2319,13 +2346,15 @@ class GraphMailboxSyncService {
     const stored = await emailAttachmentStorage.listStoredForEmail(emailId);
     const storedIds = new Set(stored.map((att) => String(att.id)));
 
-    let graphAttachments = [];
+    // Metadata first. Asking Graph for contentBytes downloads every attachment in full,
+    // and this runs on every sync cycle while almost none of them have anything new.
+    let attachmentsMeta = [];
     try {
-      graphAttachments = await fetchMessageAttachmentsWithContent(accessToken, mailboxAddress, messageId);
+      attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
     } catch (error) {
       if (!isGraphMessageNotFound(error) && !isInvalidMailboxItemId(error)) {
         console.warn(
-          `⚠️  Error fetching attachment bytes for ${String(messageId).substring(0, 24)}...:`,
+          `⚠️  Error fetching attachment metadata for ${String(messageId).substring(0, 24)}...:`,
           error.message || error
         );
       }
@@ -2333,39 +2362,94 @@ class GraphMailboxSyncService {
     }
 
     const removedRefs = await smartScanClassifyService.loadRemovedRefs();
-    const metas = [];
-    for (const att of graphAttachments) {
-      if (removedRefs.attachmentIds.has(String(att.id))) continue;
-      const already = storedIds.has(String(att.id));
-      if (already) {
-        metas.push(stored.find((row) => String(row.id) === String(att.id)));
-        continue;
-      }
+    const visible = attachmentsMeta.filter((att) => !removedRefs.attachmentIds.has(String(att.id)));
 
-      const bytes = att.contentBytes || att.content_bytes;
-      if (!bytes) {
-        metas.push(emailAttachmentStorage.toMeta(att));
-        continue;
-      }
+    // Inline attachments are email-signature logos and social icons repeated on every
+    // reply in a thread. Keep their metadata so the UI can list them, but never copy
+    // them into Storage. Files a user actually opens are still cached on demand.
+    const needsDownload = visible.filter((att) => !att.isInline && !storedIds.has(String(att.id)));
 
+    const metas = visible.map(
+      (att) =>
+        stored.find((row) => String(row.id) === String(att.id)) ||
+        emailAttachmentStorage.toMeta(att),
+    );
+
+    if (needsDownload.length) {
+      const wanted = new Set(needsDownload.map((att) => String(att.id)));
+      let withContent = [];
       try {
-        const buffer = Buffer.from(bytes, 'base64');
-        const meta = await emailAttachmentStorage.saveAttachmentBuffer({
-          emailId,
-          messageId,
-          attachment: att,
-          buffer,
-        });
-        metas.push(meta);
+        withContent = await fetchMessageAttachmentsWithContent(accessToken, mailboxAddress, messageId);
       } catch (error) {
-        console.warn(`⚠️  Failed to store attachment ${att.name || att.id}:`, error.message || error);
-        metas.push(emailAttachmentStorage.toMeta(att));
+        if (!isGraphMessageNotFound(error) && !isInvalidMailboxItemId(error)) {
+          console.warn(
+            `⚠️  Error fetching attachment bytes for ${String(messageId).substring(0, 24)}...:`,
+            error.message || error
+          );
+        }
+      }
+
+      for (const att of withContent) {
+        if (!wanted.has(String(att.id))) continue;
+        const bytes = att.contentBytes || att.content_bytes;
+        if (!bytes) continue;
+
+        try {
+          const meta = await emailAttachmentStorage.saveAttachmentBuffer({
+            emailId,
+            messageId,
+            attachment: att,
+            buffer: Buffer.from(bytes, 'base64'),
+          });
+          const index = metas.findIndex((existing) => existing && String(existing.id) === String(att.id));
+          if (index >= 0) metas[index] = meta;
+          else metas.push(meta);
+        } catch (error) {
+          console.warn(`⚠️  Failed to store attachment ${att.name || att.id}:`, error.message || error);
+        }
       }
     }
 
+    // Inline attachments get a metadata-only row so this email counts as processed.
+    // Without it the backfill passes, which ask "does this email have any stored
+    // attachments?", would revisit an inline-only email on every cycle forever.
+    for (const att of visible) {
+      if (!att.isInline || storedIds.has(String(att.id))) continue;
+      await emailAttachmentStorage.saveAttachmentMetadataRow({ emailId, messageId, attachment: att });
+    }
+
     const merged = emailAttachmentStorage.mergeAttachmentLists(metas.filter(Boolean), stored);
-    await patchMailboxEmailBody(emailId, { attachments: merged.length ? merged : null });
+    await this.patchHeaderAttachmentsIfChanged(emailId, merged);
     return merged;
+  }
+
+  /**
+   * The attachments column was rewritten on every cycle even when the list was
+   * identical, which is pointless UPDATE traffic (WAL, triggers, dead tuples) on the
+   * emails table. Read the current value and only write on a real change.
+   */
+  async patchHeaderAttachmentsIfChanged(emailId, merged) {
+    const next = merged.length ? merged : null;
+    const signature = (list) =>
+      JSON.stringify(
+        (Array.isArray(list) ? list : [])
+          .map((att) => [
+            String(att?.id ?? ''),
+            String(att?.storage_path ?? ''),
+            Boolean(att?.stored),
+          ])
+          .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+      );
+
+    const { data: current, error } = await supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .select('attachments')
+      .eq('id', emailId)
+      .maybeSingle();
+
+    if (!error && current && signature(current.attachments) === signature(next)) return;
+
+    await patchMailboxEmailBody(emailId, { attachments: next });
   }
 
   async persistAttachmentsForMessages(mailboxAddress, emailRows, accessToken) {
@@ -2387,8 +2471,13 @@ class GraphMailboxSyncService {
 
     const toPersist = [];
     for (const row of unique) {
-      if (row._backfillAttachments && (await emailAttachmentStorage.emailHasStoredAttachments(row.id))) {
-        continue;
+      if (row._backfillAttachments) {
+        if (attachmentBackfillWasChecked(row.id)) continue;
+        if (await emailAttachmentStorage.emailHasStoredAttachments(row.id)) {
+          markAttachmentBackfillChecked(row.id);
+          continue;
+        }
+        markAttachmentBackfillChecked(row.id);
       }
       toPersist.push(row);
     }
@@ -2631,7 +2720,12 @@ class GraphMailboxSyncService {
     const needsPersist = [];
     for (const row of rows) {
       if (!row?.id || !row.message_id) continue;
-      if (await emailAttachmentStorage.emailHasStoredAttachments(row.id)) continue;
+      if (attachmentBackfillWasChecked(row.id)) continue;
+      if (await emailAttachmentStorage.emailHasStoredAttachments(row.id)) {
+        markAttachmentBackfillChecked(row.id);
+        continue;
+      }
+      markAttachmentBackfillChecked(row.id);
       needsPersist.push(row);
     }
 

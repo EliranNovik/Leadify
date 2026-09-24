@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { supabase } from './supabase';
 
@@ -11,12 +11,73 @@ import { supabase } from './supabase';
  * the tables their rows are built from.
  */
 
-/** The authenticated shell scrolls inside <main class="app-main-scroll">, not the window. */
+/** The authenticated shell scrolls inside <main class="app-main-scroll">, not the window.
+ *  `/pipeline` is an exception: App.tsx keeps the page in `.pipeline-keep-alive-scroll`.
+ */
 export function getAppScrollContainer(): HTMLElement | null {
+  const keepAlive = document.querySelector('.pipeline-keep-alive-scroll') as HTMLElement | null;
+  if (keepAlive && !keepAlive.classList.contains('hidden')) {
+    return keepAlive;
+  }
   return (
     (document.querySelector('.app-main-scroll') as HTMLElement | null) ||
     (document.querySelector('main') as HTMLElement | null)
   );
+}
+
+/** Run a state update without letting the pipeline/app scroller jump to the top. */
+export function withPreservedAppScroll<T>(fn: () => T): T {
+  const el = getAppScrollContainer();
+  const top = el?.scrollTop ?? 0;
+  const result = fn();
+  const restore = () => {
+    const current = getAppScrollContainer();
+    if (current) current.scrollTop = top;
+  };
+  restore();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => {
+      restore();
+      requestAnimationFrame(restore);
+    });
+  }
+  return result;
+}
+
+/**
+ * Hold the app/pipeline scroller at its current offset across the next React commits
+ * (row refreshes, modal close). Call `release()` after the last setState.
+ */
+export function useStickyAppScroll(): {
+  hold: (top?: number) => void;
+  release: () => void;
+} {
+  const pendingRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const top = pendingRef.current;
+    if (top == null) return;
+    const el = getAppScrollContainer();
+    if (el) el.scrollTop = top;
+  });
+
+  const hold = useCallback((top?: number) => {
+    const el = getAppScrollContainer();
+    pendingRef.current = top ?? el?.scrollTop ?? 0;
+  }, []);
+
+  const release = useCallback(() => {
+    const finish = () => {
+      pendingRef.current = null;
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    } else {
+      setTimeout(finish, 0);
+    }
+  }, []);
+
+  return { hold, release };
 }
 
 export const DEFAULT_PIPELINE_STALE_MS = 5 * 60 * 1000;
@@ -42,6 +103,12 @@ export function isKeepAlivePipelinePath(pathname: string): boolean {
 export function usePipelineRouteActive(): boolean {
   const { pathname } = useLocation();
   return isPipelineShellPath(pathname);
+}
+
+/** True only while App.tsx is showing `.pipeline-keep-alive-scroll`. */
+export function useKeepAlivePipelineVisible(): boolean {
+  const { pathname } = useLocation();
+  return isKeepAlivePipelinePath(pathname);
 }
 
 export type SnapshotStore<T> = {
@@ -123,9 +190,13 @@ export function useScrollRestoration(
     const container = getAppScrollContainer();
     if (!container) return;
 
-    const target = store.getScrollTop();
-    if (target > 0) container.scrollTop = target;
-    frozenRef.current = false;
+    const isLoading = contentReadyKey === true;
+    frozenRef.current = isLoading;
+
+    if (!isLoading) {
+      const target = store.getScrollTop();
+      if (target > 0) container.scrollTop = target;
+    }
 
     const onScroll = () => {
       if (frozenRef.current) return;
@@ -133,7 +204,7 @@ export function useScrollRestoration(
     };
     container.addEventListener('scroll', onScroll, { passive: true });
     return () => {
-      store.setScrollTop(container.scrollTop);
+      if (!frozenRef.current) store.setScrollTop(container.scrollTop);
       frozenRef.current = true;
       container.removeEventListener('scroll', onScroll);
     };

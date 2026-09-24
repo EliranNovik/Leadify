@@ -3566,15 +3566,19 @@ const ContractPage: React.FC<{
       }).eq('id', contract.id);
 
       // Fill TipTap JSON with clientInputs
+      const unsignedContent = resolveContractBodyContent(contract, template);
       const filledContent = fillTiptapJsonWithInputs(
-        resolveContractBodyContent(contract, template),
+        unsignedContent,
         clientInputs,
         '',
         { text: 0, signature: 0 }
       );
       // Save filled content to DB before marking as signed
       await supabase.from('contracts').update({
-        custom_content: filledContent
+        custom_content: filledContent,
+        // Placeholder body kept for cloning an amended draft later; custom_content
+        // no longer contains the placeholders once it is filled.
+        pre_sign_content: (contract as any).pre_sign_content ?? unsignedContent,
       }).eq('id', contract.id);
 
       const { data: updatedContract, error } = await supabase

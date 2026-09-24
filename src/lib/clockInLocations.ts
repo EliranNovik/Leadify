@@ -54,6 +54,13 @@ export function isQrOnlyClockInLocation(loc: ClockInLocationOption): boolean {
   return name === 'ramat gan - office' || name === 'ramat gan office';
 }
 
+export function isRamatGanClockInLocation(loc: ClockInLocationOption): boolean {
+  if (isQrOnlyClockInLocation(loc)) return true;
+  const slug = loc.slug?.toLowerCase() ?? '';
+  const name = loc.name.trim().toLowerCase();
+  return slug.includes('ramat-gan') || name.includes('ramat gan');
+}
+
 /** Workplaces employees may pick in the CRM clock-in modal (excludes QR-only offices). */
 export function filterManualSelectableClockInLocations(
   locations: ClockInLocationOption[],

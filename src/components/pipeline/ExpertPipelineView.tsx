@@ -17,7 +17,10 @@ import { openLeadFromRowClick } from '../../lib/leadNavigation';
 import {
   createSnapshotStore,
   pipelineViewIdentityKey,
+  useKeepAlivePipelineVisible,
   useRevalidateOnVisible,
+  useScrollRestoration,
+  useStickyAppScroll,
 } from '../../lib/pipelineLiveCache';
 import ExpertSummaryCards, {
   type ExpertQuickFilter,
@@ -235,6 +238,9 @@ const ExpertPipelineView: React.FC<Props> = ({
   const [resultsThisMonth, setResultsThisMonth] = useState(
     () => initialSnapshot?.resultsThisMonth || 0,
   );
+  const { hold: holdPipelineScroll, release: releasePipelineScroll } = useStickyAppScroll();
+  const pipelineVisible = useKeepAlivePipelineVisible();
+  useScrollRestoration(snapshotStore, loading, pipelineVisible);
 
   useEffect(() => {
     savePipelineFilters('expert', {
@@ -445,6 +451,7 @@ const ExpertPipelineView: React.FC<Props> = ({
       const combined = [...newRows, ...legacyRows].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       );
+      holdPipelineScroll();
       setRows(combined);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
@@ -459,7 +466,9 @@ const ExpertPipelineView: React.FC<Props> = ({
       setRows([]);
       setResultsThisMonth(0);
     } finally {
+      holdPipelineScroll();
       setLoading(false);
+      releasePipelineScroll();
     }
   }, [viewAs]);
 

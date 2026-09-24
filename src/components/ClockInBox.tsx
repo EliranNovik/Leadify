@@ -1,15 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 import ClockStatusIcon from './ClockStatusIcon';
 import ClockInModal from './ClockInModal';
-import ManualClockInApprovalModal from './ManualClockInApprovalModal';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
-import { useAdminRole } from '../hooks/useAdminRole';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
-import { fetchCombinedPendingHrApprovalCount } from '../lib/hrApprovals';
-import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 
 interface ClockInBoxProps {
   employeeId: number | null;
@@ -23,11 +18,8 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   isAltTheme = false,
 }) => {
   const { user } = useAuthContext();
-  const { isSuperUser } = useAdminRole();
   const gate = useOptionalClockInGate();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isApprovalModalOpen, setIsApprovalModalOpen] = useState(false);
-  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const [todayTotal, setTodayTotal] = useState<string>('');
@@ -125,31 +117,11 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
     }
   }, [employeeId]);
 
-  const fetchPendingApprovals = useCallback(async () => {
-    if (!isSuperUser) {
-      setPendingApprovalCount(0);
-      return;
-    }
-    try {
-      const count = await fetchCombinedPendingHrApprovalCount();
-      setPendingApprovalCount(count);
-    } catch (error) {
-      console.error('Error fetching pending approvals:', error);
-    }
-  }, [isSuperUser]);
-
-  useManualClockInApprovalLiveRefresh({
-    enabled: isSuperUser,
-    channelSuffix: 'clock-box',
-    onChange: fetchPendingApprovals,
-  });
-
   useEffect(() => {
     if (!employeeId) return;
 
     void fetchClockInStatus();
     void fetchTodayTotal();
-    void fetchPendingApprovals();
 
     // Realtime subscription: react instantly to clock-in/out changes
     const channel = supabase
@@ -172,14 +144,13 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
     // Fallback poll every 5 minutes (keeps today-total accurate even without changes)
     const interval = setInterval(() => {
       void fetchTodayTotal();
-      void fetchPendingApprovals();
     }, 5 * 60_000);
 
     return () => {
       void supabase.removeChannel(channel);
       clearInterval(interval);
     };
-  }, [employeeId, fetchClockInStatus, fetchTodayTotal, fetchPendingApprovals]);
+  }, [employeeId, fetchClockInStatus, fetchTodayTotal]);
 
   const handleCloseModal = () => {
     setIsModalOpen(false);
@@ -191,18 +162,6 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
 
   const displayValue = isClockedIn && currentDuration ? currentDuration : todayTotal || '0h 0m';
   const displayLabel = isClockedIn ? 'Clocked In' : 'Clocked Out';
-
-  const approvalButtonClass = [
-    'relative inline-flex items-center justify-center',
-    'h-10 w-10 md:h-11 md:w-11',
-    'rounded-full shadow-md',
-    'transition-all duration-200',
-    'hover:scale-105 hover:shadow-lg active:scale-95',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
-    isDark2Theme
-      ? 'bg-base-100 text-primary ring-1 ring-base-300 hover:bg-base-100 focus-visible:ring-primary'
-      : 'bg-white/95 text-primary ring-1 ring-white/90 hover:bg-white focus-visible:ring-white',
-  ].join(' ');
 
   const gradientClass = isClockedIn
     ? isAltTheme
@@ -230,38 +189,6 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           }
         }}
       >
-        {isSuperUser && (
-          <div className="absolute bottom-1 right-1 md:bottom-1.5 md:right-1.5 z-20">
-            <button
-              type="button"
-              className={approvalButtonClass}
-              title="Approve manual clock-ins"
-              aria-label={
-                pendingApprovalCount > 0
-                  ? `Approve manual clock-ins, ${pendingApprovalCount} pending`
-                  : 'Approve manual clock-ins'
-              }
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsApprovalModalOpen(true);
-              }}
-            >
-              <ClipboardDocumentCheckIcon className="w-5 h-5 md:w-[1.375rem] md:h-[1.375rem]" />
-              {pendingApprovalCount > 0 && (
-                <span
-                  className={`absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[1rem] h-4 px-1 text-[9px] font-bold rounded-full ring-2 ${
-                    isDark2Theme
-                      ? 'bg-primary text-primary-content ring-base-100'
-                      : 'bg-primary text-white ring-white'
-                  }`}
-                >
-                  {pendingApprovalCount}
-                </span>
-              )}
-            </button>
-          </div>
-        )}
-
         {isClockedIn && (
           <div className="absolute top-1 right-1 md:top-1.5 md:right-1.5 z-10">
             <span
@@ -317,14 +244,12 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           </div>
         </div>
 
-        {!isSuperUser && (
         <ClockStatusIcon
           checked={isClockedIn}
           className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
             isDark2Theme ? 'text-base-content/35' : 'text-white/40'
           }`}
         />
-        )}
       </div>
 
       <ClockInModal
@@ -337,14 +262,6 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           void fetchClockInStatus();
         }}
       />
-
-      {isSuperUser && (
-        <ManualClockInApprovalModal
-          isOpen={isApprovalModalOpen}
-          onClose={() => setIsApprovalModalOpen(false)}
-          onUpdated={() => void fetchPendingApprovals()}
-        />
-      )}
     </>
   );
 };

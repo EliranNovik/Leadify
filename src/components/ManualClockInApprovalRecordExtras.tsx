@@ -6,6 +6,7 @@ import {
   FlagIcon,
   XMarkIcon,
 } from '@heroicons/react/24/solid';
+import { DocumentTextIcon } from '@heroicons/react/24/outline';
 import type { ManualClockInApprovalRecord } from '../lib/employeeClockInApproval';
 import {
   buildClockInApprovalReview,
@@ -15,6 +16,8 @@ import {
   type ClockInInsightLevel,
 } from '../lib/clockInApprovalInsights';
 import type { ClockInRevisionSnapshot } from '../lib/employeeClockInRevisions';
+import { CLOCK_IN_OVERTIME_APPROVAL_BUCKET } from '../lib/employeeClockInOvertimeApproval';
+import DocumentViewerModal from './DocumentViewerModal';
 
 export function ApprovalNotesButton({
   notes,
@@ -110,39 +113,81 @@ export function ManualClockInApprovalRecordExtras({
   revision?: ClockInRevisionSnapshot | null;
   colSpan: number;
 }) {
+  const [viewerOpen, setViewerOpen] = useState(false);
   const review = buildClockInApprovalReview(record, revision);
   const notes = getApprovalInsightNotes(review.insights);
+  const overtimePath = record.overtime_approval_storage_path?.trim() || '';
+  const overtimeName = record.overtime_approval_file_name?.trim() || 'Overtime approval screenshot';
 
-  if (notes.length === 0) return null;
+  if (notes.length === 0 && !overtimePath) return null;
 
   const hasFlag = notes.some((note) => note.level === 'flag');
 
   return (
-    <tr className="manual-clock-approval-detail-row">
-      <td colSpan={colSpan} className="!bg-[#f8fafc]/80 !px-5 !py-2.5 !border-t !border-base-200/70">
-        <div className="flex items-start gap-3 text-sm">
-          <span className="min-w-[2.75rem] shrink-0 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
-            Note
-          </span>
-          <div className="min-w-0 flex-1 space-y-2 leading-relaxed">
-            {notes.map((note) => (
-              <p
-                key={note.title}
-                className={
-                  note.level === 'flag'
-                    ? 'text-red-800'
-                    : hasFlag
-                      ? 'text-base-content/70'
-                      : 'text-amber-900'
-                }
-              >
-                {note.detail}
-              </p>
-            ))}
+    <>
+      <tr className="manual-clock-approval-detail-row">
+        <td colSpan={colSpan} className="!bg-[#f8fafc]/80 !px-5 !py-2.5 !border-t !border-base-200/70">
+          <div className="space-y-2.5">
+            {notes.length > 0 && (
+              <div className="flex items-start gap-3 text-sm">
+                <span className="min-w-[2.75rem] shrink-0 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
+                  Note
+                </span>
+                <div className="min-w-0 flex-1 space-y-2 leading-relaxed">
+                  {notes.map((note) => (
+                    <p
+                      key={note.title}
+                      className={
+                        note.level === 'flag'
+                          ? 'text-red-800'
+                          : hasFlag
+                            ? 'text-base-content/70'
+                            : 'text-amber-900'
+                      }
+                    >
+                      {note.detail}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+            {overtimePath && (
+              <div className="flex items-start gap-3 text-sm">
+                <span className="min-w-[2.75rem] shrink-0 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
+                  OT
+                </span>
+                <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-950 hover:bg-amber-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setViewerOpen(true);
+                    }}
+                  >
+                    <DocumentTextIcon className="h-4 w-4 shrink-0" />
+                    View overtime approval
+                    <span className="max-w-[14rem] truncate font-normal text-amber-800/80">
+                      {overtimeName}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      </td>
-    </tr>
+        </td>
+      </tr>
+      {viewerOpen && (
+        <DocumentViewerModal
+          isOpen
+          onClose={() => setViewerOpen(false)}
+          documentUrl={overtimePath}
+          documentName={overtimeName}
+          employeeName={record.employee_name}
+          bucketName={CLOCK_IN_OVERTIME_APPROVAL_BUCKET}
+        />
+      )}
+    </>
   );
 }
 

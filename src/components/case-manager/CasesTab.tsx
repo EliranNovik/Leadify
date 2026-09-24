@@ -968,7 +968,9 @@ const CasesTab: React.FC<HandlerTabProps> = ({
           const { data, error } = await supabase
             .from('contracts')
             .select('client_id, applicant_count, contact_name, id, public_token')
-            .in('client_id', newLeads.map(lead => lead.id));
+            .in('client_id', newLeads.map(lead => lead.id))
+            // Archived contracts are superseded; counting them would double applicant counts.
+            .is('archived_at', null);
 
           if (error) throw error;
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   ChatBubbleLeftRightIcon,
   ChevronDownIcon,
@@ -38,12 +38,12 @@ import {
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import {
   createSnapshotStore,
-  isKeepAlivePipelinePath,
   pipelineViewIdentityKey,
   usePipelineRouteActive,
   useRealtimeTables,
   useRevalidateOnVisible,
   useScrollRestoration,
+  useStickyAppScroll,
   type RealtimeTableSubscription,
 } from '../lib/pipelineLiveCache';
 import PipelineSummaryCards from './PipelineSummaryCards';
@@ -944,7 +944,6 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   refreshToken = 0,
 }) => {
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const pipelineRouteActive = usePipelineRouteActive();
   const initialSnapshot = (() => {
     const snapshot = snapshotStore.get();
@@ -989,6 +988,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   const [editingFollowUp, setEditingFollowUp] = useState<CasePipelineRow | null>(null);
   const [followUpDraft, setFollowUpDraft] = useState('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const { hold: holdPipelineScroll, release: releasePipelineScroll } = useStickyAppScroll();
 
   const contextRef = useRef<PipelineContext | null>(initialSnapshot?.context || null);
   const rowIdsRef = useRef<Set<string>>(new Set((initialSnapshot?.rows || []).map((r) => r.id)));
@@ -1379,6 +1379,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
         context: ctx,
         userDbId,
       });
+      holdPipelineScroll();
       setRows(mapped);
 
       // Real interaction data backs both the Last interaction column and the awaiting-reply
@@ -1404,7 +1405,9 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
       setError(e instanceof Error ? e.message : 'Failed to load case pipeline');
       setRows([]);
     } finally {
+      holdPipelineScroll();
       setLoading(false);
+      releasePipelineScroll();
     }
   }, [setRows, viewAs]);
 
@@ -1431,7 +1434,7 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
   useScrollRestoration(
     snapshotStore,
     loading,
-    pipelineRouteActive && !isKeepAlivePipelinePath(pathname),
+    pipelineRouteActive,
   );
 
   const removeRow = useCallback(
@@ -1990,8 +1993,10 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
 
   const closeFollowUpModal = () => {
     if (savingFollowUp) return;
+    holdPipelineScroll();
     setEditingFollowUp(null);
     setFollowUpDraft('');
+    releasePipelineScroll();
   };
 
   const saveFollowUpDate = async () => {
@@ -2078,8 +2083,10 @@ const CasePipelineView: React.FC<CasePipelineViewProps> = ({
         );
       }
 
+      holdPipelineScroll();
       setEditingFollowUp(null);
       setFollowUpDraft('');
+      releasePipelineScroll();
     } catch (e) {
       console.error('Error saving follow-up:', e);
       toast.error(e instanceof Error ? e.message : 'Failed to save follow-up');

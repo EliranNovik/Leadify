@@ -25,7 +25,12 @@ import {
   formatDayDeclineNotes,
   getDayClockInApprovalStatus,
 } from '../../lib/employeeClockInApproval';
-import { sumCountedClockDurationsMs } from '../../lib/workingHoursExport';
+import {
+  clockSessionsForDisplay,
+  sumCountedClockDurationsMs,
+  type DailyClockInSummary,
+  type ClockSessionSummary,
+} from '../../lib/workingHoursExport';
 import {
   documentNameFromUrl,
   getUnavailabilityApprovalStatus,
@@ -35,22 +40,28 @@ import {
   unavailabilityTypeLabel,
   type EmployeeUnavailabilityDayRow,
 } from '../../lib/employeeUnavailabilities';
-import type { DailyClockInSummary } from '../../lib/workingHoursExport';
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
 import { DocumentFileGlyph } from '../../lib/documentFileGlyphs';
+import { CLOCK_IN_OVERTIME_APPROVAL_BUCKET } from '../../lib/employeeClockInOvertimeApproval';
 
-type DayApprovalDisplayStatus = 'approved' | 'pending' | 'declined';
+type DayApprovalDisplayStatus = 'approved' | 'pending' | 'declined' | 'auto-approved';
 
-const DAY_APPROVAL_ORDER: DayApprovalDisplayStatus[] = ['declined', 'pending', 'approved'];
+const DAY_APPROVAL_ORDER: DayApprovalDisplayStatus[] = ['declined', 'pending', 'approved', 'auto-approved'];
 
 function collectDayApprovalStatuses(params: {
+  hasClock: boolean;
   hasManualClock: boolean;
   clockApprovalStatus: ReturnType<typeof getDayClockInApprovalStatus>;
   unavailabilities: EmployeeUnavailabilityDayRow[];
 }): DayApprovalDisplayStatus[] {
   const found = new Set<DayApprovalDisplayStatus>();
-  if (params.hasManualClock && clockInApprovalWatermarkLabel(params.clockApprovalStatus)) {
-    found.add(params.clockApprovalStatus);
+  if (params.hasManualClock) {
+    if (clockInApprovalWatermarkLabel(params.clockApprovalStatus)) {
+      found.add(params.clockApprovalStatus);
+    }
+  } else if (params.hasClock) {
+    if (params.clockApprovalStatus === 'declined') found.add('declined');
+    else found.add('auto-approved');
   }
   for (const unavail of params.unavailabilities) {
     if (isGeneralUnavailability(unavail)) continue;
@@ -66,13 +77,17 @@ function MobileApprovalStatusLabel({ status }: { status: DayApprovalDisplayStatu
       ? 'Waiting for approval'
       : status === 'declined'
         ? 'Declined'
-        : 'Approved';
+        : status === 'auto-approved'
+          ? 'Auto approved'
+          : 'Approved';
   const colorClass =
     status === 'pending'
       ? 'text-sky-700'
       : status === 'declined'
         ? 'text-red-700'
-        : 'text-emerald-700';
+        : status === 'auto-approved'
+          ? 'text-gray-500'
+          : 'text-emerald-700';
   const Icon =
     status === 'pending' ? ClockSolidIcon : status === 'declined' ? XCircleIcon : CheckBadgeIcon;
   return (
@@ -107,6 +122,9 @@ type ClockInRow = {
   manually: boolean;
   approved: boolean;
   declined: boolean;
+  clock_in_time?: string;
+  overtime_approval_storage_path?: string | null;
+  overtime_approval_file_name?: string | null;
 };
 
 type WorkingHoursMobileListProps = {
@@ -137,35 +155,62 @@ type WorkingHoursMobileListProps = {
     name: string;
     reason: string;
     uploadedAt: string;
+    bucketName?: string;
   }) => void;
 };
 
-function MobileDateLabel({ dateKey, muted = false }: { dateKey: string; muted?: boolean }) {
+function MobileDateLabel({
+  dateKey,
+  muted = false,
+  accent,
+}: {
+  dateKey: string;
+  muted?: boolean;
+  accent?: string;
+}) {
   return (
-    <span className={`text-base ${muted ? 'text-gray-500' : 'text-base-content'}`}>
-      <span className="font-semibold text-gray-500">{formatWorkingHoursWeekday(dateKey)}</span>
-      <span className="mx-1.5 text-gray-300" aria-hidden>·</span>
+    <span className={`flex flex-col items-start leading-snug text-base ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
+      <span className="font-semibold" style={accent ? { color: accent } : undefined}>
+        {formatWorkingHoursWeekday(dateKey)}
+      </span>
       <span className="font-medium">{formatWorkingHoursDateLabel(dateKey)}</span>
     </span>
   );
 }
 
-function MobileTimeList({ value }: { value: string }) {
-  const parts = value.split(', ').filter(Boolean);
-  if (parts.length === 0) return <span className="text-gray-400">—</span>;
-  const showIndex = parts.length > 1;
+function sessionWorkplaceName(session: ClockSessionSummary): string {
+  if (session.workplaceIn && session.workplaceIn !== '—') return session.workplaceIn;
+  if (session.workplaceOut && session.workplaceOut !== '—') return session.workplaceOut;
+  return '';
+}
+
+function MobileTimeList({
+  sessions,
+  field,
+}: {
+  sessions?: ClockSessionSummary[] | null;
+  field: 'clockIn' | 'clockOut';
+}) {
+  const list = sessions ?? [];
+  if (list.length === 0) return <span className="text-gray-400">—</span>;
+  const showIndex = list.length > 1;
   return (
     <div className="flex flex-col gap-0.5">
-      {parts.map((part, i) => (
-        <span key={`${part}-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-          {showIndex ? (
-            <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-100 px-1.5 text-[11px] font-semibold tabular-nums text-gray-600">
-              {i + 1}
-            </span>
-          ) : null}
-          {part}
-        </span>
-      ))}
+      {list.map((session, i) => {
+        const time = field === 'clockIn' ? session.clockIn : session.clockOut;
+        const workplace = sessionWorkplaceName(session);
+        return (
+          <span key={`${field}-${time}-${i}`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            {showIndex ? (
+              <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-gray-100 px-1.5 text-[11px] font-semibold tabular-nums text-gray-600">
+                {i + 1}
+              </span>
+            ) : null}
+            {time}
+            {workplace ? <span className="text-gray-400 font-normal">{workplace}</span> : null}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -184,18 +229,6 @@ function MobileField({
       </p>
       <div className="text-base text-base-content leading-snug">{children}</div>
     </div>
-  );
-}
-
-function MobileManualEntryBadge({ hasManual }: { hasManual: boolean }) {
-  if (!hasManual) return null;
-  return (
-    <span
-      className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
-      title="Manual entry"
-    >
-      <PencilSquareIcon className="w-3.5 h-3.5" />
-    </span>
   );
 }
 
@@ -366,11 +399,11 @@ export default function WorkingHoursMobileList({
           const isHoliday = row.isHolidayPlaceholder;
           const holidayLabel = row.holidayNames?.[0];
           const hintText = isWeekend
-            ? 'Weekend — optional overtime'
+            ? 'Weekend'
             : isHoliday
               ? holidayLabel
-                ? `${holidayLabel} — no entry yet`
-                : 'Holiday — no entry yet'
+                ? `${holidayLabel}\nno entry yet`
+                : 'Holiday\nno entry yet'
               : 'No entry yet';
           const cardBg = isWeekend
             ? 'bg-slate-100'
@@ -393,7 +426,11 @@ export default function WorkingHoursMobileList({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1.5 min-w-0">
-                    <MobileDateLabel dateKey={row.dateKey} muted />
+                    <MobileDateLabel
+                      dateKey={row.dateKey}
+                      muted
+                      accent={meta?.weekNum ? getWeekAccentColor(meta.weekNum) : undefined}
+                    />
                   </div>
                   {isBulkSelectable && (
                     <input
@@ -406,7 +443,7 @@ export default function WorkingHoursMobileList({
                     />
                   )}
                 </div>
-                <p className={`text-base text-center ${isWeekend ? 'font-semibold text-slate-600' : 'italic text-gray-500'}`}>
+                <p className={`text-base text-center whitespace-pre-line ${isWeekend ? 'font-semibold text-slate-600' : 'italic text-gray-500'}`}>
                   {hintText}
                 </p>
                 {!isMonthSubmitted && !bulkSelectMode && (
@@ -453,10 +490,10 @@ export default function WorkingHoursMobileList({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="space-y-1.5 min-w-0">
-                  <MobileDateLabel dateKey={row.dateKey} />
+                  <MobileDateLabel dateKey={row.dateKey} accent={accent} />
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <MobileManualEntryBadge hasManual={row.clock?.hasManual === true} />
                     {collectDayApprovalStatuses({
+                      hasClock,
                       hasManualClock: row.clock?.hasManual === true,
                       clockApprovalStatus: approvalStatus,
                       unavailabilities: row.unavailabilities,
@@ -507,13 +544,10 @@ export default function WorkingHoursMobileList({
                   )}
                 </MobileField>
                 <MobileField label="Clock in">
-                  {hasClock ? <MobileTimeList value={row.clock!.clockIns} /> : <span className="text-gray-400">—</span>}
+                  {hasClock ? <MobileTimeList sessions={clockSessionsForDisplay(row.clock)} field="clockIn" /> : <span className="text-gray-400">—</span>}
                 </MobileField>
                 <MobileField label="Clock out">
-                  {hasClock ? <MobileTimeList value={row.clock!.clockOuts} /> : <span className="text-gray-400">—</span>}
-                </MobileField>
-                <MobileField label="Workplace">
-                  {hasClock ? row.clock!.workplacesIn : <span className="text-gray-400">—</span>}
+                  {hasClock ? <MobileTimeList sessions={clockSessionsForDisplay(row.clock)} field="clockOut" /> : <span className="text-gray-400">—</span>}
                 </MobileField>
                 <MobileField label="Notes">
                   {hasNotes && row.clock ? (
@@ -530,7 +564,8 @@ export default function WorkingHoursMobileList({
                 </MobileField>
               </div>
 
-              {row.unavailabilities.some((u) => u.document_url) && (
+              {(row.unavailabilities.some((u) => u.document_url)
+                || dayRecords.some((r) => r.overtime_approval_storage_path?.trim())) && (
                 <div className="flex flex-wrap gap-2">
                   {row.unavailabilities
                     .filter((u) => u.document_url)
@@ -555,6 +590,41 @@ export default function WorkingHoursMobileList({
                         </button>
                       );
                     })}
+                  {Array.from(
+                    new Map(
+                      dayRecords
+                        .filter((r) => r.overtime_approval_storage_path?.trim())
+                        .map((r) => [
+                          r.overtime_approval_storage_path!.trim(),
+                          r,
+                        ]),
+                    ).values(),
+                  ).map((record) => {
+                    const path = record.overtime_approval_storage_path!.trim();
+                    const docName =
+                      record.overtime_approval_file_name?.trim()
+                      || documentNameFromUrl(path)
+                      || 'Overtime approval screenshot';
+                    return (
+                      <button
+                        key={`ot-doc-${path}`}
+                        type="button"
+                        className="btn btn-xs btn-ghost gap-1.5 border border-base-200"
+                        onClick={() =>
+                          onViewDocument({
+                            url: path,
+                            name: docName,
+                            reason: 'Overtime approval screenshot',
+                            uploadedAt: record.clock_in_time || '',
+                            bucketName: CLOCK_IN_OVERTIME_APPROVAL_BUCKET,
+                          })
+                        }
+                      >
+                        <DocumentFileGlyph fileName={docName} className="h-5 w-5" />
+                        <span className="truncate max-w-[8rem]">{docName}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 

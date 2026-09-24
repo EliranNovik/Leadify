@@ -297,17 +297,22 @@ export async function fetchLeadContractPublicLink(
   const rawId = String(leadId || '').replace(/^legacy_/i, '').trim();
   if (!rawId) return null;
 
+  // Archived contracts must never become the live link: the preference below picks an
+  // unsigned contract first, which is right for an amended draft but would otherwise let
+  // a superseded original take over when no draft exists.
   const contractQuery = isLegacy
     ? supabase
         .from('contracts')
         .select('id, status, signed_at, public_token, created_at')
         .eq('legacy_id', rawId)
+        .is('archived_at', null)
         .order('created_at', { ascending: false })
         .limit(8)
     : supabase
         .from('contracts')
         .select('id, status, signed_at, public_token, created_at')
         .eq('client_id', rawId)
+        .is('archived_at', null)
         .order('created_at', { ascending: false })
         .limit(8);
 
@@ -329,6 +334,7 @@ export async function fetchLeadContractPublicLink(
       .from('lead_leadcontact')
       .select('id, public_token, signed_contract_html, contract_html, main')
       .eq('lead_id', rawId)
+      .is('contract_archived_at', null)
       .limit(8);
     for (const row of contacts || []) {
       if (!row.contract_html && !row.signed_contract_html && !row.public_token) continue;

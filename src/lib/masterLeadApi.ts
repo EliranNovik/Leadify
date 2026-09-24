@@ -476,6 +476,7 @@ export const fetchNewMasterLead = async (
           .from('contracts')
           .select('id, client_id, contact_id')
           .in('client_id', leadIdsForContracts.map(id => String(id)))
+          .is('archived_at', null)
           .order('created_at', { ascending: false })
         : Promise.resolve({ data: null, error: null })
     ]);
@@ -1186,6 +1187,7 @@ export const fetchLegacyMasterLead = async (
         .from('contracts')
         .select('id, client_id, contact_id')
         .in('client_id', newLinkedLeadIds.map((id: any) => String(id)))
+        .is('archived_at', null)
         .order('created_at', { ascending: false });
 
       (newLinkedContracts || []).forEach((contract: any) => {
@@ -1831,4 +1833,235 @@ export async function breakLinkedLeads(
     console.error('breakLinkedLeads error:', err);
     return { success: false, error: message };
   }
+}
+
+const CONNECTION_IN_CHUNK = 120;
+
+async function fetchLeadRowsByColumn<T>(
+  table: 'leads' | 'leads_lead',
+  column: string,
+  ids: Array<string | number>,
+  select: string,
+): Promise<T[]> {
+  const unique = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const pages: T[][] = [];
+  for (let i = 0; i < unique.length; i += CONNECTION_IN_CHUNK) {
+    const chunk = unique.slice(i, i + CONNECTION_IN_CHUNK);
+    const { data, error } = await supabase.from(table).select(select).in(column, chunk);
+    if (error) {
+      console.warn(`fetchLeadConnectionCounts ${table}.${column}:`, error);
+      continue;
+    }
+    pages.push((data || []) as T[]);
+  }
+  return pages.flat();
+}
+
+type ChainLeadRow = {
+  id: string | number;
+  lead_number?: string | null;
+  manual_id?: string | null;
+  master_id?: string | number | null;
+  linked_master_lead?: string | number | null;
+};
+
+function memberKey(isLegacy: boolean, id: string | number): string {
+  return `${isLegacy ? 'L' : 'N'}:${String(id).replace(/^legacy_/, '')}`;
+}
+
+class LeadUnionFind {
+  parent = new Map<string, string>();
+
+  find(x: string): string {
+    if (!this.parent.has(x)) this.parent.set(x, x);
+    const p = this.parent.get(x)!;
+    if (p !== x) {
+      const root = this.find(p);
+      this.parent.set(x, root);
+      return root;
+    }
+    return x;
+  }
+
+  union(a: string, b: string): void {
+    const ra = this.find(a);
+    const rb = this.find(b);
+    if (ra !== rb) this.parent.set(ra, rb);
+  }
+}
+
+export type LeadConnectionCount = {
+  /** Total leads in the chain, including this one. */
+  count: number;
+  /** Identifier for `/clients/{id}/master`. */
+  masterPageId: string;
+};
+
+/**
+ * Batch: how many leads each row is connected to via master_id subleads or
+ * linked_master_lead (Combine leads). Count is the full chain size (master + children).
+ */
+export async function fetchLeadConnectionCounts(
+  leads: Array<{
+    key: string;
+    id: string | number;
+    isLegacy: boolean;
+    leadNumber?: string | null;
+    masterId?: string | number | null;
+    linkedMasterLead?: string | number | null;
+  }>,
+): Promise<Map<string, LeadConnectionCount>> {
+  const result = new Map<string, LeadConnectionCount>();
+  if (leads.length === 0) return result;
+
+  const uf = new LeadUnionFind();
+  const pageIdByNode = new Map<string, string>();
+  const realMembers = new Set<string>();
+  const inputMemberByKey = new Map<string, string>();
+
+  const rememberPageId = (node: string, pageId: string | null | undefined) => {
+    const trimmed = pageId != null ? String(pageId).trim() : '';
+    if (trimmed && !pageIdByNode.has(node)) pageIdByNode.set(node, trimmed);
+  };
+
+  const ingest = (row: ChainLeadRow, isLegacy: boolean) => {
+    const id = String(row.id).replace(/^legacy_/, '');
+    const m = memberKey(isLegacy, id);
+    realMembers.add(m);
+    uf.find(m);
+    const leadNumber = row.lead_number != null ? String(row.lead_number) : null;
+    rememberPageId(m, isLegacy ? id : leadNumber || id);
+
+    const masterId =
+      row.master_id != null && String(row.master_id).trim() !== ''
+        ? String(row.master_id).trim()
+        : null;
+    if (masterId) {
+      const masterIsLegacy = /^\d+$/.test(masterId) && !isUuid(masterId);
+      const masterNode = memberKey(masterIsLegacy, masterId);
+      uf.union(m, masterNode);
+      rememberPageId(masterNode, masterId);
+    }
+
+    if (isNonSelfLinkedMasterLead(row.linked_master_lead, leadNumber, id)) {
+      const linked = String(row.linked_master_lead).trim();
+      const linkedNode = `LINK:${normalizeBaseLeadNumber(linked)}`;
+      uf.union(m, linkedNode);
+      const linkedPage = isLegacyMasterLinkValue(linked)
+        ? normalizeBaseLeadNumber(linked)
+        : linked.includes('/')
+          ? linked.split('/')[0]
+          : linked;
+      rememberPageId(linkedNode, linkedPage);
+    }
+  };
+
+  for (const lead of leads) {
+    const id = String(lead.id).replace(/^legacy_/, '');
+    const m = memberKey(lead.isLegacy, id);
+    inputMemberByKey.set(lead.key, m);
+    ingest(
+      {
+        id,
+        lead_number: lead.leadNumber ?? null,
+        master_id: lead.masterId ?? null,
+        linked_master_lead: lead.linkedMasterLead ?? null,
+      },
+      lead.isLegacy,
+    );
+  }
+
+  const linkedValues = new Set<string>();
+  const newMasterIds: string[] = [];
+  const legacyMasterIds: number[] = [];
+  const newLeadNumbers: string[] = [];
+  const legacyIds: number[] = [];
+
+  for (const lead of leads) {
+    const id = String(lead.id).replace(/^legacy_/, '');
+    linkedMasterLookupValues(lead.linkedMasterLead, lead.leadNumber, id, lead.masterId).forEach((v) =>
+      linkedValues.add(v),
+    );
+    if (lead.isLegacy) {
+      const n = Number(id);
+      if (Number.isFinite(n)) legacyIds.push(n);
+      if (lead.masterId && /^\d+$/.test(String(lead.masterId).trim())) {
+        legacyMasterIds.push(Number(lead.masterId));
+      }
+    } else {
+      newMasterIds.push(id);
+      if (lead.leadNumber) newLeadNumbers.push(String(lead.leadNumber));
+      if (lead.masterId) newMasterIds.push(String(lead.masterId).trim());
+    }
+  }
+
+  const newSelect = 'id, lead_number, master_id, linked_master_lead';
+  const legacySelect = 'id, lead_number, manual_id, master_id, linked_master_lead';
+  const linkedList = [...linkedValues];
+  const numericLinked = linkedList
+    .map((v) => Number(normalizeBaseLeadNumber(v)))
+    .filter((n) => Number.isFinite(n));
+
+  const [linkedNew, linkedLegacy, byMasterNew, byMasterLegacy, byLeadNumber, byLegacyId] =
+    await Promise.all([
+      fetchLeadRowsByColumn<ChainLeadRow>('leads', 'linked_master_lead', linkedList, newSelect),
+      fetchLeadRowsByColumn<ChainLeadRow>('leads_lead', 'linked_master_lead', linkedList, legacySelect),
+      fetchLeadRowsByColumn<ChainLeadRow>('leads', 'master_id', newMasterIds, newSelect),
+      fetchLeadRowsByColumn<ChainLeadRow>('leads_lead', 'master_id', legacyMasterIds, legacySelect),
+      fetchLeadRowsByColumn<ChainLeadRow>(
+        'leads',
+        'lead_number',
+        [...newLeadNumbers, ...linkedList],
+        newSelect,
+      ),
+      fetchLeadRowsByColumn<ChainLeadRow>('leads_lead', 'id', [...legacyIds, ...numericLinked], legacySelect),
+    ]);
+
+  linkedNew.forEach((row) => ingest(row, false));
+  byMasterNew.forEach((row) => ingest(row, false));
+  byLeadNumber.forEach((row) => ingest(row, false));
+  linkedLegacy.forEach((row) => ingest(row, true));
+  byMasterLegacy.forEach((row) => ingest(row, true));
+  byLegacyId.forEach((row) => ingest(row, true));
+
+  const membersByRoot = new Map<string, Set<string>>();
+  const addToRoot = (node: string) => {
+    const root = uf.find(node);
+    const set = membersByRoot.get(root) || new Set<string>();
+    set.add(node);
+    membersByRoot.set(root, set);
+  };
+  realMembers.forEach(addToRoot);
+  for (const node of uf.parent.keys()) {
+    // LINK: nodes are union-find placeholders, not extra leads.
+    if (!realMembers.has(node) && (node.startsWith('L:') || node.startsWith('N:'))) addToRoot(node);
+  }
+
+  for (const [inputKey, member] of inputMemberByKey) {
+    const root = uf.find(member);
+    const members = membersByRoot.get(root);
+    const countable = [...(members || [])].filter((node) => !node.startsWith('LINK:'));
+    const count = countable.length || 1;
+    if (count <= 1) continue;
+    const linkedPage = [...uf.parent.keys()]
+      .filter((node) => uf.find(node) === root && node.startsWith('LINK:'))
+      .map((node) => pageIdByNode.get(node))
+      .find((id) => Boolean(id));
+    const unresolvedMasterPage = countable
+      .filter((node) => !realMembers.has(node))
+      .map((node) => pageIdByNode.get(node))
+      .find((id) => Boolean(id));
+    const pageId =
+      linkedPage ||
+      unresolvedMasterPage ||
+      pageIdByNode.get(member) ||
+      countable.map((node) => pageIdByNode.get(node)).find((id) => Boolean(id)) ||
+      pageIdByNode.get(root) ||
+      '';
+    if (!pageId) continue;
+    result.set(inputKey, { count, masterPageId: pageId });
+  }
+
+  return result;
 }

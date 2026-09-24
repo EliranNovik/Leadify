@@ -111,9 +111,6 @@ export function useRealtimeRefresh({
         (payload: RealtimeChangePayload) => {
           const matcher = tablesRef.current?.[index]?.match;
           if (matcher && !matcher(payload)) return;
-          // #region agent log
-          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'H',location:'useRealtimeRefresh.ts:match',message:'realtime row matched',data:{table:t.table,eventType:payload?.eventType??null,hasOnPayload:typeof onPayloadRef.current==='function',hasStage:payload?.new?.stage!=null,stage:payload?.new?.stage??null,channel:channelName},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           onPayloadRef.current?.(payload);
           triggerReload();
         },

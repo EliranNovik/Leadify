@@ -6,6 +6,10 @@ import {
   assertWorkingHoursMonthEditable,
 } from './employeeWorkingHoursSubmissions';
 import { insertClockInRevision } from './employeeClockInRevisions';
+import {
+  assertManualDurationAllowed,
+  type ClockInOvertimeApprovalFileMeta,
+} from './employeeClockInOvertimeApproval';
 
 /** Notes tag for pending sessions created from the daily lead allocation page. */
 export const LEAD_ALLOCATION_HOURS_NOTE = 'Lead allocation hours';
@@ -19,6 +23,7 @@ export type ManualClockInPayload = {
   notes?: string;
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
+  overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
 };
 
 function combineDateAndTime(date: string, time: string): Date {
@@ -61,6 +66,14 @@ export async function insertManualClockInRecord(
   }
 
   await assertDateEditableForEmployee(payload.employeeId, payload.date);
+  // Cap is read from tenants_employee.min_hours at save time only.
+  // Stored clock_in_time / clock_out_time stay exactly as entered.
+  await assertManualDurationAllowed({
+    employeeId: payload.employeeId,
+    clockInTime: payload.clockInTime,
+    clockOutTime: payload.clockOutTime,
+    overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
+  });
 
   const employeeUserId = await resolveEmployeeAuthUserId(
     payload.employeeId,
@@ -82,6 +95,12 @@ export async function insertManualClockInRecord(
     location_source: 'manual',
   };
 
+  if (payload.overtimeApproval?.storagePath) {
+    row.overtime_approval_storage_path = payload.overtimeApproval.storagePath;
+    row.overtime_approval_file_name = payload.overtimeApproval.fileName || null;
+    row.overtime_approval_mime_type = payload.overtimeApproval.mimeType || null;
+  }
+
   if (payload.clockInLocationId) {
     row.clock_in_location_id = payload.clockInLocationId;
   }
@@ -97,6 +116,12 @@ export async function insertManualClockInRecord(
     delete withoutPresets.clock_out_location_id;
     const retry = await supabase.from('employee_clock_in').insert(withoutPresets);
     error = retry.error;
+  }
+
+  if (error && String(error.message || '').includes('overtime_approval')) {
+    throw new Error(
+      'Overtime approval screenshot could not be saved. Run sql/2026-09-24_employee_clock_in_overtime_approval.sql and try again.',
+    );
   }
 
   if (error) throw error;
@@ -125,6 +150,7 @@ export type ClockInSessionUpdate = {
   notes?: string;
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
+  overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
 };
 
 function isoToTimeInput(iso: string): string {
@@ -155,17 +181,33 @@ export function clockInSessionToFormValues(session: {
 }
 
 export async function updateClockInSession(update: ClockInSessionUpdate): Promise<void> {
-  const { data: existing, error: fetchError } = await supabase
-    .from('employee_clock_in')
-    .select(
-      `employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined,
+  const overtimeSelect = `employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined,
+       approved_by, approved_at, clock_in_location_id, clock_out_location_id,
+       overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type,
+       location_latitude, location_longitude, location_address, location_city, location_country, location_source,
+       clock_out_location_latitude, clock_out_location_longitude,
+       clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source`;
+  const coreSelect = `employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined,
        approved_by, approved_at, clock_in_location_id, clock_out_location_id,
        location_latitude, location_longitude, location_address, location_city, location_country, location_source,
        clock_out_location_latitude, clock_out_location_longitude,
-       clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source`,
-    )
+       clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source`;
+
+  let { data: existing, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select(overtimeSelect)
     .eq('id', update.id)
     .single();
+
+  if (fetchError && /overtime_approval/i.test(fetchError.message || '')) {
+    const retry = await supabase
+      .from('employee_clock_in')
+      .select(coreSelect)
+      .eq('id', update.id)
+      .single();
+    existing = retry.data;
+    fetchError = retry.error;
+  }
 
   if (fetchError) throw fetchError;
   if (!existing) throw new Error('Clock-in entry not found');
@@ -182,6 +224,16 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
   if (clockOut.getTime() <= clockIn.getTime()) {
     throw new Error('Clock out must be after clock in');
   }
+
+  await assertManualDurationAllowed({
+    employeeId: existing.employee_id,
+    clockInTime: update.clockInTime,
+    clockOutTime: update.clockOutTime,
+    overtimeApprovalStoragePath:
+      update.overtimeApproval?.storagePath
+      || existing.overtime_approval_storage_path
+      || null,
+  });
 
   const previousForm = clockInSessionToFormValues({
     id: update.id,
@@ -226,6 +278,18 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     approved_at: preserveApproval ? existing.approved_at : null,
   };
 
+  const overtimePath =
+    update.overtimeApproval?.storagePath
+    || existing.overtime_approval_storage_path
+    || null;
+  if (overtimePath) {
+    row.overtime_approval_storage_path = overtimePath;
+    row.overtime_approval_file_name =
+      update.overtimeApproval?.fileName || existing.overtime_approval_file_name || null;
+    row.overtime_approval_mime_type =
+      update.overtimeApproval?.mimeType || existing.overtime_approval_mime_type || null;
+  }
+
   if (update.clockInLocationId) {
     row.clock_in_location_id = update.clockInLocationId;
   } else {
@@ -251,6 +315,12 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
       .update(withoutPresets)
       .eq('id', update.id);
     error = retry.error;
+  }
+
+  if (error && String(error.message || '').includes('overtime_approval')) {
+    throw new Error(
+      'Overtime approval screenshot could not be saved. Run sql/2026-09-24_employee_clock_in_overtime_approval.sql and try again.',
+    );
   }
 
   if (error) throw error;

@@ -504,9 +504,6 @@ const AppContentInner: React.FC = () => {
             closer: clientData.closer ?? prev.closer,
             handler: clientData.handler ?? prev.handler,
           });
-          // #region agent log
-          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'I',location:'App.tsx:refreshClientData:legacy',message:'legacy lead refetch merge',data:{prevStage:prev?.stage??null,incomingStage:clientData.stage??null,mergedStage:merged.stage??null},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           persistClientToSessionStorage(merged);
           return merged;
         });
@@ -608,9 +605,6 @@ const AppContentInner: React.FC = () => {
           };
           writeResolvedLeadMeta(newClientData, resolveLeadMetaChips(newClientData));
           const merged = sameLead ? preferNewerLeadStage(prev, { ...prev, ...newClientData }) : newClientData;
-          // #region agent log
-          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'I',location:'App.tsx:refreshClientData:new',message:'lead refetch merge',data:{prevStage:prev?.stage??null,incomingStage:newClientData.stage??null,mergedStage:merged.stage??null,keptNewerStage:sameLead && Number(merged.stage)===Number(prev?.stage) && Number(newClientData.stage)!==Number(prev?.stage)},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
           persistClientToSessionStorage(merged);
           return merged;
         });
@@ -1111,7 +1105,7 @@ const AppContentInner: React.FC = () => {
                   {pipelinePageMounted ? (
                     <div
                       ref={pipelineScrollRef}
-                      className={`pipeline-keep-alive-scroll absolute bottom-0 left-0 right-0 overflow-x-hidden overflow-y-auto bg-[#f3f4f6] top-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:top-14 ${
+                      className={`pipeline-keep-alive-scroll absolute bottom-0 left-0 right-0 overflow-x-hidden overflow-y-auto overflow-anchor-none bg-[#f3f4f6] top-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:top-14 ${
                         isPipelinePage ? 'z-0' : 'hidden'
                       }`}
                       aria-hidden={!isPipelinePage}

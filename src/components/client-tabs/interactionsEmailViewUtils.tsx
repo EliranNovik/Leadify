@@ -270,16 +270,10 @@ export function formatEmailBodyForTimeline(htmlOrText: string | null | undefined
   if (!htmlOrText) return '';
   const raw = extractHtmlBody(String(htmlOrText));
   if (isAssembledEmailDisplayHtml(raw)) {
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H1',location:'interactionsEmailViewUtils.tsx:formatEmailBodyForTimeline',message:'assembled-html skip',data:{inLen:raw.length,inBr:(raw.match(/<br\s*\/?>/gi)||[]).length,inNl:(raw.match(/\n/g)||[]).length,inDiv:(raw.match(/<\/div>/gi)||[]).length,inP:(raw.match(/<\/p>/gi)||[]).length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return flattenAssembledSignature(raw);
   }
 
   const { body, signature } = splitEmailBodyAndSignature(raw);
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H5',location:'interactionsEmailViewUtils.tsx:formatEmailBodyForTimeline',message:'split body/signature',data:{rawLen:raw.length,bodyLen:body.length,sigLen:signature.length,wholeAsSig:body.trim().length===0&&signature.length>0},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   const withCards = applyContractLinkPreviewHtml(body);
   const contractPreviews = extractContractPreviewTables(withCards);
   const formattedBody = restoreContractPreviewTables(
@@ -343,9 +337,6 @@ function formatEmailBodyInner(htmlOrText: string | null | undefined): string {
   const httpGlued = /[^\s]https?:\/\//i.test(content);
   content = restoreFlattenedEmailLineBreaks(content);
   content = stripEmailQuoteMarkers(content);
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H2',location:'interactionsEmailViewUtils.tsx:formatEmailBodyInner',message:'after strip+restore',data:{afterStripLen,afterStripNl,afterRestoreNl:(content.match(/\n/g)||[]).length,httpGlued,hasHttp:/https?:\/\//i.test(content),hasShalom:/שלום/.test(content)},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const escaped = content
     .replace(/&/g, '&amp;')
@@ -373,9 +364,6 @@ function stripEmailQuoteMarkers(text: string): string {
 function restoreFlattenedEmailLineBreaks(text: string): string {
   let content = text;
   const hadNewlines = content.includes('\n');
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H2',location:'interactionsEmailViewUtils.tsx:restoreFlattenedEmailLineBreaks',message:'restore entry',data:{hadNewlines,len:content.length,nl:(content.match(/\n/g)||[]).length,skipGreeting:hadNewlines},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const applyLabeledBreaks = (src: string, leading: string, paragraphLabels: string[], lineLabels: string[]) => {
     let out = src;
@@ -552,9 +540,6 @@ export function ensureFormattedEmailHtml(htmlOrText: string | null | undefined):
   // tags here used to flatten the signature back into one paragraph.
   if (isAssembledEmailDisplayHtml(raw)) {
     const assembledOut = sanitizeEmailHtml(flattenAssembledSignature(raw));
-    // #region agent log
-    fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H1',location:'interactionsEmailViewUtils.tsx:ensureFormattedEmailHtml',message:'assembled branch',data:{inLen:raw.length,inBr:(raw.match(/<br\s*\/?>/gi)||[]).length,outBr:(assembledOut.match(/<br\s*\/?>/gi)||[]).length,outDiv:(assembledOut.match(/<\/div>/gi)||[]).length,prewrap:/timeline-prewrap/i.test(raw)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     return assembledOut;
   }
   const prepared = applyContractLinkPreviewHtml(raw);
@@ -566,9 +551,6 @@ export function ensureFormattedEmailHtml(htmlOrText: string | null | undefined):
   const out = sanitizeEmailHtml(
     restoreContractPreviewTables(formatEmailHtmlForReadingPane(source), contractPreviews.blocks),
   );
-  // #region agent log
-  fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H3',location:'interactionsEmailViewUtils.tsx:ensureFormattedEmailHtml',message:'rebuild branch',data:{inLen:raw.length,inBr:(raw.match(/<br\s*\/?>/gi)||[]).length,inNl:(raw.match(/\n/g)||[]).length,usedPrewrapExtract:isTimelinePrewrapHtml(contractPreviews.text),outLen:out.length,outBr:(out.match(/<br\s*\/?>/gi)||[]).length,outNl:(out.match(/\n/g)||[]).length},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   return out;
 }
 

@@ -2,13 +2,14 @@ import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition 
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabProps } from '../../types/client';
-import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon, ClipboardDocumentIcon, EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon, ClipboardDocumentIcon, EllipsisHorizontalIcon, ArchiveBoxIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { fetchContractTypeBySlug } from '../../lib/contractTypes';
+import { archiveAndAmendContract } from '../../lib/contractArchive';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extension-placeholder';
@@ -280,6 +281,7 @@ function isTempContactId(id: number): boolean {
 function mergeFetchedContactContracts(
   prev: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null },
   incomingMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null },
+  liveContractIds?: Set<string>,
 ) {
   const merged = { ...prev };
   Object.keys(incomingMap).forEach((contactId) => {
@@ -291,7 +293,9 @@ function mergeFetchedContactContracts(
       return;
     }
     if (existing?.status === 'signed' && (!incoming || incoming.status !== 'signed')) {
-      return;
+      // A cached signed contract normally wins over a racey empty fetch, but not once
+      // the server stops listing it as live — that means it was archived or deleted.
+      if (!liveContractIds || liveContractIds.has(existing.id)) return;
     }
     if (incoming != null || !existing) {
       merged[contactIdNum] = incoming;
@@ -317,6 +321,19 @@ function mergeFetchedContactsWithLocalEdits(
 
   return unsavedDrafts.length > 0 ? [...merged, ...unsavedDrafts] : merged;
 }
+
+type ArchivedContractInfo = {
+  id: string;
+  name: string;
+  status: string;
+  signed_at?: string;
+  archived_at?: string;
+  isLegacy?: boolean;
+  // Legacy contracts carry their body inline; needed to open them from the archived list.
+  contractHtml?: string;
+  signedContractHtml?: string;
+  public_token?: string;
+};
 
 interface ContractTemplate {
   id: string;
@@ -517,6 +534,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     {},
     { storage: 'sessionStorage', retainOnPageRefresh: true }
   );
+  // Archived contracts are listed separately, under the live documents.
+  const [archivedContracts, setArchivedContracts] = useState<{ [id: number]: ArchivedContractInfo[] }>({});
+  const [archivingContractId, setArchivingContractId] = useState<string | null>(null);
   const [contractTemplates, setContractTemplates] = useState<ContractTemplate[]>([]);
 
   const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
@@ -1047,9 +1067,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     
     // If we've already fetched for this exact client+contacts combo this mount, skip
     if (contractsFetchedRef.current.has(clientKey)) {
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'C',location:'ContactInfoTab.tsx:fetchContracts:skip',message:'skipped contract fetch (already fetched this mount)',data:{contactCount:contacts.length,allContactsCovered,cachedContractStatuses:Object.values(contactContracts).map((c)=>c?.status||null),refreshKey:contractsRefreshKey},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       // Just ensure all contacts are in the map (don't fetch again)
       if (!allContactsCovered) {
         setContactContracts(prev => {
@@ -1103,6 +1120,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               contract_html,
               signed_contract_html,
               public_token,
+              contract_archived_at,
               main
             `)
             .eq('lead_id', legacyId);
@@ -1121,13 +1139,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           if (newError) {
             console.error('❌ Error fetching new contracts for legacy lead:', newError);
           }
-          // #region agent log
-          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'D',location:'ContactInfoTab.tsx:fetchContracts:legacy',message:'fetched contracts for legacy lead',data:{legacyCount:legacyContracts?.length||0,newCount:newContracts?.length||0,newRows:(newContracts||[]).slice(0,8).map((c:any)=>({status:c.status,hasSignedAt:Boolean(c.signed_at),hasContactId:c.contact_id!=null,contactMatched:contacts.some(ct=>ct.id===c.contact_id)})),contactIds:contacts.map(c=>c.id),stage:client?.stage??null},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
 
           if (mounted) {
             // Group contracts by contact_id for legacy leads
             const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null } = {};
+            const archivedMap: { [id: number]: ArchivedContractInfo[] } = {};
+            const liveContractIds = new Set<string>();
+            const addArchived = (contactId: number, entry: ArchivedContractInfo) => {
+              archivedMap[contactId] = [...(archivedMap[contactId] || []), entry];
+            };
 
             // Initialize all contacts with no contract
             contacts.forEach(contact => {
@@ -1149,7 +1169,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   const targetContactId = legacyContract.contact_id;
                   if (targetContactId) {
                     const targetContact = contacts.find(c => c.id === targetContactId);
-                    if (targetContact) {
+                    if (targetContact && legacyContract.contract_archived_at) {
+                      addArchived(targetContactId, {
+                        id: `legacy_${legacyContract.id}`,
+                        name: 'Legacy Contract',
+                        status,
+                        archived_at: legacyContract.contract_archived_at,
+                        isLegacy: true,
+                        contractHtml: legacyContract.contract_html,
+                        signedContractHtml: legacyContract.signed_contract_html,
+                        public_token: legacyContract.public_token,
+                      });
+                    } else if (targetContact) {
+                      liveContractIds.add(`legacy_${legacyContract.id}`);
                       // Keep the most recent/complete one if multiple exist for same contact
                       const existingContract = contactContractsMap[targetContactId];
                       if (!existingContract || (hasSignedContract && existingContract.status !== 'signed')) {
@@ -1176,7 +1208,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 const targetContactId = contract.contact_id;
                 if (targetContactId) {
                   const targetContact = contacts.find(c => c.id === targetContactId);
-                  if (targetContact) {
+                  if (targetContact && contract.archived_at) {
+                    addArchived(targetContactId, {
+                      id: contract.id,
+                      name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                      status: contract.status,
+                      signed_at: contract.signed_at,
+                      archived_at: contract.archived_at,
+                      isLegacy: false,
+                    });
+                  } else if (targetContact) {
+                    liveContractIds.add(contract.id);
                     // Only assign if this contact doesn't already have a contract, or if this is more recent
                     const existingContract = contactContractsMap[targetContactId];
                     if (!existingContract || (contract.signed_at && !existingContract.signed_at)) {
@@ -1197,9 +1239,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Merge with existing contracts to preserve any that might have been set
             if (mounted) {
               startTransition(() => {
-                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap));
+                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap, liveContractIds));
+                setArchivedContracts(archivedMap);
                 // Set most recent contract for backward compatibility
-                const allContracts = [...(legacyContracts || []), ...(newContracts || [])];
+                const allContracts = [
+                  ...(legacyContracts || []).filter((row: any) => !row.contract_archived_at),
+                  ...(newContracts || []).filter((row: any) => !row.archived_at),
+                ];
                 if (allContracts.length > 0) {
                   setMostRecentContract(allContracts[0]);
                 } else {
@@ -1223,14 +1269,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Error fetching contracts:', error);
             throw error;
           }
-          // #region agent log
-          fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'D',location:'ContactInfoTab.tsx:fetchContracts:new',message:'fetched contracts for new lead',data:{rowCount:data?.length||0,rows:(data||[]).slice(0,8).map((c:any)=>({status:c.status,hasSignedAt:Boolean(c.signed_at),hasContactId:c.contact_id!=null,contactMatched:contacts.some(ct=>ct.id===c.contact_id)})),contactIds:contacts.map(c=>c.id),mainContactId,stage:client?.stage??null},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
 
           if (mounted && data) {
 
             // Initialize all contacts with no contract
             const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string } | null } = {};
+            const archivedMap: { [id: number]: ArchivedContractInfo[] } = {};
+            const liveContractIds = new Set<string>();
             contacts.forEach(contact => {
               contactContractsMap[contact.id] = null;
             });
@@ -1241,6 +1286,29 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
               const targetContactId = contract.contact_id;
               let assigned = false;
+
+              // Archived contracts never occupy the card; they get their own list so the
+              // lead can hold a signed original plus the amended draft that replaced it.
+              if (contract.archived_at) {
+                const archivedOwner =
+                  (targetContactId && contacts.some(c => c.id === targetContactId) ? targetContactId : mainContactId) ?? null;
+                if (archivedOwner != null) {
+                  archivedMap[archivedOwner] = [
+                    ...(archivedMap[archivedOwner] || []),
+                    {
+                      id: contract.id,
+                      name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                      status: contract.status,
+                      signed_at: contract.signed_at,
+                      archived_at: contract.archived_at,
+                      isLegacy: false,
+                    },
+                  ];
+                }
+                return;
+              }
+
+              liveContractIds.add(contract.id);
 
               if (targetContactId) {
                 const targetContact = contacts.find(c => c.id === targetContactId);
@@ -1287,13 +1355,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Merge with existing contracts to preserve any that might have been set
             if (mounted) {
               startTransition(() => {
-                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap));
-                // Set most recent contract for backward compatibility
-                if (data.length > 0) {
-                  setMostRecentContract(data[0]);
-                } else {
-                  setMostRecentContract(null);
-                }
+                setContactContracts(prev => mergeFetchedContactContracts(prev, contactContractsMap, liveContractIds));
+                setArchivedContracts(archivedMap);
+                // Set most recent contract for backward compatibility (this drives the
+                // "open contract" navigation, so it must never be an archived one).
+                const liveRows = data.filter((contract: any) => !contract.archived_at);
+                setMostRecentContract(liveRows.length > 0 ? liveRows[0] : null);
               });
             }
           }
@@ -3385,6 +3452,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .select('id')
           .eq('client_id', client.id)
           .eq('contact_id', contractForm.contactId)
+          // Archived contracts are history; they must not block the amended one.
+          .is('archived_at', null)
           .limit(1);
 
         if (checkError) {
@@ -3540,6 +3609,50 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     }
   };
 
+  /**
+   * Archive the signed contract and open a fresh draft cloned from it. The clone keeps
+   * the deal (template, pricing, contact details) but drops the signature, the signed
+   * date and the public link, so it can be edited and sent for signing again.
+   */
+  const handleArchiveContract = async (contractId: string) => {
+    if (archivingContractId) return;
+    setArchivingContractId(contractId);
+    try {
+      const { newContractId } = await archiveAndAmendContract({ contractId });
+
+      // Refetch so the card shows the amended draft and the archived list picks up the original.
+      contractsFetchedRef.current.clear();
+      setContractsRefreshKey((k) => k + 1);
+
+      if (newContractId) {
+        toast.success('Contract archived. A new draft was created from it.');
+      } else {
+        toast.success('Contract archived. You can now create a new contract.');
+      }
+
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      const pgError = error as { code?: string; message?: string; details?: string; hint?: string };
+      console.error('Error archiving contract:', {
+        code: pgError?.code,
+        message: pgError?.message,
+        details: pgError?.details,
+        hint: pgError?.hint,
+        error,
+      });
+      // 42703 = undefined column: the archive migration has not been applied yet.
+      if (pgError?.code === '42703') {
+        toast.error('Archiving is not set up on the database yet. Run the contracts archive migration.');
+      } else {
+        toast.error(`Failed to archive contract${pgError?.message ? `: ${pgError.message}` : '. Please try again.'}`);
+      }
+    } finally {
+      setArchivingContractId(null);
+    }
+  };
+
   const handleSignContract = async (contractId: string) => {
     try {
       console.log('handleSignContract called with contractId:', contractId);
@@ -3597,10 +3710,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const legacyContractId = contractId.replace('legacy_', '');
       console.log('🔍 Legacy contract ID:', legacyContractId);
 
-      // Find the contract data in contactContracts
-      const contractData = Object.values(contactContracts).find(contract =>
-        contract && contract.id === contractId
-      );
+      // Find the contract data in the live contracts, then in the archived list.
+      const contractData =
+        Object.values(contactContracts).find(contract => contract && contract.id === contractId) ||
+        Object.values(archivedContracts)
+          .flat()
+          .find(contract => contract && contract.id === contractId);
 
       console.log('🔍 Found contract data:', contractData);
 
@@ -4639,6 +4754,27 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                     >
                                       View physical contract
                                     </button>
+                                    {cardContract.status === 'signed' && (
+                                      <button
+                                        type="button"
+                                        className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+                                        disabled={archivingContractId === cardContract.id}
+                                        onClick={() => {
+                                          setOpenContractMenuId(null);
+                                          if (
+                                            window.confirm(
+                                              'Archive this signed contract and create a new draft from it? The signed copy is kept under Archived, and the new draft starts without the signature and date.',
+                                            )
+                                          ) {
+                                            handleArchiveContract(cardContract.id);
+                                          }
+                                        }}
+                                      >
+                                        {archivingContractId === cardContract.id
+                                          ? 'Archiving…'
+                                          : 'Archive & create new'}
+                                      </button>
+                                    )}
                                     {cardContract.status === 'draft' && (
                                       <button
                                         type="button"
@@ -4691,7 +4827,48 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         </div>
                       )}
 
+                      {(archivedContracts[contact.id]?.length ?? 0) > 0 && (
+                        <div className="mt-3 pt-3 border-t border-[#eef0f4]">
+                          <h6 className="text-[11px] font-semibold tracking-wider text-gray-400 uppercase mb-2">
+                            Archived
+                          </h6>
+                          <div className="flex flex-col gap-2">
+                            {archivedContracts[contact.id].map((archived) => (
+                              <div
+                                key={archived.id}
+                                role="button"
+                                tabIndex={0}
+                                className="grid grid-cols-[40px_minmax(0,1fr)_auto] gap-3 items-center p-3 bg-white/60 rounded-[10px] cursor-pointer hover:bg-white transition-colors"
+                                onClick={() => handleViewContract(archived.id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleViewContract(archived.id);
+                                  }
+                                }}
+                              >
+                                <div className="h-10 w-10 rounded-lg bg-gray-100 text-gray-400 flex items-center justify-center shrink-0">
+                                  <ArchiveBoxIcon className="h-5 w-5" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-gray-600 truncate">
+                                    {archived.name || 'Contract'}
+                                  </div>
+                                  <div className="mt-0.5 text-xs text-gray-400">
+                                    {archived.archived_at
+                                      ? `Archived ${new Date(archived.archived_at).toLocaleDateString()}`
+                                      : 'Archived'}
+                                  </div>
+                                </div>
+                                <span className="text-xs text-gray-400 shrink-0">{archived.status}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {!(cardContract && contact.id === mainContactId) &&
+                        (archivedContracts[contact.id]?.length ?? 0) === 0 &&
                         typeof contact.id !== 'number' && (
                           <p className="text-xs text-gray-400 py-1">No documents yet</p>
                         )}

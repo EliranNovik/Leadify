@@ -3,7 +3,7 @@ import Meetings from './Meetings';
 import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import TeamStatusModal from './TeamStatusModal';
-import ClockInBox from './ClockInBox';
+// import ClockInBox from './ClockInBox';
 
 // Lazy load bottom components for faster initial render
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
@@ -763,6 +763,7 @@ const Dashboard: React.FC = () => {
 
   const location = useLocation();
   const dashboardPathname = location.pathname || '/';
+  const closedDealsSectionRef = useRef<HTMLDivElement>(null);
   const realtimeRefreshTimerRef = useRef<number | null>(null);
   const teamAvailabilityRefreshTimerRef = useRef<number | null>(null);
   /** Realtime change that arrived while the tab was hidden, applied on the next visible. */
@@ -2747,6 +2748,13 @@ const Dashboard: React.FC = () => {
 
   // Remove dropdown state
   const [showLeadsList, setShowLeadsList] = React.useState(false);
+
+  const goToClosedDealsLast30 = useCallback(() => {
+    setShowLeadsList(true);
+    window.setTimeout(() => {
+      closedDealsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  }, []);
 
   // Real data for Score Board
   const [realRevenueThisMonth, setRealRevenueThisMonth] = useState<number>(0);
@@ -7088,14 +7096,61 @@ const Dashboard: React.FC = () => {
           </svg>
         </div>
 
-        {/* Clock In / Out */}
-        {currentUserEmployeeId != null && (
+        {/* Clock In / Out — commented out; 4th box is signed deals today */}
+        {/* {currentUserEmployeeId != null && (
           <ClockInBox
             employeeId={currentUserEmployeeId}
             isDark2Theme={isDark2Theme}
             isAltTheme={isAltTheme}
           />
-        )}
+        )} */}
+
+        {/* Signed deals today (same attribution as My Performance / closed deals) */}
+        <div
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
+            isDark2Theme
+              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+              : `bg-gradient-to-tr ${isAltTheme ? 'from-violet-600 via-purple-600 to-indigo-500' : 'from-violet-600 via-purple-600 to-indigo-500'} text-white`
+          }`}
+          onClick={goToClosedDealsLast30}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              goToClosedDealsLast30();
+            }
+          }}
+        >
+          <div className="flex items-center gap-2 md:gap-4">
+            <div
+              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
+                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+              }`}
+            >
+              <DocumentCheckIcon
+                className={`w-7 h-7 md:w-7 md:h-7 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              />
+            </div>
+            <div>
+              <div
+                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              >
+                {performanceLoading ? '—' : contractsToday}
+              </div>
+              <div
+                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
+              >
+                Signed today
+              </div>
+            </div>
+          </div>
+          <DocumentCheckIcon
+            className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
+              isDark2Theme ? 'text-base-content/35' : 'text-white/40'
+            }`}
+          />
+        </div>
       </div>
 
       {/* Expanded Content for Top Boxes */}
@@ -8881,8 +8936,13 @@ const Dashboard: React.FC = () => {
         </Suspense>
       </div>
 
+      <div
+        id="dashboard-closed-deals"
+        ref={closedDealsSectionRef}
+        className="w-full mt-12 scroll-mt-24"
+      >
       {/* 4. My Performance Graph (Full Width) - hidden on mobile */}
-      <div className="w-full mt-12 hidden md:block">
+      <div className="hidden md:block">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 w-full max-w-full">
           <div className="p-8">
             <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
@@ -9091,6 +9151,7 @@ const Dashboard: React.FC = () => {
           </div>
         )
       }
+      </div>
 
 
       {/* Scoreboard deals modal (Agreement signed / Invoiced count badges) */}

@@ -1835,15 +1835,9 @@ const Clients: React.FC<ClientsProps> = ({
       if (!clientId) return;
       if (clientSyncInFlightRef.current) {
         clientSyncQueuedRef.current = true;
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'F',location:'Clients.tsx:syncClientFromServer:queue',message:'realtime sync queued because a fetch is already in flight',data:{clientId},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
       clientSyncInFlightRef.current = true;
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'G',location:'Clients.tsx:syncClientFromServer:start',message:'starting lead sync from server',data:{clientId,silent:options?.silent===true},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const showIndicator = options?.silent !== true;
       if (showIndicator) setIsClientSyncing(true);
       try {
@@ -1930,16 +1924,10 @@ const Clients: React.FC<ClientsProps> = ({
     onPayload: (payload) => {
       const row = payload?.new;
       if (!row || row.stage == null || !selectedClient?.id) {
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'H',location:'Clients.tsx:onPayload:skip',message:'realtime event matched but had no stage to patch',data:{hasRow:Boolean(row),stage:row?.stage??null,eventType:payload?.eventType??null},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
       const nextStage = Number(row.stage);
       if (!Number.isFinite(nextStage)) return;
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'F',location:'Clients.tsx:onPayload:stage',message:'live-patching lead stage from realtime',data:{nextStage,prevStage:selectedClient.stage,hasStageChangedAt:Boolean(row.stage_changed_at)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setSelectedClient((prev: any) => {
         if (!prev || String(prev.id) !== String(selectedClient.id)) return prev;
         if (Number(prev.stage) === nextStage) return prev;
@@ -1965,9 +1953,6 @@ const Clients: React.FC<ClientsProps> = ({
       if (!openLeadMatchesPublicContractStage(openId, payload) || payload.stage == null) return;
       const nextStage = Number(payload.stage);
       if (!Number.isFinite(nextStage)) return;
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'N',location:'Clients.tsx:broadcast:stage',message:'applying public-sign stage broadcast',data:{nextStage,prevStage:selectedClient.stage,openId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setSelectedClient((prev: any) => {
         if (!prev || String(prev.id) !== openId) return prev;
         const stageLabel = getStageName(String(nextStage));
@@ -5539,9 +5524,6 @@ const Clients: React.FC<ClientsProps> = ({
       await refreshClientData(rawClientId ?? clientIdString);
 
       console.log('✅ Handler assignment complete!');
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'J',location:'Clients.tsx:assignSuccessStageHandler',message:'handler assignment wrote stage 105',data:{shouldUpdateStage,handlerSetStageId,prevStage:selectedClient.stage,hasHandlerId:handlerIdNumeric!=null},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       toast.success(handlerLabel ? 'Case handler assigned and stage updated to Handler Set.' : 'Case handler cleared.');
     } catch (error) {
       console.error('❌ Error updating case handler for success stage:', error);
@@ -8062,9 +8044,6 @@ const Clients: React.FC<ClientsProps> = ({
         timestamp: stageTimestamp,
         stageDate: signedDate, // Pass the signed date to be used in leads_leadstage.date field
       });
-      // #region agent log
-      fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'A',location:'Clients.tsx:handleSignedAgreement',message:'manual stage 60 save via CRM',data:{signedStageId,prevStage:selectedClient.stage},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
 
       setShowSignedDrawer(false);
       await onClientUpdate();
@@ -12227,6 +12206,7 @@ const Clients: React.FC<ClientsProps> = ({
             .from('contracts')
             .select('id, template_id, contact_id, contact_name, status')
             .eq('client_id', selectedClient.id)
+            .is('archived_at', null)
             .order('created_at', { ascending: false });
 
           if (contractsError) {

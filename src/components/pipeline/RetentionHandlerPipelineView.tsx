@@ -17,7 +17,10 @@ import { openLeadFromRowClick } from '../../lib/leadNavigation';
 import {
   createSnapshotStore,
   pipelineViewIdentityKey,
+  useKeepAlivePipelineVisible,
   useRevalidateOnVisible,
+  useScrollRestoration,
+  useStickyAppScroll,
 } from '../../lib/pipelineLiveCache';
 import {
   HandlerCaseOverlays,
@@ -176,6 +179,9 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
   const [editingFollowUp, setEditingFollowUp] = useState<HandlerPipelineRow | null>(null);
   const [followUpDraft, setFollowUpDraft] = useState('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
+  const { hold: holdPipelineScroll, release: releasePipelineScroll } = useStickyAppScroll();
+  const pipelineVisible = useKeepAlivePipelineVisible();
+  useScrollRestoration(snapshotStore, loading, pipelineVisible);
 
   useEffect(() => {
     savePipelineFilters('retention', {
@@ -442,6 +448,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
         return db - da;
       });
 
+      holdPipelineScroll();
       setRows(processed);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
@@ -456,6 +463,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           ...row,
           emailFlag5: flag5ByRowId.get(row.id) || null,
         }));
+        holdPipelineScroll();
         setRows(withEmailFlags);
         snapshotStore.set({
           identityKey: pipelineViewIdentityKey(viewAs),
@@ -473,7 +481,9 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
       setError(err instanceof Error ? err.message : 'Failed to load retention pipeline');
       setRows([]);
     } finally {
+      holdPipelineScroll();
       setLoading(false);
+      releasePipelineScroll();
     }
   }, [viewAs]);
 
@@ -538,8 +548,10 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
 
   const closeFollowUpModal = () => {
     if (savingFollowUp) return;
+    holdPipelineScroll();
     setEditingFollowUp(null);
     setFollowUpDraft('');
+    releasePipelineScroll();
   };
 
   const saveFollowUpDate = async () => {
@@ -565,8 +577,10 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
         return next;
       });
       toast.success(hasDate ? 'Follow-up date saved' : 'Follow-up date cleared');
+      holdPipelineScroll();
       setEditingFollowUp(null);
       setFollowUpDraft('');
+      releasePipelineScroll();
     } catch (error) {
       console.error('Failed to save follow-up date:', error);
       toast.error('Failed to save follow-up date');

@@ -3642,6 +3642,7 @@ async function executeListSignedContracts(args: {
             .from('contracts')
             .select('id, client_id, status, signed_at, total_amount')
             .in('client_id', chunk)
+            .is('archived_at', null)
             .order('signed_at', { ascending: false });
           if (error) return [];
           return data || [];
@@ -3653,6 +3654,7 @@ async function executeListSignedContracts(args: {
             .from('contracts')
             .select('id, legacy_id, status, signed_at, total_amount')
             .in('legacy_id', chunk)
+            .is('archived_at', null)
             .order('signed_at', { ascending: false });
           if (error) return [];
           return data || [];

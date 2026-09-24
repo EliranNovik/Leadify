@@ -70,6 +70,8 @@ import {
   pipelineViewIdentityKey,
   useDebouncedCallback,
   useRealtimeTables,
+  useScrollRestoration,
+  useStickyAppScroll,
 } from '../lib/pipelineLiveCache';
 import PipelineSummaryCards from './PipelineSummaryCards';
 import {
@@ -575,6 +577,13 @@ const PipelinePage: React.FC = () => {
       return newLeads;
     });
   }, [pipelineMode, viewAs]);
+
+  const { hold: holdPipelineScroll, release: releasePipelineScroll } = useStickyAppScroll();
+  useScrollRestoration(
+    pipelineLeadsStores[pipelineMode],
+    isLoading,
+    pipelineVisible && isOwnPipelineTab,
+  );
 
   // Sync leads when pipelineMode changes - but don't load from storage here,
   // the fetchLeads useEffect will handle it and always refetch on mode change
@@ -2118,16 +2127,19 @@ const PipelinePage: React.FC = () => {
 
 
           // Set leads immediately, fetch tags asynchronously (non-blocking)
+          holdPipelineScroll();
           setLeads(allLeads as LeadForPipeline[]);
           
           // Fetch tags in background without blocking UI
           fetchTagsForLeads(allLeads).then(() => {
             // Update leads with tags after fetching (preserve existing leads state)
+            holdPipelineScroll();
             setLeads((currentLeads) => {
               const leadsMap = new Map(currentLeads.map(lead => [lead.id, lead]));
               // Tags are already set in fetchTagsForLeads via direct mutation, but trigger re-render
               return [...currentLeads];
             });
+            releasePipelineScroll();
           }).catch((error) => {
             console.error('Error fetching tags:', error);
             // Continue without tags if fetch fails
@@ -2140,8 +2152,10 @@ const PipelinePage: React.FC = () => {
       // Keep the rows already on screen rather than emptying the table behind the user's back.
       if (!keepVisible) setLeads([]);
     }
+    holdPipelineScroll();
     setIsLoading(false);
     pipelineLastFetchedAtRef.current = Date.now();
+    releasePipelineScroll();
   };
 
   // Stable refs for realtime-triggered refreshes (avoid subscription churn).
@@ -2427,8 +2441,10 @@ const PipelinePage: React.FC = () => {
 
   const closeFollowUpModal = () => {
     if (savingFollowUp) return;
+    holdPipelineScroll();
     setEditingFollowUpLead(null);
     setFollowUpDraft('');
+    releasePipelineScroll();
   };
 
   const saveFollowUpDate = async () => {
@@ -2508,8 +2524,10 @@ const PipelinePage: React.FC = () => {
             : lead,
         ),
       );
+      holdPipelineScroll();
       setEditingFollowUpLead(null);
       setFollowUpDraft('');
+      releasePipelineScroll();
     } catch (error) {
       console.error('Failed to save follow-up date:', error);
       toast.error('Failed to save follow-up date');
@@ -3410,52 +3428,7 @@ const PipelinePage: React.FC = () => {
       // Update local state
       setSelectedLead({ ...selectedLead, manual_interactions: updatedInteractions });
       closeContactDrawer();
-      
-      // Refresh leads data
-      const fetchLeads = async () => {
-        setIsLoading(true);
-        const { data, error } = await supabase
-          .from('leads')
-          .select(`
-            id,
-            lead_number,
-            name,
-            created_at,
-            expert,
-            topic,
-            handler_notes,
-            expert_notes,
-            meetings (
-              meeting_date
-            ),
-            onedrive_folder_link,
-            stage,
-            number_of_applicants_meeting,
-            potential_applicants_meeting,
-            balance,
-            balance_currency,
-            probability,
-            eligibility_status,
-            next_followup,
-            manual_interactions,
-            email,
-            mobile,
-            phone,
-            comments,
-            label
-          `)
-          .order('created_at', { ascending: false });
-
-        if (error) {
-          console.error('Error fetching leads for pipeline page:', error);
-          setLeads([]);
-        } else {
-          setLeads(data as LeadForPipeline[]);
-        }
-        setIsLoading(false);
-      };
-      
-      await fetchLeads();
+      void fetchLeads({ silent: true });
     } catch (error) {
       console.error('Error saving contact:', error);
     }
@@ -5301,8 +5274,8 @@ const PipelinePage: React.FC = () => {
       // Remove the assigned lead from the assignment list
       setAssignmentLeads(prev => prev.filter(l => l.id !== lead.id));
       
-      // Refresh the main leads list
-      await fetchLeads();
+      // Refresh the main leads list without unmounting the table
+      void fetchLeads({ silent: true });
       
     } catch (error) {
       console.error('Error assigning lead:', error);
@@ -6570,7 +6543,7 @@ const PipelinePage: React.FC = () => {
             lead_type: (railLead || selectedLead)!.lead_type === 'legacy' ? 'legacy' : 'new'
           }}
           onClientUpdate={async () => {
-            await fetchLeads();
+            void fetchLeads({ silent: true });
           }}
         />
       )}
@@ -6589,7 +6562,7 @@ const PipelinePage: React.FC = () => {
             topic: (railLead || selectedLead)!.topic || undefined
           }}
           onClientUpdate={async () => {
-            await fetchLeads();
+            void fetchLeads({ silent: true });
           }}
         />
       )}
@@ -6618,7 +6591,7 @@ const PipelinePage: React.FC = () => {
             category: followupActiveLead.category,
           }}
           onClientUpdate={async () => {
-            await fetchLeads();
+            void fetchLeads({ silent: true });
           }}
         />
       ) : null}
@@ -7607,8 +7580,10 @@ const PipelinePage: React.FC = () => {
             : null
         }
         onSave={async () => {
-          await fetchLeads();
+          holdPipelineScroll();
+          void fetchLeads({ silent: true });
           setSelectedLead(null);
+          releasePipelineScroll();
         }}
       />
 

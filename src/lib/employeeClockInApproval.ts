@@ -48,6 +48,9 @@ export type ManualClockInApprovalRecord = {
   employee_phone?: string | null;
   employee_mobile?: string | null;
   employee_chat_user_id?: string | null;
+  overtime_approval_storage_path?: string | null;
+  overtime_approval_file_name?: string | null;
+  overtime_approval_mime_type?: string | null;
 };
 
 const MANUAL_APPROVAL_SELECT = `
@@ -58,8 +61,13 @@ const MANUAL_APPROVAL_SELECT = `
   clock_out_place:clock_in_locations!clock_out_location_id ( name ),
   location_latitude, location_longitude, location_address, location_city, location_country, location_source,
   clock_out_location_latitude, clock_out_location_longitude,
-  clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source
+  clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source,
+  overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type
 `;
+
+function isMissingOvertimeApprovalColumnError(error: { message?: string } | null | undefined): boolean {
+  return /overtime_approval/i.test(error?.message || '');
+}
 
 export function isManualClockInRecord(record: ClockInApprovalFields): boolean {
   return record.manually === true;
@@ -272,6 +280,24 @@ export async function fetchManualClockInsForApproval(
     .lte('clock_in_time', end)
     .order('clock_in_time', { ascending: true });
 
+  if (error && isMissingOvertimeApprovalColumnError(error)) {
+    const retry = await supabase
+      .from('employee_clock_in')
+      .select(
+        MANUAL_APPROVAL_SELECT.replace(
+          /,\s*overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type/,
+          '',
+        ),
+      )
+      .eq('employee_id', employeeId)
+      .eq('manually', true)
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: true });
+    if (retry.error) throw retry.error;
+    return ((retry.data as ManualClockInApprovalRecord[]) || []).map(normalizeClockInApprovalFields);
+  }
+
   if (error) throw error;
   return ((data as ManualClockInApprovalRecord[]) || []).map(normalizeClockInApprovalFields);
 }
@@ -384,6 +410,32 @@ export async function fetchPendingManualClockInsForApproval(
   }
 
   const { data, error } = await query;
+  if (error && isMissingOvertimeApprovalColumnError(error)) {
+    let retryQuery = supabase
+      .from('employee_clock_in')
+      .select(
+        MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT.replace(
+          /,\s*overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type/,
+          '',
+        ),
+      )
+      .eq('manually', true)
+      .eq('approved', false)
+      .eq('declined', false)
+      .order('clock_in_time', { ascending: true });
+    if (scope !== 'all') {
+      const monthStr = String(scope.month).padStart(2, '0');
+      const lastDay = new Date(scope.year, scope.month, 0).getDate();
+      const dateFrom = `${scope.year}-${monthStr}-01`;
+      const dateTo = `${scope.year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+      const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+      retryQuery = retryQuery.gte('clock_in_time', start).lte('clock_in_time', end);
+    }
+    const retry = await retryQuery;
+    if (retry.error) throw retry.error;
+    const mappedRetry = mapManualClockInApprovalRows((retry.data || []) as ManualClockInApprovalRow[]);
+    return enrichManualApprovalRowsWithContacts(mappedRetry);
+  }
   if (error) throw error;
   const mapped = mapManualClockInApprovalRows((data || []) as ManualClockInApprovalRow[]);
   return enrichManualApprovalRowsWithContacts(mapped);

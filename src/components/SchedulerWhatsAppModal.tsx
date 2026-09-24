@@ -1376,7 +1376,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         // Auto-scroll on first load
         if (!isPolling && isFirstLoad && shouldAutoScroll) {
           setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
             setShouldAutoScroll(false);
             setIsFirstLoad(false);
           }, 200);
@@ -1513,7 +1513,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   useEffect(() => {
     if (shouldAutoScroll && messages.length > 0) {
       setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
         setShouldAutoScroll(false);
       }, 100);
     }
@@ -1525,13 +1525,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       // Use multiple timeouts to ensure the DOM is ready and messages are rendered
       const scrollToBottom = () => {
         if (messagesEndRef.current) {
-          messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        } else {
-          // Fallback: scroll the messages container directly
-          const messagesContainer = document.querySelector('.overflow-y-auto');
-          if (messagesContainer) {
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-          }
+          messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
         }
       };
 

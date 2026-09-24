@@ -13,25 +13,16 @@ const NineHourOvertimeMonitor: React.FC = () => {
     !gate.adminBypassActive,
   );
 
-  const {
-    isOpen,
-    phase,
-    promptSecondsLeft,
-    countdownSecondsLeft,
-    todayTotalMs,
-    continueOvertime,
-    clockOutNow,
-  } = useNineHourOvertimeAutomation({ employeeId, enabled });
+  const { isOpen, todayTotalMs, dismissReminder } = useNineHourOvertimeAutomation({
+    employeeId,
+    enabled,
+  });
 
   return (
     <NineHourOvertimeModal
       isOpen={isOpen}
-      phase={phase}
-      promptSecondsLeft={promptSecondsLeft}
-      countdownSecondsLeft={countdownSecondsLeft}
       todayTotalMs={todayTotalMs}
-      onContinueOvertime={continueOvertime}
-      onClockOutNow={clockOutNow}
+      onClose={dismissReminder}
     />
   );
 };

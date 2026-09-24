@@ -19,8 +19,13 @@ export type ProformaSendBundleResult = {
   whatsAppError: Error | null;
 };
 
-/** Send invoice by email and/or WhatsApp, using whichever contact channels are available. */
-export async function sendProformaInvoiceBundle(
+const inFlightInvoiceSends = new Map<string, Promise<ProformaSendBundleResult>>();
+
+function invoiceSendKey(input: ProformaSendEmailInput): string {
+  return `${input.kind}:${String(input.recordId)}:${input.language ?? 'en'}`;
+}
+
+async function sendProformaInvoiceBundleOnce(
   input: ProformaSendEmailInput,
 ): Promise<ProformaSendBundleResult> {
   const [resolvedEmail, resolvedPhone] = await Promise.all([
@@ -81,6 +86,21 @@ export async function sendProformaInvoiceBundle(
     whatsAppPhone,
     whatsAppError,
   };
+}
+
+/** Send invoice by email and/or WhatsApp, using whichever contact channels are available. */
+export async function sendProformaInvoiceBundle(
+  input: ProformaSendEmailInput,
+): Promise<ProformaSendBundleResult> {
+  const sendKey = invoiceSendKey(input);
+  const existing = inFlightInvoiceSends.get(sendKey);
+  if (existing) return existing;
+
+  const pending = sendProformaInvoiceBundleOnce(input).finally(() => {
+    inFlightInvoiceSends.delete(sendKey);
+  });
+  inFlightInvoiceSends.set(sendKey, pending);
+  return pending;
 }
 
 export function buildProformaSendSuccessMessage(

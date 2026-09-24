@@ -787,9 +787,6 @@ const PublicLegacyContractView: React.FC = () => {
         );
         const rpcPayload = rpcData && typeof rpcData === 'object' ? (rpcData as { success?: boolean; error?: string; stage?: number }) : null;
         const rpcOk = !rpcError && rpcPayload?.success === true;
-        // #region agent log
-        fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'post-fix',hypothesisId:'M',location:'PublicLegacyContractView.tsx:handleSubmit:rpc',message:'legacy html public stage rpc',data:{rpcOk,rpcError:rpcError?.message||null,rpcFail:rpcPayload?.error??null},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         if (!rpcOk) {
           const { error: stageInsertError } = await supabase
             .from('leads_leadstage')

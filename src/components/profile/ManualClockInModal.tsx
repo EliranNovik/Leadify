@@ -5,6 +5,7 @@ import {
   fetchActiveClockInLocations,
   fetchEmployeeWorksFromHome,
   isHomeClockInLocation,
+  isRamatGanClockInLocation,
   type ClockInLocationOption,
 } from '../../lib/clockInLocations';
 import { insertManualClockInRecords } from '../../lib/employeeClockInManual';
@@ -14,6 +15,14 @@ import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
+import ClockInOvertimeApprovalBox, {
+  clockInOutTimesExceedMinHours,
+} from './ClockInOvertimeApprovalBox';
+import {
+  fetchEmployeeMinHours,
+  overtimeApprovalRequiredError,
+  uploadClockInOvertimeApprovalDocument,
+} from '../../lib/employeeClockInOvertimeApproval';
 
 interface ManualClockInModalProps {
   isOpen: boolean;
@@ -56,6 +65,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
+  const [minHours, setMinHours] = useState(8);
+  const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -65,6 +76,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     setClockOutTime('17:00');
     setNotes('');
     setWorkplaceLocationId('');
+    setOvertimeFile(null);
+    void fetchEmployeeMinHours(employeeId).then(setMinHours);
     void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
       ([locations, wfh]) => {
         setWorkplaces(locations);
@@ -79,11 +92,15 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   );
   const homeNeedsApproval =
     selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace) && !worksFromHome;
+  const ramatGanSelected =
+    selectedWorkplace != null && isRamatGanClockInLocation(selectedWorkplace);
 
   const datesToSave = useMemo(() => {
     const filled = dateRows.map((row) => row.value).filter(Boolean);
     return sortDates(filled);
   }, [dateRows]);
+
+  const exceedsMinHours = clockInOutTimesExceedMinHours(clockInTime, clockOutTime, minHours);
 
   if (!isOpen) return null;
 
@@ -110,6 +127,11 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
       const mergedNotes = [notes?.trim(), wfhNote].filter(Boolean).join('\n');
 
       const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
+      let overtimeApproval = null;
+      if (exceedsMinHours) {
+        if (!overtimeFile) throw overtimeApprovalRequiredError(minHours);
+        overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
+      }
       const count = await insertManualClockInRecords({
         employeeId,
         userId,
@@ -119,6 +141,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         notes: mergedNotes,
         clockInLocationId: locationId,
         clockOutLocationId: locationId,
+        overtimeApproval,
       });
       toast.success(
         count === 1
@@ -154,6 +177,18 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
       toast.error('Please fill in clock in and clock out times');
       return;
     }
+    if (workplaces.length > 0 && workplaceLocationId === '') {
+      toast.error('Please choose a workplace');
+      return;
+    }
+    if (ramatGanSelected && !notes.trim()) {
+      toast.error('Please add notes for Ramat Gan');
+      return;
+    }
+    if (exceedsMinHours && !overtimeFile) {
+      toast.error(overtimeApprovalRequiredError(minHours).message);
+      return;
+    }
 
     const warnings = await getHolidayWarningsForDates(datesToSave);
     if (warnings.length > 0) {
@@ -167,6 +202,18 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
   const hasDuplicateDates =
     dateRows.map((row) => row.value).filter(Boolean).length !== datesToSave.length;
+  const workplaceMissing = workplaces.length > 0 && workplaceLocationId === '';
+  const notesMissing = ramatGanSelected && !notes.trim();
+  const overtimeDocMissing = exceedsMinHours && !overtimeFile;
+  const submitDisabled =
+    saving || datesToSave.length === 0 || hasDuplicateDates || workplaceMissing || notesMissing || overtimeDocMissing;
+  const submitBlockedReason = workplaceMissing
+    ? 'Choose a workplace first'
+    : notesMissing
+      ? 'Add notes for Ramat Gan first'
+      : overtimeDocMissing
+        ? 'Upload the overtime approval screenshot first'
+        : null;
 
   return (
     <>
@@ -174,15 +221,55 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         open={isOpen}
         onClose={onClose}
         title="Add clock-in / out"
-        onSave={() => void handleSave()}
         saving={saving}
-        saveDisabled={datesToSave.length === 0 || hasDuplicateDates}
-        saveLabel={`Save${datesToSave.length > 1 ? ` (${datesToSave.length})` : ''}`}
+        headerClassName="!border-b-0"
+        footerClassName="!border-t-0"
+        footer={
+          <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
+            <button
+              type="button"
+              className="btn btn-ghost border-none shadow-none flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            {submitBlockedReason ? (
+              <span
+                className="tooltip tooltip-top flex-1 md:flex-none"
+                data-tip={submitBlockedReason}
+              >
+                <span className="block w-full cursor-not-allowed">
+                  <button
+                    type="button"
+                    className="btn btn-primary rounded-full px-8 w-full md:min-w-[6.5rem] md:flex-none max-md:min-h-12 pointer-events-none"
+                    disabled
+                  >
+                    {`Submit for approval${datesToSave.length > 1 ? ` (${datesToSave.length})` : ''}`}
+                  </button>
+                </span>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary rounded-full px-8 flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
+                onClick={() => void handleSave()}
+                disabled={submitDisabled}
+              >
+                {saving ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  `Submit for approval${datesToSave.length > 1 ? ` (${datesToSave.length})` : ''}`
+                )}
+              </button>
+            )}
+          </div>
+        }
         mobileFullHeight
       >
         <div className="space-y-4">
           <div className="space-y-2">
-            <span className="label-text font-medium">Dates</span>
+            <span className="label-text font-medium text-gray-600">Dates</span>
             <div className="space-y-2">
               {dateRows.map((row, index) => (
                 <div key={row.id} className="space-y-1">
@@ -227,7 +314,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
           <div className="grid grid-cols-2 gap-3">
             <label className="form-control w-full">
-              <span className="label-text font-medium mb-1">Clock in</span>
+              <span className="label-text font-medium text-gray-600 mb-1">Clock in</span>
               <input
                 type="time"
                 className="input input-bordered w-full"
@@ -237,7 +324,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
               />
             </label>
             <label className="form-control w-full">
-              <span className="label-text font-medium mb-1">Clock out</span>
+              <span className="label-text font-medium text-gray-600 mb-1">Clock out</span>
               <input
                 type="time"
                 className="input input-bordered w-full"
@@ -250,7 +337,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
           {workplaces.length > 0 && (
             <label className="form-control w-full">
-              <span className="label-text font-medium mb-1">Workplace</span>
+              <span className="label-text font-medium text-gray-600 mb-1">Workplace</span>
               <select
                 className="select select-bordered w-full"
                 value={workplaceLocationId}
@@ -267,6 +354,19 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
             </label>
           )}
 
+          {exceedsMinHours && (
+            <ClockInOvertimeApprovalBox
+              minHours={minHours}
+              clockInTime={clockInTime}
+              clockOutTime={clockOutTime}
+              dateKeys={datesToSave}
+              notes={notes}
+              file={overtimeFile}
+              onFileChange={setOvertimeFile}
+              disabled={saving}
+            />
+          )}
+
           {homeNeedsApproval && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               Home needs approval before you can use it.
@@ -274,12 +374,18 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
           )}
 
           <label className="form-control w-full">
-            <span className="label-text font-medium mb-1">Notes</span>
+            <span className="label-text font-medium text-gray-600 mb-1">
+              Notes{ramatGanSelected ? ' *' : ''}
+            </span>
             <textarea
               className="textarea textarea-bordered w-full min-h-[80px]"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Optional notes (applied to each selected date)"
+              placeholder={
+                ramatGanSelected
+                  ? 'Explain why you did not use the QR scanner at the office to clock in and out'
+                  : 'Optional notes (applied to each selected date)'
+              }
               disabled={saving}
             />
           </label>

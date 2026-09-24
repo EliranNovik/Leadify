@@ -528,9 +528,6 @@ export default function EmailGmailSplitPane({
                     : null;
                 const bodySource = message.body_html || message.body_preview || '';
                 const bodyHtml = ensureFormattedEmailHtml(bodySource);
-                // #region agent log
-                fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7db878'},body:JSON.stringify({sessionId:'7db878',runId:'pre-fix',hypothesisId:'H4',location:'EmailGmailSplitPane.tsx:bodyHtml',message:'pane render',data:{usedPreview:!message.body_html&&!!message.body_preview,srcLen:String(bodySource).length,srcBr:(String(bodySource).match(/<br\s*\/?>/gi)||[]).length,outBr:(String(bodyHtml).match(/<br\s*\/?>/gi)||[]).length,outPrewrap:/timeline-prewrap/i.test(bodyHtml),assembled:/email-signature-block/i.test(String(bodySource))},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
 
                 return (
                   <article

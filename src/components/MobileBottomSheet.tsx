@@ -253,6 +253,11 @@ export default function MobileBottomSheet({
 
     const shouldLockScroll = scrollLock === 'always' || isNarrowViewport();
     const prevOverflow = document.body.style.overflow;
+    const mainEl = document.querySelector('main');
+    const keepAliveEl = document.querySelector('.pipeline-keep-alive-scroll');
+    const savedMainTop = mainEl instanceof HTMLElement ? mainEl.scrollTop : 0;
+    const savedKeepAliveTop = keepAliveEl instanceof HTMLElement ? keepAliveEl.scrollTop : 0;
+    const savedWindowY = window.scrollY;
     if (shouldLockScroll) {
       document.body.style.overflow = 'hidden';
     }
@@ -261,6 +266,9 @@ export default function MobileBottomSheet({
       if (shouldLockScroll) {
         document.body.style.overflow = prevOverflow;
       }
+      if (mainEl instanceof HTMLElement) mainEl.scrollTop = savedMainTop;
+      if (keepAliveEl instanceof HTMLElement) keepAliveEl.scrollTop = savedKeepAliveTop;
+      window.scrollTo({ top: savedWindowY, left: 0, behavior: 'auto' });
     };
   }, [open, scrollLock, initialSnap]);
 

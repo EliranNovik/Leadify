@@ -10,8 +10,12 @@ function resolveIntervalMs() {
   if (Number.isFinite(minutes) && minutes > 0) return minutes * 60 * 1000;
   const seconds = Number.parseInt(process.env.SCAN_CENTER_SYNC_INTERVAL_SECONDS || '', 10);
   if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
-  // Graph delta poll is the live fetch. Shared-mailbox webhooks often land on the
-  // public Render URL, not this process, so do not wait 30 minutes between cycles.
+  // With a webhook configured, push delivers new mail and this loop is only a safety
+  // net: it renews the Graph subscription (capped at ~2.9 days) and recovers
+  // notifications dropped while the instance was spun down. Every cycle costs a
+  // mailbox_tokens read plus a delta round trip, so keep it slow.
+  if (WEBHOOK_URL) return 15 * 60 * 1000;
+  // No webhook means this poll is the only way new mail arrives.
   return 20 * 1000;
 }
 

@@ -583,7 +583,14 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
                               />
                             </td>
                             <td className="text-sm max-w-[10rem] sm:max-w-[16rem] lg:max-w-[28rem] xl:max-w-[36rem]">
-                              <ApprovalNotesButton notes={r.notes} />
+                              <div className="space-y-1">
+                                <ApprovalNotesButton notes={r.notes} />
+                                {r.overtime_approval_storage_path?.trim() ? (
+                                  <div className="text-xs font-medium text-amber-800">
+                                    Overtime screenshot attached
+                                  </div>
+                                ) : null}
+                              </div>
                             </td>
                           </>
                         )}
@@ -612,7 +619,7 @@ const HrApprovalsPanel: React.FC<HrApprovalsPanelProps> = ({ onUpdated }) => {
                           </div>
                         </td>
                       </tr>,
-                      !isWfh ? (
+                      !isWfh || r.overtime_approval_storage_path?.trim() ? (
                         <ManualClockInApprovalRecordExtras
                           key={`${key}-extras`}
                           record={r}

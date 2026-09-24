@@ -138,6 +138,32 @@ async function findStoredRow(emailId, attachmentId) {
   return data || null;
 }
 
+/**
+ * Write-path lookup: always scoped to the owning email.
+ *
+ * findStoredRow above falls back to a global graph_attachment_id match, which is right
+ * for reads (legacy rows have no email_id) but wrong here: the same inline signature
+ * image carries one graph id across every reply in a thread, so the fallback let one
+ * email adopt another email's row. The follow-up update then rewrote that row's
+ * email_id, the other email stopped seeing it, and both re-uploaded the file on every
+ * sync cycle forever.
+ */
+async function findStoredRowForEmail(emailId, attachmentId) {
+  if (!attachmentId || !emailId || !/^\d+$/.test(String(emailId))) return null;
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('email_id', Number(emailId))
+    .eq('graph_attachment_id', String(attachmentId))
+    .maybeSingle();
+
+  if (error && !tableMissing(error)) {
+    console.warn('⚠️  email_attachments lookup failed:', error.message || error);
+  }
+  return data || null;
+}
+
 async function downloadStoredAttachment(emailId, attachmentId) {
   const row = await findStoredRow(emailId, attachmentId);
   if (!row?.storage_path) return null;
@@ -188,7 +214,7 @@ async function saveAttachmentBuffer({ emailId, messageId, attachment, buffer }) 
     updated_at: new Date().toISOString(),
   };
 
-  const existing = await findStoredRow(emailId, attachment.id);
+  const existing = await findStoredRowForEmail(emailId, attachment.id);
   const { error: dbError } = await writeAttachmentRow(existing?.id || null, payload);
   if (dbError && !tableMissing(dbError)) {
     console.warn(
@@ -198,6 +224,44 @@ async function saveAttachmentBuffer({ emailId, messageId, attachment, buffer }) 
   }
 
   return toMeta(attachment, { storage_path: path, size: buffer.length });
+}
+
+/**
+ * Record an attachment we deliberately do not copy into Storage (inline signature
+ * images). The row carries metadata with storage_path NULL.
+ *
+ * Without it, "has this email got stored attachments?" stays false for an email whose
+ * attachments are all inline, so the backfill passes would revisit that email on every
+ * sync cycle forever. Real files that merely failed to download are left unrecorded on
+ * purpose, so they are still retried.
+ */
+async function saveAttachmentMetadataRow({ emailId, messageId, attachment }) {
+  if (!emailId || !attachment?.id) return toMeta(attachment);
+
+  const existing = await findStoredRowForEmail(emailId, attachment.id);
+  if (existing) return toMeta(attachment);
+
+  const payload = {
+    email_id: Number(emailId),
+    message_id: messageId || null,
+    graph_attachment_id: String(attachment.id),
+    name: attachment.name || 'attachment',
+    content_type: attachment.contentType || attachment.content_type || 'application/octet-stream',
+    size_bytes: typeof attachment.size === 'number' ? attachment.size : null,
+    is_inline: Boolean(attachment.isInline ?? attachment.is_inline),
+    content_id: attachment.contentId || attachment.content_id || null,
+    storage_path: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await writeAttachmentRow(null, payload);
+  if (error && !tableMissing(error)) {
+    console.warn(
+      `⚠️  email_attachments metadata save failed for email ${emailId} (${attachment.name || attachment.id}):`,
+      error.message || error
+    );
+  }
+  return toMeta(attachment);
 }
 
 function mergeAttachmentLists(primary = [], stored = []) {
@@ -228,6 +292,8 @@ module.exports = {
   toMeta,
   listStoredForEmail,
   findStoredRow,
+  findStoredRowForEmail,
+  saveAttachmentMetadataRow,
   downloadStoredAttachment,
   saveAttachmentBuffer,
   mergeAttachmentLists,

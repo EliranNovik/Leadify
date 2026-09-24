@@ -32,8 +32,9 @@ export type ModalActionFooterProps = {
     loading?: boolean;
     disabled?: boolean;
     cancelDisabled?: boolean;
-    confirmClassName?: string;
-    cancelClassName?: string;
+  confirmClassName?: string;
+  cancelClassName?: string;
+  confirmTooltip?: string;
 };
 
 export function ModalActionFooter({
@@ -47,6 +48,7 @@ export function ModalActionFooter({
     cancelDisabled = false,
     confirmClassName = '',
     cancelClassName = '',
+    confirmTooltip,
 }: ModalActionFooterProps) {
     const confirmBtnClass =
         confirmVariant === 'success'
@@ -54,6 +56,19 @@ export function ModalActionFooter({
             : confirmVariant === 'error'
               ? 'btn-error'
               : 'btn-primary';
+
+    const confirmButton = (
+            <button
+                type="button"
+                className={`btn ${confirmBtnClass} w-full md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${
+                    confirmTooltip ? 'pointer-events-none' : 'flex-1'
+                } ${confirmClassName}`}
+                onClick={onConfirm}
+                disabled={disabled || loading}
+            >
+                {loading ? <span className="loading loading-spinner loading-sm" /> : confirmLabel}
+            </button>
+    );
 
     return (
         <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
@@ -65,14 +80,16 @@ export function ModalActionFooter({
             >
                 {cancelLabel}
             </button>
-            <button
-                type="button"
-                className={`btn ${confirmBtnClass} flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${confirmClassName}`}
-                onClick={onConfirm}
-                disabled={disabled || loading}
-            >
-                {loading ? <span className="loading loading-spinner loading-sm" /> : confirmLabel}
-            </button>
+            {confirmTooltip ? (
+                <span
+                    className="tooltip tooltip-top flex-1 md:flex-none"
+                    data-tip={confirmTooltip}
+                >
+                    <span className="block w-full cursor-not-allowed">{confirmButton}</span>
+                </span>
+            ) : (
+                confirmButton
+            )}
         </div>
     );
 }

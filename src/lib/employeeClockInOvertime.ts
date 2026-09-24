@@ -46,8 +46,20 @@ export function overtimeContinueStorageKey(dateKey: string): string {
   return `clock_in_overtime_continue_${dateKey}`;
 }
 
+export function nineHourReminderDismissedStorageKey(dateKey: string): string {
+  return `clock_in_nine_hour_reminder_dismissed_${dateKey}`;
+}
+
 export function hasContinuedOvertimeToday(dateKey = getTodayDateKey()): boolean {
   return readClockInOptInFlag(overtimeContinueStorageKey(dateKey));
+}
+
+export function hasDismissedNineHourReminderToday(dateKey = getTodayDateKey()): boolean {
+  return readClockInOptInFlag(nineHourReminderDismissedStorageKey(dateKey));
+}
+
+export function markNineHourReminderDismissedToday(dateKey = getTodayDateKey()): void {
+  writeClockInOptInFlag(nineHourReminderDismissedStorageKey(dateKey));
 }
 
 export async function fetchOvertimeOptInFromDb(
