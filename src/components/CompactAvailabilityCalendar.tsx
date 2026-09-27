@@ -14,6 +14,7 @@ import {
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import UnavailabilityTypeBadge from './UnavailabilityTypeBadge';
+import { UnavailabilityTypeIcon } from './UnavailabilityTypeBadge';
 import HolidayEntryWarningModal from './profile/HolidayEntryWarningModal';
 import {
   unavailabilityTypeCompactLabelClass,
@@ -25,7 +26,6 @@ import {
   getHolidayNamesForDate,
   getHolidayWarningsForDates,
   getHolidaysForYearMap,
-  holidayCompactLabel,
   preloadHolidayYears,
 } from '../lib/israeliJewishHolidays';
 import { eachDayInRange } from '../lib/employeeClockInFormat';
@@ -62,7 +62,13 @@ interface CalendarDay {
 
 export interface CompactAvailabilityCalendarRef {
   openAddRangeModal: () => void;
+  openAddUnavailabilityModal: () => void;
+  openAddSickDayForDate: (dateKey: string) => void;
   openDayForDate: (dateKey: string) => void;
+  /** Step back / forward by one day, week or month, whichever the view shows. */
+  goToPrevious: () => void;
+  goToNext: () => void;
+  goToToday: () => void;
 }
 
 interface CompactAvailabilityCalendarProps {
@@ -73,6 +79,554 @@ interface CompactAvailabilityCalendarProps {
   initialYear?: number;
   initialMonth?: number;
   onMonthChange?: (year: number, month1to12: number) => void;
+  /**
+   * Hours worked per YYYY-MM-DD, shown inside each day box on desktop. Days without an
+   * entry stay out of the map. Only the caller knows which clock-ins count, so it does
+   * the summing.
+   */
+  workedMsByDate?: Map<string, number>;
+  /**
+   * Desktop only: lay the calendar out as a page — grey backdrop, month picker in a left
+   * sidebar, the month grid in a white card. Mobile keeps the single-column layout.
+   */
+  desktopPageLayout?: boolean;
+  /**
+   * Which view to render. The switch lives in the host's header, so the host owns this.
+   * Left out, the calendar stays on the month grid.
+   */
+  view?: AvailabilityCalendarView;
+  onViewChange?: (view: AvailabilityCalendarView) => void;
+  /**
+   * Reports the label for the range on screen ("Sep 2026", "Sunday 27 September 2026"),
+   * so a host that puts the navigation in its own header can show it.
+   */
+  onRangeLabelChange?: (label: string) => void;
+  /** Dashboard card: dots instead of holiday names and no boxes outside the month. */
+  simplified?: boolean;
+  /** Optional action shown in the full calendar's Create menu. */
+  onUploadSickDays?: () => void;
+}
+
+const MINI_WEEKDAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+const monthNames = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+export type AvailabilityCalendarView = 'day' | 'week' | 'month';
+
+const CALENDAR_VIEWS: { id: AvailabilityCalendarView; label: string }[] = [
+  { id: 'day', label: 'Day' },
+  { id: 'week', label: 'Week' },
+  { id: 'month', label: 'Month' },
+];
+
+/** Segmented control for the view switch. Lives in the modal header, not the calendar card. */
+export function AvailabilityViewTabs({
+  view,
+  onChange,
+  className = '',
+}: {
+  view: AvailabilityCalendarView;
+  onChange: (view: AvailabilityCalendarView) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`inline-flex items-center gap-1 rounded-lg bg-gray-200/70 p-1 ${className}`}>
+      {CALENDAR_VIEWS.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          onClick={() => onChange(option.id)}
+          aria-pressed={view === option.id}
+          className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+            view === option.id
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Row height of one hour in the day and week grids. */
+const HOUR_ROW_PX = 48;
+/** Where the grid is scrolled when it opens, so the working day is in view. */
+const TIME_GRID_INITIAL_HOUR = 7;
+
+type TimedCalendarItem = {
+  key: string;
+  /** Hours since midnight, fractional. */
+  startHour: number;
+  endHour: number;
+  label: string;
+  className: string;
+  unavailabilityType?: UnavailabilityType | string;
+};
+
+type AllDayCalendarItem = {
+  key: string;
+  label: string;
+  className: string;
+  unavailabilityType?: UnavailabilityType | string;
+};
+
+function hoursFromTimeString(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = /^(\d{1,2}):(\d{2})/.exec(String(value).trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours + minutes / 60;
+}
+
+function formatHourLabel(hour: number): string {
+  if (hour === 0 || hour === 24) return '';
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  const display = hour % 12 === 0 ? 12 : hour % 12;
+  return `${display} ${suffix}`;
+}
+
+function hourValueToTime(hourValue: number): string {
+  const totalMinutes = Math.round(Math.max(0, Math.min(24, hourValue)) * 60);
+  const hours = Math.min(23, Math.floor(totalMinutes / 60));
+  const minutes = totalMinutes >= 24 * 60 ? 59 : totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function startOfWeek(date: Date): Date {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  start.setDate(start.getDate() - start.getDay());
+  return start;
+}
+
+/**
+ * Day and week views: an all-day strip over a scrollable 24-hour grid, the way a calendar
+ * app lays them out. Only entries with both a start and an end time get a positioned
+ * block; everything else belongs in the all-day strip.
+ */
+function AvailabilityTimeGrid({
+  days,
+  timedByDate,
+  allDayByDate,
+  scrollToNowRequest,
+  unavailabilityModalOpen,
+  onSelectDate,
+  onSelectTimeRange,
+}: {
+  days: Date[];
+  timedByDate: Map<string, TimedCalendarItem[]>;
+  allDayByDate: Map<string, AllDayCalendarItem[]>;
+  scrollToNowRequest: number;
+  unavailabilityModalOpen: boolean;
+  onSelectDate: (date: Date) => void;
+  onSelectTimeRange: (date: Date, startHour: number, endHour: number) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [nowMinutes, setNowMinutes] = useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  });
+  const [dragSelection, setDragSelection] = useState<{
+    dateKey: string;
+    anchorHour: number;
+    startHour: number;
+    endHour: number;
+    pointerId: number;
+    moved: boolean;
+  } | null>(null);
+
+  const hourAtPointer = (element: HTMLElement, clientY: number): number => {
+    const rect = element.getBoundingClientRect();
+    const rawHour = (clientY - rect.top) / HOUR_ROW_PX;
+    return Math.max(0, Math.min(23.5, Math.floor(rawHour * 2) / 2));
+  };
+
+  useEffect(() => {
+    const body = scrollRef.current;
+    if (body) body.scrollTop = TIME_GRID_INITIAL_HOUR * HOUR_ROW_PX;
+  }, []);
+
+  useEffect(() => {
+    if (scrollToNowRequest === 0) return;
+    const body = scrollRef.current;
+    if (!body) return;
+    const now = new Date();
+    const currentHour = now.getHours() + now.getMinutes() / 60;
+    body.scrollTo({
+      top: Math.max(0, currentHour - 1) * HOUR_ROW_PX,
+      behavior: 'smooth',
+    });
+  }, [scrollToNowRequest]);
+
+  useEffect(() => {
+    if (!unavailabilityModalOpen) setDragSelection(null);
+  }, [unavailabilityModalOpen]);
+
+  useEffect(() => {
+    const tick = window.setInterval(() => {
+      const now = new Date();
+      setNowMinutes(now.getHours() * 60 + now.getMinutes());
+    }, 60_000);
+    return () => window.clearInterval(tick);
+  }, []);
+
+  const todayKey = toLocalDateKey(new Date());
+  const gridTemplate = `4rem repeat(${days.length}, minmax(0, 1fr))`;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Day headers + all-day strip */}
+      {/* The time body has a vertical scrollbar. Reserve the same width here so every
+          header column stays directly above its time-grid column. */}
+      <div className="shrink-0 border-b border-gray-200 bg-white pr-3">
+        <div className="grid" style={{ gridTemplateColumns: gridTemplate }}>
+          <div className="border-r border-gray-200 px-2 py-1 text-[10px] font-medium text-gray-400">
+            GMT+03
+          </div>
+          {days.map((day) => {
+            const dateKey = toLocalDateKey(day);
+            const isToday = dateKey === todayKey;
+            const isWeekend = day.getDay() === 5 || day.getDay() === 6;
+            const isPastDay = days.length > 1 && dateKey < todayKey;
+            return (
+              <button
+                key={dateKey}
+                type="button"
+                onClick={() => onSelectDate(day)}
+                className={`border-r border-gray-200 px-2 py-1 last:border-r-0 hover:bg-gray-50 ${
+                  days.length === 1 ? 'text-left' : 'text-center'
+                } ${
+                  isWeekend ? 'bg-gray-100/80' : ''
+                } ${isPastDay ? 'bg-gray-50 opacity-60 grayscale-[35%]' : ''}`}
+              >
+                <div className={`${days.length > 1 ? 'text-sm' : 'text-base'} font-medium uppercase tracking-wide ${
+                  isWeekend ? 'text-red-500' : 'text-gray-500'
+                }`}>
+                  {day.toLocaleDateString('en-US', { weekday: 'short' })}
+                </div>
+                <div
+                  className={`flex items-center justify-center rounded-full font-semibold ${
+                    days.length > 1 ? 'mx-auto h-9 w-9 text-lg' : 'h-10 w-10 text-xl'
+                  } ${
+                    isToday ? 'bg-violet-600 text-white' : 'text-gray-800'
+                  }`}
+                >
+                  {day.getDate()}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="grid border-t border-gray-100" style={{ gridTemplateColumns: gridTemplate }}>
+          <div className="border-r border-gray-200 px-2 py-1 text-[11px] text-gray-400">
+            All day
+          </div>
+          {days.map((day) => {
+            const dateKey = toLocalDateKey(day);
+            const items = allDayByDate.get(dateKey) ?? [];
+            const isWeekend = day.getDay() === 5 || day.getDay() === 6;
+            const isPastDay = days.length > 1 && dateKey < todayKey;
+            return (
+              <div
+                key={dateKey}
+                className={`min-h-[1.75rem] space-y-0.5 border-r border-gray-200 px-1 py-1 last:border-r-0 ${
+                  isWeekend ? 'bg-gray-100/80' : ''
+                } ${isPastDay ? 'bg-gray-50 opacity-60 grayscale-[35%]' : ''}`}
+              >
+                {items.map((item) => (
+                  <div
+                    key={item.key}
+                    title={item.label}
+                    className={`flex items-center gap-1.5 truncate rounded px-2 py-1 text-xs font-semibold md:text-sm ${item.className}`}
+                  >
+                    {item.unavailabilityType && (
+                      <UnavailabilityTypeIcon
+                        type={item.unavailabilityType}
+                        className="h-4 w-4 shrink-0"
+                      />
+                    )}
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Scrollable hour grid */}
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-scroll bg-white"
+        style={{ scrollbarGutter: 'stable' }}
+      >
+        <div className="grid" style={{ gridTemplateColumns: gridTemplate }}>
+          <div className="border-r border-gray-200">
+            {Array.from({ length: 24 }, (_, hour) => (
+              <div
+                key={hour}
+                className="relative border-b border-gray-100"
+                style={{ height: HOUR_ROW_PX }}
+              >
+                <span className="absolute -top-2 right-1.5 bg-white px-0.5 text-[11px] text-gray-400">
+                  {formatHourLabel(hour)}
+                </span>
+              </div>
+            ))}
+          </div>
+          {days.map((day) => {
+            const dateKey = toLocalDateKey(day);
+            const items = timedByDate.get(dateKey) ?? [];
+            const isToday = dateKey === todayKey;
+            const isWeekend = day.getDay() === 5 || day.getDay() === 6;
+            const isPastDay = days.length > 1 && dateKey < todayKey;
+            return (
+              <div
+                key={dateKey}
+                className={`relative border-r border-gray-200 last:border-r-0 ${
+                  isWeekend ? 'bg-gray-100/80' : ''
+                } ${isPastDay ? 'bg-gray-50 opacity-60 grayscale-[35%]' : ''}`}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  event.preventDefault();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  const startHour = hourAtPointer(event.currentTarget, event.clientY);
+                  setDragSelection({
+                    dateKey,
+                    anchorHour: startHour,
+                    startHour,
+                    endHour: Math.min(24, startHour + 0.5),
+                    pointerId: event.pointerId,
+                    moved: false,
+                  });
+                }}
+                onPointerMove={(event) => {
+                  if (!dragSelection || dragSelection.pointerId !== event.pointerId) return;
+                  const pointedHour = hourAtPointer(event.currentTarget, event.clientY);
+                  const rangeStart = Math.min(dragSelection.anchorHour, pointedHour);
+                  const rangeEnd = Math.min(
+                    24,
+                    Math.max(dragSelection.anchorHour, pointedHour) + 0.5,
+                  );
+                  setDragSelection({
+                    ...dragSelection,
+                    startHour: rangeStart,
+                    endHour: rangeEnd,
+                    moved:
+                      dragSelection.moved
+                      || Math.abs(pointedHour - dragSelection.anchorHour) >= 0.5,
+                  });
+                }}
+                onPointerUp={(event) => {
+                  if (!dragSelection || dragSelection.pointerId !== event.pointerId) return;
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  const startHour = dragSelection.startHour;
+                  const endHour = dragSelection.moved
+                    ? dragSelection.endHour
+                    : Math.min(24, startHour + 1);
+                  // Keep the finalized purple selection visible behind the modal. It is
+                  // cleared when the modal closes.
+                  setDragSelection({
+                    ...dragSelection,
+                    startHour,
+                    endHour,
+                    pointerId: -1,
+                    moved: true,
+                  });
+                  onSelectTimeRange(day, startHour, endHour);
+                }}
+                onPointerCancel={() => setDragSelection(null)}
+              >
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <div
+                    key={hour}
+                    className="border-b border-gray-100"
+                    style={{ height: HOUR_ROW_PX }}
+                  />
+                ))}
+                {items.map((item) => {
+                  const top = item.startHour * HOUR_ROW_PX;
+                  const height = Math.max(
+                    (item.endHour - item.startHour) * HOUR_ROW_PX,
+                    HOUR_ROW_PX / 2,
+                  );
+                  const [itemTypeLabel, itemTimeLabel] = item.label.split(' · ');
+                  return (
+                    <div
+                      key={item.key}
+                      title={item.label}
+                      className={`absolute left-1 right-1 overflow-hidden rounded-md px-2 py-1 text-xs font-semibold shadow-sm md:text-sm ${item.className}`}
+                      style={{ top, height }}
+                    >
+                      <span className="flex items-start gap-1">
+                        {item.unavailabilityType && (
+                          <UnavailabilityTypeIcon
+                            type={item.unavailabilityType}
+                            className="h-4 w-4 shrink-0"
+                          />
+                        )}
+                        {days.length > 1 && itemTimeLabel ? (
+                          <span className="flex min-w-0 flex-col leading-tight">
+                            <span className="truncate">{itemTypeLabel}</span>
+                            <span className="truncate font-medium opacity-75">{itemTimeLabel}</span>
+                          </span>
+                        ) : (
+                          <span className="truncate">{item.label}</span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+                {dragSelection?.dateKey === dateKey && (
+                  <div
+                    className="pointer-events-none absolute left-1 right-1 z-20 flex items-start justify-center overflow-hidden rounded-md bg-violet-200/80 px-1 py-1"
+                    style={{
+                      top: dragSelection.startHour * HOUR_ROW_PX,
+                      height: Math.max(
+                        (dragSelection.endHour - dragSelection.startHour) * HOUR_ROW_PX,
+                        HOUR_ROW_PX / 2,
+                      ),
+                    }}
+                  >
+                    <span className="rounded bg-white/80 px-1.5 py-0.5 text-[11px] font-semibold text-violet-800 shadow-sm">
+                      {hourValueToTime(dragSelection.startHour)}–{hourValueToTime(dragSelection.endHour)}
+                    </span>
+                  </div>
+                )}
+                {isToday && (
+                  <div
+                    className="pointer-events-none absolute left-0 right-0 z-10 border-t-2 border-red-500"
+                    style={{ top: (nowMinutes / 60) * HOUR_ROW_PX }}
+                  >
+                    <span className="absolute -left-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Month picker for the sidebar. Deliberately plain: no unavailability, holiday or meeting
+ * markers, so it stays readable next to the full grid.
+ */
+function MiniMonthCalendar({
+  year,
+  month,
+  monthLabel,
+  unavailableDateKeys,
+  onPrevMonth,
+  onNextMonth,
+  onSelectDate,
+}: {
+  year: number;
+  /** 0-based, matching Date. */
+  month: number;
+  monthLabel: string;
+  unavailableDateKeys: Set<string>;
+  onPrevMonth: () => void;
+  onNextMonth: () => void;
+  onSelectDate: (date: Date) => void;
+}) {
+  const todayKey = toLocalDateKey(new Date());
+  const leadingBlanks = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  return (
+    <div className="p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-gray-700">{monthLabel}</span>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={onPrevMonth}
+            className="btn btn-xs btn-circle border-0 bg-white shadow-sm hover:bg-gray-100"
+            aria-label="Previous month"
+          >
+            <ChevronLeftIcon className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onNextMonth}
+            className="btn btn-xs btn-circle border-0 bg-white shadow-sm hover:bg-gray-100"
+            aria-label="Next month"
+          >
+            <ChevronRightIcon className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 gap-y-0.5">
+        {MINI_WEEKDAY_INITIALS.map((initial, idx) => (
+          <div
+            key={idx}
+            className={`text-center text-[11px] font-medium ${
+              idx === 5 || idx === 6 ? 'text-red-500' : 'text-gray-400'
+            }`}
+          >
+            {initial}
+          </div>
+        ))}
+        {Array.from({ length: leadingBlanks }, (_, idx) => (
+          <div key={`blank-${idx}`} />
+        ))}
+        {Array.from({ length: daysInMonth }, (_, idx) => {
+          const dayNum = idx + 1;
+          const date = new Date(year, month, dayNum);
+          const isToday = toLocalDateKey(date) === todayKey;
+          const isUnavailable = unavailableDateKeys.has(toLocalDateKey(date));
+          const isWeekend = date.getDay() === 5 || date.getDay() === 6;
+          return (
+            <button
+              key={dayNum}
+              type="button"
+              onClick={() => onSelectDate(date)}
+              className={`relative mx-auto flex h-7 w-7 items-center justify-center rounded-full text-xs transition-colors ${
+                isToday
+                  ? 'bg-violet-600 font-semibold text-white'
+                  : isWeekend
+                    ? 'bg-gray-200/80 text-gray-700 hover:bg-gray-300/80'
+                    : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {dayNum}
+              {isUnavailable && (
+                <span
+                  className="absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-red-500 ring-1 ring-gray-50"
+                  aria-label="Unavailable"
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function toLocalDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** Compact enough for a calendar box: "8h", "7h 30m". */
+function compactHoursLabel(totalMs: number): string {
+  const minutes = Math.round(totalMs / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours <= 0) return `${mins}m`;
+  return mins === 0 ? `${hours}h` : `${hours}h ${mins}m`;
 }
 
 type ReasonUnavailabilityRow = {
@@ -84,7 +638,20 @@ type ReasonUnavailabilityRow = {
 };
 
 const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, CompactAvailabilityCalendarProps>((props, ref) => {
-  const { onAvailabilityChange, employeeId: employeeIdProp, initialYear, initialMonth, onMonthChange } = props;
+  const {
+    onAvailabilityChange,
+    employeeId: employeeIdProp,
+    initialYear,
+    initialMonth,
+    onMonthChange,
+    workedMsByDate,
+    desktopPageLayout = false,
+    view = 'month',
+    onViewChange,
+    onRangeLabelChange,
+    simplified = false,
+    onUploadSickDays,
+  } = props;
   const { instance } = useMsal();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -114,10 +681,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   const [selectedDateMeetings, setSelectedDateMeetings] = useState<any[]>([]);
   const [rangeMeetings, setRangeMeetings] = useState<Map<string, any[]>>(new Map());
   const [existingUnavailabilities, setExistingUnavailabilities] = useState<any[]>([]);
+  const [editingUnavailability, setEditingUnavailability] = useState<any | null>(null);
   const [reasonUnavailabilities, setReasonUnavailabilities] = useState<ReasonUnavailabilityRow[]>([]);
   const [selectedDateHolidays, setSelectedDateHolidays] = useState<string[]>([]);
   const [holidayWarningOpen, setHolidayWarningOpen] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
+  const [scrollToNowRequest, setScrollToNowRequest] = useState(0);
   const pendingHolidaySaveRef = useRef<(() => Promise<void>) | null>(null);
 
   // Get current month and year
@@ -167,8 +736,14 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
 
   useEffect(() => {
     if (initialYear == null || initialMonth == null) return;
-    const synced = new Date(initialYear, initialMonth - 1, 1);
-    setCurrentDate(synced);
+    // Land on today when that is the requested month, so the day view opens on today
+    // rather than the 1st. The month view only reads the month and year either way.
+    const today = new Date();
+    const isCurrentMonth =
+      today.getFullYear() === initialYear && today.getMonth() + 1 === initialMonth;
+    setCurrentDate(
+      new Date(initialYear, initialMonth - 1, isCurrentMonth ? today.getDate() : 1),
+    );
     onMonthChange?.(initialYear, initialMonth);
   }, [initialYear, initialMonth, onMonthChange]);
 
@@ -199,10 +774,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     // Add current month's days
     for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
       const date = new Date(currentYear, currentMonth, dayNum);
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      const dateString = `${year}-${month}-${day}`;
+      const dateString = toLocalDateKey(date);
       const dayUnavailableTimes = unavailableTimes.filter(ut => ut.date === dateString);
 
       // Check if this date is in any unavailable range
@@ -712,23 +1284,29 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
               existing.push({
                 id: `reason-${reason.id}`,
                 date: dateString,
+                startDate: reasonStartDate,
+                endDate: reasonEndDate,
                 startTime: reason.start_time,
                 endTime: reason.end_time,
                 reason: reasonText,
                 type: reason.unavailability_type,
-                source: 'reasons_table'
+                source: 'reasons_table',
+                documentUrl: reason.document_url,
               });
             } else {
               // All day range
               existing.push({
                 id: `reason-${reason.id}`,
                 date: dateString,
+                startDate: reasonStartDate,
+                endDate: reasonEndDate,
                 startTime: null,
                 endTime: null,
                 reason: reasonText,
                 type: reason.unavailability_type,
                 source: 'reasons_table',
-                isAllDay: true
+                isAllDay: true,
+                documentUrl: reason.document_url,
               });
             }
           }
@@ -806,6 +1384,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
 
       // Check for exact duplicates (same date, same time)
       const exactDuplicate = existing.find((ex: any) => {
+        if (ex.id === editingUnavailability?.id) return false;
         if (ex.isAllDay) return false; // All day entries don't conflict with time-based entries
         return ex.startTime === newUnavailableTime.startTime &&
           ex.endTime === newUnavailableTime.endTime;
@@ -819,6 +1398,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
 
       // Check for overlapping times (excluding all-day entries)
       const overlapping = existing.find((ex: any) => {
+        if (ex.id === editingUnavailability?.id) return false;
         if (ex.isAllDay) return true; // All day entries conflict with any time-based entry
         if (!ex.startTime || !ex.endTime) return false;
         return timeRangesOverlap(
@@ -842,6 +1422,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       // For general, allow multiple entries on the same day (but not duplicates/overlaps)
       if (newUnavailableTime.unavailabilityType !== 'general') {
         const typeConflict = existing.find((ex: any) =>
+          ex.id !== editingUnavailability?.id &&
           ex.type === newUnavailableTime.unavailabilityType && ex.isAllDay
         );
 
@@ -867,8 +1448,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         employee_id: currentEmployeeId,
         unavailability_type: newUnavailableTime.unavailabilityType,
         start_date: dateString,
-        start_time: newUnavailableTime.startTime,
-        end_time: newUnavailableTime.endTime,
+        end_date: editingUnavailability?.endDate || null,
+        start_time: editingUnavailability?.isAllDay ? null : newUnavailableTime.startTime,
+        end_time: editingUnavailability?.isAllDay ? null : newUnavailableTime.endTime,
+        sick_days_reason: null,
+        vacation_reason: null,
+        general_reason: null,
         ...approvalFieldsForUnavailabilityType(newUnavailableTime.unavailabilityType),
       };
 
@@ -883,10 +1468,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         reasonData.general_reason = newUnavailableTime.reason;
       }
 
-      // Save to new table
-      const { error: reasonError } = await supabase
-        .from('employee_unavailability_reasons')
-        .insert(reasonData);
+      // Save to new table, or update the selected existing record.
+      const reasonId = editingUnavailability?.id?.replace('reason-', '');
+      const reasonQuery = supabase.from('employee_unavailability_reasons');
+      const { error: reasonError } = reasonId
+        ? await reasonQuery.update(reasonData).eq('id', reasonId)
+        : await reasonQuery.insert(reasonData);
 
       if (reasonError) {
         console.error('Error saving unavailability reason:', reasonError);
@@ -896,7 +1483,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       }
 
       // Create Outlook event if enabled (using the new data structure)
-      if (outlookSyncEnabled) {
+      if (outlookSyncEnabled && !editingUnavailability) {
         try {
           const newTime: UnavailableTime = {
             id: Date.now().toString(),
@@ -912,8 +1499,13 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         }
       }
 
-      toast.success('Request saved — waiting for management approval');
+      toast.success(
+        editingUnavailability
+          ? 'Unavailability updated successfully'
+          : 'Request saved — waiting for management approval',
+      );
       setShowAddModal(false);
+      setEditingUnavailability(null);
       setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
       setExistingUnavailabilities([]);
 
@@ -1249,10 +1841,29 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     openAddRangeModal: () => {
       setShowAddRangeModal(true);
     },
+    openAddUnavailabilityModal: () => {
+      void openDayModal(currentDate);
+    },
+    openAddSickDayForDate: (dateKey: string) => {
+      const [year, month, day] = dateKey.split('-').map(Number);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return;
+      setNewUnavailableTime((current) => ({
+        ...current,
+        unavailabilityType: 'sick_days',
+      }));
+      void openDayModal(new Date(year, month - 1, day));
+    },
     openDayForDate: (dateKey: string) => {
       const [y, m, d] = dateKey.split('-').map(Number);
       if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return;
       void openDayModal(new Date(y, m - 1, d));
+    },
+    goToPrevious: () => shiftView(-1),
+    goToNext: () => shiftView(1),
+    goToToday: () => {
+      const today = new Date();
+      goToMonth(today);
+      setScrollToNowRequest((request) => request + 1);
     },
   }));
 
@@ -1261,11 +1872,141 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   }, [currentMonth, currentYear, employeeIdProp]);
 
   const calendarDays = generateCalendarDays();
-  const monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
+  const miniUnavailableDateKeys = new Set(
+    calendarDays
+      .filter(
+        (day) =>
+          day.isCurrentMonth
+          && (day.unavailableTimes.length > 0 || day.isInUnavailableRange),
+      )
+      .map((day) => toLocalDateKey(day.date)),
+  );
 
+  /** Days the day and week views cover. Month view keeps using calendarDays. */
+  const timeGridDays = useMemo(() => {
+    const anchor = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+    if (view === 'day') return [anchor];
+    const weekStart = startOfWeek(anchor);
+    return Array.from({ length: 7 }, (_, idx) => {
+      const day = new Date(weekStart);
+      day.setDate(weekStart.getDate() + idx);
+      return day;
+    });
+  }, [currentDate, view]);
+
+  const { timedByDate, allDayByDate } = useMemo(() => {
+    const timed = new Map<string, TimedCalendarItem[]>();
+    const allDay = new Map<string, AllDayCalendarItem[]>();
+    const pushTimed = (dateKey: string, item: TimedCalendarItem) => {
+      const list = timed.get(dateKey);
+      if (list) list.push(item);
+      else timed.set(dateKey, [item]);
+    };
+    const pushAllDay = (dateKey: string, item: AllDayCalendarItem) => {
+      const list = allDay.get(dateKey);
+      if (list) list.push(item);
+      else allDay.set(dateKey, [item]);
+    };
+
+    for (const day of timeGridDays) {
+      const dateKey = toLocalDateKey(day);
+
+      for (const holiday of yearHolidayMap.get(dateKey) ?? []) {
+        pushAllDay(dateKey, {
+          key: `holiday-${holiday}`,
+          label: holiday,
+          className: 'bg-violet-100 text-violet-800',
+        });
+      }
+
+      const workedMs = workedMsByDate?.get(dateKey) ?? 0;
+      if (workedMs > 0) {
+        pushAllDay(dateKey, {
+          key: 'worked',
+          label: `${compactHoursLabel(workedMs)} worked`,
+          className: 'bg-emerald-100 text-emerald-800',
+        });
+      }
+
+      reasonUnavailabilities.forEach((reason, idx) => {
+        const end = reason.end_date || reason.start_date;
+        if (dateKey < reason.start_date || dateKey > end) return;
+
+        const label = unavailabilityTypeShortLabel(reason.unavailability_type);
+        const tone = unavailabilityTypeCompactLabelClass(reason.unavailability_type);
+        const startHour = hoursFromTimeString(reason.start_time);
+        const endHour = hoursFromTimeString(reason.end_time);
+
+        // A single-day entry with both times gets a positioned block; a multi-day range or
+        // one without times is an all-day entry.
+        if (startHour != null && endHour != null && endHour > startHour && reason.start_date === end) {
+          pushTimed(dateKey, {
+            key: `reason-${idx}`,
+            startHour,
+            endHour,
+            label: `${label} · ${normalizeTime(reason.start_time || '')}–${normalizeTime(reason.end_time || '')}`,
+            className: tone,
+            unavailabilityType: reason.unavailability_type,
+          });
+        } else {
+          pushAllDay(dateKey, {
+            key: `reason-${idx}`,
+            label,
+            className: tone,
+            unavailabilityType: reason.unavailability_type,
+          });
+        }
+      });
+
+      for (const entry of unavailableTimes) {
+        if (entry.date !== dateKey) continue;
+        const startHour = hoursFromTimeString(entry.startTime);
+        const endHour = hoursFromTimeString(entry.endTime);
+        if (startHour == null || endHour == null || endHour <= startHour) continue;
+        pushTimed(dateKey, {
+          key: `time-${entry.id}`,
+          startHour,
+          endHour,
+          label: entry.reason?.trim() || 'Unavailable',
+          className: 'bg-red-100 text-red-700',
+        });
+      }
+    }
+
+    for (const list of timed.values()) list.sort((a, b) => a.startHour - b.startHour);
+    return { timedByDate: timed, allDayByDate: allDay };
+  }, [timeGridDays, yearHolidayMap, workedMsByDate, reasonUnavailabilities, unavailableTimes]);
+
+  /** Day and week views step by day or week; month view still steps by month. */
+  const shiftView = (direction: 1 | -1) => {
+    if (view === 'month') {
+      goToMonth(new Date(currentYear, currentMonth + direction, 1));
+      return;
+    }
+    const next = new Date(currentDate);
+    next.setDate(next.getDate() + direction * (view === 'day' ? 1 : 7));
+    goToMonth(next);
+  };
+
+  const viewRangeLabel = (() => {
+    if (view === 'month') return `${monthNames[currentMonth]} ${currentYear}`;
+    if (view === 'day') {
+      return currentDate.toLocaleDateString('en-GB', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+    }
+    const first = timeGridDays[0];
+    const last = timeGridDays[timeGridDays.length - 1];
+    const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
+    return `${first.toLocaleDateString('en-GB', opts)} – ${last.toLocaleDateString('en-GB', opts)}, ${last.getFullYear()}`;
+  })();
+
+  useEffect(() => {
+    onRangeLabelChange?.(viewRangeLabel);
+  }, [viewRangeLabel, onRangeLabelChange]);
   const openDayModal = async (date: Date) => {
     setSelectedDate(date);
     setShowAddModal(true);
@@ -1305,96 +2046,332 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   };
 
   return (
-    <div className="w-full">
-      {/* Month Navigation */}
-      <div className="flex items-center justify-between mb-3">
+    <div
+      className={
+        desktopPageLayout
+          ? 'w-full md:flex md:h-full md:items-stretch md:gap-4 md:bg-gray-50 md:p-4'
+          : 'w-full'
+      }
+    >
+      <style>{`
+        @keyframes availability-drawer-in {
+          from { transform: translateX(100%); opacity: 0.75; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        .availability-drawer {
+          animation: availability-drawer-in 220ms ease-out;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .availability-drawer { animation: none; }
+        }
+      `}</style>
+      {desktopPageLayout && (
+        <aside className="hidden md:block md:w-60 md:shrink-0 md:self-start">
+          <details className="dropdown mb-3 w-full">
+            <summary className="btn btn-primary h-11 min-h-11 rounded-full px-6 gap-2 text-base">
+              <PlusIcon className="h-5 w-5" />
+              Create
+            </summary>
+            <ul className="menu dropdown-content z-30 mt-2 w-52 rounded-xl bg-white p-2 shadow-xl ring-1 ring-black/5">
+              <li>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    setShowAddRangeModal(true);
+                    const details = event.currentTarget.closest('details');
+                    if (details) details.open = false;
+                  }}
+                >
+                  Add range
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    void openDayModal(currentDate);
+                    const details = event.currentTarget.closest('details');
+                    if (details) details.open = false;
+                  }}
+                >
+                  Add unavailability
+                </button>
+              </li>
+              {onUploadSickDays && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      onUploadSickDays();
+                      const details = event.currentTarget.closest('details');
+                      if (details) details.open = false;
+                    }}
+                  >
+                    Upload sick-day document
+                  </button>
+                </li>
+              )}
+            </ul>
+          </details>
+          <MiniMonthCalendar
+            year={currentYear}
+            month={currentMonth}
+            monthLabel={`${monthNames[currentMonth]} ${currentYear}`}
+            unavailableDateKeys={miniUnavailableDateKeys}
+            onPrevMonth={() => goToMonth(new Date(currentYear, currentMonth - 1, 1))}
+            onNextMonth={() => goToMonth(new Date(currentYear, currentMonth + 1, 1))}
+            onSelectDate={(date) => {
+              // The mini calendar navigates the main calendar and always opens that date
+              // in Day view. Only the main calendar opens the unavailability popup.
+              goToMonth(date);
+              onViewChange?.('day');
+            }}
+          />
+        </aside>
+      )}
+
+      <div
+        className={
+          desktopPageLayout
+            ? 'md:flex md:min-h-0 md:min-w-0 md:flex-1 md:flex-col md:rounded-2xl md:bg-white md:p-4 md:shadow-sm'
+            : undefined
+        }
+      >
+      {/* Month Navigation — hidden on desktop page layout, where the host header owns it */}
+      <div
+        className={`flex items-center justify-between mb-3 ${
+          desktopPageLayout ? 'md:hidden' : ''
+        }`}
+      >
         <button
-          onClick={() => goToMonth(new Date(currentYear, currentMonth - 1, 1))}
+          onClick={() => shiftView(-1)}
           className="btn btn-xs btn-ghost btn-circle"
+          aria-label="Previous"
         >
           <ChevronLeftIcon className="w-4 h-4" />
         </button>
         <span className="text-sm font-semibold text-gray-700">
-          {monthNames[currentMonth]} {currentYear}
+          <span className={desktopPageLayout ? 'hidden md:inline' : undefined}>
+            {viewRangeLabel}
+          </span>
+          <span className={desktopPageLayout ? 'md:hidden' : 'hidden'}>
+            {monthNames[currentMonth]} {currentYear}
+          </span>
         </span>
         <button
-          onClick={() => goToMonth(new Date(currentYear, currentMonth + 1, 1))}
+          onClick={() => shiftView(1)}
           className="btn btn-xs btn-ghost btn-circle"
+          aria-label="Next"
         >
           <ChevronRightIcon className="w-4 h-4" />
         </button>
       </div>
 
+      {desktopPageLayout && view !== 'month' && (
+        <div className="hidden md:flex md:min-h-0 md:flex-1 md:flex-col">
+          <AvailabilityTimeGrid
+            days={timeGridDays}
+            timedByDate={timedByDate}
+            allDayByDate={allDayByDate}
+            scrollToNowRequest={scrollToNowRequest}
+            unavailabilityModalOpen={showAddModal}
+            onSelectDate={(date) => void openDayModal(date)}
+            onSelectTimeRange={(date, startHour, endHour) => {
+              setNewUnavailableTime((current) => ({
+                ...current,
+                startTime: hourValueToTime(startHour),
+                endTime: hourValueToTime(endHour),
+              }));
+              void openDayModal(date);
+            }}
+          />
+        </div>
+      )}
+
+      <div
+        className={
+          desktopPageLayout
+            ? view === 'month'
+              ? 'md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-hidden'
+              : 'md:hidden'
+            : undefined
+        }
+      >
+      <div className={desktopPageLayout ? 'md:flex md:min-h-0 md:flex-1 md:flex-col' : undefined}>
+      <div className={desktopPageLayout ? 'md:flex md:min-h-0 md:min-w-0 md:flex-1 md:flex-col' : undefined}>
+
       {/* Day Headers */}
-      <div className="grid grid-cols-7 gap-1 mb-1">
-        {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, idx) => (
-          <div key={idx} className="text-center text-xs font-medium text-gray-500 py-1">
-            {day}
+      <div className="grid grid-cols-7 gap-1 md:gap-1.5 mb-1">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, idx) => (
+          <div
+            key={idx}
+            className={`text-center text-xs md:text-sm font-medium py-1 ${
+              idx === 5 || idx === 6 ? 'text-red-500' : 'text-gray-500'
+            }`}
+          >
+            <span className="md:hidden">{day.charAt(0)}</span>
+            <span className="hidden md:inline">{day}</span>
           </div>
         ))}
       </div>
 
       {/* Calendar Grid */}
-      <div className="grid grid-cols-7 gap-1">
+      <div
+        className={`grid grid-cols-7 gap-1 md:gap-1.5 ${
+          desktopPageLayout ? 'md:min-h-0 md:flex-1 md:grid-rows-6' : ''
+        }`}
+      >
         {calendarDays.map((day, idx) => {
           if (!day.isCurrentMonth) {
-            return <div key={idx} className="aspect-square"></div>;
+            return (
+              <div
+                key={idx}
+                className={`aspect-square ${
+                  simplified ? '' : 'border border-gray-100'
+                } ${desktopPageLayout ? 'md:aspect-auto' : ''}`}
+              />
+            );
           }
 
           const isUnavailable = day.unavailableTimes.length > 0 || day.isInUnavailableRange;
+          const isWeekend = day.date.getDay() === 5 || day.date.getDay() === 6;
           const typeLabels = day.unavailabilityTypes.map((type) => unavailabilityTypeShortLabel(type));
 
           // Only show green if not unavailable (red takes precedence)
           const showGreen = day.hasMeeting && !isUnavailable;
+
+          const dateKey = toLocalDateKey(day.date);
+          const isPastDay = dateKey < toLocalDateKey(new Date());
+          const workedMs = workedMsByDate?.get(dateKey) ?? 0;
 
           const titleParts: string[] = [];
           if (day.holidays.length > 0) titleParts.push(day.holidays.join(', '));
           if (typeLabels.length > 0) titleParts.push(typeLabels.join(', '));
           else if (isUnavailable) titleParts.push('Unavailable');
           if (showGreen) titleParts.push('Meeting');
+          if (workedMs > 0) titleParts.push(`${compactHoursLabel(workedMs)} worked`);
 
           return (
             <button
               key={idx}
               onClick={() => void openDayModal(day.date)}
               className={`
-                min-h-[3.25rem] text-xs font-medium rounded transition-all cursor-pointer
-                flex flex-col items-center justify-start gap-0.5 p-0.5 overflow-hidden
-                ${day.isToday ? 'ring-2 ring-primary bg-primary/10' : ''}
-                ${showGreen ? 'bg-green-100 text-green-700' : ''}
-                ${isUnavailable ? 'bg-red-100 text-red-700' : ''}
-                ${!isUnavailable && !showGreen && day.holidays.length > 0 ? 'bg-violet-50 text-violet-800' : ''}
-                ${!isUnavailable && !showGreen && day.holidays.length === 0 ? 'text-gray-700 hover:bg-gray-200' : 'hover:opacity-90'}
+                relative text-xs md:text-sm font-medium rounded md:rounded-lg border border-gray-100
+                ${
+                  simplified
+                    ? 'aspect-square min-h-0'
+                    : `min-h-[3.25rem] ${desktopPageLayout ? 'md:h-full md:min-h-0' : 'md:min-h-[5.5rem]'}`
+                }
+                transition-all cursor-pointer
+                flex flex-col items-center justify-start overflow-hidden
+                ${simplified ? 'gap-0 p-0.5 md:p-0.5' : 'gap-0.5 p-0.5 md:p-1.5'}
+                ${isPastDay ? 'after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:bg-gray-300/25' : isWeekend ? 'bg-gray-100/80' : ''}
+                ${day.isToday ? 'ring-2 ring-inset ring-primary bg-primary/10' : ''}
+                ${showGreen && !isPastDay ? 'bg-green-100 text-green-700' : ''}
+                ${isUnavailable ? 'text-gray-700' : ''}
+                ${!isUnavailable && !showGreen ? 'text-gray-700 hover:bg-gray-200' : 'hover:opacity-90'}
               `}
               title={titleParts.join(' · ') || undefined}
             >
-              <span className="font-semibold leading-none">{day.date.getDate()}</span>
+              <span
+                className={`relative z-[1] flex items-center justify-center font-semibold leading-none md:text-base ${
+                  day.isToday
+                    ? simplified
+                      ? 'h-7 min-w-7 rounded-full bg-violet-600 px-1.5 text-white'
+                      : 'h-8 min-w-8 rounded-full bg-violet-600 px-2 text-white'
+                    : isUnavailable
+                      ? 'text-red-600'
+                      : ''
+                }`}
+              >
+                {day.date.getDate()}
+              </span>
+              {day.isToday && !simplified && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+                  Today
+                </span>
+              )}
+              {workedMs > 0 && (
+                <span className={`hidden md:inline-flex items-center gap-1.5 rounded-full bg-white/70 px-2 py-1 text-sm font-semibold leading-none text-gray-700 ${
+                  isPastDay ? 'opacity-60 grayscale-[35%]' : ''
+                }`}>
+                  <ClockIcon className="h-3.5 w-3.5" />
+                  {compactHoursLabel(workedMs)}
+                </span>
+              )}
               {(day.holidays.length > 0 || day.unavailabilityTypes.length > 0) && (
-                <div className="flex flex-col gap-px w-full px-0.5">
+                <div
+                  className={
+                    simplified
+                      ? `flex w-full min-h-4 items-center justify-center gap-1 px-0.5 ${
+                          isPastDay ? 'opacity-60 grayscale-[35%]' : ''
+                        }`
+                      : `flex flex-col gap-px md:gap-0.5 w-full px-0.5 ${
+                          isPastDay ? 'opacity-60 grayscale-[35%]' : ''
+                        }`
+                  }
+                >
                   {day.holidays.slice(0, 1).map((holiday) => (
-                    <span
-                      key={holiday}
-                      className="text-[9px] leading-tight font-medium truncate rounded px-0.5 bg-violet-100/90 text-violet-800"
-                    >
-                      {holidayCompactLabel(holiday)}
-                    </span>
+                    simplified ? (
+                      <span
+                        key={holiday}
+                        className="mx-auto h-2 w-2 rounded-full bg-violet-500"
+                        title={holiday}
+                        aria-label={holiday}
+                      />
+                    ) : (
+                      <span
+                        key={holiday}
+                        className="self-center inline-flex w-fit max-w-full items-center gap-1.5 text-[10px] md:text-[13px] leading-tight font-medium rounded px-2 py-1 bg-violet-100/90 text-violet-800"
+                      >
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" />
+                        <span className="whitespace-normal break-words text-center">{holiday}</span>
+                      </span>
+                    )
                   ))}
-                  {day.unavailabilityTypes.slice(0, 2).map((type) => (
-                    <span
-                      key={type}
-                      className={`text-[9px] leading-tight font-medium truncate rounded px-0.5 ${unavailabilityTypeCompactLabelClass(type)}`}
-                    >
-                      {unavailabilityTypeShortLabel(type)}
-                    </span>
-                  ))}
+                  {day.unavailabilityTypes.slice(0, 2).map((type) =>
+                    simplified && (type === 'vacation' || type === 'sick_days') ? (
+                      <span
+                        key={type}
+                        className="mx-auto inline-flex items-center gap-1"
+                        title={unavailabilityTypeShortLabel(type)}
+                        aria-label={unavailabilityTypeShortLabel(type)}
+                      >
+                        <UnavailabilityTypeIcon
+                          type={type}
+                          className={`h-5 w-5 ${
+                            type === 'vacation' ? 'text-green-700' : 'text-orange-700'
+                          }`}
+                        />
+                      </span>
+                    ) : (
+                      <span
+                        key={type}
+                        className={`inline-flex items-center justify-center gap-1.5 text-[10px] md:text-[13px] leading-tight font-medium rounded px-2 py-1 ${unavailabilityTypeCompactLabelClass(type)}`}
+                      >
+                        <UnavailabilityTypeIcon
+                          type={type}
+                          className={`h-5 w-5 shrink-0 ${
+                            type === 'vacation'
+                              ? 'text-green-700'
+                              : type === 'sick_days'
+                                ? 'text-orange-700'
+                                : 'text-red-700'
+                          }`}
+                        />
+                        <span className="truncate">{unavailabilityTypeShortLabel(type)}</span>
+                      </span>
+                    ),
+                  )}
                   {day.unavailabilityTypes.length > 2 && (
-                    <span className="text-[8px] leading-tight text-gray-600">+{day.unavailabilityTypes.length - 2}</span>
+                    <span className="text-[9px] md:text-xs leading-tight text-gray-600">+{day.unavailabilityTypes.length - 2}</span>
                   )}
                 </div>
               )}
             </button>
           );
         })}
+      </div>
       </div>
 
       {/* Legend */}
@@ -1416,17 +2393,40 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           <span>Today</span>
         </div>
       </div>
+      </div>
+      </div>
+      </div>
 
       {/* Add Unavailable Time Modal */}
       {showAddModal && selectedDate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Add Unavailable Time</h3>
+        <div
+          className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/20 backdrop-blur-[1px]"
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            setShowAddModal(false);
+            setSelectedDate(null);
+            setEditingUnavailability(null);
+            setNewUnavailableTime({
+              startTime: '09:00',
+              endTime: '17:00',
+              reason: '',
+              unavailabilityType: 'general',
+              documentFile: null,
+            });
+            setSelectedDateMeetings([]);
+            setExistingUnavailabilities([]);
+          }}
+        >
+          <aside className="availability-drawer h-full w-full max-w-md overflow-y-auto border-l border-gray-200 bg-white shadow-2xl sm:rounded-l-3xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between bg-white/95 px-6 py-5 backdrop-blur">
+              <h3 className="text-lg font-semibold">
+                {editingUnavailability ? 'Edit Unavailability' : 'Add Unavailable Time'}
+              </h3>
               <button
                 onClick={() => {
                   setShowAddModal(false);
                   setSelectedDate(null);
+                  setEditingUnavailability(null);
                   setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
                   setSelectedDateMeetings([]);
                   setExistingUnavailabilities([]);
@@ -1437,7 +2437,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-4 px-6 py-5 pb-8">
               {selectedDateHolidays.length > 0 && (
                 <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800">
                   <p className="font-medium">Jewish / Israeli holiday</p>
@@ -1449,32 +2449,60 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   <span className="label-text">Date</span>
                 </label>
                 <input
-                  type="text"
+                  type="date"
                   className="input input-bordered w-full"
-                  value={selectedDate.toLocaleDateString()}
-                  disabled
+                  value={toLocalDateKey(selectedDate)}
+                  onChange={(event) => {
+                    const [year, month, day] = event.target.value.split('-').map(Number);
+                    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+                      return;
+                    }
+                    void openDayModal(new Date(year, month - 1, day));
+                  }}
                 />
               </div>
 
               {/* Existing Unavailabilities on this date */}
               {existingUnavailabilities.length > 0 && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="text-sm font-semibold text-blue-800 mb-2">
+                <div className="overflow-hidden rounded-xl bg-gray-100">
+                  <div className="px-4 pt-3 text-sm font-semibold text-gray-700">
                     Existing Unavailabilities on this day:
                   </div>
-                  <div className="space-y-2">
+                  <div className="divide-y divide-gray-200">
                     {existingUnavailabilities.map((unav: any, idx: number) => (
-                      <div key={idx} className="bg-white rounded p-2 border border-blue-200">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <div className="text-sm font-medium text-blue-900">
+                      <div
+                        key={idx}
+                        className={`flex w-full items-start justify-between gap-2 px-4 py-3 text-left transition-colors hover:bg-gray-200/70 ${
+                          editingUnavailability?.id === unav.id ? 'bg-gray-200' : ''
+                        }`}
+                        role={unav.source === 'reasons_table' ? 'button' : undefined}
+                        tabIndex={unav.source === 'reasons_table' ? 0 : undefined}
+                        onClick={() => {
+                          if (unav.source !== 'reasons_table') return;
+                          setEditingUnavailability(unav);
+                          setNewUnavailableTime({
+                            startTime: normalizeTime(unav.startTime || '09:00'),
+                            endTime: normalizeTime(unav.endTime || '17:00'),
+                            reason: unav.reason || '',
+                            unavailabilityType: unav.type || 'general',
+                            documentFile: null,
+                          });
+                        }}
+                        onKeyDown={(event) => {
+                          if (unav.source !== 'reasons_table' || (event.key !== 'Enter' && event.key !== ' ')) return;
+                          event.preventDefault();
+                          event.currentTarget.click();
+                        }}
+                      >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-gray-900">
                               {unav.isAllDay ? (
                                 <span>All Day</span>
                               ) : (
                                 <span>{normalizeTime(unav.startTime)} - {normalizeTime(unav.endTime)}</span>
                               )}
                             </div>
-                            <div className="text-xs text-blue-700 mt-1">
+                            <div className="mt-1 text-xs text-gray-600">
                               {unav.reason}
                             </div>
                             <div className="mt-1">
@@ -1487,13 +2515,15 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                               className="btn btn-ghost btn-xs btn-circle text-error shrink-0"
                               title="Remove unavailability"
                               disabled={loading}
-                              onClick={() => void deleteUnavailableTime(unav.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void deleteUnavailableTime(unav.id);
+                              }}
                             >
                               <TrashIcon className="w-4 h-4" />
                             </button>
                           )}
                         </div>
-                      </div>
                     ))}
                   </div>
                 </div>
@@ -1528,6 +2558,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 </div>
               )}
 
+              {!editingUnavailability?.isAllDay && (
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="label">
@@ -1552,6 +2583,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   />
                 </div>
               </div>
+              )}
 
               <div>
                 <label className="label">
@@ -1670,12 +2702,13 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 </div>
               )}
 
-              <div className="flex gap-2 justify-end">
+              <div className="sticky bottom-0 z-10 -mx-6 -mb-8 mt-6 flex justify-end gap-2 border-t border-gray-100 bg-white/95 px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] backdrop-blur">
                 <button
                   className="btn btn-ghost"
                   onClick={() => {
                     setShowAddModal(false);
                     setSelectedDate(null);
+                    setEditingUnavailability(null);
                     setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
                     setSelectedDateMeetings([]);
                     setExistingUnavailabilities([]);
@@ -1684,23 +2717,41 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   Cancel
                 </button>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-primary rounded-full px-6"
                   onClick={saveUnavailableTime}
                   disabled={loading || uploadingDocument}
                 >
-                  {loading || uploadingDocument ? 'Saving...' : 'Save'}
+                  {loading || uploadingDocument
+                    ? 'Saving...'
+                    : editingUnavailability
+                      ? 'Update'
+                      : 'Save'}
                 </button>
               </div>
             </div>
-          </div>
+          </aside>
         </div>
       )}
 
       {/* Add Unavailable Range Modal */}
       {showAddRangeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <div className="flex items-center justify-between mb-4">
+        <div
+          className="fixed inset-0 z-50 flex items-stretch justify-end bg-black/20 backdrop-blur-[1px]"
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            setShowAddRangeModal(false);
+            setNewUnavailableRange({
+              startDate: '',
+              endDate: '',
+              reason: '',
+              unavailabilityType: 'general',
+              documentFile: null,
+            });
+            setRangeMeetings(new Map());
+          }}
+        >
+          <aside className="availability-drawer h-full w-full max-w-md overflow-y-auto border-l border-gray-200 bg-white shadow-2xl sm:rounded-l-3xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between bg-white/95 px-6 py-5 backdrop-blur">
               <h3 className="text-lg font-semibold">Add Unavailable Range</h3>
               <button
                 onClick={() => {
@@ -1714,7 +2765,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-4 px-6 py-5 pb-8">
               <div>
                 <label className="label">
                   <span className="label-text">Start Date</span>
@@ -1974,7 +3025,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 </div>
               )}
 
-              <div className="flex gap-2 justify-end">
+              <div className="sticky bottom-0 z-10 -mx-6 -mb-8 mt-6 flex justify-end gap-2 border-t border-gray-100 bg-white/95 px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] backdrop-blur">
                 <button
                   className="btn btn-ghost"
                   onClick={() => {
@@ -1986,7 +3037,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   Cancel
                 </button>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-primary rounded-full px-6"
                   onClick={saveUnavailableRange}
                   disabled={loading || uploadingDocument}
                 >
@@ -1994,7 +3045,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 </button>
               </div>
             </div>
-          </div>
+          </aside>
         </div>
       )}
 

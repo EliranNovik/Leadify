@@ -51,6 +51,8 @@ export type ClockInExportRecord = {
   clock_out_location_address?: string | null;
   clock_out_location_city?: string | null;
   clock_out_location_country?: string | null;
+  /** Set on synthetic standard-hours rows. Never present on a row from the database. */
+  auto_filled?: boolean;
 };
 
 export type EmployeeWorkingHoursTotals = {

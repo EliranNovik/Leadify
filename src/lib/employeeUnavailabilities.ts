@@ -537,6 +537,111 @@ export function expandUnavailabilitiesToDailyRows(
   return rows;
 }
 
+/**
+ * The little an absence calculation needs. Kept structural rather than a Pick of
+ * EmployeeUnavailabilityEntry so the report's lighter row shape also fits, and the times
+ * optional because not every query selects them — a row without them simply removes no
+ * hours, which is the rule for an untimed general entry anyway.
+ */
+export type UnavailabilityDayEffectInput = {
+  unavailability_type: UnavailabilityType | string;
+  start_date: string;
+  end_date: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+};
+
+export type UnavailabilityDayEffect = {
+  /** A sick or vacation day removes the whole working day. */
+  fullDay: boolean;
+  /** Hours removed by timed general absences. */
+  generalHours: number;
+};
+
+function parseTimeToHours(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const match = /^(\d{1,2}):(\d{2})/.exec(String(value).trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours + minutes / 60;
+}
+
+/**
+ * How each date's unavailabilities reduce the working day.
+ *
+ * Sick and vacation remove the day outright. A general entry only counts when it has
+ * both a start and an end time — without them it stays the soft calendar note it has
+ * always been and the day is untouched.
+ */
+export function buildUnavailabilityDayEffects(
+  entries: UnavailabilityDayEffectInput[],
+  dateFrom: string,
+  dateTo: string,
+): Map<string, UnavailabilityDayEffect> {
+  const byDate = new Map<string, UnavailabilityDayEffect>();
+
+  for (const row of expandUnavailabilitiesToDailyRows(
+    entries as EmployeeUnavailabilityEntry[],
+    dateFrom,
+    dateTo,
+  )) {
+    const effect = byDate.get(row.date) ?? { fullDay: false, generalHours: 0 };
+
+    if (row.unavailability_type === 'sick_days' || row.unavailability_type === 'vacation') {
+      effect.fullDay = true;
+    } else if (row.unavailability_type === 'general') {
+      const start = parseTimeToHours(row.start_time);
+      const end = parseTimeToHours(row.end_time);
+      if (start != null && end != null && end > start) {
+        effect.generalHours += end - start;
+      }
+    }
+
+    byDate.set(row.date, effect);
+  }
+
+  return byDate;
+}
+
+/** Hours a timed general absence removes from each day. */
+export function buildGeneralAbsenceHoursByDate(
+  entries: UnavailabilityDayEffectInput[],
+  dateFrom: string,
+  dateTo: string,
+): Map<string, number> {
+  const hours = new Map<string, number>();
+  for (const [date, effect] of buildUnavailabilityDayEffects(entries, dateFrom, dateTo)) {
+    if (effect.generalHours > 0) hours.set(date, effect.generalHours);
+  }
+  return hours;
+}
+
+export function timedGeneralAbsenceBadgeDetails(
+  entry: Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_time' | 'end_time'>,
+): { deductedLabel: string; periodLabel: string; tooltip: string } | null {
+  if (entry.unavailability_type !== 'general' || !entry.start_time || !entry.end_time) return null;
+  const start = parseTimeToHours(entry.start_time);
+  const end = parseTimeToHours(entry.end_time);
+  if (start == null || end == null || end <= start) return null;
+
+  const totalMinutes = Math.round((end - start) * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const deductedLabel = [
+    hours > 0 ? `${hours}h` : '',
+    minutes > 0 ? `${minutes}m` : '',
+  ].filter(Boolean).join(' ');
+  const shortTime = (value: string) => value.slice(0, 5);
+  const periodLabel = `${shortTime(entry.start_time)}–${shortTime(entry.end_time)}`;
+  return {
+    deductedLabel,
+    periodLabel,
+    tooltip: `General unavailability · ${periodLabel} · ${deductedLabel} deducted`,
+  };
+}
+
 function rangesOverlap(
   start: string,
   end: string | null,
@@ -609,6 +714,9 @@ export type UnavailabilityReasonReportRow = {
   document_url: string | null;
   start_date: string;
   end_date: string | null;
+  /** Present so a timed general absence shortens the working day here too. */
+  start_time: string | null;
+  end_time: string | null;
   created_at: string;
   approved?: boolean;
   declined?: boolean;
@@ -622,8 +730,8 @@ export async function fetchUnavailabilityReasonsForReportInRange(
   const { data, error } = await supabase
     .from('employee_unavailability_reasons')
     .select(
-      `id, employee_id, unavailability_type, sick_days_reason, document_url, start_date, end_date, created_at,
-       approved, declined`,
+      `id, employee_id, unavailability_type, sick_days_reason, document_url, start_date, end_date,
+       start_time, end_time, created_at, approved, declined`,
     )
     .lte('start_date', dateTo)
     .or(`end_date.gte.${dateFrom},end_date.is.null`)

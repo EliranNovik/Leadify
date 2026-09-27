@@ -5,6 +5,7 @@ import {
   toDateInputValue,
 } from './employeeClockInFormat';
 import { getHolidaysForYearMap } from './israeliJewishHolidays';
+import { buildHolidayMapForRange, dayHasPremium150Holiday } from './employeeExtraHours';
 import { expandUnavailabilitiesToDailyRows } from './employeeUnavailabilities';
 import type { EmployeeUnavailabilityEntry } from './employeeUnavailabilities';
 
@@ -13,6 +14,7 @@ export type WorkingHoursDayCoverageStatus =
   | 'missing'
   | 'weekend'
   | 'holiday'
+  | 'holiday_off'
   | 'future';
 
 export type WorkingHoursDayCoverage = {
@@ -72,6 +74,7 @@ export function buildWorkingHoursMonthCoverage(
   const covered = buildCoveredDates(year, month, records, unavailabilities);
   const { from, to } = monthRange(year, month);
   const holidayMap = getHolidaysForYearMap(year);
+  const statutoryHolidayMap = buildHolidayMapForRange(from, to);
 
   const days: WorkingHoursDayCoverage[] = [];
 
@@ -82,6 +85,8 @@ export function buildWorkingHoursMonthCoverage(
     if (!isIsraeliWorkdayIso(day)) {
       // Fri/Sat always shown as weekend (never count as missing), even if future.
       status = 'weekend';
+    } else if (dayHasPremium150Holiday(day, statutoryHolidayMap)) {
+      status = 'holiday_off';
     } else if (day > asOfDate) {
       status = 'future';
     } else if (covered.has(day)) {

@@ -4,15 +4,15 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import {
   CLOCK_IN_OVERTIME_DOC_MAX_BYTES,
+  OVERTIME_APPROVAL_BASE_HOURS,
   buildOvertimeApprovalWhatsAppMessage,
-  clockSessionExceedsMinHours,
+  clockSessionExceedsOvertimeBase,
   fetchMichaelDeckerWhatsAppUrl,
   formatClockSessionDurationLabel,
   isAllowedOvertimeApprovalFile,
 } from '../../lib/employeeClockInOvertimeApproval';
 
 interface ClockInOvertimeApprovalBoxProps {
-  minHours: number;
   clockInTime: string;
   clockOutTime: string;
   dateKeys?: string[];
@@ -24,7 +24,6 @@ interface ClockInOvertimeApprovalBoxProps {
 }
 
 const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
-  minHours,
   clockInTime,
   clockOutTime,
   dateKeys = [],
@@ -38,7 +37,6 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const durationLabel = formatClockSessionDurationLabel(clockInTime, clockOutTime);
   const message = buildOvertimeApprovalWhatsAppMessage({
-    minHours,
     clockInTime,
     clockOutTime,
     dateKeys,
@@ -68,7 +66,8 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   return (
     <div className="rounded-xl bg-red-50 px-3 py-3 space-y-3 text-sm text-red-950">
       <p className="font-medium">
-        This session is {durationLabel}, which is more than your {minHours}h base hours.
+        This session is {durationLabel}, which is more than the {OVERTIME_APPROVAL_BASE_HOURS}h
+        standard day.
       </p>
       <p>
         Get approval from <strong>Michael Decker</strong> on WhatsApp first. After he approves,
@@ -168,12 +167,11 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   );
 };
 
-export function clockInOutTimesExceedMinHours(
+export function clockInOutTimesExceedOvertimeBase(
   clockInTime: string,
   clockOutTime: string,
-  minHours: number,
 ): boolean {
-  return clockSessionExceedsMinHours(clockInTime, clockOutTime, minHours);
+  return clockSessionExceedsOvertimeBase(clockInTime, clockOutTime);
 }
 
 export default ClockInOvertimeApprovalBox;

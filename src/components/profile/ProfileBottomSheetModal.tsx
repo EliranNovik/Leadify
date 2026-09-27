@@ -23,7 +23,12 @@ export type ProfileBottomSheetModalProps = {
   zIndex?: number;
   closeOnOverlayClick?: boolean;
   mobileFullHeight?: boolean;
+  /** Desktop only: fill the viewport instead of floating a centred card. */
+  desktopFullScreen?: boolean;
+  desktopLayout?: 'center' | 'drawer-right';
   sheetClassName?: string;
+  /** Replaces the default content padding rather than adding to it. */
+  contentClassName?: string;
   headerClassName?: string;
   footerClassName?: string;
   headerRight?: React.ReactNode;
@@ -48,7 +53,10 @@ export default function ProfileBottomSheetModal({
   zIndex = PROFILE_MODAL_Z_INDEX,
   closeOnOverlayClick = true,
   mobileFullHeight = false,
+  desktopFullScreen = false,
+  desktopLayout = 'center',
   sheetClassName = '',
+  contentClassName,
   headerClassName = '',
   footerClassName = '',
   headerRight,
@@ -82,10 +90,13 @@ export default function ProfileBottomSheetModal({
       zIndex={zIndex}
       closeOnOverlayClick={closeOnOverlayClick && !saving}
       mobileFullHeight={mobileFullHeight}
-      desktopLayout="center"
+      desktopLayout={desktopLayout}
+      desktopFullScreen={desktopFullScreen}
       overlayClassName={DESKTOP_CENTER_MODAL_PROPS.overlayClassName}
-      sheetClassName={`${DESKTOP_CENTER_MODAL_PROPS.sheetClassName} ${sheetClassName}`.trim()}
-      contentClassName={DESKTOP_CENTER_MODAL_PROPS.contentClassName}
+      sheetClassName={`${
+        desktopLayout === 'center' ? DESKTOP_CENTER_MODAL_PROPS.sheetClassName : ''
+      } ${sheetClassName}`.trim()}
+      contentClassName={contentClassName ?? DESKTOP_CENTER_MODAL_PROPS.contentClassName}
       headerClassName={headerClassName}
       footerClassName={`${DESKTOP_CENTER_MODAL_PROPS.footerClassName} ${footerClassName}`.trim()}
       footer={resolvedFooter}

@@ -50,6 +50,10 @@ import { fetchWorkingHoursSubmissionsForMonth } from '../lib/employeeWorkingHour
 import { fetchActiveStaffEmployeesWithDepartment } from '../lib/employeeSalaries';
 import { filterCountedClockInRecords } from '../lib/employeeClockInApproval';
 import {
+  withAutoFilledClockInRecords,
+  withAutoFilledClockInRecordsByEmployee,
+} from '../lib/autoFilledWorkingHours';
+import {
   buildHolidayMapForRange,
   calculateEmployeeExtraHoursForRange,
   calculateExtraHoursByEmployee,
@@ -274,9 +278,22 @@ const EmployeeUnavailabilitiesReport = () => {
         }
       }
 
-      const clockByEmployee = groupClockInTotalsByEmployee(clockRecords);
+      const filledClockRecords = withAutoFilledClockInRecordsByEmployee({
+        records: clockRecords,
+        employees: new Map(
+          [...minHoursByEmployee].map(([employeeId, minHours]) => [
+            employeeId,
+            { minHours, unavailabilities: unavailByEmployee.get(employeeId) ?? [] },
+          ]),
+        ),
+        dateFrom: fromDate,
+        dateTo: toDate,
+        holidayMap,
+      });
+
+      const clockByEmployee = groupClockInTotalsByEmployee(filledClockRecords);
       const clockRecordsByEmployee = new Map<number, ClockInExportRecord[]>();
-      for (const record of clockRecords) {
+      for (const record of filledClockRecords) {
         const employeeId = record.employee_id;
         if (employeeId == null) continue;
         const list = clockRecordsByEmployee.get(employeeId);
@@ -432,16 +449,25 @@ const EmployeeUnavailabilitiesReport = () => {
     setDetailExporting(true);
     try {
       await preloadHolidayMapsForRange(fromDate, toDate);
-      const countedRecords = filterCountedClockInRecords(detailRecords);
+      const filledRecords = withAutoFilledClockInRecords({
+        employeeId: selectedEmployee.employeeId,
+        minHours: selectedEmployee.minHours,
+        dateFrom: fromDate,
+        dateTo: toDate,
+        holidayMap: buildHolidayMapForRange(fromDate, toDate),
+        existingRecords: detailRecords,
+        unavailabilities: detailUnavailabilities,
+      });
+      const countedRecords = filterCountedClockInRecords(filledRecords);
       const extraHours = calculateEmployeeExtraHoursForRange(
-        detailRecords,
+        filledRecords,
         selectedEmployee.minHours,
         fromDate,
         toDate,
         detailUnavailabilities,
       );
       const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
-        detailRecords,
+        filledRecords,
         detailUnavailabilities,
         fromDate,
         toDate,
@@ -484,14 +510,7 @@ const EmployeeUnavailabilitiesReport = () => {
         preloadHolidayMapsForRange(fromDate, toDate),
       ]);
 
-      const clockByEmployee = new Map<number, ClockInExportRecord[]>();
-      for (const record of clockRecords) {
-        const empId = record.employee_id;
-        if (empId == null) continue;
-        const list = clockByEmployee.get(empId);
-        if (list) list.push(record);
-        else clockByEmployee.set(empId, [record]);
-      }
+      const holidayMap = buildHolidayMapForRange(fromDate, toDate);
 
       const unavailByEmployee = new Map<number, EmployeeUnavailabilityEntry[]>();
       for (const entry of allUnavailabilities) {
@@ -503,10 +522,36 @@ const EmployeeUnavailabilitiesReport = () => {
       const minHoursByEmployee = new Map(
         displayedEmployees.map((emp) => [emp.employeeId, emp.minHours]),
       );
+
+      const filledClockRecords = withAutoFilledClockInRecordsByEmployee({
+        records: clockRecords,
+        employees: new Map(
+          displayedEmployees.map((emp) => [
+            emp.employeeId,
+            {
+              minHours: emp.minHours,
+              unavailabilities: unavailByEmployee.get(emp.employeeId) ?? [],
+            },
+          ]),
+        ),
+        dateFrom: fromDate,
+        dateTo: toDate,
+        holidayMap,
+      });
+
+      const clockByEmployee = new Map<number, ClockInExportRecord[]>();
+      for (const record of filledClockRecords) {
+        const empId = record.employee_id;
+        if (empId == null) continue;
+        const list = clockByEmployee.get(empId);
+        if (list) list.push(record);
+        else clockByEmployee.set(empId, [record]);
+      }
+
       const extraHoursByEmployee = calculateExtraHoursByEmployee(
         clockByEmployee,
         minHoursByEmployee,
-        buildHolidayMapForRange(fromDate, toDate),
+        holidayMap,
         fromDate,
         toDate,
         unavailByEmployee,

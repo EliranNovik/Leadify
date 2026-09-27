@@ -66,10 +66,37 @@ const MyProfilePage: React.FC = () => {
       return match || 'About';
     })();
     const [activeTab, setActiveTab] = useState(tabFromUrl);
+    const [showFloatingTabs, setShowFloatingTabs] = useState(false);
+    const desktopTabsRef = useRef<HTMLDivElement>(null);
+    const mobileTabsRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
       setActiveTab(tabFromUrl);
     }, [tabFromUrl]);
+
+    useEffect(() => {
+      const handleScroll = () => {
+        const tabs = window.innerWidth >= 768 ? desktopTabsRef.current : mobileTabsRef.current;
+        setShowFloatingTabs(Boolean(tabs && tabs.getBoundingClientRect().bottom <= 48));
+      };
+      handleScroll();
+      document.addEventListener('scroll', handleScroll, { passive: true, capture: true });
+      window.addEventListener('resize', handleScroll);
+      return () => {
+        document.removeEventListener('scroll', handleScroll, true);
+        window.removeEventListener('resize', handleScroll);
+      };
+    }, []);
+
+    const selectProfileTab = (tab: string, scrollToContent = true) => {
+      setActiveTab(tab);
+      if (scrollToContent) {
+        window.requestAnimationFrame(() => {
+          contentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
+    };
 
     // Edit form state
     const [formData, setFormData] = useState({
@@ -417,16 +444,16 @@ const MyProfilePage: React.FC = () => {
                             <h1 className="text-2xl md:text-3xl font-bold text-gray-900 md:text-white drop-shadow-lg">{profile.official_name}</h1>
                             <p className="text-sm md:text-base text-gray-600 md:text-white/90 drop-shadow-md mt-1 md:mt-0">{getRoleDisplay(profile.bonuses_role)}</p>
                         </div>
-                        <div className="hidden md:flex w-full items-center justify-between gap-2 lg:gap-3 overflow-x-auto pb-1 min-w-0">
+                        <div ref={desktopTabsRef} className="hidden md:flex w-full -translate-y-6 items-center gap-6 overflow-x-auto min-w-0">
                             {profileTabs.map((tab) => (
                                 <button
                                     key={tab}
                                     type="button"
-                                    className={`px-4 lg:px-5 py-2.5 rounded-full text-sm font-semibold transition-all border whitespace-nowrap flex-1 ${activeTab === tab
-                                        ? 'bg-primary text-white shadow-lg border-primary/80'
-                                        : 'bg-white text-gray-700 hover:bg-white border-white shadow-sm'
+                                    className={`border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${activeTab === tab
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900'
                                         }`}
-                                    onClick={() => setActiveTab(tab)}
+                                    onClick={() => selectProfileTab(tab)}
                                 >
                                     {tab}
                                 </button>
@@ -437,17 +464,17 @@ const MyProfilePage: React.FC = () => {
             </div>
 
             {/* Tabs below the photo on small screens */}
-            <div className="relative z-10 px-4 w-full mt-24 md:hidden">
-                <div className="flex gap-2 overflow-x-auto pb-2">
+            <div ref={mobileTabsRef} className="relative z-10 px-4 w-full mt-24 md:hidden">
+                <div className="flex gap-6 overflow-x-auto">
                     {profileTabs.map((tab) => (
                         <button
                             key={tab}
                             type="button"
-                            className={`px-4 py-2 rounded-full text-sm font-semibold transition-all border whitespace-nowrap shrink-0 ${activeTab === tab
-                                ? 'bg-primary text-white shadow-lg border-primary/80'
-                                : 'bg-white/80 text-gray-700 hover:bg-white border-white/70 shadow-sm'
+                            className={`shrink-0 border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${activeTab === tab
+                                ? 'border-primary text-primary'
+                                : 'border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900'
                                 }`}
-                            onClick={() => setActiveTab(tab)}
+                            onClick={() => selectProfileTab(tab)}
                         >
                             {tab}
                         </button>
@@ -455,8 +482,30 @@ const MyProfilePage: React.FC = () => {
                 </div>
             </div>
 
+            {showFloatingTabs && (
+                <div className="fixed left-1/2 top-12 z-[1000] w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 rounded-full border border-gray-200 bg-white/95 px-4 shadow-lg backdrop-blur">
+                    <div className="flex items-center justify-center gap-5 overflow-x-auto">
+                        {profileTabs.map((tab) => (
+                            <button
+                                key={tab}
+                                type="button"
+                                className={`shrink-0 border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${
+                                    activeTab === tab
+                                        ? 'border-primary text-primary'
+                                        : 'border-transparent text-gray-500 hover:text-gray-900'
+                                }`}
+                                onClick={() => selectProfileTab(tab, false)}
+                            >
+                                {tab}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Main Content Area */}
             <div
+              ref={contentRef}
               className={`flex-1 w-full py-6 md:py-8 mt-4 md:mt-28 px-4 md:px-6 ${
                 activeTab === 'Working Hours' || activeTab === 'Personal' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
               }`}

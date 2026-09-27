@@ -16,10 +16,9 @@ import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import ClockInOvertimeApprovalBox, {
-  clockInOutTimesExceedMinHours,
+  clockInOutTimesExceedOvertimeBase,
 } from './ClockInOvertimeApprovalBox';
 import {
-  fetchEmployeeMinHours,
   overtimeApprovalRequiredError,
   uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
@@ -65,7 +64,6 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
-  const [minHours, setMinHours] = useState(8);
   const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
 
   useEffect(() => {
@@ -77,7 +75,6 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     setNotes('');
     setWorkplaceLocationId('');
     setOvertimeFile(null);
-    void fetchEmployeeMinHours(employeeId).then(setMinHours);
     void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
       ([locations, wfh]) => {
         setWorkplaces(locations);
@@ -100,7 +97,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     return sortDates(filled);
   }, [dateRows]);
 
-  const exceedsMinHours = clockInOutTimesExceedMinHours(clockInTime, clockOutTime, minHours);
+  const exceedsOvertimeBase = clockInOutTimesExceedOvertimeBase(clockInTime, clockOutTime);
 
   if (!isOpen) return null;
 
@@ -128,8 +125,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
       const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
       let overtimeApproval = null;
-      if (exceedsMinHours) {
-        if (!overtimeFile) throw overtimeApprovalRequiredError(minHours);
+      if (exceedsOvertimeBase) {
+        if (!overtimeFile) throw overtimeApprovalRequiredError();
         overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
       }
       const count = await insertManualClockInRecords({
@@ -185,8 +182,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
       toast.error('Please add notes for Ramat Gan');
       return;
     }
-    if (exceedsMinHours && !overtimeFile) {
-      toast.error(overtimeApprovalRequiredError(minHours).message);
+    if (exceedsOvertimeBase && !overtimeFile) {
+      toast.error(overtimeApprovalRequiredError().message);
       return;
     }
 
@@ -204,7 +201,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     dateRows.map((row) => row.value).filter(Boolean).length !== datesToSave.length;
   const workplaceMissing = workplaces.length > 0 && workplaceLocationId === '';
   const notesMissing = ramatGanSelected && !notes.trim();
-  const overtimeDocMissing = exceedsMinHours && !overtimeFile;
+  const overtimeDocMissing = exceedsOvertimeBase && !overtimeFile;
   const submitDisabled =
     saving || datesToSave.length === 0 || hasDuplicateDates || workplaceMissing || notesMissing || overtimeDocMissing;
   const submitBlockedReason = workplaceMissing
@@ -221,6 +218,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         open={isOpen}
         onClose={onClose}
         title="Add clock-in / out"
+        desktopLayout="drawer-right"
         saving={saving}
         headerClassName="!border-b-0"
         footerClassName="!border-t-0"
@@ -354,9 +352,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
             </label>
           )}
 
-          {exceedsMinHours && (
+          {exceedsOvertimeBase && (
             <ClockInOvertimeApprovalBox
-              minHours={minHours}
               clockInTime={clockInTime}
               clockOutTime={clockOutTime}
               dateKeys={datesToSave}

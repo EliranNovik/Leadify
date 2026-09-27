@@ -14,10 +14,9 @@ import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import ClockInOvertimeApprovalBox, {
-  clockInOutTimesExceedMinHours,
+  clockInOutTimesExceedOvertimeBase,
 } from './ClockInOvertimeApprovalBox';
 import {
-  fetchEmployeeMinHours,
   overtimeApprovalRequiredError,
   uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
@@ -51,7 +50,6 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
-  const [minHours, setMinHours] = useState(8);
   const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
   const [notes, setNotes] = useState('');
 
@@ -64,7 +62,6 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
     setWorkplaceLocationId('');
     setOvertimeFile(null);
     setNotes('');
-    void fetchEmployeeMinHours(employeeId).then(setMinHours);
     void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
       ([locations, wfh]) => {
         setWorkplaces(locations);
@@ -81,7 +78,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
     selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace) && !worksFromHome;
   const ramatGanSelected =
     selectedWorkplace != null && isRamatGanClockInLocation(selectedWorkplace);
-  const exceedsMinHours = clockInOutTimesExceedMinHours(clockInTime, clockOutTime, minHours);
+  const exceedsOvertimeBase = clockInOutTimesExceedOvertimeBase(clockInTime, clockOutTime);
 
   const performSave = async () => {
     setSaving(true);
@@ -93,8 +90,8 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
 
       const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
       let overtimeApproval = null;
-      if (exceedsMinHours) {
-        if (!overtimeFile) throw overtimeApprovalRequiredError(minHours);
+      if (exceedsOvertimeBase) {
+        if (!overtimeFile) throw overtimeApprovalRequiredError();
         overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
       }
       const count = await insertManualClockInRecords({
@@ -144,8 +141,8 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
       toast.error('Please add notes for Ramat Gan');
       return;
     }
-    if (exceedsMinHours && !overtimeFile) {
-      toast.error(overtimeApprovalRequiredError(minHours).message);
+    if (exceedsOvertimeBase && !overtimeFile) {
+      toast.error(overtimeApprovalRequiredError().message);
       return;
     }
 
@@ -163,7 +160,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
 
   const workplaceMissing = workplaces.length > 0 && workplaceLocationId === '';
   const notesMissing = ramatGanSelected && !notes.trim();
-  const overtimeDocMissing = exceedsMinHours && !overtimeFile;
+  const overtimeDocMissing = exceedsOvertimeBase && !overtimeFile;
   const submitDisabled = saving || datesToSave.length === 0 || workplaceMissing || notesMissing || overtimeDocMissing;
   const submitBlockedReason = workplaceMissing
     ? 'Choose a workplace first'
@@ -179,6 +176,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
         open={isOpen}
         onClose={onClose}
         title="Add multiple clock-in / out"
+        desktopLayout="drawer-right"
         saving={saving}
         headerClassName="!border-b-0"
         footerClassName="!border-t-0"
@@ -278,9 +276,8 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
             </label>
           )}
 
-          {exceedsMinHours && (
+          {exceedsOvertimeBase && (
             <ClockInOvertimeApprovalBox
-              minHours={minHours}
               clockInTime={clockInTime}
               clockOutTime={clockOutTime}
               dateKeys={datesToSave}

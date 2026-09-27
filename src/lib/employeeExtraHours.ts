@@ -1,26 +1,43 @@
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { eachDayInRange, isIsraeliWorkdayIso } from './employeeClockInFormat';
-import { formatDurationMs } from './employeeClockInOvertime';
+import { NINE_HOURS_MS, formatDurationMs } from './employeeClockInOvertime';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
-import { getHolidaysForYearMap, preloadHolidayYears } from './israeliJewishHolidays';
-import type { EmployeeUnavailabilityEntry } from './employeeUnavailabilities';
-import { expandUnavailabilitiesToDailyRows } from './employeeUnavailabilities';
+import { getPremiumHolidaysForYearMap, preloadHolidayYears } from './israeliJewishHolidays';
+import type {
+  EmployeeUnavailabilityEntry,
+  UnavailabilityDayEffectInput,
+} from './employeeUnavailabilities';
+import {
+  buildGeneralAbsenceHoursByDate,
+  expandUnavailabilitiesToDailyRows,
+} from './employeeUnavailabilities';
 import type { ClockInExportRecord } from './workingHoursExport';
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 
-/** Required hours on a regular workday for attendance balance. */
+/** Required hours on a regular workday for attendance balance (missing hours). */
 export const REQUIRED_DAILY_HOURS = 8;
 const REQUIRED_DAILY_MS = REQUIRED_DAILY_HOURS * MS_PER_HOUR;
+
+/**
+ * Hours worked in a day before overtime starts.
+ *
+ * Fixed company-wide and deliberately not the employee's min_hours, so 125% and 150%
+ * mean the same thing on every contract. This is the same nine-hour day the auto
+ * clock-out and the overtime approval flow are built around.
+ */
+export const OVERTIME_BASE_DAILY_HOURS = NINE_HOURS_MS / MS_PER_HOUR;
+const OVERTIME_BASE_DAILY_MS = OVERTIME_BASE_DAILY_HOURS * MS_PER_HOUR;
 
 /** First overtime hours per day pay at 125%; any above that at 150%. */
 export const OVERTIME_125_CAP_HOURS = 2;
 const OVERTIME_125_CAP_MS = OVERTIME_125_CAP_HOURS * MS_PER_HOUR;
 
-/** @deprecated Use OVERTIME_125_CAP_HOURS + REQUIRED_DAILY_HOURS (8 + 2 = 10). */
-export const DAILY_PREMIUM_150_HOUR_THRESHOLD = REQUIRED_DAILY_HOURS + OVERTIME_125_CAP_HOURS;
+/** @deprecated Use OVERTIME_BASE_DAILY_HOURS + OVERTIME_125_CAP_HOURS (9 + 2 = 11). */
+export const DAILY_PREMIUM_150_HOUR_THRESHOLD =
+  OVERTIME_BASE_DAILY_HOURS + OVERTIME_125_CAP_HOURS;
 
 const OVERTIME_125_WEIGHT = 1.25;
 const OVERTIME_150_WEIGHT = 1.5;
@@ -99,29 +116,17 @@ function msToHours(ms: number): number {
   return ms / MS_PER_HOUR;
 }
 
-/** Holidays that qualify for 150% / are excluded from regular workdays (Hebcal titles). */
-export function isQualifyingPremium150Holiday(title: string): boolean {
-  const normalized = title.trim().toLowerCase();
-  if (!normalized || normalized.includes('erev')) return false;
-  if (normalized.includes('chol ha') || normalized.includes('hol ha')) return false;
-
-  if (/rosh hashana/.test(normalized)) return true;
-  if (/yom kippur/.test(normalized)) return true;
-  if (/^sukkot i\b/.test(normalized) || /^sukkot 1\b/.test(normalized)) return true;
-  if (/shemini atzeret|shmini atzeret|simchat torah/.test(normalized)) return true;
-  if (/^pesach i\b|^passover i\b/.test(normalized)) return true;
-  if (/^pesach vii\b|^passover vii\b/.test(normalized)) return true;
-  if (/^shavuot\b/.test(normalized)) return true;
-  if (/yom ha['']?atzmaut|independence day/.test(normalized)) return true;
-
-  return false;
-}
-
+/**
+ * Statutory holidays on this date.
+ *
+ * `holidayMap` must come from buildHolidayMapForRange, which is already restricted to
+ * days off. Filtering titles here instead is what let "Rosh Hashana LaBehemot" in.
+ */
 export function getQualifyingHolidayNamesForDate(
   dateKey: string,
   holidayMap: Map<string, string[]>,
 ): string[] {
-  return (holidayMap.get(dateKey) ?? []).filter(isQualifyingPremium150Holiday);
+  return [...(holidayMap.get(dateKey) ?? [])];
 }
 
 /**
@@ -283,6 +288,7 @@ function accumulateDailyAttendance(
   to: string,
   holidayMap: Map<string, string[]>,
   excludedDateKeys: Set<string>,
+  generalAbsenceHoursByDate: Map<string, number> = new Map(),
 ): { rawMissingMs: number; rawOvertime125Ms: number; rawOvertime150Ms: number } {
   let rawMissingMs = 0;
   let rawOvertime125Ms = 0;
@@ -294,19 +300,29 @@ function accumulateDailyAttendance(
     if (isDeficitTrackingWorkday(dateKey, holidayMap)) {
       if (excludedDateKeys.has(dateKey)) {
         // Sick / vacation day — no missing hours; any overtime still counts.
-        if (workedMs > REQUIRED_DAILY_MS) {
-          const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - REQUIRED_DAILY_MS);
+        if (workedMs > OVERTIME_BASE_DAILY_MS) {
+          const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - OVERTIME_BASE_DAILY_MS);
           rawOvertime125Ms += overtime125Ms;
           rawOvertime150Ms += overtime150Ms;
         }
         continue;
       }
 
-      const dailyBalanceMs = workedMs - REQUIRED_DAILY_MS;
-      if (dailyBalanceMs < 0) {
-        rawMissingMs += -dailyBalanceMs;
-      } else if (dailyBalanceMs > 0) {
-        const { overtime125Ms, overtime150Ms } = splitOvertimeMs(dailyBalanceMs);
+      // A timed general absence reduces what the day owes, so being out for three
+      // hours does not read as three missing hours. The overtime base stays at nine:
+      // an absence shortens the day, it does not make the rest of it overtime.
+      const requiredMs = Math.max(
+        0,
+        REQUIRED_DAILY_MS - hoursToMs(generalAbsenceHoursByDate.get(dateKey) ?? 0),
+      );
+
+      // Two different thresholds on purpose: attendance is owed REQUIRED_DAILY_HOURS,
+      // while overtime only starts after OVERTIME_BASE_DAILY_HOURS. Hours in between
+      // are the unpaid break window — neither missing nor payable overtime.
+      if (workedMs < requiredMs) {
+        rawMissingMs += requiredMs - workedMs;
+      } else if (workedMs > OVERTIME_BASE_DAILY_MS) {
+        const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - OVERTIME_BASE_DAILY_MS);
         rawOvertime125Ms += overtime125Ms;
         rawOvertime150Ms += overtime150Ms;
       }
@@ -323,7 +339,7 @@ function accumulateDailyAttendance(
 }
 
 export function buildSickAndVacationDateKeys(
-  entries: Array<Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_date' | 'end_date'>>,
+  entries: UnavailabilityDayEffectInput[],
   from: string,
   to: string,
   holidayMap: Map<string, string[]> = new Map(),
@@ -343,7 +359,7 @@ export function buildSickAndVacationDateKeys(
  * (Sun–Thu, excluding the nine qualifying Jewish holidays).
  */
 export function countPaidUnavailabilityWorkdays(
-  entries: Array<Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_date' | 'end_date'>>,
+  entries: UnavailabilityDayEffectInput[],
   type: 'sick_days' | 'vacation',
   from: string,
   to: string,
@@ -364,7 +380,7 @@ export function calculateEmployeeExtraHours(
   holidayMap: Map<string, string[]>,
   from: string,
   to: string,
-  unavailabilities: Array<Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_date' | 'end_date'>> = [],
+  unavailabilities: UnavailabilityDayEffectInput[] = [],
   nowMs = Date.now(),
 ): EmployeeExtraHoursTotals {
   const counted = filterCountedClockInRecords(records);
@@ -377,6 +393,7 @@ export function calculateEmployeeExtraHours(
     to,
     holidayMap,
     excludedDays,
+    buildGeneralAbsenceHoursByDate(unavailabilities, from, to),
   );
 
   const offset = offsetMissingAgainstOvertimeHours(
@@ -407,7 +424,10 @@ export async function preloadHolidayMapsForRange(from: string, to: string): Prom
   await preloadHolidayYears([...years]);
 }
 
-/** Build a merged holiday map for a date range (call preloadHolidayMapsForRange first). */
+/**
+ * Statutory days off in a date range (call preloadHolidayMapsForRange first).
+ * Minor holidays and Rosh Chodesh are excluded — they are normal working days.
+ */
 export function buildHolidayMapForRange(from: string, to: string): Map<string, string[]> {
   const years = new Set<number>();
   const [fromY] = from.split('-').map(Number);
@@ -417,7 +437,7 @@ export function buildHolidayMapForRange(from: string, to: string): Map<string, s
 
   const mergedHolidayMap = new Map<string, string[]>();
   for (const year of years) {
-    const yearMap = getHolidaysForYearMap(year);
+    const yearMap = getPremiumHolidaysForYearMap(year);
     for (const [date, names] of yearMap) {
       if (date < from || date > to) continue;
       mergedHolidayMap.set(date, names);
@@ -434,7 +454,7 @@ export function calculateExtraHoursByEmployee(
   to: string,
   unavailabilitiesByEmployee: Map<
     number,
-    Array<Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_date' | 'end_date'>>
+    UnavailabilityDayEffectInput[]
   > = new Map(),
   nowMs = Date.now(),
 ): Map<number, EmployeeExtraHoursTotals> {
@@ -460,7 +480,7 @@ export function calculateExtraHoursByEmployee(
 export function getHolidayMapForDateKey(dateKey: string): Map<string, string[]> {
   const year = Number(dateKey.slice(0, 4));
   if (!Number.isFinite(year)) return new Map();
-  return getHolidaysForYearMap(year);
+  return getPremiumHolidaysForYearMap(year);
 }
 
 export function calculateEmployeeExtraHoursForRange(
@@ -468,7 +488,7 @@ export function calculateEmployeeExtraHoursForRange(
   minHours: number,
   from: string,
   to: string,
-  unavailabilities: Array<Pick<EmployeeUnavailabilityEntry, 'unavailability_type' | 'start_date' | 'end_date'>> = [],
+  unavailabilities: UnavailabilityDayEffectInput[] = [],
   nowMs = Date.now(),
 ): EmployeeExtraHoursTotals {
   return calculateEmployeeExtraHours(

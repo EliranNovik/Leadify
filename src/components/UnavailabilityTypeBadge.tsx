@@ -15,9 +15,13 @@ interface UnavailabilityTypeBadgeProps {
   size?: 'sm' | 'xs' | 'md';
   borderless?: boolean;
   className?: string;
+  deductedHoursLabel?: string;
+  tooltip?: string;
+  displayLabel?: string;
+  subtitle?: string;
 }
 
-function UnavailabilityTypeIcon({
+export function UnavailabilityTypeIcon({
   type,
   className,
 }: {
@@ -42,20 +46,52 @@ const UnavailabilityTypeBadge: React.FC<UnavailabilityTypeBadgeProps> = ({
   size = 'sm',
   borderless = false,
   className = '',
+  deductedHoursLabel,
+  tooltip,
+  displayLabel,
+  subtitle,
 }) => {
   const sizeClass =
     size === 'xs' ? 'badge-xs' : size === 'md' ? 'badge-md text-sm font-medium' : 'badge-sm';
   const iconSize = size === 'md' ? 'h-5 w-5 shrink-0' : size === 'xs' ? 'h-4 w-4 shrink-0' : 'h-5 w-5 shrink-0';
 
-  return (
+  const badge = (
     <span
-      className={`badge inline-flex items-center gap-1.5 ${sizeClass} ${unavailabilityTypeBadgeClass(type)} ${borderless ? 'border-0' : ''} ${className}`.trim()}
+      className={`badge inline-flex items-center gap-1.5 ${sizeClass} ${
+        subtitle ? 'h-auto min-h-0 py-1.5' : ''
+      } ${unavailabilityTypeBadgeClass(type)} ${borderless ? 'border-0' : ''} ${className}`.trim()}
     >
       <UnavailabilityTypeIcon type={type} className={iconSize} />
-      {unavailabilityTypeLabel(type)}
+      {subtitle ? (
+        <span className="flex min-w-0 flex-col items-start leading-tight">
+          <span className="font-semibold">{displayLabel || unavailabilityTypeLabel(type)}</span>
+          <span
+            className="max-w-[9rem] truncate text-xs font-normal opacity-75"
+            title={subtitle}
+          >
+            {subtitle}
+          </span>
+        </span>
+      ) : (
+        displayLabel || unavailabilityTypeLabel(type)
+      )}
+    </span>
+  );
+
+  if (!deductedHoursLabel) return badge;
+
+  return (
+    <span
+      className="relative inline-flex"
+      title={tooltip}
+      aria-label={tooltip}
+    >
+      {badge}
+      <span className="badge badge-error badge-xs absolute -right-2 -top-2 z-10 border-0 font-bold text-white shadow-sm">
+        -{deductedHoursLabel}
+      </span>
     </span>
   );
 };
 
-export { UnavailabilityTypeIcon };
 export default UnavailabilityTypeBadge;

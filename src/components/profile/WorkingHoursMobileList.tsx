@@ -16,18 +16,15 @@ import {
   durationVsMinHoursTone,
   formatWorkingHoursDateLabel,
   formatWorkingHoursWeekday,
-  sumClockDurations,
 } from '../../lib/employeeClockInFormat';
 import {
   clockInApprovalRowClass,
   clockInApprovalWatermarkLabel,
-  filterCountedClockInRecords,
   formatDayDeclineNotes,
   getDayClockInApprovalStatus,
 } from '../../lib/employeeClockInApproval';
 import {
   clockSessionsForDisplay,
-  sumCountedClockDurationsMs,
   type DailyClockInSummary,
   type ClockSessionSummary,
 } from '../../lib/workingHoursExport';
@@ -38,6 +35,7 @@ import {
   unavailabilityApprovalWatermarkLabel,
   unavailabilityReasonText,
   unavailabilityTypeLabel,
+  timedGeneralAbsenceBadgeDetails,
   type EmployeeUnavailabilityDayRow,
 } from '../../lib/employeeUnavailabilities';
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
@@ -106,6 +104,8 @@ export type WorkingHoursMobileDayRow = {
   isMissingPlaceholder?: boolean;
   isHolidayPlaceholder?: boolean;
   isWeekendPlaceholder?: boolean;
+  isFuturePlaceholder?: boolean;
+  isHolidayOffPlaceholder?: boolean;
   isWeekend?: boolean;
   holidayNames?: string[];
 };
@@ -139,6 +139,7 @@ type WorkingHoursMobileListProps = {
   deletingRowKey: string | null;
   deletingClockInDay: string | null;
   recordsByDay: Map<string, ClockInRow[]>;
+  effectiveWorkedMsForDay: (dateKey: string, records: ClockInRow[]) => number;
   minHours: number;
   getWeekAccentColor: (weekNum: number) => string;
   isRowLocked: (dateKey: string) => boolean;
@@ -150,6 +151,9 @@ type WorkingHoursMobileListProps = {
   onDeleteUnavailability: (row: EmployeeUnavailabilityDayRow) => void;
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
+  onAddClockIn: (dateKey: string) => void;
+  /** Days whose hours are auto-filled and so have no stored row to edit. */
+  isAutoFilledDay: (dateKey: string) => boolean;
   onViewDocument: (doc: {
     url: string;
     name: string;
@@ -158,6 +162,11 @@ type WorkingHoursMobileListProps = {
     bucketName?: string;
   }) => void;
 };
+
+function durationLabel(totalMs: number): string {
+  const safeMs = Math.max(0, totalMs);
+  return `${Math.floor(safeMs / 3_600_000)}h ${Math.floor((safeMs % 3_600_000) / 60_000)}m`;
+}
 
 function MobileDateLabel({
   dateKey,
@@ -236,6 +245,7 @@ function MobileDayActions({
   dateKey,
   unavailabilities,
   hasClock,
+  autoFilledClock,
   readOnly,
   loading,
   deletingRowKey,
@@ -244,10 +254,12 @@ function MobileDayActions({
   onDeleteUnavailability,
   onEditClockIn,
   onDeleteClockIn,
+  onAddClockIn,
 }: {
   dateKey: string;
   unavailabilities: EmployeeUnavailabilityDayRow[];
   hasClock: boolean;
+  autoFilledClock: boolean;
   readOnly: boolean;
   loading: boolean;
   deletingRowKey: string | null;
@@ -256,6 +268,7 @@ function MobileDayActions({
   onDeleteUnavailability: (row: EmployeeUnavailabilityDayRow) => void;
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
+  onAddClockIn: (dateKey: string) => void;
 }) {
   if (readOnly || (!hasClock && unavailabilities.length === 0)) return null;
 
@@ -296,7 +309,18 @@ function MobileDayActions({
           </React.Fragment>
         );
       })}
-      {hasClock && (
+      {hasClock && autoFilledClock && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
+          disabled={loading}
+          onClick={() => onAddClockIn(dateKey)}
+        >
+          <PlusIcon className="w-4 h-4" />
+          Add clock-in
+        </button>
+      )}
+      {hasClock && !autoFilledClock && (
         <>
           <button
             type="button"
@@ -338,6 +362,7 @@ export default function WorkingHoursMobileList({
   deletingRowKey,
   deletingClockInDay,
   recordsByDay,
+  effectiveWorkedMsForDay,
   minHours,
   getWeekAccentColor,
   isRowLocked,
@@ -349,6 +374,8 @@ export default function WorkingHoursMobileList({
   onDeleteUnavailability,
   onEditClockIn,
   onDeleteClockIn,
+  onAddClockIn,
+  isAutoFilledDay,
   onViewDocument,
 }: WorkingHoursMobileListProps) {
   if (loading) {
@@ -386,20 +413,32 @@ export default function WorkingHoursMobileList({
         ) : null;
 
         const isPlaceholder =
-          row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isWeekendPlaceholder;
+          row.isMissingPlaceholder ||
+          row.isHolidayPlaceholder ||
+          row.isWeekendPlaceholder ||
+          row.isFuturePlaceholder ||
+          row.isHolidayOffPlaceholder;
         const isWeekend = row.isWeekendPlaceholder === true;
         const isBulkSelectable =
           bulkSelectMode &&
-          (row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isWeekendPlaceholder) &&
+          (
+            row.isMissingPlaceholder ||
+            row.isHolidayPlaceholder ||
+            row.isWeekendPlaceholder ||
+            row.isFuturePlaceholder
+          ) &&
           !isMonthSubmitted;
         const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
         const readOnly = isRowLocked(row.dateKey);
 
         if (isPlaceholder) {
           const isHoliday = row.isHolidayPlaceholder;
+          const isHolidayOff = row.isHolidayOffPlaceholder === true;
           const holidayLabel = row.holidayNames?.[0];
           const hintText = isWeekend
             ? 'Weekend'
+            : isHolidayOff
+              ? `${holidayLabel || 'Holiday'}\nPaid day off`
             : isHoliday
               ? holidayLabel
                 ? `${holidayLabel}\nno entry yet`
@@ -473,6 +512,7 @@ export default function WorkingHoursMobileList({
 
         const hasClock = row.clock != null;
         const dayRecords = recordsByDay.get(row.dateKey) ?? [];
+        const autoFilledClock = hasClock && isAutoFilledDay(row.dateKey);
         const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
           hasManualClockSummary: row.clock?.hasManual === true,
         });
@@ -511,14 +551,21 @@ export default function WorkingHoursMobileList({
                 <MobileField label="Unavailability">
                   {row.unavailabilities.length > 0 ? (
                     <div className="flex flex-col gap-1.5">
-                      {row.unavailabilities.map((u) => (
-                        <UnavailabilityTypeBadge
-                          key={`${u.id}-${u.date}`}
-                          type={u.unavailability_type}
-                          size="md"
-                          borderless
-                        />
-                      ))}
+                      {row.unavailabilities.map((u) => {
+                        const details = timedGeneralAbsenceBadgeDetails(u);
+                        return (
+                          <UnavailabilityTypeBadge
+                            key={`${u.id}-${u.date}`}
+                            type={u.unavailability_type}
+                            size="md"
+                            borderless
+                            deductedHoursLabel={details?.deductedLabel}
+                            tooltip={details?.tooltip}
+                            displayLabel={details?.periodLabel}
+                            subtitle={details ? u.general_reason?.trim() || 'No details' : undefined}
+                          />
+                        );
+                      })}
                     </div>
                   ) : (
                     <span className="text-gray-400">—</span>
@@ -527,15 +574,14 @@ export default function WorkingHoursMobileList({
                 <MobileField label="Total">
                   {hasClock ? (
                     (() => {
-                      const counted = filterCountedClockInRecords(dayRecords);
-                      const workedMs = sumCountedClockDurationsMs(counted);
+                      const workedMs = effectiveWorkedMsForDay(row.dateKey, dayRecords);
                       const tone = durationVsMinHoursTone(workedMs, minHours);
                       return (
                         <span
                           className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold w-fit ${durationVsMinHoursBadgeClass(tone)}`}
                           title={durationVsMinHoursTitle(tone, minHours)}
                         >
-                          {sumClockDurations(counted)}
+                          {durationLabel(workedMs)}
                         </span>
                       );
                     })()
@@ -640,6 +686,8 @@ export default function WorkingHoursMobileList({
                 onDeleteUnavailability={onDeleteUnavailability}
                 onEditClockIn={onEditClockIn}
                 onDeleteClockIn={onDeleteClockIn}
+                onAddClockIn={onAddClockIn}
+                autoFilledClock={autoFilledClock}
               />
             </div>
           </React.Fragment>

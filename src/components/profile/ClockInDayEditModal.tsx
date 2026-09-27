@@ -3,6 +3,7 @@ import { toast } from 'react-hot-toast';
 import { fetchActiveClockInLocations, isRamatGanClockInLocation, type ClockInLocationOption } from '../../lib/clockInLocations';
 import {
   clockInSessionToFormValues,
+  insertManualClockInRecord,
   updateClockInSessions,
   type ClockInSessionUpdate,
 } from '../../lib/employeeClockInManual';
@@ -10,7 +11,6 @@ import { unavailabilityDateLabel } from '../../lib/employeeUnavailabilities';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import {
-  fetchEmployeeMinHours,
   overtimeApprovalRequiredError,
   uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
@@ -18,7 +18,7 @@ import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import ClockInOvertimeApprovalBox, {
-  clockInOutTimesExceedMinHours,
+  clockInOutTimesExceedOvertimeBase,
 } from './ClockInOvertimeApprovalBox';
 
 export type ClockInDaySession = {
@@ -37,8 +37,10 @@ export type ClockInDaySession = {
 interface ClockInDayEditModalProps {
   isOpen: boolean;
   employeeId: number;
+  userId: string;
   dateKey: string;
   sessions: ClockInDaySession[];
+  createFromAutoFill?: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -48,8 +50,10 @@ type SessionFormRow = ClockInSessionUpdate;
 const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   isOpen,
   employeeId,
+  userId,
   dateKey,
   sessions,
+  createFromAutoFill = false,
   onClose,
   onSaved,
 }) => {
@@ -58,7 +62,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
-  const [minHours, setMinHours] = useState(8);
   const [overtimeFiles, setOvertimeFiles] = useState<Record<number, File | null>>({});
 
   useEffect(() => {
@@ -66,7 +69,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
     setFormRows(sessions.map((s) => clockInSessionToFormValues(s)));
     setOvertimeFiles({});
     void fetchActiveClockInLocations().then(setWorkplaces);
-    void fetchEmployeeMinHours(employeeId).then(setMinHours);
   }, [isOpen, sessions, employeeId]);
 
   const updateRow = (id: number, patch: Partial<SessionFormRow>) => {
@@ -86,7 +88,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   );
 
   const rowMissingOvertimeDoc = (row: SessionFormRow): boolean => {
-    if (!clockInOutTimesExceedMinHours(row.clockInTime, row.clockOutTime, minHours)) {
+    if (!clockInOutTimesExceedOvertimeBase(row.clockInTime, row.clockOutTime)) {
       return false;
     }
     return !overtimeFiles[row.id] && !existingOvertimeById[row.id]?.path;
@@ -100,13 +102,13 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
       const rowsToSave: ClockInSessionUpdate[] = [];
       for (const row of formRows) {
         const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
-        const exceeds = clockInOutTimesExceedMinHours(row.clockInTime, row.clockOutTime, minHours);
+        const exceeds = clockInOutTimesExceedOvertimeBase(row.clockInTime, row.clockOutTime);
         const file = overtimeFiles[row.id] ?? null;
         let overtimeApproval = row.overtimeApproval ?? null;
         if (exceeds && file) {
           overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, file);
         } else if (exceeds && !existingOvertimeById[row.id]?.path) {
-          throw overtimeApprovalRequiredError(minHours);
+          throw overtimeApprovalRequiredError();
         }
         rowsToSave.push({
           ...row,
@@ -115,8 +117,32 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
           overtimeApproval,
         });
       }
-      await updateClockInSessions(rowsToSave);
-      toast.success('Clock-in entries updated');
+      if (createFromAutoFill) {
+        const row = rowsToSave[0];
+        if (!row) return;
+        await insertManualClockInRecord({
+          employeeId,
+          userId,
+          date: dateKey,
+          clockInTime: row.clockInTime,
+          clockOutTime: row.clockOutTime,
+          notes: row.notes,
+          clockInLocationId: row.clockInLocationId,
+          clockOutLocationId: row.clockOutLocationId,
+          overtimeApproval: row.overtimeApproval,
+          approveAutomatically: !clockInOutTimesExceedOvertimeBase(
+            row.clockInTime,
+            row.clockOutTime,
+          ),
+        });
+      } else {
+        await updateClockInSessions(rowsToSave);
+      }
+      toast.success(
+        createFromAutoFill
+          ? 'Auto-added hours replaced with your edited hours'
+          : 'Clock-in entries updated',
+      );
       onSaved();
       onClose();
     } catch (err) {
@@ -148,7 +174,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
     const missing = formRows.find(rowMissingOvertimeDoc);
     if (missing) {
-      toast.error(overtimeApprovalRequiredError(minHours).message);
+      toast.error(overtimeApprovalRequiredError().message);
       return;
     }
 
@@ -163,6 +189,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   };
 
   const hadAutomatic = sessions.some((s) => !s.manually);
+  const submitMissingOvertimeDocument = formRows.some(rowMissingOvertimeDoc);
 
   return (
     <>
@@ -170,9 +197,46 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
         open={isOpen}
         onClose={onClose}
         title="Edit clock-in / out"
-        onSave={() => void handleSave()}
-        saving={saving}
-        saveDisabled={formRows.length === 0 || formRows.some(rowMissingRamatGanNotes)}
+        headerClassName="border-b-0"
+        footerClassName="border-t-0"
+        footer={
+          <div className="flex w-full items-center justify-end gap-2">
+            <button
+              type="button"
+              className="btn btn-ghost h-10 min-h-10 rounded-full px-5"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <span
+              className={submitMissingOvertimeDocument ? 'tooltip tooltip-top' : ''}
+              data-tip={
+                submitMissingOvertimeDocument
+                  ? 'Upload the overtime approval document before submitting.'
+                  : undefined
+              }
+            >
+              <button
+                type="button"
+                className="btn btn-primary h-10 min-h-10 rounded-full px-8"
+                onClick={() => void handleSave()}
+                disabled={
+                  saving ||
+                  formRows.length === 0 ||
+                  formRows.some(rowMissingRamatGanNotes) ||
+                  submitMissingOvertimeDocument
+                }
+              >
+                {saving ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  'Submit for approval'
+                )}
+              </button>
+            </span>
+          </div>
+        }
         mobileFullHeight
       >
         <div className="space-y-4">
@@ -183,6 +247,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
               className="input input-bordered w-full"
               value={unavailabilityDateLabel(dateKey)}
               readOnly
+              disabled
             />
           </label>
 
@@ -190,16 +255,17 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
           {hadAutomatic && (
             <p className="text-sm text-gray-500 bg-base-200/60 rounded-lg px-3 py-2">
-              Saving will mark edited entries as <strong>Manual</strong>.
+              {createFromAutoFill
+                ? <>Saving will replace the auto-added hours with a <strong>manual entry</strong>.</>
+                : <>Saving will mark edited entries as <strong>Manual</strong>.</>}
             </p>
           )}
 
           <div className="space-y-4">
             {formRows.map((row, index) => {
-              const exceeds = clockInOutTimesExceedMinHours(
+              const exceeds = clockInOutTimesExceedOvertimeBase(
                 row.clockInTime,
                 row.clockOutTime,
-                minHours,
               );
               const ramatGanRow = (() => {
                 const wp = rowWorkplace(row);
@@ -262,7 +328,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
                   {exceeds && (
                     <ClockInOvertimeApprovalBox
-                      minHours={minHours}
                       clockInTime={row.clockInTime}
                       clockOutTime={row.clockOutTime}
                       dateKeys={[dateKey]}

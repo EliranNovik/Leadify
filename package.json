@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "NODE_OPTIONS=--max-old-space-size=8192 vite build",
     "preview": "vite preview",
+    "test": "esbuild src/lib/*.test.ts --bundle --platform=node --format=cjs --outdir=node_modules/.cache/crm-tests --out-extension:.js=.cjs --log-level=warning --define:import.meta.env='{\"VITE_SUPABASE_URL\":\"http://127.0.0.1:54321\",\"VITE_SUPABASE_ANON_KEY\":\"test-anon-key\"}' && node --test node_modules/.cache/crm-tests",
     "insert-test-data": "node scripts/insert_test_data.js",
     "websocket": "node websocket-server.js",
     "start-websocket": "node start-websocket.js"

@@ -8,6 +8,7 @@ import {
 import { insertClockInRevision } from './employeeClockInRevisions';
 import {
   assertManualDurationAllowed,
+  clockSessionExceedsOvertimeBase,
   type ClockInOvertimeApprovalFileMeta,
 } from './employeeClockInOvertimeApproval';
 
@@ -24,6 +25,8 @@ export type ManualClockInPayload = {
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
   overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
+  /** Used when replacing derived standard hours that remain within the overtime limit. */
+  approveAutomatically?: boolean;
 };
 
 function combineDateAndTime(date: string, time: string): Date {
@@ -69,7 +72,6 @@ export async function insertManualClockInRecord(
   // Cap is read from tenants_employee.min_hours at save time only.
   // Stored clock_in_time / clock_out_time stay exactly as entered.
   await assertManualDurationAllowed({
-    employeeId: payload.employeeId,
     clockInTime: payload.clockInTime,
     clockOutTime: payload.clockOutTime,
     overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
@@ -85,11 +87,11 @@ export async function insertManualClockInRecord(
     user_id: employeeUserId,
     clock_in_time: clockIn.toISOString(),
     clock_out_time: clockOut.toISOString(),
-    manually: true,
-    approved: false,
+    manually: payload.approveAutomatically !== true,
+    approved: payload.approveAutomatically === true,
     declined: false,
     approved_by: null,
-    approved_at: null,
+    approved_at: payload.approveAutomatically === true ? new Date().toISOString() : null,
     is_active: false,
     notes: payload.notes?.trim() || null,
     location_source: 'manual',
@@ -226,7 +228,6 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
   }
 
   await assertManualDurationAllowed({
-    employeeId: existing.employee_id,
     clockInTime: update.clockInTime,
     clockOutTime: update.clockOutTime,
     overtimeApprovalStoragePath:
@@ -256,6 +257,11 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     && (existing.manually !== true || existing.approved === true);
 
   const preserveApproval = wasEffectivelyApproved && materialFieldsUnchanged;
+  const requiresOvertimeApproval = clockSessionExceedsOvertimeBase(
+    update.clockInTime,
+    update.clockOutTime,
+  );
+  const approveAutomatically = !requiresOvertimeApproval;
 
   if (!preserveApproval) {
     await insertClockInRevision(
@@ -269,13 +275,18 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     clock_in_time: clockIn.toISOString(),
     clock_out_time: clockOut.toISOString(),
     is_active: false,
-    manually: true,
+    manually: requiresOvertimeApproval,
     notes: update.notes?.trim() || null,
     location_source: 'manual',
-    approved: preserveApproval,
+    approved: approveAutomatically || preserveApproval,
     declined: false,
     approved_by: preserveApproval ? existing.approved_by : null,
-    approved_at: preserveApproval ? existing.approved_at : null,
+    approved_at:
+      approveAutomatically
+        ? existing.approved_at || new Date().toISOString()
+        : preserveApproval
+          ? existing.approved_at
+          : null,
   };
 
   const overtimePath =

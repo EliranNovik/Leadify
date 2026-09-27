@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { normalizeEmployeeMinHours } from './employeeLeadReporting';
+import { NINE_HOURS_MS } from './employeeClockInOvertime';
 import {
   CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS,
   buildHelpContactWhatsAppUrl,
@@ -38,14 +38,21 @@ export function clockSessionDurationMinutes(clockInTime: string, clockOutTime: s
   return end.hours * 60 + end.minutes - (start.hours * 60 + start.minutes);
 }
 
-export function clockSessionExceedsMinHours(
+/**
+ * Hours a session may run before it needs an overtime approval.
+ *
+ * Fixed company-wide rather than the employee's own min_hours, so overtime means the same
+ * thing on every contract — the same nine-hour day the auto clock-out and the 125% / 150%
+ * calculation are built around.
+ */
+export const OVERTIME_APPROVAL_BASE_HOURS = NINE_HOURS_MS / 3_600_000;
+
+export function clockSessionExceedsOvertimeBase(
   clockInTime: string,
   clockOutTime: string,
-  minHours: number,
 ): boolean {
   const minutes = clockSessionDurationMinutes(clockInTime, clockOutTime);
-  const capMinutes = Math.round(normalizeEmployeeMinHours(minHours) * 60);
-  return minutes > capMinutes;
+  return minutes > OVERTIME_APPROVAL_BASE_HOURS * 60;
 }
 
 export function formatClockSessionDurationLabel(clockInTime: string, clockOutTime: string): string {
@@ -69,7 +76,6 @@ export function formatOvertimeSessionDateLabel(dateKey: string): string {
 }
 
 export function buildOvertimeApprovalWhatsAppMessage(params: {
-  minHours: number;
   clockInTime: string;
   clockOutTime: string;
   dateKeys?: string[];
@@ -84,21 +90,10 @@ export function buildOvertimeApprovalWhatsAppMessage(params: {
     ? `${datePart}, ${params.clockInTime}–${params.clockOutTime} (${durationLabel})`
     : `${params.clockInTime}–${params.clockOutTime} (${durationLabel})`;
   const initial =
-    `Hi Michael, I need overtime approval to clock in more than my ${params.minHours}h base hours. Planned session: ${session}.`;
+    `Hi Michael, I need overtime approval to clock in more than the ${OVERTIME_APPROVAL_BASE_HOURS}h standard day. Planned session: ${session}.`;
   const extraNotes = params.notes?.trim();
   if (!extraNotes) return initial;
   return `${initial}\n\nAdditional notes:\n${extraNotes}`;
-}
-
-/** Read-only. Never writes `min_hours` or rewrites stored clock-in/out times. */
-export async function fetchEmployeeMinHours(employeeId: number): Promise<number> {
-  const { data } = await supabase
-    .from('tenants_employee')
-    .select('min_hours')
-    .eq('id', employeeId)
-    .maybeSingle();
-
-  return normalizeEmployeeMinHours(data?.min_hours);
 }
 
 export async function fetchMichaelDeckerWhatsAppUrl(
@@ -129,24 +124,20 @@ export async function fetchMichaelDeckerWhatsAppUrl(
   return `${url}?text=${encodeURIComponent(message)}`;
 }
 
-export function overtimeApprovalRequiredError(minHours: number): Error {
+export function overtimeApprovalRequiredError(): Error {
   return new Error(
-    `Clock-in/out is longer than your ${minHours}h base hours. Get WhatsApp approval from Michael Decker and upload the screenshot before saving.`,
+    `Clock-in/out is longer than the ${OVERTIME_APPROVAL_BASE_HOURS}h standard day. Get WhatsApp approval from Michael Decker and upload the screenshot before saving.`,
   );
 }
 
 export async function assertManualDurationAllowed(params: {
-  employeeId: number;
   clockInTime: string;
   clockOutTime: string;
   overtimeApprovalStoragePath?: string | null;
 }): Promise<void> {
-  const minHours = await fetchEmployeeMinHours(params.employeeId);
-  if (!clockSessionExceedsMinHours(params.clockInTime, params.clockOutTime, minHours)) {
-    return;
-  }
+  if (!clockSessionExceedsOvertimeBase(params.clockInTime, params.clockOutTime)) return;
   if (params.overtimeApprovalStoragePath?.trim()) return;
-  throw overtimeApprovalRequiredError(minHours);
+  throw overtimeApprovalRequiredError();
 }
 
 export function isAllowedOvertimeApprovalFile(file: File): string | null {

@@ -5,6 +5,8 @@ import {
   CheckIcon,
   ClockIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   PencilSquareIcon,
   PlusIcon,
   SquaresPlusIcon,
@@ -17,6 +19,8 @@ import { toast } from 'react-hot-toast';
 import { FaFileExcel } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
 import CompactAvailabilityCalendar, {
+  AvailabilityViewTabs,
+  type AvailabilityCalendarView,
   type CompactAvailabilityCalendarRef,
 } from '../CompactAvailabilityCalendar';
 import {
@@ -37,9 +41,9 @@ import {
   formatWorkingHoursDateLabel,
   formatWorkingHoursWeekday,
   getSundayWeekStartKey,
+  eachDayInRange,
   isIsraeliWorkdayIso,
   monthRange,
-  sumClockDurations,
   toDateInputValue,
   filterClockInRecordsToLocalMonth,
 } from '../../lib/employeeClockInFormat';
@@ -47,6 +51,12 @@ import { normalizeEmployeeMinHours } from '../../lib/employeeLeadReporting';
 import {
   preloadHolidayYears,
 } from '../../lib/israeliJewishHolidays';
+import { buildHolidayMapForRange, isDeficitTrackingWorkday } from '../../lib/employeeExtraHours';
+import {
+  isAutoFilledClockInRecord,
+  isAutoFilledOnlyDay,
+  withAutoFilledClockInRecords,
+} from '../../lib/autoFilledWorkingHours';
 import { deleteClockInSessions } from '../../lib/employeeClockInManual';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
@@ -60,6 +70,9 @@ import {
   countUnavailabilityApprovalBlockersInMonth,
   getUnavailabilityApprovalStatus,
   isGeneralUnavailability,
+  buildGeneralAbsenceHoursByDate,
+  buildUnavailabilityDayEffects,
+  timedGeneralAbsenceBadgeDetails,
   unavailabilityApprovalWatermarkLabel,
   type EmployeeUnavailabilityEntry,
   type EmployeeUnavailabilityDayRow,
@@ -114,6 +127,8 @@ type ClockInRow = {
   overtime_approval_storage_path?: string | null;
   overtime_approval_file_name?: string | null;
   overtime_approval_mime_type?: string | null;
+  /** Set on synthetic standard-hours rows, which have no id to edit or delete. */
+  auto_filled?: boolean;
 };
 
 function collectDayOvertimeDocuments(dayRecords: ClockInRow[]) {
@@ -149,6 +164,7 @@ const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+const SHORT_MONTH_NAMES = MONTH_NAMES.map((name) => name.slice(0, 3));
 
 const MERGED_COL_SPAN = 8;
 const WH_PLACEHOLDER_HINT_COL_SPAN = MERGED_COL_SPAN - 3;
@@ -386,7 +402,7 @@ const SUBMIT_HOURS_BTN_CLASS =
   'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
 
 const CANCEL_SUBMISSION_BTN_CLASS =
-  'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-amber-50 text-amber-900 hover:bg-amber-100 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
+  'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 text-white shadow-md transition-all duration-200 bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500 hover:shadow-lg active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
 
 type WorkingHoursRowFilter = 'approved' | 'declined' | 'pending' | 'unavailability' | 'clock' | 'no-entry';
 
@@ -413,10 +429,21 @@ type MergedWorkingHoursDayRow = {
   isHolidayPlaceholder?: boolean;
   /** Fri/Sat with no entry — weekend marker row. */
   isWeekendPlaceholder?: boolean;
+  /** Future calendar day with no entry — shown without counting it as missing. */
+  isFuturePlaceholder?: boolean;
+  /** One of the statutory paid holidays (or its eve), with no required hours. */
+  isHolidayOffPlaceholder?: boolean;
   /** Fri/Sat day (with or without entries). */
   isWeekend?: boolean;
   holidayNames?: string[];
 };
+
+function workingHoursDurationLabel(totalMs: number): string {
+  const safeMs = Math.max(0, totalMs);
+  const hours = Math.floor(safeMs / 3_600_000);
+  const minutes = Math.floor((safeMs % 3_600_000) / 60_000);
+  return `${hours}h ${minutes}m`;
+}
 
 function buildFullMonthTableRows(
   mergedRows: MergedWorkingHoursDayRow[],
@@ -459,6 +486,23 @@ function buildFullMonthTableRows(
         isHolidayPlaceholder: true,
         holidayNames: day.holidayNames,
       });
+    } else if (day.status === 'future') {
+      rows.push({
+        dateKey: day.dateKey,
+        date: formatWorkingHoursDateLabel(day.dateKey),
+        clock: null,
+        unavailabilities: [],
+        isFuturePlaceholder: true,
+      });
+    } else if (day.status === 'holiday_off') {
+      rows.push({
+        dateKey: day.dateKey,
+        date: formatWorkingHoursDateLabel(day.dateKey),
+        clock: null,
+        unavailabilities: [],
+        isHolidayOffPlaceholder: true,
+        holidayNames: day.holidayNames,
+      });
     }
   }
 
@@ -475,8 +519,7 @@ function rowMatchesWorkingHoursFilters(
 
   const isNoEntryRow =
     row.isMissingPlaceholder === true
-    || row.isHolidayPlaceholder === true
-    || row.isWeekendPlaceholder === true;
+    || row.isHolidayPlaceholder === true;
   const hasClock = row.clock != null;
   const hasUnavail = row.unavailabilities.length > 0;
   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
@@ -636,6 +679,8 @@ type WorkingHoursRowActionsMenuProps = {
   dateKey: string;
   unavailabilities: EmployeeUnavailabilityDayRow[];
   hasClock: boolean;
+  /** Hours shown but not stored yet, so the only action is to record real ones. */
+  autoFilledClock?: boolean;
   loading: boolean;
   deletingRowKey: string | null;
   deletingClockInDay: string | null;
@@ -644,6 +689,7 @@ type WorkingHoursRowActionsMenuProps = {
   onDeleteUnavailability: (row: EmployeeUnavailabilityDayRow) => void;
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
+  onAddClockIn: (dateKey: string) => void;
 };
 
 const WORKING_HOURS_ACTIONS_MENU_EST_HEIGHT_PX = 120;
@@ -653,6 +699,7 @@ function WorkingHoursRowActionsMenu({
   dateKey,
   unavailabilities,
   hasClock,
+  autoFilledClock = false,
   loading,
   deletingRowKey,
   deletingClockInDay,
@@ -661,6 +708,7 @@ function WorkingHoursRowActionsMenu({
   onDeleteUnavailability,
   onEditClockIn,
   onDeleteClockIn,
+  onAddClockIn,
 }: WorkingHoursRowActionsMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
@@ -791,7 +839,24 @@ function WorkingHoursRowActionsMenu({
           <div className="border-t border-base-200" />
         </li>
       )}
-      {hasClock && (
+      {hasClock && autoFilledClock && (
+        <li role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="gap-2 text-sm"
+            disabled={isBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeAnd(() => onEditClockIn(dateKey));
+            }}
+          >
+            <PencilSquareIcon className="w-4 h-4" />
+            Edit auto-added hours
+          </button>
+        </li>
+      )}
+      {hasClock && !autoFilledClock && (
         <>
           <li role="none">
             <button
@@ -893,6 +958,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const { user } = useAuthContext();
   const calendarRef = useRef<CompactAvailabilityCalendarRef>(null);
   const hoursShellRef = useRef<HTMLDivElement>(null);
+  const headerMonthFilterRef = useRef<HTMLDetailsElement>(null);
+  const toolbarMonthFilterRef = useRef<HTMLDetailsElement>(null);
+  const addEntryMenuRef = useRef<HTMLDetailsElement>(null);
   const hasLoadedOnceRef = useRef(false);
   const now = useMemo(() => new Date(), []);
   const [year, setYear] = useState(() =>
@@ -922,6 +990,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const [loadingMonthSubmission, setLoadingMonthSubmission] = useState(false);
   const [cancellingSubmission, setCancellingSubmission] = useState(false);
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
+  const [calendarView, setCalendarView] = useState<AvailabilityCalendarView>('day');
+  const [calendarRangeLabel, setCalendarRangeLabel] = useState('');
   const [calendarViewYear, setCalendarViewYear] = useState(now.getFullYear());
   const [calendarViewMonth, setCalendarViewMonth] = useState(now.getMonth() + 1);
   const [calendarMonthRecords, setCalendarMonthRecords] = useState<ClockInRow[]>([]);
@@ -931,6 +1001,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const [editingRow, setEditingRow] = useState<EmployeeUnavailabilityDayRow | null>(null);
   const [deletingRowKey, setDeletingRowKey] = useState<string | null>(null);
   const [manualClockInOpen, setManualClockInOpen] = useState(false);
+  const [overtimeDatePickerOpen, setOvertimeDatePickerOpen] = useState(false);
+  const [overtimeDateKey, setOvertimeDateKey] = useState(() => toDateInputValue(new Date()));
+  const [addEntryOpenUpward, setAddEntryOpenUpward] = useState(false);
   const [bulkManualClockInOpen, setBulkManualClockInOpen] = useState(false);
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
   const [bulkSelectedDateKeys, setBulkSelectedDateKeys] = useState<Set<string>>(() => new Set());
@@ -946,8 +1019,23 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   } | null>(null);
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
   const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
+  const [scrollToTodayRequested, setScrollToTodayRequested] = useState(false);
+  const [selectedWeekNum, setSelectedWeekNum] = useState(1);
   const [manualClockInInitialDateKey, setManualClockInInitialDateKey] = useState<string | null>(null);
   const [pendingCalendarDateKey, setPendingCalendarDateKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    const closeDropdownsOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      [headerMonthFilterRef, toolbarMonthFilterRef, addEntryMenuRef].forEach((dropdownRef) => {
+        const details = dropdownRef.current;
+        if (details?.open && !details.contains(target)) details.open = false;
+      });
+    };
+    document.addEventListener('pointerdown', closeDropdownsOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeDropdownsOnOutsideClick);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1119,8 +1207,29 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     void loadMonthSubmission();
   }, [loadMonthSubmission]);
 
-  const dailyRows = useMemo(() => aggregateClockInRecordsByDay(records), [records]);
-  const periodTotal = sumClockDurations(filterCountedClockInRecords(records));
+  /**
+   * Real rows plus the standard hours auto-filled on untouched working days.
+   *
+   * Only the hour totals and the day list read this. `recordsByDay` deliberately stays on
+   * `records`, because an auto-filled day has no row in the database and so nothing for the
+   * edit or delete actions to act on.
+   */
+  const filledRecords = useMemo(
+    () =>
+      withAutoFilledClockInRecords({
+        employeeId: employeeId ?? 0,
+        minHours: employeeMinHours,
+        dateFrom,
+        dateTo,
+        holidayMap: buildHolidayMapForRange(dateFrom, dateTo),
+        existingRecords: records,
+        unavailabilities,
+      }) as ClockInRow[],
+    // holidayMapVersion: the holiday map fills in asynchronously after the first render.
+    [employeeId, employeeMinHours, dateFrom, dateTo, records, unavailabilities, holidayMapVersion],
+  );
+
+  const dailyRows = useMemo(() => aggregateClockInRecordsByDay(filledRecords), [filledRecords]);
 
   const monthSubmitApprovalBlockers = useMemo(() => {
     const clockBlockers = countClockInApprovalBlockersInMonth(records, year, month);
@@ -1153,7 +1262,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
   const recordsByDay = useMemo(() => {
     const map = new Map<string, ClockInRow[]>();
-    for (const record of records) {
+    for (const record of filledRecords) {
       const key = toDateInputValue(new Date(record.clock_in_time));
       const bucket = map.get(key);
       if (bucket) bucket.push(record);
@@ -1166,13 +1275,67 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       );
     }
     return map;
-  }, [records]);
+  }, [filledRecords]);
 
+  const generalAbsenceHoursByDate = useMemo(
+    () => buildGeneralAbsenceHoursByDate(unavailabilities, dateFrom, dateTo),
+    [unavailabilities, dateFrom, dateTo],
+  );
+
+  const effectiveWorkedMsForDay = useCallback(
+    (dateKey: string, dayRecords: ClockInRow[]) => {
+      const workedMs = sumCountedClockDurationsMs(filterCountedClockInRecords(dayRecords));
+      // Synthetic standard hours already have timed general unavailability deducted.
+      if (isAutoFilledOnlyDay(dayRecords)) return workedMs;
+      const absenceMs = (generalAbsenceHoursByDate.get(dateKey) ?? 0) * 3_600_000;
+      return Math.max(0, workedMs - absenceMs);
+    },
+    [generalAbsenceHoursByDate],
+  );
+
+  const periodTotalMs = useMemo(
+    () =>
+      [...recordsByDay.entries()].reduce(
+          (total, [dateKey, dayRecords]) =>
+            total + effectiveWorkedMsForDay(dateKey, dayRecords),
+          0,
+        ),
+    [recordsByDay, effectiveWorkedMsForDay],
+  );
+  const periodTotal = workingHoursDurationLabel(periodTotalMs);
+
+  /**
+   * Auto-filled days show their hours but have no row to edit, delete or annotate — the
+   * employee replaces them by adding a real clock-in, which takes the day over.
+   */
+  const isAutoFilledDay = useCallback(
+    (dateKey: string) => {
+      const dayRecords = recordsByDay.get(dateKey);
+      return Boolean(dayRecords?.length) && isAutoFilledOnlyDay(dayRecords!);
+    },
+    [recordsByDay],
+  );
+
+  /** Sessions a modal may act on: the real rows only. */
+  const editableRecordsForDay = useCallback(
+    (dateKey: string) =>
+      (recordsByDay.get(dateKey) ?? []).filter((record) => !isAutoFilledClockInRecord(record)),
+    [recordsByDay],
+  );
+
+  const editingAutoFilledDay = editingClockInDay
+    ? isAutoFilledDay(editingClockInDay)
+    : false;
   const editingClockInSessions = editingClockInDay
-    ? recordsByDay.get(editingClockInDay) ?? []
+    ? editingAutoFilledDay
+      ? (recordsByDay.get(editingClockInDay) ?? []).map((record, index) => ({
+          ...record,
+          id: -(index + 1),
+        }))
+      : editableRecordsForDay(editingClockInDay)
     : [];
   const editingNotesSessions = editingNotesDay
-    ? recordsByDay.get(editingNotesDay) ?? []
+    ? editableRecordsForDay(editingNotesDay)
     : [];
 
   const unavailabilityDayRows = useMemo(
@@ -1202,11 +1365,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     return buildWorkingHoursMonthCoverage(
       year,
       month,
-      filterCountedClockInRecords(records),
+      filterCountedClockInRecords(filledRecords),
       filterCountedUnavailability(unavailabilities),
       { pendingApprovalDates },
     );
-  }, [year, month, records, unavailabilities, unavailabilityDayRows, recordsByDay, holidayMapVersion]);
+  }, [year, month, filledRecords, unavailabilities, unavailabilityDayRows, recordsByDay, holidayMapVersion]);
 
   const tableDayRows = useMemo(
     () => buildFullMonthTableRows(mergedDayRows, monthCoverage.days),
@@ -1237,6 +1400,28 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () => buildMonthWeekNumberLookup(year, month),
     [year, month],
   );
+  const availableWeekNumbers = useMemo(
+    () => [...new Set(monthWeekLookup.values())].sort((a, b) => a - b),
+    [monthWeekLookup],
+  );
+  const weeksWithUnavailability = useMemo(() => {
+    const weeks = new Set<number>();
+    unavailabilityDayRows.forEach((row) => {
+      const weekNum = monthWeekLookup.get(row.date);
+      if (weekNum != null) weeks.add(weekNum);
+    });
+    return weeks;
+  }, [unavailabilityDayRows, monthWeekLookup]);
+
+  useEffect(() => {
+    const today = new Date();
+    const todayKey = toDateInputValue(today);
+    const defaultWeek =
+      today.getFullYear() === year && today.getMonth() + 1 === month
+        ? monthWeekLookup.get(todayKey)
+        : availableWeekNumbers[0];
+    setSelectedWeekNum(defaultWeek ?? 1);
+  }, [year, month, monthWeekLookup, availableWeekNumbers]);
 
   const weekRowMeta = useMemo(
     () => buildWorkingHoursWeekRowMeta(filteredMergedDayRows, monthWeekLookup),
@@ -1261,6 +1446,20 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     });
     return sections;
   }, [filteredMergedDayRows, weekRowMeta]);
+  const displayedDayRows = useMemo(
+    () => selectedWeekNum === 0
+      ? filteredMergedDayRows
+      : filteredMergedDayRows.filter(
+          (row) => (monthWeekLookup.get(row.dateKey) ?? 1) === selectedWeekNum,
+        ),
+    [filteredMergedDayRows, monthWeekLookup, selectedWeekNum],
+  );
+  const displayedWeekSections = useMemo(
+    () => selectedWeekNum === 0
+      ? weekSections
+      : weekSections.filter((section) => section.weekNum === selectedWeekNum),
+    [weekSections, selectedWeekNum],
+  );
 
   const handleCalendarMonthChange = useCallback((viewYear: number, viewMonth: number) => {
     setCalendarViewYear(viewYear);
@@ -1271,6 +1470,107 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () => countMissingEntryPlaceholderRows(tableDayRows),
     [tableDayRows],
   );
+
+  const workingHoursSummary = useMemo(() => {
+    // The target covers the complete selected month, using this employee's min_hours.
+    // Non-working Fridays/Saturdays and statutory paid holidays are excluded.
+    const summaryTo = dateTo;
+    const holidayMap = buildHolidayMapForRange(dateFrom, dateTo);
+    const expectedDays =
+      summaryTo < dateFrom
+        ? 0
+        : eachDayInRange(dateFrom, summaryTo).filter((dateKey) =>
+            isDeficitTrackingWorkday(dateKey, holidayMap),
+          ).length;
+    const expectedMs = expectedDays * employeeMinHours * 3_600_000;
+
+    let unavailableMs = 0;
+    const absenceEffects = buildUnavailabilityDayEffects(
+      unavailabilities,
+      dateFrom,
+      summaryTo,
+    );
+    for (const [dateKey, effect] of absenceEffects) {
+      if (!isDeficitTrackingWorkday(dateKey, holidayMap)) continue;
+      unavailableMs += (
+        effect.fullDay
+          ? employeeMinHours
+          : Math.min(employeeMinHours, effect.generalHours)
+      ) * 3_600_000;
+    }
+    unavailableMs = Math.min(expectedMs, unavailableMs);
+    const adjustedExpectedMs = Math.max(0, expectedMs - unavailableMs);
+    const balanceMs = periodTotalMs - adjustedExpectedMs;
+    const unavailabilityDayCount = new Set(
+      unavailabilityDayRows
+        .filter((row) => row.date >= dateFrom && row.date <= summaryTo)
+        .map((row) => row.date),
+    ).size;
+    const completion = adjustedExpectedMs > 0
+      ? Math.min(999, Math.round((periodTotalMs / adjustedExpectedMs) * 1000) / 10)
+      : 100;
+
+    return {
+      expectedMs,
+      unavailableMs,
+      adjustedExpectedMs,
+      balanceMs,
+      completion,
+      unavailabilityDayCount,
+    };
+  }, [
+    dateFrom,
+    dateTo,
+    employeeMinHours,
+    periodTotalMs,
+    unavailabilities,
+    unavailabilityDayRows,
+    holidayMapVersion,
+  ]);
+
+  const shiftWorkingHoursMonth = useCallback((direction: -1 | 1) => {
+    const next = new Date(year, month - 1 + direction, 1);
+    setYear(next.getFullYear());
+    setMonth(next.getMonth() + 1);
+  }, [year, month]);
+
+  const reviewMissingDays = useCallback(() => {
+    setRowFilters(new Set<WorkingHoursRowFilter>(['no-entry']));
+    const firstMissingDate = tableDayRows.find(
+      (row) => row.isMissingPlaceholder || row.isHolidayPlaceholder,
+    )?.dateKey;
+    if (firstMissingDate) {
+      setSelectedWeekNum(monthWeekLookup.get(firstMissingDate) ?? 1);
+    }
+    window.requestAnimationFrame(() => {
+      if (firstMissingDate) {
+        [...document.querySelectorAll<HTMLElement>(`[id="wh-row-${firstMissingDate}"]`)]
+          .find((element) => element.getClientRects().length > 0)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+  }, [tableDayRows, monthWeekLookup]);
+
+  const goToTodayRow = useCallback(() => {
+    const today = new Date();
+    setYear(today.getFullYear());
+    setMonth(today.getMonth() + 1);
+    setRowFilters(new Set());
+    setSelectedWeekNum(monthWeekLookup.get(toDateInputValue(today)) ?? 1);
+    setScrollToTodayRequested(true);
+  }, [monthWeekLookup]);
+
+  useEffect(() => {
+    if (!scrollToTodayRequested || loading) return;
+    const todayKey = toDateInputValue(new Date());
+    const row = [...document.querySelectorAll<HTMLElement>(`[id="wh-row-${todayKey}"]`)]
+      .find((element) => element.getClientRects().length > 0);
+    if (!row) return;
+    window.requestAnimationFrame(() => {
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setScrollToTodayRequested(false);
+    });
+  }, [scrollToTodayRequested, loading, filteredMergedDayRows]);
 
   const calendarMissingDays = useMemo(() => {
     const viewRange = monthRange(calendarViewYear, calendarViewMonth);
@@ -1301,6 +1601,44 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     holidayMapVersion,
   ]);
 
+  /**
+   * Hours per day for the month the calendar is showing, auto-filled days included.
+   * The filtered month already has its records loaded; other months come from the
+   * calendar's own fetch below.
+   */
+  const calendarWorkedMsByDate = useMemo(() => {
+    const viewRange = monthRange(calendarViewYear, calendarViewMonth);
+    const sameMonth = viewRange.from === monthRange(year, month).from;
+    const source = sameMonth
+      ? filledRecords
+      : withAutoFilledClockInRecords({
+          employeeId: employeeId ?? 0,
+          minHours: employeeMinHours,
+          dateFrom: viewRange.from,
+          dateTo: viewRange.to,
+          holidayMap: buildHolidayMapForRange(viewRange.from, viewRange.to),
+          existingRecords: calendarMonthRecords,
+          unavailabilities: calendarMonthUnavailabilities,
+        });
+
+    const byDate = new Map<string, number>();
+    for (const summary of aggregateClockInRecordsByDay(source)) {
+      if (summary.totalDurationMs > 0) byDate.set(summary.dateKey, summary.totalDurationMs);
+    }
+    return byDate;
+  }, [
+    calendarViewYear,
+    calendarViewMonth,
+    year,
+    month,
+    filledRecords,
+    calendarMonthRecords,
+    calendarMonthUnavailabilities,
+    employeeId,
+    employeeMinHours,
+    holidayMapVersion,
+  ]);
+
   useEffect(() => {
     if (!calendarModalOpen || !employeeId) return;
 
@@ -1320,7 +1658,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         const [clockResult, unavailRows] = await Promise.all([
           supabase
             .from('employee_clock_in')
-            .select('clock_in_time')
+            // clock_out_time and the approval flags are what make the per-day hours in the
+            // calendar boxes add up; coverage counting alone only needs clock_in_time.
+            .select('clock_in_time, clock_out_time, manually, approved, declined')
             .eq('employee_id', employeeId)
             .gte('clock_in_time', start)
             .lte('clock_in_time', end),
@@ -1379,7 +1719,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () =>
       tableDayRows.filter(
         (row) =>
-          (row.isMissingPlaceholder || row.isHolidayPlaceholder) && !isMonthSubmitted,
+          (row.isMissingPlaceholder || row.isHolidayPlaceholder || row.isFuturePlaceholder)
+          && !isMonthSubmitted,
       ),
     [tableDayRows, isMonthSubmitted],
   );
@@ -1466,13 +1807,21 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   };
 
   const handleExportExcel = () => {
-    const countedRecords = filterCountedClockInRecords(records);
+    const countedRecords = filterCountedClockInRecords(filledRecords);
     const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
       countedRecords,
       unavailabilities,
       dateFrom,
       dateTo,
-    );
+    ).map((row) => {
+      const dayRecords = recordsByDay.get(row.dateKey) ?? [];
+      const effectiveMs = effectiveWorkedMsForDay(row.dateKey, dayRecords);
+      return {
+        ...row,
+        totalDurationMs: effectiveMs,
+        totalDuration: effectiveMs > 0 ? workingHoursDurationLabel(effectiveMs) : '—',
+      };
+    });
     if (mergedRows.length === 0) {
       toast('No records to export for this period.', { icon: '⚠️' });
       return;
@@ -1483,7 +1832,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         employeeName: employeeName || `Employee #${employeeId}`,
         dateFrom,
         dateTo,
-        periodTotalMs: sumCountedClockDurationsMs(countedRecords),
+        periodTotalMs: [...recordsByDay.entries()].reduce(
+          (total, [dateKey, dayRecords]) =>
+            total + effectiveWorkedMsForDay(dateKey, dayRecords),
+          0,
+        ),
         filenameSuffix: employeeName || String(employeeId),
       });
       toast.success(`Exported ${mergedRows.length} day(s) to Excel.`);
@@ -1532,7 +1885,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       return;
     }
 
-    const daySessions = recordsByDay.get(dateKey) ?? [];
+    const daySessions = editableRecordsForDay(dateKey);
     if (daySessions.length === 0) return;
 
     const label = formatWorkingHoursDateLabel(dateKey);
@@ -1557,33 +1910,81 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   };
 
   return (
-    <div ref={hoursShellRef} className="my-profile-hours-shell w-full max-w-full min-w-0 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1 w-full min-w-0">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
+    <div ref={hoursShellRef} className="my-profile-hours-shell w-full max-w-full min-w-0 space-y-5 px-1">
+      <section>
+      <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
+        <div className="flex min-w-0 items-start gap-3">
           {!embedded && (
-            <div className="flex items-center gap-3 min-w-0 mr-1">
-              <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                <ClockIcon className="w-5 h-5 text-primary" />
+            <>
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
+                <ClockIcon className="h-6 w-6 text-primary" />
               </div>
               <div className="min-w-0">
-                <h2 className="text-xl md:text-2xl font-bold text-gray-800">Working Hours</h2>
-                <p className="text-sm text-gray-500">Unavailabilities and clock-in/out history</p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-2xl font-bold tracking-tight text-gray-900 md:text-3xl">Working Hours</h2>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline relative h-10 min-h-10 gap-2 overflow-visible rounded-full border-gray-200 px-4 text-gray-700"
+                    onClick={() => {
+                      setCalendarViewYear(year);
+                      setCalendarViewMonth(month);
+                      setCalendarModalOpen(true);
+                    }}
+                  >
+                    <CalendarDaysIcon className="h-5 w-5" />
+                    Calendar
+                    <span className="badge badge-xs absolute -right-1.5 -top-1.5 border-0 bg-red-500 px-1.5 text-[9px] text-white shadow-sm">
+                      New
+                    </span>
+                  </button>
+                </div>
+                <p className="mt-1 text-sm text-gray-500">Track your attendance, absences and monthly balance</p>
               </div>
+            </>
+          )}
+        </div>
+        <div className="flex flex-col items-start gap-2 lg:items-end">
+          <div className="flex flex-wrap items-center gap-2">
+            {periodMissingDays > 0 && (
+              <MissingDaysBadge count={periodMissingDays} loading={loading} />
+            )}
+            <div className="flex h-12 items-center rounded-full border border-gray-200 bg-white p-1 shadow-sm">
+              <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={() => shiftWorkingHoursMonth(-1)} aria-label="Previous month">
+                <ChevronLeftIcon className="h-5 w-5" />
+              </button>
+              <details ref={headerMonthFilterRef} className="dropdown dropdown-end">
+                <summary className="btn btn-ghost h-10 min-h-10 min-w-[9rem] gap-2 rounded-full px-3 text-base font-semibold">
+                  <CalendarDaysIcon className="h-5 w-5 text-gray-400" />
+                  {SHORT_MONTH_NAMES[month - 1]} {year}
+                </summary>
+                <div className="dropdown-content z-50 mt-2 w-72 rounded-2xl border border-gray-100 bg-white p-4 shadow-xl">
+                  <div className="space-y-3 text-left">
+                    <YearWheelPicker
+                      label="Year"
+                      labelClassName="label-text text-sm text-gray-400 mb-1.5 font-medium"
+                      value={year}
+                      onChange={setYear}
+                    />
+                    <label className="form-control w-full">
+                      <span className="label-text mb-1.5 text-sm font-medium text-gray-400">Month</span>
+                      <select
+                        className="select select-bordered h-12 w-full text-base"
+                        value={month}
+                        onChange={(event) => setMonth(Number(event.target.value))}
+                      >
+                        {MONTH_NAMES.map((name, index) => (
+                          <option key={name} value={index + 1}>{name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={() => shiftWorkingHoursMonth(1)} aria-label="Next month">
+                <ChevronRightIcon className="h-5 w-5" />
+              </button>
             </div>
-          )}
-          {monthSubmission && (
-            <span
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-100 text-green-800 border border-green-200"
-              title={`Submitted on ${new Date(monthSubmission.submitted_at).toLocaleString('en-GB')}`}
-            >
-              <CheckIcon className="w-4 h-4 shrink-0" />
-              Submitted
-            </span>
-          )}
-          {submitBlockedByApproval && !isMonthSubmitted && monthSubmitBlockMessage && (
-            <span className="text-xs text-red-700 max-w-md">{monthSubmitBlockMessage}</span>
-          )}
-          {!isMonthSubmitted && (
+            {!isMonthSubmitted ? (
             <button
               type="button"
               className={SUBMIT_HOURS_BTN_CLASS}
@@ -1600,10 +2001,19 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
                 <CheckIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
               </span>
-              Submit {MONTH_NAMES[month - 1]} {year}
+              Submit month
             </button>
-          )}
-          {isMonthSubmitted && (
+            ) : (
+              <>
+                <span
+                  className="btn btn-sm btn-outline h-11 min-h-11 gap-2 rounded-full border-gray-200 px-5 text-gray-700"
+                  title={`Submitted on ${new Date(monthSubmission.submitted_at).toLocaleString('en-GB')}`}
+                >
+                  <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-700 text-white">
+                    <CheckIcon className="h-5 w-5 stroke-[3]" />
+                  </span>
+                  Submitted
+                </span>
             <button
               type="button"
               className={CANCEL_SUBMISSION_BTN_CLASS}
@@ -1620,49 +2030,115 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
               )}
               Cancel submission
             </button>
+              </>
+            )}
+          </div>
+          {submitBlockedByApproval && !isMonthSubmitted && monthSubmitBlockMessage && (
+            <span className="max-w-md text-xs text-red-700">{monthSubmitBlockMessage}</span>
           )}
-        </div>
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <span className="text-base font-semibold text-primary">
-            Period total: {periodTotal}
-          </span>
-          <MissingDaysBadge count={periodMissingDays} loading={loading} />
         </div>
       </div>
 
-      <div className="px-1">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between xl:gap-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:gap-5 min-w-0">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl shrink-0">
-            <div className="form-control w-full">
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-5 text-white shadow-xl">
+          <div>
+            <p className="text-4xl font-bold">{periodTotal}</p>
+            <p className="mt-1 text-lg font-semibold text-white/95">Worked</p>
+            <div className="mt-2 h-2 w-full min-w-36 overflow-hidden rounded-full bg-white/20">
+              <div
+                className="h-full rounded-full bg-white shadow-sm transition-[width] duration-500"
+                style={{ width: `${Math.min(100, workingHoursSummary.completion)}%` }}
+              />
+            </div>
+            <p className="mt-1 text-sm font-semibold text-white/90">
+              {workingHoursSummary.completion}% of expected
+            </p>
+          </div>
+          <div className="rounded-full bg-white/20 p-4"><ClockIcon className="h-9 w-9" /></div>
+        </div>
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-tr from-sky-600 via-cyan-500 to-blue-500 p-5 text-white shadow-xl">
+          <div>
+            <p className="text-4xl font-bold">{workingHoursDurationLabel(workingHoursSummary.adjustedExpectedMs)}</p>
+            <p className="mt-1 text-lg font-semibold text-white/95">Expected</p>
+            <p className="mt-1 text-sm text-white/80">
+              {MONTH_NAMES[month - 1]} target after absences
+            </p>
+          </div>
+          <div className="rounded-full bg-white/20 p-4"><CalendarDaysIcon className="h-9 w-9" /></div>
+        </div>
+        <div className={`flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-tr p-5 text-white shadow-xl ${
+          workingHoursSummary.balanceMs >= 0
+            ? 'from-teal-600 via-emerald-500 to-green-500'
+            : 'from-pink-500 via-rose-500 to-orange-500'
+        }`}>
+          <div>
+            <p className="text-4xl font-bold">
+              {workingHoursSummary.balanceMs >= 0 ? '+' : '-'}
+              {workingHoursDurationLabel(Math.abs(workingHoursSummary.balanceMs))}
+            </p>
+            <p className="mt-1 text-lg font-semibold text-white/95">Balance</p>
+            <p className="mt-1 text-sm text-white/80">
+              {workingHoursSummary.balanceMs >= 0 ? 'On track' : 'Below target'}
+            </p>
+          </div>
+          <div className="rounded-full bg-white/20 p-4"><CheckIcon className="h-9 w-9" /></div>
+        </div>
+        <button
+          type="button"
+          onClick={reviewMissingDays}
+          className="flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500 p-5 text-left text-white shadow-xl transition-transform hover:scale-[1.02]"
+        >
+          <div>
+            <p className="text-4xl font-bold">{periodMissingDays} {periodMissingDays === 1 ? 'day' : 'days'}</p>
+            <p className="mt-1 text-lg font-semibold text-white/95">Missing entries</p>
+            <p className="mt-1 text-sm text-white/80">Review days →</p>
+          </div>
+          <div className="rounded-full bg-white/20 p-4"><XMarkIcon className="h-9 w-9" /></div>
+        </button>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-5 xl:flex-row xl:items-end xl:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex h-12 items-center rounded-full border border-gray-200 bg-white p-1 shadow-sm">
+            <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={() => shiftWorkingHoursMonth(-1)} aria-label="Previous month">
+              <ChevronLeftIcon className="h-5 w-5" />
+            </button>
+            <details ref={toolbarMonthFilterRef} className="dropdown">
+              <summary className="btn btn-ghost h-10 min-h-10 min-w-[9rem] gap-2 rounded-full px-3 text-base font-semibold">
+                <CalendarDaysIcon className="h-5 w-5 text-gray-400" />
+                {SHORT_MONTH_NAMES[month - 1]} {year}
+              </summary>
+              <div className="dropdown-content z-40 mt-2 w-72 rounded-2xl border border-gray-100 bg-white p-4 shadow-xl">
+                <div className="space-y-3">
+                  <div className="form-control w-full">
               <YearWheelPicker
                 label="Year"
+                labelClassName="label-text text-sm text-gray-400 mb-1.5 font-medium"
                 value={year}
                 onChange={setYear}
               />
-            </div>
-            <label className="form-control w-full">
-              <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
-              <select
-                className="select select-bordered w-full text-base h-12"
-                value={month}
-                onChange={(e) => setMonth(Number(e.target.value))}
-              >
-                {MONTH_NAMES.map((name, i) => (
-                  <option key={name} value={i + 1}>{name}</option>
-                ))}
-              </select>
-            </label>
+                  </div>
+                  <label className="form-control w-full">
+                    <span className="label-text mb-1.5 text-sm font-medium text-gray-400">Month</span>
+                    <select className="select select-bordered h-12 w-full text-base" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                      {MONTH_NAMES.map((name, i) => <option key={name} value={i + 1}>{name}</option>)}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            </details>
+            <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={() => shiftWorkingHoursMonth(1)} aria-label="Next month">
+              <ChevronRightIcon className="h-5 w-5" />
+            </button>
           </div>
-          <div className="min-w-0 w-full sm:max-w-xs shrink-0">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium block">Show</span>
+          <div className="min-w-0 w-full sm:w-44">
             <div className="dropdown w-full">
               <button
                 type="button"
                 tabIndex={0}
-                className="btn btn-outline border-gray-200 bg-white hover:bg-gray-50 w-full h-12 min-h-12 justify-between font-normal text-base text-gray-800 rounded-full px-4"
+                className="btn btn-outline h-12 min-h-12 w-full justify-between rounded-full border-gray-200 bg-white px-4 text-base font-normal text-gray-800 hover:bg-gray-50"
               >
-                <span className="truncate">{rowFilterSummary}</span>
+                <span className="truncate">{rowFilterSummary === 'All' ? 'All entries' : rowFilterSummary}</span>
                 <ChevronDownIcon className="w-4 h-4 shrink-0 text-gray-400" aria-hidden />
               </button>
               <ul
@@ -1702,21 +2178,57 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
               </ul>
             </div>
           </div>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-2 pb-0.5 shrink-0">
+          <button
+            type="button"
+            className="btn btn-outline h-12 min-h-12 rounded-full border-gray-200 bg-white px-5 text-gray-700 hover:bg-gray-50"
+            onClick={goToTodayRow}
+          >
+            Today
+          </button>
+          <div className="inline-flex h-12 items-center gap-1 rounded-full bg-gray-200 p-1">
+            {availableWeekNumbers.map((weekNum) => (
               <button
+                key={weekNum}
                 type="button"
-                className="btn btn-sm btn-outline btn-primary gap-2 h-10 min-h-10 rounded-full"
-                onClick={openCalendarModal}
-                disabled={isMonthSubmitted}
-                title={isMonthSubmitted ? monthLockedMessage : undefined}
+                className={`h-10 rounded-full px-4 text-sm font-semibold transition-colors ${
+                  selectedWeekNum === weekNum
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+                onClick={() => setSelectedWeekNum(weekNum)}
               >
-                <CalendarDaysIcon className="w-6 h-6" />
-                Add unavailability
+                <span className="relative inline-block">
+                  Week {weekNum}
+                  {weeksWithUnavailability.has(weekNum) && (
+                    <span
+                      className="tooltip tooltip-error absolute -right-2 -top-1"
+                      data-tip="This week contains unavailability"
+                      title="This week contains unavailability"
+                      aria-label="Contains unavailability"
+                    >
+                      <span className="block h-2 w-2 rounded-full bg-red-500" />
+                    </span>
+                  )}
+                </span>
               </button>
+            ))}
+            <button
+              type="button"
+              className={`h-10 rounded-full px-4 text-sm font-semibold transition-colors ${
+                selectedWeekNum === 0
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+              onClick={() => setSelectedWeekNum(0)}
+            >
+              All
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
-                className="btn btn-sm btn-outline btn-primary gap-2 h-10 min-h-10 rounded-full"
+                className="btn btn-sm btn-outline h-11 min-h-11 gap-2 rounded-full border-gray-200 px-5"
                 onClick={handleExportExcel}
                 disabled={exporting || loading || mergedDayRows.length === 0}
                 title="Download this employee's working hours as Excel"
@@ -1726,46 +2238,88 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                 ) : (
                   <FaFileExcel className="w-6 h-6" />
                 )}
-                Export to Excel
+                Export
               </button>
-              <button
-                type="button"
-                className={`btn btn-sm gap-2 h-10 min-h-10 rounded-full ${
-                  bulkSelectMode ? 'btn-primary' : 'btn-outline btn-primary'
-                }`}
-                onClick={handleBulkSelectModeToggle}
-                disabled={!user?.id || isMonthSubmitted}
-                title={
-                  isMonthSubmitted
-                    ? monthLockedMessage
-                    : bulkSelectMode
-                      ? 'Cancel row selection'
-                      : 'Select table rows to add clock-in in bulk'
-                }
+              <details
+                ref={addEntryMenuRef}
+                className={`dropdown dropdown-end ${addEntryOpenUpward ? 'dropdown-top' : ''}`}
               >
-                <SquaresPlusIcon className="w-6 h-6" />
-                {bulkSelectMode ? 'Cancel selection' : 'Add multiple clock-in'}
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm btn-outline btn-primary gap-2 h-10 min-h-10 rounded-full"
-                onClick={() => {
-                  if (isMonthSubmitted) {
-                    toast.error(monthLockedMessage);
-                    return;
-                  }
-                  setManualClockInInitialDateKey(null);
-                  setManualClockInOpen(true);
-                }}
-                disabled={!user?.id || isMonthSubmitted}
-                title={isMonthSubmitted ? monthLockedMessage : undefined}
-              >
-                <PlusIcon className="w-6 h-6" />
-                Add clock-in
-              </button>
-            </div>
+                <summary
+                  className="btn btn-primary h-11 min-h-11 gap-2 rounded-full px-6"
+                  onClick={() => {
+                    const rect = addEntryMenuRef.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    const estimatedMenuHeight = 230;
+                    setAddEntryOpenUpward(
+                      window.innerHeight - rect.bottom < estimatedMenuHeight
+                      && rect.top > estimatedMenuHeight,
+                    );
+                  }}
+                >
+                  <PlusIcon className="h-5 w-5" />
+                  Add entry
+                  <span className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/15">
+                    <ChevronDownIcon className="h-5 w-5" />
+                  </span>
+                </summary>
+                <ul className={`menu dropdown-content z-40 w-64 rounded-2xl border border-gray-100 bg-white p-2 shadow-xl ${
+                  addEntryOpenUpward ? 'mb-2' : 'mt-2'
+                }`}>
+                  <li>
+                    <button className="gap-3" type="button" disabled={!user?.id || isMonthSubmitted} onClick={() => { setManualClockInInitialDateKey(null); setManualClockInOpen(true); }}>
+                      <ClockIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                      Add working hours
+                    </button>
+                  </li>
+                  <li>
+                    <button className="gap-3" type="button" disabled={!user?.id || isMonthSubmitted} onClick={handleBulkSelectModeToggle}>
+                      <SquaresPlusIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                      Add multiple working days
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      className="gap-3"
+                      type="button"
+                      disabled={isMonthSubmitted}
+                      onClick={(event) => {
+                        const today = new Date();
+                        const isCurrentMonth =
+                          today.getFullYear() === year && today.getMonth() + 1 === month;
+                        const targetDate = isCurrentMonth
+                          ? toDateInputValue(today)
+                          : `${year}-${String(month).padStart(2, '0')}-01`;
+                        setPendingCalendarDateKey(targetDate);
+                        openCalendarModal();
+                        const details = event.currentTarget.closest('details');
+                        if (details) details.open = false;
+                      }}
+                    >
+                      <CalendarDaysIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                      Add unavailability
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      className="gap-3"
+                      type="button"
+                      disabled={!user?.id || isMonthSubmitted}
+                      onClick={(event) => {
+                        setOvertimeDateKey(toDateInputValue(new Date()));
+                        setOvertimeDatePickerOpen(true);
+                        const details = event.currentTarget.closest('details');
+                        if (details) details.open = false;
+                      }}
+                    >
+                      <PlusIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                      Add overtime
+                    </button>
+                  </li>
+                </ul>
+              </details>
         </div>
-      </div>
+        </div>
+      </section>
 
       {/* Working hours & unavailabilities */}
       <div className="w-full">
@@ -1807,7 +2361,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           </div>
         )}
         <WorkingHoursMobileList
-          rows={filteredMergedDayRows}
+          rows={displayedDayRows}
           weekMeta={weekRowMeta}
           loading={loading}
           hasActiveRowFilters={hasActiveRowFilters}
@@ -1818,6 +2372,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           deletingRowKey={deletingRowKey}
           deletingClockInDay={deletingClockInDay}
           recordsByDay={recordsByDay}
+          effectiveWorkedMsForDay={effectiveWorkedMsForDay}
           minHours={employeeMinHours}
           getWeekAccentColor={getWeekAccentColor}
           isRowLocked={isRowLockedForSubmission}
@@ -1841,6 +2396,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
             setEditingClockInDay(dateKey);
           }}
           onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
+          onAddClockIn={handlePlaceholderAddClockIn}
+          isAutoFilledDay={isAutoFilledDay}
           onViewDocument={setSelectedDocument}
         />
         <div className="hidden md:block w-full">
@@ -1858,7 +2415,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                 </tbody>
               </table>
             </div>
-          ) : filteredMergedDayRows.length === 0 ? (
+          ) : displayedDayRows.length === 0 ? (
             <div className="overflow-x-auto rounded-2xl">
               <table className="pipeline-flat-table my-profile-hours-table w-full min-w-[64rem] table-fixed border-separate border-spacing-0 text-base">
                 <WorkingHoursColGroup bulkSelectMode={bulkSelectMode} />
@@ -1877,7 +2434,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           ) : (
             <div className="overflow-x-auto">
               <div className="min-w-[64rem] flex flex-col gap-12">
-              {weekSections.map((section) => (
+              {displayedWeekSections.map((section) => (
                 <div key={`wh-week-${section.weekNum}`}>
                   <WorkingHoursWeekHeading weekNum={section.weekNum} />
                   <div className="rounded-2xl">
@@ -1896,12 +2453,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                   const isPlaceholder =
                     row.isMissingPlaceholder ||
                     row.isHolidayPlaceholder ||
-                    row.isWeekendPlaceholder;
+                    row.isWeekendPlaceholder ||
+                    row.isFuturePlaceholder ||
+                    row.isHolidayOffPlaceholder;
                   const isBulkSelectable =
                     bulkSelectMode &&
                     (row.isMissingPlaceholder ||
                       row.isHolidayPlaceholder ||
-                      row.isWeekendPlaceholder) &&
+                      row.isWeekendPlaceholder ||
+                      row.isFuturePlaceholder) &&
                     !isMonthSubmitted;
                   const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
                   const weekMeta = weekRowMeta.get(row.dateKey);
@@ -1910,10 +2470,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                     const isWeekend = row.isWeekendPlaceholder === true;
                     const placeholderInteractive = !isMonthSubmitted;
                     const isHoliday = row.isHolidayPlaceholder;
+                    const isHolidayOff = row.isHolidayOffPlaceholder === true;
                     const holidayLabel = row.holidayNames?.[0];
                     const rowClass = isWeekend
                       ? 'wh-weekend-placeholder'
-                      : isHoliday
+                      : isHoliday || isHolidayOff
                         ? 'wh-holiday-placeholder'
                         : 'wh-missing-placeholder';
                     return (
@@ -1955,7 +2516,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           </div>
                         </td>
                         <td className={WH_DATA_CELL}>
-                          <span className="text-gray-400">No entry</span>
+                          <span className="text-gray-400">{isHolidayOff ? 'Free day' : 'No entry'}</span>
                         </td>
                         <td
                           colSpan={WH_PLACEHOLDER_HINT_COL_SPAN}
@@ -1963,6 +2524,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                         >
                           {isWeekend ? (
                             'Weekend'
+                          ) : isHolidayOff ? (
+                            <span className="flex flex-col items-start leading-snug">
+                              <span>{holidayLabel || 'Holiday'}</span>
+                              <span className="italic">Paid day off</span>
+                            </span>
                           ) : isHoliday ? (
                             <span className="flex flex-col items-start leading-snug">
                               <span>{holidayLabel || 'Holiday'}</span>
@@ -2004,6 +2570,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
                   const hasClock = row.clock != null;
                   const dayRecords = recordsByDay.get(row.dateKey) ?? [];
+                  const autoFilledClock = hasClock && isAutoFilledDay(row.dateKey);
                   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
                     hasManualClockSummary: row.clock?.hasManual === true,
                   });
@@ -2052,18 +2619,25 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       <td className={WH_DATA_CELL}>
                         {row.unavailabilities.length > 0 ? (
                           <div className="flex flex-col gap-2">
-                            {row.unavailabilities.map((unavail) => (
-                              <div
-                                key={`${unavail.id}-${unavail.date}`}
-                                className="flex flex-col items-start gap-0.5"
-                              >
-                                <UnavailabilityTypeBadge
-                                  type={unavail.unavailability_type}
-                                  size="md"
-                                  borderless
-                                />
-                              </div>
-                            ))}
+                            {row.unavailabilities.map((unavail) => {
+                              const details = timedGeneralAbsenceBadgeDetails(unavail);
+                              return (
+                                <div
+                                  key={`${unavail.id}-${unavail.date}`}
+                                  className="flex flex-col items-start gap-0.5"
+                                >
+                                  <UnavailabilityTypeBadge
+                                    type={unavail.unavailability_type}
+                                    size="md"
+                                    borderless
+                                    deductedHoursLabel={details?.deductedLabel}
+                                    tooltip={details?.tooltip}
+                                    displayLabel={details?.periodLabel}
+                                    subtitle={details ? unavail.general_reason?.trim() || 'No details' : undefined}
+                                  />
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
                           <span className="text-gray-400">—</span>
@@ -2086,10 +2660,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       <td className={`whitespace-nowrap ${WH_DATA_CELL}`}>
                         {hasClock ? (
                           <TotalDurationBadge
-                            workedMs={sumCountedClockDurationsMs(
-                              filterCountedClockInRecords(dayRecords),
+                            workedMs={effectiveWorkedMsForDay(row.dateKey, dayRecords)}
+                            label={workingHoursDurationLabel(
+                              effectiveWorkedMsForDay(row.dateKey, dayRecords),
                             )}
-                            label={sumClockDurations(filterCountedClockInRecords(dayRecords))}
                             minHours={employeeMinHours}
                           />
                         ) : (
@@ -2170,6 +2744,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                               dateKey={row.dateKey}
                               unavailabilities={row.unavailabilities}
                               hasClock={hasClock}
+                              autoFilledClock={autoFilledClock}
                               loading={loading}
                               deletingRowKey={deletingRowKey}
                               deletingClockInDay={deletingClockInDay}
@@ -2190,6 +2765,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                                 setEditingClockInDay(dateKey);
                               }}
                               onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
+                              onAddClockIn={handlePlaceholderAddClockIn}
                             />
                           </div>
                         </div>
@@ -2406,28 +2982,65 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       <ProfileBottomSheetModal
         open={calendarModalOpen}
         onClose={() => setCalendarModalOpen(false)}
-        title="My Availability"
-        subtitle={<MissingDaysBadge count={calendarMissingDays} loading={loading} />}
+        title={
+          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            My Availability
+            {calendarMissingDays > 0 && (
+              <MissingDaysBadge count={calendarMissingDays} loading={loading} />
+            )}
+          </span>
+        }
         hideFooter
         mobileFullHeight
-        sheetClassName="md:max-w-2xl"
+        desktopFullScreen
+        // Grey page backdrop on desktop; the calendar supplies its own padding there.
+        contentClassName="px-5 py-5 md:p-0 md:bg-gray-50 md:flex md:flex-col"
+        headerClassName="md:relative md:bg-gray-50 md:border-b-0"
         headerRight={
-          <button
-            type="button"
-            onClick={() => {
-              if (isMonthSubmitted) {
-                toast.error(monthLockedMessage);
-                return;
-              }
-              calendarRef.current?.openAddRangeModal();
-            }}
-            className="btn btn-xs btn-primary gap-1"
-            disabled={isMonthSubmitted}
-            title={isMonthSubmitted ? monthLockedMessage : 'Add unavailability range'}
-          >
-            <PlusIcon className="w-3.5 h-3.5" />
-            Add range
-          </button>
+          <div className="flex items-center gap-3">
+            <div className="hidden md:absolute md:left-1/2 md:top-1/2 md:flex md:-translate-x-1/2 md:-translate-y-1/2 md:items-center md:gap-2">
+              <button
+                type="button"
+                onClick={() => calendarRef.current?.goToToday()}
+                className="btn btn-ghost mr-2 h-10 min-h-10 rounded-full border border-gray-200 bg-white px-5 text-base font-semibold"
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => calendarRef.current?.goToPrevious()}
+                className="btn btn-ghost btn-circle h-10 min-h-10 w-10"
+                aria-label="Previous"
+              >
+                <ChevronLeftIcon className="h-6 w-6" />
+              </button>
+              <span className="min-w-[13rem] text-center text-base font-semibold text-gray-800">
+                {calendarRangeLabel}
+              </span>
+              <button
+                type="button"
+                onClick={() => calendarRef.current?.goToNext()}
+                className="btn btn-ghost btn-circle h-10 min-h-10 w-10"
+                aria-label="Next"
+              >
+                <ChevronRightIcon className="h-6 w-6" />
+              </button>
+            </div>
+            <AvailabilityViewTabs
+              view={calendarView}
+              onChange={setCalendarView}
+              className="hidden md:inline-flex"
+            />
+            <button
+              type="button"
+              onClick={() => setCalendarModalOpen(false)}
+              className="btn btn-sm btn-ghost btn-circle h-9 min-h-9 w-9"
+              aria-label="Close availability calendar"
+              title="Close"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
         }
       >
         <CompactAvailabilityCalendar
@@ -2437,6 +3050,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           initialYear={year}
           initialMonth={month}
           onMonthChange={handleCalendarMonthChange}
+          workedMsByDate={calendarWorkedMsByDate}
+          desktopPageLayout
+          view={calendarView}
+          onViewChange={setCalendarView}
+          onRangeLabelChange={setCalendarRangeLabel}
           onAvailabilityChange={() => void fetchRecords()}
         />
       </ProfileBottomSheetModal>
@@ -2455,13 +3073,98 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       <ClockInDayEditModal
         isOpen={!!editingClockInDay}
         employeeId={employeeId}
+        userId={user?.id ?? ''}
         dateKey={editingClockInDay ?? ''}
         sessions={editingClockInSessions}
+        createFromAutoFill={editingAutoFilledDay}
         onClose={() => setEditingClockInDay(null)}
         onSaved={() => {
           void fetchRecords();
         }}
       />
+
+      {overtimeDatePickerOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 z-[10070] flex items-stretch justify-end bg-black/20 backdrop-blur-[1px]"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setOvertimeDatePickerOpen(false);
+          }}
+        >
+          <aside className="h-full w-full max-w-sm border-l border-gray-200 bg-white shadow-2xl sm:rounded-l-3xl">
+            <div className="flex items-center justify-between px-6 py-5">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Choose overtime date</h3>
+                <p className="mt-1 text-sm text-gray-500">Select the day before entering the hours.</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle btn-sm"
+                onClick={() => setOvertimeDatePickerOpen(false)}
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5">
+              <label className="form-control w-full">
+                <span className="label-text mb-1.5 text-sm font-medium text-gray-500">Date</span>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={overtimeDateKey}
+                  onChange={(event) => setOvertimeDateKey(event.target.value)}
+                />
+              </label>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {[
+                  { label: 'Today', offset: 0 },
+                  { label: 'Yesterday', offset: -1 },
+                  { label: 'Tomorrow', offset: 1 },
+                ].map((option) => {
+                  const date = new Date();
+                  date.setDate(date.getDate() + option.offset);
+                  const dateKey = toDateInputValue(date);
+                  const selected = overtimeDateKey === dateKey;
+                  return (
+                    <button
+                      key={option.label}
+                      type="button"
+                      className={`btn btn-sm rounded-full ${
+                        selected ? 'btn-primary' : 'btn-outline border-gray-200'
+                      }`}
+                      onClick={() => setOvertimeDateKey(dateKey)}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="absolute bottom-0 right-0 flex w-full max-w-sm justify-end gap-2 bg-white px-6 py-5 sm:rounded-bl-3xl">
+              <button
+                type="button"
+                className="btn btn-ghost h-10 min-h-10 rounded-full px-5"
+                onClick={() => setOvertimeDatePickerOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary h-10 min-h-10 rounded-full px-7"
+                disabled={!overtimeDateKey}
+                onClick={() => {
+                  setOvertimeDatePickerOpen(false);
+                  setManualClockInInitialDateKey(overtimeDateKey);
+                  setManualClockInOpen(true);
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </aside>
+        </div>,
+        document.body,
+      )}
 
       <ManualClockInModal
         isOpen={manualClockInOpen}

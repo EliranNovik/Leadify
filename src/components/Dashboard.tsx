@@ -58,7 +58,12 @@ import { getStageName } from '../lib/stageUtils';
 import EmployeeScoreboard from './EmployeeScoreboard';
 import { formatMeetingValue } from '../lib/meetingValue';
 import { toast } from 'react-hot-toast';
-import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './CompactAvailabilityCalendar';
+import CompactAvailabilityCalendar, {
+  AvailabilityViewTabs,
+  type AvailabilityCalendarView,
+  type CompactAvailabilityCalendarRef,
+} from './CompactAvailabilityCalendar';
+import ProfileBottomSheetModal from './profile/ProfileBottomSheetModal';
 import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
 import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
@@ -592,14 +597,45 @@ type DashboardTeamAvailabilityCache = {
 };
 
 // My Availability Section Component
-const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpenUploadDocs?: () => void }> = ({ onAvailabilityChange, onOpenUploadDocs }) => {
+const MyAvailabilitySection: React.FC<{
+  onAvailabilityChange?: () => void;
+  onOpenUploadDocs?: () => void;
+  onRegisterAddSickDay?: (handler: (dateKey: string) => void) => void;
+}> = ({ onAvailabilityChange, onOpenUploadDocs, onRegisterAddSickDay }) => {
   const calendarRef = React.useRef<CompactAvailabilityCalendarRef>(null);
+  const fullCalendarRef = React.useRef<CompactAvailabilityCalendarRef>(null);
+  const [fullCalendarOpen, setFullCalendarOpen] = useState(false);
+  const [fullCalendarView, setFullCalendarView] = useState<AvailabilityCalendarView>('day');
+  const [fullCalendarRangeLabel, setFullCalendarRangeLabel] = useState('');
+  const today = new Date();
+
+  useEffect(() => {
+    onRegisterAddSickDay?.((dateKey: string) => {
+      setFullCalendarOpen(true);
+      // The full calendar mounts after the state update; open its sick-day drawer after that commit.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => fullCalendarRef.current?.openAddSickDayForDate(dateKey));
+      });
+    });
+  }, [onRegisterAddSickDay]);
 
   return (
     <>
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">My Availability</h3>
+        <h3 className="text-lg font-semibold text-gray-900">Calendar</h3>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFullCalendarOpen(true)}
+            className="btn btn-sm btn-outline relative overflow-visible rounded-full gap-1.5 px-4"
+            title="Open full calendar"
+          >
+            <CalendarDaysIcon className="w-4 h-4" />
+            Open calendar
+            <span className="badge badge-sm absolute -right-2 -top-2 border-0 bg-red-500 text-white shadow-sm">
+              New
+            </span>
+          </button>
           {onOpenUploadDocs && (
             <button
               onClick={onOpenUploadDocs}
@@ -620,7 +656,88 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
           </button>
         </div>
       </div>
-      <CompactAvailabilityCalendar ref={calendarRef} onAvailabilityChange={onAvailabilityChange} />
+      <CompactAvailabilityCalendar
+        ref={calendarRef}
+        simplified
+        onAvailabilityChange={onAvailabilityChange}
+      />
+
+      <ProfileBottomSheetModal
+        open={fullCalendarOpen}
+        onClose={() => setFullCalendarOpen(false)}
+        title={
+          <span className="flex items-center gap-2">
+            <span className="font-extrabold text-primary">RMQ 2.0</span>
+            <span>Calendar</span>
+          </span>
+        }
+        hideFooter
+        mobileFullHeight
+        desktopFullScreen
+        contentClassName="px-5 py-5 md:p-0 md:bg-gray-50 md:flex md:flex-col"
+        headerClassName="md:relative md:bg-gray-50 md:border-b-0"
+        headerRight={
+          <div className="flex items-center gap-3">
+            <div className="hidden md:absolute md:left-1/2 md:top-1/2 md:flex md:-translate-x-1/2 md:-translate-y-1/2 md:items-center md:gap-1">
+              <button
+                type="button"
+                onClick={() => fullCalendarRef.current?.goToToday()}
+                className="btn btn-ghost mr-2 h-10 min-h-10 rounded-full border border-gray-200 bg-white px-5 text-base font-semibold"
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => fullCalendarRef.current?.goToPrevious()}
+                className="btn btn-sm btn-ghost btn-circle"
+                aria-label="Previous"
+              >
+                <ChevronLeftIcon className="h-4 w-4" />
+              </button>
+              <span className="min-w-[13rem] text-center text-base font-semibold text-gray-800">
+                {fullCalendarRangeLabel}
+              </span>
+              <button
+                type="button"
+                onClick={() => fullCalendarRef.current?.goToNext()}
+                className="btn btn-sm btn-ghost btn-circle"
+                aria-label="Next"
+              >
+                <ChevronRightIcon className="h-4 w-4" />
+              </button>
+            </div>
+            <AvailabilityViewTabs
+              view={fullCalendarView}
+              onChange={setFullCalendarView}
+              className="hidden md:inline-flex"
+            />
+            <button
+              type="button"
+              onClick={() => setFullCalendarOpen(false)}
+              className="btn btn-sm btn-ghost btn-circle h-9 min-h-9 w-9"
+              aria-label="Close availability calendar"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
+        }
+      >
+        <CompactAvailabilityCalendar
+          ref={fullCalendarRef}
+          initialYear={today.getFullYear()}
+          initialMonth={today.getMonth() + 1}
+          desktopPageLayout
+          view={fullCalendarView}
+          onViewChange={setFullCalendarView}
+          onRangeLabelChange={setFullCalendarRangeLabel}
+          onUploadSickDays={
+            onOpenUploadDocs
+              ? () => onOpenUploadDocs()
+              : undefined
+          }
+          onAvailabilityChange={onAvailabilityChange}
+        />
+      </ProfileBottomSheetModal>
     </>
   );
 };
@@ -696,6 +813,7 @@ const Dashboard: React.FC = () => {
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
   const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
   const [isSickDaysUploadModalOpen, setIsSickDaysUploadModalOpen] = useState(false);
+  const openAddSickDayFromCalendarRef = useRef<((dateKey: string) => void) | null>(null);
   const [isTeamStatusModalOpen, setIsTeamStatusModalOpen] = useState(false);
   const [unavailableEmployeesCount, setUnavailableEmployeesCount] = useState(0);
   const [currentlyUnavailableCount, setCurrentlyUnavailableCount] = useState(0);
@@ -8905,6 +9023,9 @@ const Dashboard: React.FC = () => {
               <MyAvailabilitySection
                 onAvailabilityChange={() => void loadTeamAvailability(teamAvailabilityDate, { background: true })}
                 onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
+                onRegisterAddSickDay={(handler) => {
+                  openAddSickDayFromCalendarRef.current = handler;
+                }}
               />
             </div>
           </div>
@@ -9322,6 +9443,9 @@ const Dashboard: React.FC = () => {
                 <MyAvailabilitySection
                   onAvailabilityChange={() => void loadTeamAvailability(teamAvailabilityDate, { background: true })}
                   onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
+                  onRegisterAddSickDay={(handler) => {
+                    openAddSickDayFromCalendarRef.current = handler;
+                  }}
                 />
               </div>
             </div>
@@ -9332,7 +9456,12 @@ const Dashboard: React.FC = () => {
       {/* Sick Days Document Upload Modal */}
       <SickDaysDocumentUploadModal
         isOpen={isSickDaysUploadModalOpen}
+        variant="drawer"
         onClose={() => setIsSickDaysUploadModalOpen(false)}
+        onAddSickDay={(dateKey) => {
+          setIsSickDaysUploadModalOpen(false);
+          openAddSickDayFromCalendarRef.current?.(dateKey);
+        }}
         onDocumentUploaded={() => {
           // Refresh availability data if needed
           void loadTeamAvailability(teamAvailabilityDate, { background: true });

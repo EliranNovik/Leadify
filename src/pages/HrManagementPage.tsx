@@ -87,6 +87,7 @@ import {
   sumCountedClockDurationsMs,
   type ClockInExportRecord,
 } from '../lib/workingHoursExport';
+import { withAutoFilledClockInRecordsByEmployee } from '../lib/autoFilledWorkingHours';
 import HrApprovalsPanel from '../components/hr/HrApprovalsPanel';
 import HrEmployeeAboutEditModal from '../components/hr/HrEmployeeAboutEditModal';
 import HrManagementSideRail from '../components/hr/HrManagementSideRail';
@@ -598,8 +599,24 @@ export default function HrManagementPage() {
         else unavailByEmployee.set(entry.employee_id, [entry]);
       }
 
+      const filledClockRecords = withAutoFilledClockInRecordsByEmployee({
+        records: clockRecords,
+        employees: new Map(
+          activeEmployees.map((emp) => [
+            Number(emp.id),
+            {
+              minHours: emp.minHours,
+              unavailabilities: unavailByEmployee.get(Number(emp.id)) ?? [],
+            },
+          ]),
+        ),
+        dateFrom: fromDate,
+        dateTo: toDate,
+        holidayMap,
+      });
+
       const clockByEmployee = new Map<number, ClockInExportRecord[]>();
-      for (const record of clockRecords) {
+      for (const record of filledClockRecords) {
         const empId = record.employee_id;
         if (empId == null) continue;
         const list = clockByEmployee.get(empId);
@@ -610,7 +627,7 @@ export default function HrManagementPage() {
       const minHoursByEmployee = new Map(
         activeEmployees.map((emp) => [Number(emp.id), emp.minHours]),
       );
-      const clockTotalsByEmployee = groupClockInTotalsByEmployee(clockRecords);
+      const clockTotalsByEmployee = groupClockInTotalsByEmployee(filledClockRecords);
       const extraHoursByEmployee = calculateExtraHoursByEmployee(
         clockByEmployee,
         minHoursByEmployee,
@@ -873,15 +890,6 @@ export default function HrManagementPage() {
 
       const holidayMap = buildHolidayMapForRange(fromDate, toDate);
 
-      const clockByEmployee = new Map<number, ClockInExportRecord[]>();
-      for (const record of clockRecords) {
-        const empId = record.employee_id;
-        if (empId == null) continue;
-        const list = clockByEmployee.get(empId);
-        if (list) list.push(record);
-        else clockByEmployee.set(empId, [record]);
-      }
-
       const unavailByEmployee = new Map<number, EmployeeUnavailabilityEntry[]>();
       for (const entry of allUnavailabilities) {
         const list = unavailByEmployee.get(entry.employee_id);
@@ -889,10 +897,35 @@ export default function HrManagementPage() {
         else unavailByEmployee.set(entry.employee_id, [entry]);
       }
 
+      const filledClockRecords = withAutoFilledClockInRecordsByEmployee({
+        records: clockRecords,
+        employees: new Map(
+          filteredHoursBoard.map((emp) => [
+            emp.employeeId,
+            {
+              minHours: emp.minHours,
+              unavailabilities: unavailByEmployee.get(emp.employeeId) ?? [],
+            },
+          ]),
+        ),
+        dateFrom: fromDate,
+        dateTo: toDate,
+        holidayMap,
+      });
+
+      const clockByEmployee = new Map<number, ClockInExportRecord[]>();
+      for (const record of filledClockRecords) {
+        const empId = record.employee_id;
+        if (empId == null) continue;
+        const list = clockByEmployee.get(empId);
+        if (list) list.push(record);
+        else clockByEmployee.set(empId, [record]);
+      }
+
       const minHoursByEmployee = new Map(
         filteredHoursBoard.map((emp) => [emp.employeeId, emp.minHours]),
       );
-      const clockTotalsByEmployee = groupClockInTotalsByEmployee(clockRecords);
+      const clockTotalsByEmployee = groupClockInTotalsByEmployee(filledClockRecords);
       const extraHoursByEmployee = calculateExtraHoursByEmployee(
         clockByEmployee,
         minHoursByEmployee,

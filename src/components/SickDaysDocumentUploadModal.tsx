@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
-import { XMarkIcon, DocumentArrowUpIcon, DocumentIcon, CheckCircleIcon, XCircleIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, DocumentArrowUpIcon, DocumentIcon, CheckCircleIcon, XCircleIcon, EyeIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import DocumentViewerModal from './DocumentViewerModal';
 
@@ -71,12 +72,16 @@ interface SickDaysDocumentUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onDocumentUploaded?: () => void;
+  onAddSickDay?: (dateKey: string) => void;
+  variant?: 'modal' | 'drawer';
 }
 
 const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = ({
   isOpen,
   onClose,
-  onDocumentUploaded
+  onDocumentUploaded,
+  onAddSickDay,
+  variant = 'modal',
 }) => {
   const [sickDays, setSickDays] = useState<SickDayRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -87,6 +92,10 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
   const [uploadFilter, setUploadFilter] = useState<'all' | 'uploaded' | 'not_uploaded'>('all');
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
+  const [showSickDayDateDrawer, setShowSickDayDateDrawer] = useState(false);
+  const [newSickDayDate, setNewSickDayDate] = useState(
+    () => new Date().toISOString().slice(0, 10),
+  );
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<{ url: string; name: string; reason: string | null; uploadedAt: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -417,21 +426,62 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-lg p-6 max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+  return createPortal(
+    <div
+      className={`fixed inset-0 z-[10100] flex bg-black/20 backdrop-blur-[1px] ${
+        variant === 'drawer' ? 'items-stretch justify-end' : 'items-center justify-center'
+      }`}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return;
+        onClose();
+        setSelectedSickDay(null);
+        setSelectedFile(null);
+      }}
+    >
+      <div
+        className={
+          variant === 'drawer'
+            ? 'h-screen w-full max-w-3xl overflow-y-auto border-l border-gray-200 bg-white p-6 shadow-2xl sm:rounded-l-3xl'
+            : 'bg-white rounded-lg p-6 max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto'
+        }
+        style={
+          variant === 'drawer'
+            ? { animation: 'sick-days-drawer-in 220ms ease-out' }
+            : undefined
+        }
+      >
+        {variant === 'drawer' && (
+          <style>{`
+            @keyframes sick-days-drawer-in {
+              from { transform: translateX(100%); opacity: 0.75; }
+              to { transform: translateX(0); opacity: 1; }
+            }
+          `}</style>
+        )}
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Upload Documents for Sick Days</h3>
-          <button
-            onClick={() => {
-              onClose();
-              setSelectedSickDay(null);
-              setSelectedFile(null);
-            }}
-            className="btn btn-ghost btn-sm btn-circle"
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onAddSickDay && (
+              <button
+                type="button"
+                onClick={() => setShowSickDayDateDrawer(true)}
+                className="btn btn-sm btn-primary rounded-full gap-1.5 px-4"
+              >
+                <PlusIcon className="h-4 w-4" />
+                Add sick day
+              </button>
+            )}
+            <button
+              onClick={() => {
+                onClose();
+                setSelectedSickDay(null);
+                setSelectedFile(null);
+              }}
+              className="btn btn-ghost btn-sm btn-circle"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -448,26 +498,38 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
             {/* Filters */}
             <div className="rounded-lg p-4 space-y-4 border border-gray-200">
               {/* Upload Status Filter */}
-              <div>
-                <label className="label">
+              <div className="flex flex-col items-end">
+                <label className="label self-stretch">
                   <span className="label-text font-semibold">Filter by Upload Status</span>
                 </label>
-                <div className="flex gap-2">
+                <div className="inline-flex items-center gap-1 rounded-lg bg-gray-200/70 p-1">
                   <button
                     onClick={() => setUploadFilter('all')}
-                    className={`btn btn-sm ${uploadFilter === 'all' ? 'btn-primary' : 'btn-ghost'}`}
+                    className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+                      uploadFilter === 'all'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
                   >
                     All
                   </button>
                   <button
                     onClick={() => setUploadFilter('uploaded')}
-                    className={`btn btn-sm ${uploadFilter === 'uploaded' ? 'btn-primary' : 'btn-ghost'}`}
+                    className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+                      uploadFilter === 'uploaded'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
                   >
                     Uploaded
                   </button>
                   <button
                     onClick={() => setUploadFilter('not_uploaded')}
-                    className={`btn btn-sm ${uploadFilter === 'not_uploaded' ? 'btn-primary' : 'btn-ghost'}`}
+                    className={`rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+                      uploadFilter === 'not_uploaded'
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
                   >
                     Not Uploaded
                   </button>
@@ -515,10 +577,10 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                       setSelectedSickDay(sickDay);
                       setSelectedFile(null);
                     }}
-                    className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
+                    className={`p-4 rounded-lg cursor-pointer transition-all ${
                       selectedSickDay?.id === sickDay.id
-                        ? 'border-primary bg-primary/5'
-                        : 'border-gray-200 hover:border-gray-300 bg-white'
+                        ? 'bg-primary/10 shadow-sm'
+                        : 'bg-gray-50 hover:bg-gray-100'
                     }`}
                   >
                     <div className="flex items-start justify-between mb-2">
@@ -533,9 +595,9 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                         )}
                       </div>
                       {sickDay.effectiveDocumentUrl ? (
-                        <CheckCircleIcon className="w-5 h-5 text-green-500 flex-shrink-0 ml-2" />
+                        <CheckCircleIcon className="w-7 h-7 text-green-500 flex-shrink-0 ml-2" />
                       ) : (
-                        <XCircleIcon className="w-5 h-5 text-red-500 flex-shrink-0 ml-2" />
+                        <XCircleIcon className="w-7 h-7 text-red-500 flex-shrink-0 ml-2" />
                       )}
                     </div>
                     {sickDay.effectiveDocumentUrl ? (
@@ -708,6 +770,61 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
         )}
       </div>
 
+      {showSickDayDateDrawer && (
+        <div
+          className="fixed inset-0 z-20 flex items-stretch justify-end bg-black/25 backdrop-blur-[1px]"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setShowSickDayDateDrawer(false);
+          }}
+        >
+          <aside className="relative h-screen w-full max-w-sm border-l border-gray-200 bg-white shadow-2xl sm:rounded-l-3xl">
+            <div className="flex items-center justify-between px-6 py-5">
+              <h3 className="text-lg font-semibold text-gray-900">Choose sick-day date</h3>
+              <button
+                type="button"
+                onClick={() => setShowSickDayDateDrawer(false)}
+                className="btn btn-sm btn-ghost btn-circle"
+                aria-label="Close date picker"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="px-6 py-4">
+              <label className="label">
+                <span className="label-text font-medium">Date</span>
+              </label>
+              <input
+                type="date"
+                className="input input-bordered w-full"
+                value={newSickDayDate}
+                onChange={(event) => setNewSickDayDate(event.target.value)}
+              />
+            </div>
+            <div className="absolute inset-x-0 bottom-0 flex justify-end gap-2 bg-white/95 px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] backdrop-blur">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setShowSickDayDateDrawer(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary rounded-full px-6"
+                disabled={!newSickDayDate}
+                onClick={() => {
+                  if (!newSickDayDate) return;
+                  setShowSickDayDateDrawer(false);
+                  onAddSickDay?.(newSickDayDate);
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* Document Viewer Modal */}
       {selectedDocument && (
         <DocumentViewerModal
@@ -722,7 +839,8 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
           sickDaysReason={selectedDocument.reason || undefined}
         />
       )}
-    </div>
+    </div>,
+    document.body,
   );
 };
 

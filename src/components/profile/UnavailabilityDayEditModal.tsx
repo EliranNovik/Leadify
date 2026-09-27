@@ -93,8 +93,28 @@ const UnavailabilityDayEditModal: React.FC<UnavailabilityDayEditModalProps> = ({
         open={isOpen}
         onClose={onClose}
         title="Edit unavailability"
-        onSave={() => void handleSave()}
-        saving={saving}
+        headerClassName="border-b-0"
+        footerClassName="border-t-0"
+        footer={
+          <div className="flex w-full items-center justify-end gap-2">
+            <button
+              type="button"
+              className="btn btn-ghost h-10 min-h-10 rounded-full px-5"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary h-10 min-h-10 rounded-full px-8"
+              onClick={() => void handleSave()}
+              disabled={saving}
+            >
+              {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+            </button>
+          </div>
+        }
         mobileFullHeight
       >
         <div className="space-y-4">
