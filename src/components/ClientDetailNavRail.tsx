@@ -25,6 +25,35 @@ export type ClientDetailNavTab = {
   badge?: number;
 };
 
+/**
+ * Under this height the vertical footer stack (~10rem) and the expanded tab list (~26rem for
+ * the full 9 tabs, below a 7.25rem rail offset) stop fitting together, so the actions lay out
+ * horizontally along the bottom and hand that space back to the tabs.
+ */
+const SHORT_RAIL_VIEWPORT_QUERY = '(max-height: 820px)';
+
+/**
+ * Clears the horizontal action bar (2.75rem tall, 0.5rem off the bottom) so the docked app nav
+ * opens from just above it instead of covering it.
+ */
+export const CLIENT_DETAIL_NAV_ACTIONS_CLEARANCE_CLASS = 'bottom-[3.75rem]';
+
+export const useShortRailViewport = () => {
+  const [isShort, setIsShort] = useState(
+    () => window.matchMedia(SHORT_RAIL_VIEWPORT_QUERY).matches,
+  );
+
+  useEffect(() => {
+    const query = window.matchMedia(SHORT_RAIL_VIEWPORT_QUERY);
+    const sync = () => setIsShort(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
+  return isShort;
+};
+
 export type ClientDetailNavLeadActions = {
   onCreateSubLead: () => void;
   onEditDetails: () => void;
@@ -56,6 +85,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
   leadActions,
 }) => {
   const [expanded, setExpanded] = useState(false);
+  const horizontalActions = useShortRailViewport();
   const collapseTimer = useRef<number | null>(null);
 
   const clearCollapseTimer = () => {
@@ -98,17 +128,23 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
 
   const footerBtnClass =
     'inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800';
+  const footerTooltipClass = horizontalActions
+    ? 'tooltip tooltip-top z-50'
+    : 'tooltip tooltip-right z-50';
 
   return (
+    // Flex column rather than two absolutely-positioned children: the tab card and the
+    // footer buttons used to be independently pinned to top/bottom at the same z-index, so on
+    // a short viewport the card grew underneath the footer and the footer painted over it.
     <aside
-      className="hidden md:block md:fixed md:bottom-0 md:left-0 md:z-30 md:w-[4.75rem] md:overflow-visible"
+      className="hidden md:fixed md:bottom-0 md:left-0 md:z-30 md:flex md:w-[4.75rem] md:flex-col md:overflow-visible"
       style={{ top: 'var(--client-detail-nav-top, 7.25rem)' }}
       aria-label="Client sections"
     >
       <div
         className={[
-          'absolute left-0 top-0 z-40 flex flex-col overflow-visible',
-          expanded ? 'w-[15.5rem] pb-6 pt-0' : 'h-[22rem] w-[4.75rem] pt-0',
+          'relative z-40 flex min-h-0 flex-col overflow-visible',
+          expanded ? 'w-[15.5rem] flex-1 pb-2 pt-0' : 'h-[22rem] w-[4.75rem] pt-0',
         ].join(' ')}
         onMouseEnter={openRail}
         onMouseLeave={scheduleCloseRail}
@@ -121,7 +157,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
       >
         <div
           className={[
-            'flex h-fit flex-col overflow-visible transition-[width,background-color,box-shadow] duration-200 ease-out',
+            'flex min-h-0 flex-col transition-[width,background-color,box-shadow] duration-200 ease-out',
             expanded
               ? 'ml-2 w-56 rounded-2xl bg-white py-2 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/[0.04]'
               : 'ml-2 w-12 rounded-2xl bg-transparent py-0',
@@ -130,7 +166,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
           <nav
             className={
               expanded
-                ? 'flex h-fit flex-col gap-2 px-1.5'
+                ? 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain px-1.5 py-2'
                 : 'flex h-fit flex-col items-center'
             }
             aria-label="Client tabs"
@@ -184,10 +220,24 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
         </div>
       </div>
 
-      <div className="absolute bottom-2 left-0 z-40 flex w-[4.75rem] justify-center">
-        <div className="flex flex-col items-center gap-1">
+      <div
+        className={[
+          'z-40 mt-auto flex shrink-0 pb-2',
+          horizontalActions ? 'w-max pl-2' : 'w-[4.75rem] justify-center',
+        ].join(' ')}
+      >
+        <div
+          className={[
+            'flex items-center gap-1',
+            // The row is wider than the 4.75rem rail, so it overflows onto the page; the pill
+            // keeps the icons legible against whatever content sits behind it.
+            horizontalActions
+              ? 'flex-row rounded-full bg-white px-1.5 py-1 shadow-[0_6px_20px_rgba(15,23,42,0.12)] ring-1 ring-black/[0.04]'
+              : 'flex-col',
+          ].join(' ')}
+        >
           {leadActions ? (
-            <div className="tooltip tooltip-right z-50" data-tip="Add sublead">
+            <div className={footerTooltipClass} data-tip="Add sublead">
               <button
                 type="button"
                 onClick={() => void leadActions.onCreateSubLead()}
@@ -200,7 +250,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
           ) : null}
           {leadActions ? (
             <div
-              className="tooltip tooltip-right z-50"
+              className={footerTooltipClass}
               data-tip={leadActions.isUnactivated ? 'Activate case' : 'Deactivate / spam'}
             >
               <button
@@ -222,7 +272,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
             </div>
           ) : null}
           {leadActions ? (
-            <div className="tooltip tooltip-right z-50" data-tip="Edit details">
+            <div className={footerTooltipClass} data-tip="Edit details">
               <button
                 type="button"
                 onClick={() => leadActions.onEditDetails()}
@@ -234,7 +284,7 @@ const ClientDetailNavRail: React.FC<ClientDetailNavRailProps> = ({
             </div>
           ) : null}
           <div
-            className="tooltip tooltip-right z-50"
+            className={footerTooltipClass}
             data-tip={appNavOpen ? 'Close menu' : 'Open menu'}
           >
             <button

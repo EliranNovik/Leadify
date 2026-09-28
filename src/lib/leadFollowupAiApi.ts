@@ -838,9 +838,12 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     ? supabase.from('call_logs').select('cdate, time, direction, duration, source, destination').eq('lead_id', rawId).order('cdate', { ascending: false }).limit(8)
     : supabase.from('call_logs').select('cdate, time, direction, duration, source, destination').eq('client_id', rawId).order('cdate', { ascending: false }).limit(8);
 
+  // No expert_notes here: that column lives on leads, not meetings. Selecting it failed the
+  // whole query with 42703, which silently dropped meeting_brief / meeting_summary_notes /
+  // meeting_location from the AI context too.
   const meetingQuery = isLegacy
-    ? supabase.from('meetings').select('meeting_date, meeting_time, status, meeting_brief, expert_notes, meeting_summary_notes, meeting_location').eq('legacy_lead_id', rawId).order('meeting_date', { ascending: false }).limit(8)
-    : supabase.from('meetings').select('meeting_date, meeting_time, status, meeting_brief, expert_notes, meeting_summary_notes, meeting_location').eq('client_id', rawId).order('meeting_date', { ascending: false }).limit(8);
+    ? supabase.from('meetings').select('meeting_date, meeting_time, status, meeting_brief, meeting_summary_notes, meeting_location').eq('legacy_lead_id', rawId).order('meeting_date', { ascending: false }).limit(8)
+    : supabase.from('meetings').select('meeting_date, meeting_time, status, meeting_brief, meeting_summary_notes, meeting_location').eq('client_id', rawId).order('meeting_date', { ascending: false }).limit(8);
 
   const paymentQuery = isLegacy
     ? supabase.from('finances_paymentplanrow').select('value, due_date, cancel_date, actual_date').eq('lead_id', rawId).is('cancel_date', null).order('due_date', { ascending: true }).limit(8)
@@ -965,9 +968,6 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     const parts = [
       row.meeting_summary_notes ? `Summary: ${clipCaseText(row.meeting_summary_notes, 900)}` : '',
       row.meeting_brief ? `Brief: ${clipCaseText(row.meeting_brief, 900)}` : '',
-      flattenLeadNotesField(row.expert_notes)
-        ? `Meeting expert notes: ${clipNoteField(row.expert_notes, 2000)}`
-        : '',
     ].filter(Boolean);
     return parts.length ? `${header}\n${parts.join('\n')}` : `${header}: (no notes)`;
   });

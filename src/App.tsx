@@ -9,6 +9,10 @@ import { InteractionStatus } from '@azure/msal-browser';
 import { loginRequest } from './msalConfig';
 import { Toaster } from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
+import {
+  CLIENT_DETAIL_NAV_ACTIONS_CLEARANCE_CLASS,
+  useShortRailViewport,
+} from './components/ClientDetailNavRail';
 import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
@@ -227,6 +231,7 @@ const AppContentInner: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
   const [adminAppNavOpen, setAdminAppNavOpen] = useState(false);
+  const shortRailViewport = useShortRailViewport();
   const [pipelinePageMounted, setPipelinePageMounted] = useState(isPipelinePage);
   if (isPipelinePage && !pipelinePageMounted) {
     setPipelinePageMounted(true);
@@ -407,10 +412,13 @@ const AppContentInner: React.FC = () => {
           return `${masterId}/?`;
         };
 
-        // Fetch emails for legacy lead
+        // Fetch emails for legacy lead.
+        // Only the row count is consumed (calculateInteractionCountSync in Clients.tsx), so
+        // select id alone. Selecting * detoasts body_html for every email on the lead —
+        // ~1,900 rows on an active lead — and times out (57014).
         const { data: legacyEmails, error: emailsError } = await supabase
           .from('emails')
-          .select('*')
+          .select('id')
           .eq('legacy_id', legacyId)
           .order('sent_at', { ascending: false });
 
@@ -514,7 +522,7 @@ const AppContentInner: React.FC = () => {
           .from('leads')
           .select(`
             *,
-            emails (*),
+            emails (id),
             balance,
             currency_id,
             proposal_total,
@@ -1060,7 +1068,11 @@ const AppContentInner: React.FC = () => {
                   dockedPositionClassName={
                     isAdminPage
                       ? 'fixed bottom-0 left-56 top-12 z-40'
-                      : 'fixed bottom-0 left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)]'
+                      : `fixed left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)] ${
+                          shortRailViewport
+                            ? CLIENT_DETAIL_NAV_ACTIONS_CLEARANCE_CLASS
+                            : 'bottom-0'
+                        }`
                   }
                   dockedSurfaceClassName={
                     isAdminPage

@@ -197,6 +197,7 @@ import ClientHeader from './ClientHeader';
 import ClientDetailNavRail, {
   CLIENT_DETAIL_NAV_PL_CLASS,
   CLIENT_DETAIL_NAV_WITH_APP_PL_CLASS,
+  useShortRailViewport,
 } from './ClientDetailNavRail';
 import HeaderRoleAssignField, {
   HeaderRoleAssignDropdownItem,
@@ -1247,6 +1248,8 @@ const Clients: React.FC<ClientsProps> = ({
   });
   const tabContentRef = useRef<HTMLDivElement>(null);
   const clientHeaderBandRef = useRef<HTMLDivElement>(null);
+  // Drives the rail offset below and hides the floating lead pill further down.
+  const shortRailViewport = useShortRailViewport();
 
   // Align the first tab badge with the language chip in the meta strip.
   useEffect(() => {
@@ -1257,6 +1260,10 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     const NAVBAR_PX = 48;
+    // Floor for the rail on short viewports, where the floating lead pill is hidden: the rail
+    // follows the client header but never rises above this. Matches the 4.25rem
+    // `.client-header-top-band__navbar-spacer` used to clear the navbar elsewhere.
+    const SHORT_VIEWPORT_NAV_TOP_PX = 68;
     const pickVisible = (nodes: NodeListOf<Element> | Element[]): HTMLElement | null => {
       const list = Array.from(nodes) as HTMLElement[];
       return list.find((el) => el.getBoundingClientRect().height > 0) || null;
@@ -1275,13 +1282,29 @@ const Clients: React.FC<ClientsProps> = ({
       const target = langChip || metaBand;
       const scrollRoot = document.querySelector('main.clients-detail-scroll') as HTMLElement | null;
       const scrollTop = scrollRoot?.scrollTop ?? window.scrollY ?? 0;
-      if (target) {
-        const rect = target.getBoundingClientRect();
+      const targetRect = target?.getBoundingClientRect();
+      if (targetRect) {
         // 3rem collapsed icon button — keep centered on the language chip.
         const iconBtnPx = 48;
-        const alignedTop = Math.round(rect.top + rect.height / 2 - iconBtnPx / 2 + scrollTop);
-        const pinned = Math.max(alignedTop, NAVBAR_PX);
-        document.documentElement.style.setProperty('--client-detail-nav-top', `${pinned}px`);
+        // Tall viewports add scrollTop to hold the chip's place in document space. Short ones
+        // stay in viewport space so the rail sits below the client header while it is on screen
+        // and then sticks under the navbar once the header scrolls away.
+        const alignedTop = Math.round(
+          targetRect.top +
+            targetRect.height / 2 -
+            iconBtnPx / 2 +
+            (shortRailViewport ? 0 : scrollTop),
+        );
+        const floor = shortRailViewport ? SHORT_VIEWPORT_NAV_TOP_PX : NAVBAR_PX;
+        document.documentElement.style.setProperty(
+          '--client-detail-nav-top',
+          `${Math.max(alignedTop, floor)}px`,
+        );
+      } else if (shortRailViewport) {
+        document.documentElement.style.setProperty(
+          '--client-detail-nav-top',
+          `${SHORT_VIEWPORT_NAV_TOP_PX}px`,
+        );
       }
       // Viewport Y so the open white rail stays flush under the navbar after scroll.
       const headerBottom = headerBand
@@ -1322,7 +1345,7 @@ const Clients: React.FC<ClientsProps> = ({
       document.documentElement.style.removeProperty('--client-detail-nav-top');
       document.documentElement.style.removeProperty('--client-detail-header-bottom');
     };
-  }, [selectedClient?.id]);
+  }, [selectedClient?.id, shortRailViewport]);
 
   useEffect(() => {
     prefetchTabChunk(activeTab);
@@ -14322,7 +14345,7 @@ const Clients: React.FC<ClientsProps> = ({
           >
           {/* Sticky Header - appears when scrolled down, positioned below main header (desktop only - mobile bar removed) */}
           {/* Centered oval glassy bar */}
-          {showStickyHeader && (
+          {showStickyHeader && !shortRailViewport && (
             <div
               className="hidden md:flex fixed left-2 z-[45] justify-start transition-all duration-300 ease-in-out"
               style={{

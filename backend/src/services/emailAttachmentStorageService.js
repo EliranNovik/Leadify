@@ -35,18 +35,54 @@ function withLegacyColumns(payload) {
   };
 }
 
+/**
+ * Locate the row that won a duplicate-key race, scoped to the owning email for the
+ * reason described on findStoredRowForEmail. Checks the legacy attachment_id column too,
+ * since the unique index that reports the conflict keys on it.
+ */
+async function findConflictingRow(emailId, graphAttachmentId) {
+  if (!emailId || !graphAttachmentId || !/^\d+$/.test(String(emailId))) return null;
+
+  const byGraphId = await findStoredRowForEmail(emailId, graphAttachmentId);
+  if (byGraphId?.id) return byGraphId;
+  if (legacyColumnsSupported === false) return null;
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('id')
+    .eq('email_id', Number(emailId))
+    .eq('attachment_id', String(graphAttachmentId))
+    .maybeSingle();
+  if (error && !tableMissing(error) && !columnMissing(error)) {
+    console.warn('⚠️  email_attachments conflict lookup failed:', error.message || error);
+  }
+  return data || null;
+}
+
 async function writeAttachmentRow(existingId, payload) {
   const run = (row) =>
     existingId
       ? supabase.from(TABLE).update(row).eq('id', existingId)
       : supabase.from(TABLE).insert(row);
 
-  const first = await run(withLegacyColumns(payload));
-  if (!first.error || legacyColumnsSupported === false) return first;
-  if (!columnMissing(first.error)) return first;
+  let result = await run(withLegacyColumns(payload));
 
-  legacyColumnsSupported = false;
-  return run(payload);
+  if (result.error && legacyColumnsSupported !== false && columnMissing(result.error)) {
+    legacyColumnsSupported = false;
+    result = await run(payload);
+  }
+
+  // The deployed backend runs this same Graph sync, so it can insert this attachment
+  // between our pre-check and this insert. The row we wanted now exists, so adopt it
+  // instead of failing the write and re-downloading the file on every later cycle.
+  if (result.error && !existingId && String(result.error.code) === '23505') {
+    const winner = await findConflictingRow(payload.email_id, payload.graph_attachment_id);
+    if (winner?.id) {
+      return supabase.from(TABLE).update(withLegacyColumns(payload)).eq('id', winner.id);
+    }
+  }
+
+  return result;
 }
 
 const safeSegment = (value, max = 80) =>
