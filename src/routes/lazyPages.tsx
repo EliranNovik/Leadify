@@ -37,6 +37,7 @@ export const LazyCollectionFinancesReport = lazy(() => import('../pages/Collecti
 export const LazyCollectionDueReportPage = lazy(() => import('../pages/CollectionDueReportPage'));
 export const LazyCloserSuperPipelinePage = lazy(() => import('../pages/CloserSuperPipelinePage'));
 export const LazySalesContributionPage = lazy(() => import('../pages/SalesContributionPage'));
+export const LazySimpleContributionReportPage = lazy(() => import('../pages/SimpleContributionReportPage'));
 export const LazyEditContractsPage = lazy(() => import('../pages/EditContractsPage'));
 export const LazyReassignLeadsPage = lazy(() => import('../pages/ReassignLeadsPage'));
 export const LazyEmployeeUnavailabilitiesReport = lazy(() => import('../pages/EmployeeUnavailabilitiesReport'));

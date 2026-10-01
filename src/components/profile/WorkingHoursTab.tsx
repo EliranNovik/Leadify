@@ -29,6 +29,7 @@ import {
   clockSessionsForDisplay,
   exportMergedTimeAndUnavailabilitiesToExcel,
   sumCountedClockDurationsMs,
+  type ClockInExportRecord,
   type DailyClockInSummary,
   type ClockSessionSummary,
 } from '../../lib/workingHoursExport';
@@ -51,7 +52,12 @@ import { normalizeEmployeeMinHours } from '../../lib/employeeLeadReporting';
 import {
   preloadHolidayYears,
 } from '../../lib/israeliJewishHolidays';
-import { buildHolidayMapForRange, isDeficitTrackingWorkday } from '../../lib/employeeExtraHours';
+import {
+  buildHolidayMapForRange,
+  calculateEmployeeExtraHours,
+  generalAbsenceOverlapMs,
+  isDeficitTrackingWorkday,
+} from '../../lib/employeeExtraHours';
 import {
   isAutoFilledClockInRecord,
   isAutoFilledOnlyDay,
@@ -70,12 +76,13 @@ import {
   countUnavailabilityApprovalBlockersInMonth,
   getUnavailabilityApprovalStatus,
   isGeneralUnavailability,
-  buildGeneralAbsenceHoursByDate,
+  buildGeneralAbsenceWindowsByDate,
   buildUnavailabilityDayEffects,
   timedGeneralAbsenceBadgeDetails,
   unavailabilityApprovalWatermarkLabel,
   type EmployeeUnavailabilityEntry,
   type EmployeeUnavailabilityDayRow,
+  type GeneralAbsenceWindow,
 } from '../../lib/employeeUnavailabilities';
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
 import DocumentViewerModal from '../DocumentViewerModal';
@@ -158,6 +165,17 @@ interface WorkingHoursTabProps {
   initialMonth?: number;
   /** HR Management employee file: flat table (no grey card gutter), matches Leave/Employees. */
   embedded?: boolean;
+  /**
+   * Show the payable 125% / 150% breakdown inside the Balance card. HR only: employees see
+   * whether their month is covered, not what it will pay out at.
+   */
+  showOvertimePremiumSplit?: boolean;
+  /**
+   * Optional host node for the month picker / Submit month / Calendar row. My Profile passes the
+   * right-hand end of its tab bar so those controls sit on the tab line; without it they render
+   * in their own row above the stat cards.
+   */
+  headerActionsSlot?: HTMLElement | null;
 }
 
 const MONTH_NAMES = [
@@ -437,6 +455,31 @@ type MergedWorkingHoursDayRow = {
   isWeekend?: boolean;
   holidayNames?: string[];
 };
+
+/**
+ * Milliseconds of a timed general absence that actually fell inside the clocked sessions.
+ *
+ * Shares `generalAbsenceOverlapMs` with the overtime helper so the Total column and the 125% /
+ * 150% split can never disagree about how much of an absence the employee was on the clock for.
+ */
+function overlappingGeneralAbsenceMs(
+  dateKey: string,
+  dayRecords: ClockInRow[],
+  windowsByDate: Map<string, GeneralAbsenceWindow[]>,
+  nowMs: number,
+): number {
+  let overlapMs = 0;
+
+  for (const record of dayRecords) {
+    const inMs = Date.parse(record.clock_in_time);
+    if (!Number.isFinite(inMs)) continue;
+    const outMs = record.clock_out_time ? Date.parse(record.clock_out_time) : nowMs;
+    if (!Number.isFinite(outMs) || outMs <= inMs) continue;
+    overlapMs += generalAbsenceOverlapMs(inMs, outMs, dateKey, windowsByDate);
+  }
+
+  return overlapMs;
+}
 
 function workingHoursDurationLabel(totalMs: number): string {
   const safeMs = Math.max(0, totalMs);
@@ -954,6 +997,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   initialYear,
   initialMonth,
   embedded = false,
+  showOvertimePremiumSplit = false,
+  headerActionsSlot = null,
 }) => {
   const { user } = useAuthContext();
   const calendarRef = useRef<CompactAvailabilityCalendarRef>(null);
@@ -1077,14 +1122,19 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     };
   }, [employeeId]);
 
-  const toggleRowFilter = useCallback((filter: WorkingHoursRowFilter) => {
-    setRowFilters((prev) => {
-      const next = new Set(prev);
+  const toggleRowFilter = useCallback(
+    (filter: WorkingHoursRowFilter) => {
+      const next = new Set(rowFilters);
       if (next.has(filter)) next.delete(filter);
       else next.add(filter);
-      return next;
-    });
-  }, []);
+      setRowFilters(next);
+      // Matches are spread across the whole month, so a single-week view hides most of what the
+      // filter selected. Widen to the All pill so the result is visible in one go. Review days
+      // sets its own target week and deliberately does not go through here.
+      if (next.size > 0) setSelectedWeekNum(0);
+    },
+    [rowFilters],
+  );
 
   const fetchRecords = useCallback(async () => {
     if (!employeeId) {
@@ -1277,20 +1327,26 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     return map;
   }, [filledRecords]);
 
-  const generalAbsenceHoursByDate = useMemo(
-    () => buildGeneralAbsenceHoursByDate(unavailabilities, dateFrom, dateTo),
+  const generalAbsenceWindowsByDate = useMemo(
+    () => buildGeneralAbsenceWindowsByDate(unavailabilities, dateFrom, dateTo),
     [unavailabilities, dateFrom, dateTo],
   );
 
   const effectiveWorkedMsForDay = useCallback(
     (dateKey: string, dayRecords: ClockInRow[]) => {
-      const workedMs = sumCountedClockDurationsMs(filterCountedClockInRecords(dayRecords));
+      const counted = filterCountedClockInRecords(dayRecords);
+      const workedMs = sumCountedClockDurationsMs(counted);
       // Synthetic standard hours already have timed general unavailability deducted.
       if (isAutoFilledOnlyDay(dayRecords)) return workedMs;
-      const absenceMs = (generalAbsenceHoursByDate.get(dateKey) ?? 0) * 3_600_000;
+      const absenceMs = overlappingGeneralAbsenceMs(
+        dateKey,
+        counted as ClockInRow[],
+        generalAbsenceWindowsByDate,
+        Date.now(),
+      );
       return Math.max(0, workedMs - absenceMs);
     },
-    [generalAbsenceHoursByDate],
+    [generalAbsenceWindowsByDate],
   );
 
   const periodTotalMs = useMemo(
@@ -1404,24 +1460,32 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () => [...new Set(monthWeekLookup.values())].sort((a, b) => a - b),
     [monthWeekLookup],
   );
+  /**
+   * monthWeekLookup is keyed by Sunday week-start only (one entry per week), so a raw date key
+   * misses on every day except Sunday. Always normalise through getSundayWeekStartKey first.
+   */
+  const weekNumForDateKey = useCallback(
+    (dateKey: string) => monthWeekLookup.get(getSundayWeekStartKey(dateKey)),
+    [monthWeekLookup],
+  );
   const weeksWithUnavailability = useMemo(() => {
     const weeks = new Set<number>();
     unavailabilityDayRows.forEach((row) => {
-      const weekNum = monthWeekLookup.get(row.date);
+      const weekNum = weekNumForDateKey(row.date);
       if (weekNum != null) weeks.add(weekNum);
     });
     return weeks;
-  }, [unavailabilityDayRows, monthWeekLookup]);
+  }, [unavailabilityDayRows, weekNumForDateKey]);
 
   useEffect(() => {
     const today = new Date();
     const todayKey = toDateInputValue(today);
     const defaultWeek =
       today.getFullYear() === year && today.getMonth() + 1 === month
-        ? monthWeekLookup.get(todayKey)
+        ? weekNumForDateKey(todayKey)
         : availableWeekNumbers[0];
     setSelectedWeekNum(defaultWeek ?? 1);
-  }, [year, month, monthWeekLookup, availableWeekNumbers]);
+  }, [year, month, weekNumForDateKey, availableWeekNumbers]);
 
   const weekRowMeta = useMemo(
     () => buildWorkingHoursWeekRowMeta(filteredMergedDayRows, monthWeekLookup),
@@ -1450,9 +1514,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     () => selectedWeekNum === 0
       ? filteredMergedDayRows
       : filteredMergedDayRows.filter(
-          (row) => (monthWeekLookup.get(row.dateKey) ?? 1) === selectedWeekNum,
+          (row) => (weekNumForDateKey(row.dateKey) ?? 1) === selectedWeekNum,
         ),
-    [filteredMergedDayRows, monthWeekLookup, selectedWeekNum],
+    [filteredMergedDayRows, weekNumForDateKey, selectedWeekNum],
   );
   const displayedWeekSections = useMemo(
     () => selectedWeekNum === 0
@@ -1469,6 +1533,26 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const periodMissingDays = useMemo(
     () => countMissingEntryPlaceholderRows(tableDayRows),
     [tableDayRows],
+  );
+
+  /**
+   * Premium overtime for the visible month, from the same helper the HR report and the Excel
+   * export use, so the Balance card and HR cannot disagree. Values are post-offset — missing
+   * hours are already eaten out of the 150% bucket first, then 125% — i.e. what is payable.
+   * Only surfaced under `showOvertimePremiumSplit`, so employees do not see their own payout.
+   */
+  const periodOvertime = useMemo(
+    () =>
+      calculateEmployeeExtraHours(
+        filledRecords as unknown as ClockInExportRecord[],
+        employeeMinHours,
+        buildHolidayMapForRange(dateFrom, dateTo),
+        dateFrom,
+        dateTo,
+        unavailabilities,
+      ),
+    // holidayMapVersion: the holiday map fills in asynchronously after the first render.
+    [filledRecords, employeeMinHours, dateFrom, dateTo, unavailabilities, holidayMapVersion],
   );
 
   const workingHoursSummary = useMemo(() => {
@@ -1492,11 +1576,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     );
     for (const [dateKey, effect] of absenceEffects) {
       if (!isDeficitTrackingWorkday(dateKey, holidayMap)) continue;
-      unavailableMs += (
-        effect.fullDay
-          ? employeeMinHours
-          : Math.min(employeeMinHours, effect.generalHours)
-      ) * 3_600_000;
+      // Only full-day sick / vacation lowers the target. A timed general absence is already
+      // removed from worked hours (see effectiveWorkedMsForDay), so discounting the target for
+      // it as well would forgive the same hours twice and turn short days into a surplus.
+      if (effect.fullDay) unavailableMs += employeeMinHours * 3_600_000;
     }
     unavailableMs = Math.min(expectedMs, unavailableMs);
     const adjustedExpectedMs = Math.max(0, expectedMs - unavailableMs);
@@ -1540,7 +1623,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       (row) => row.isMissingPlaceholder || row.isHolidayPlaceholder,
     )?.dateKey;
     if (firstMissingDate) {
-      setSelectedWeekNum(monthWeekLookup.get(firstMissingDate) ?? 1);
+      setSelectedWeekNum(weekNumForDateKey(firstMissingDate) ?? 1);
     }
     window.requestAnimationFrame(() => {
       if (firstMissingDate) {
@@ -1549,16 +1632,16 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     });
-  }, [tableDayRows, monthWeekLookup]);
+  }, [tableDayRows, weekNumForDateKey]);
 
   const goToTodayRow = useCallback(() => {
     const today = new Date();
     setYear(today.getFullYear());
     setMonth(today.getMonth() + 1);
     setRowFilters(new Set());
-    setSelectedWeekNum(monthWeekLookup.get(toDateInputValue(today)) ?? 1);
+    setSelectedWeekNum(weekNumForDateKey(toDateInputValue(today)) ?? 1);
     setScrollToTodayRequested(true);
-  }, [monthWeekLookup]);
+  }, [weekNumForDateKey]);
 
   useEffect(() => {
     if (!scrollToTodayRequested || loading) return;
@@ -1909,44 +1992,35 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     }
   };
 
-  return (
-    <div ref={hoursShellRef} className="my-profile-hours-shell w-full max-w-full min-w-0 space-y-5 px-1">
-      <section>
-      <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
-        <div className="flex min-w-0 items-start gap-3">
-          {!embedded && (
-            <>
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10">
-                <ClockIcon className="h-6 w-6 text-primary" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-3">
-                  <h2 className="text-2xl font-bold tracking-tight text-gray-900 md:text-3xl">Working Hours</h2>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-outline relative h-10 min-h-10 gap-2 overflow-visible rounded-full border-gray-200 px-4 text-gray-700"
-                    onClick={() => {
-                      setCalendarViewYear(year);
-                      setCalendarViewMonth(month);
-                      setCalendarModalOpen(true);
-                    }}
-                  >
-                    <CalendarDaysIcon className="h-5 w-5" />
-                    Calendar
-                    <span className="badge badge-xs absolute -right-1.5 -top-1.5 border-0 bg-red-500 px-1.5 text-[9px] text-white shadow-sm">
-                      New
-                    </span>
-                  </button>
-                </div>
-                <p className="mt-1 text-sm text-gray-500">Track your attendance, absences and monthly balance</p>
-              </div>
-            </>
-          )}
-        </div>
+  const headerActions = (
+      <div
+        className={
+          headerActionsSlot
+            ? 'flex items-center'
+            : 'flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-end'
+        }
+      >
         <div className="flex flex-col items-start gap-2 lg:items-end">
           <div className="flex flex-wrap items-center gap-2">
             {periodMissingDays > 0 && (
               <MissingDaysBadge count={periodMissingDays} loading={loading} />
+            )}
+            {!embedded && (
+              <button
+                type="button"
+                className="btn btn-outline relative h-12 min-h-12 gap-2 overflow-visible rounded-full border-gray-200 bg-white px-5 text-gray-700 shadow-sm"
+                onClick={() => {
+                  setCalendarViewYear(year);
+                  setCalendarViewMonth(month);
+                  setCalendarModalOpen(true);
+                }}
+              >
+                <CalendarDaysIcon className="h-5 w-5" />
+                Calendar
+                <span className="badge badge-xs absolute -right-1.5 -top-1.5 border-0 bg-red-500 px-1.5 text-[9px] text-white shadow-sm">
+                  New
+                </span>
+              </button>
             )}
             <div className="flex h-12 items-center rounded-full border border-gray-200 bg-white p-1 shadow-sm">
               <button type="button" className="btn btn-ghost btn-circle btn-sm" onClick={() => shiftWorkingHoursMonth(-1)} aria-label="Previous month">
@@ -2038,6 +2112,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           )}
         </div>
       </div>
+  );
+
+  return (
+    <div ref={hoursShellRef} className="my-profile-hours-shell w-full max-w-full min-w-0 space-y-5 px-1">
+      <section>
+      {headerActionsSlot ? createPortal(headerActions, headerActionsSlot) : headerActions}
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500 p-5 text-white shadow-xl">
@@ -2061,7 +2141,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
             <p className="text-4xl font-bold">{workingHoursDurationLabel(workingHoursSummary.adjustedExpectedMs)}</p>
             <p className="mt-1 text-lg font-semibold text-white/95">Expected</p>
             <p className="mt-1 text-sm text-white/80">
-              {MONTH_NAMES[month - 1]} target after absences
+              {MONTH_NAMES[month - 1]} target after sick / vacation
             </p>
           </div>
           <div className="rounded-full bg-white/20 p-4"><CalendarDaysIcon className="h-9 w-9" /></div>
@@ -2071,17 +2151,26 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
             ? 'from-teal-600 via-emerald-500 to-green-500'
             : 'from-pink-500 via-rose-500 to-orange-500'
         }`}>
-          <div>
+          <div className="min-w-0">
             <p className="text-4xl font-bold">
               {workingHoursSummary.balanceMs >= 0 ? '+' : '-'}
               {workingHoursDurationLabel(Math.abs(workingHoursSummary.balanceMs))}
             </p>
             <p className="mt-1 text-lg font-semibold text-white/95">Balance</p>
-            <p className="mt-1 text-sm text-white/80">
-              {workingHoursSummary.balanceMs >= 0 ? 'On track' : 'Below target'}
-            </p>
+            {showOvertimePremiumSplit && (
+              <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-white/25 pt-2">
+                <span className="text-sm font-semibold text-white/95">
+                  <span className="text-white/75">125%</span>{' '}
+                  {workingHoursDurationLabel(periodOvertime.extraHours125Ms)}
+                </span>
+                <span className="text-sm font-semibold text-white/95">
+                  <span className="text-white/75">150%</span>{' '}
+                  {workingHoursDurationLabel(periodOvertime.extraHours150Ms)}
+                </span>
+              </div>
+            )}
           </div>
-          <div className="rounded-full bg-white/20 p-4"><CheckIcon className="h-9 w-9" /></div>
+          <div className="rounded-full bg-white/20 p-4 self-start"><CheckIcon className="h-9 w-9" /></div>
         </div>
         <button
           type="button"
@@ -2400,7 +2489,18 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           isAutoFilledDay={isAutoFilledDay}
           onViewDocument={setSelectedDocument}
         />
-        <div className="hidden md:block w-full">
+        <div
+          className={[
+            'hidden md:block w-full',
+            // The thead is transparent (see the style block below), so the column titles take
+            // the colour of whatever sits behind them. In the HR employee file that is the grey
+            // page background, so the table gets its own panel to keep headers and rows on one
+            // white surface.
+            embedded ? 'rounded-2xl border border-gray-200 bg-white p-4 shadow-sm' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
           {loading ? (
             <div className="overflow-x-auto rounded-2xl">
               <table className="pipeline-flat-table my-profile-hours-table w-full min-w-[64rem] table-fixed border-separate border-spacing-0 text-base">

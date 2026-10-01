@@ -128,6 +128,26 @@ export function legacyLeadMatchesExpert(lead: any, employeeId: number, employeeN
   return false;
 }
 
+/** True when a role field actually names somebody. A blank string is "unassigned", not "assigned". */
+function isRoleAssigned(value: unknown): boolean {
+  return value !== null && value !== undefined && String(value).trim() !== '';
+}
+
+/**
+ * Helper Closer on a new `leads` row: `helper`, falling back to `meeting_lawyer_id`.
+ *
+ * Blank strings fall through. `helper` is a text column, so a value that was filled and then
+ * cleared arrives as `''` — which `??` treats as present. That both hid a real
+ * `meeting_lawyer_id` and dropped the closer to CLOSER_WITH_HELPER for a helper who does not
+ * exist, leaving the helper's share unallocated.
+ */
+export function resolveHelperCloserValue(lead: any): string | number | null {
+  if (lead == null) return null;
+  if (isRoleAssigned(lead.helper)) return lead.helper;
+  if (isRoleAssigned(lead.meeting_lawyer_id)) return lead.meeting_lawyer_id;
+  return null;
+}
+
 /** When employee_id is unknown, numeric field matching must not false-positive; name-only paths still work. */
 const NO_EMPLOYEE_ID_SENTINEL = -999999999;
 
@@ -368,7 +388,7 @@ export const calculateSignedPortionPercentage = (
 
   // Special case: If both Closer and Helper Closer exist on the lead
   // Check if there's a Helper Closer assigned (regardless of who it is)
-  const hasHelperCloser = lead.helperCloser !== null && lead.helperCloser !== undefined;
+  const hasHelperCloser = isRoleAssigned(lead.helperCloser);
 
   if (isCloser) {
     if (hasHelperCloser) {
@@ -446,7 +466,7 @@ export const calculateLegacySignedPortionPercentage = (
 
   // Special case: If both Closer and Helper Closer exist on the lead
   // Check if there's a Helper Closer assigned (regardless of who it is)
-  const hasHelperCloser = lead.meeting_lawyer_id !== null && lead.meeting_lawyer_id !== undefined;
+  const hasHelperCloser = isRoleAssigned(lead.meeting_lawyer_id);
 
   if (isCloser) {
     if (hasHelperCloser) {

@@ -140,6 +140,7 @@ import {
   LazyReportsPage,
   LazyRetainerHandlerCasesPage,
   LazySalesContributionPage,
+  LazySimpleContributionReportPage,
   LazySchedulerToolPage,
   LazySettingsPage,
   LazySignedSalesReportPage,
@@ -1221,6 +1222,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/collection-due" element={<RouteSuspense><LazyCollectionDueReportPage /></RouteSuspense>} />
                     <Route path="/reports/closer-super-pipeline" element={<RouteSuspense><LazyCloserSuperPipelinePage /></RouteSuspense>} />
                     <Route path="/reports/sales-contribution" element={<RouteSuspense><LazySalesContributionPage /></RouteSuspense>} />
+                    <Route path="/reports/simple-contribution" element={<RouteSuspense><LazySimpleContributionReportPage /></RouteSuspense>} />
                     <Route path="/reports/edit-contracts" element={<RouteSuspense><LazyEditContractsPage /></RouteSuspense>} />
                     <Route path="/reports/reassign-leads" element={<RouteSuspense><LazyReassignLeadsPage /></RouteSuspense>} />
                     <Route path="/reports/employee-unavailabilities" element={<RouteSuspense><LazyEmployeeUnavailabilitiesReport /></RouteSuspense>} />

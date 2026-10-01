@@ -19,7 +19,12 @@ import { fetchIssuerEmployee, type EmployeeProfile } from '../lib/fetchEmployeeP
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
+import {
+  pickCurrencyId,
+  pickCurrencyToken,
+  proformaDisplayCurrency,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import {
   currencyInputFromLegacyProforma,
   fetchProformaExchangeRateInfo,
@@ -32,7 +37,10 @@ function getCurrencySymbol(
   currency: string | undefined,
   currencyId?: number | string | null,
 ): string {
-  return proformaDisplayCurrency({ currency_code: currency, currency_id: currencyId });
+  return proformaDisplayCurrency({
+    currency_code: pickCurrencyToken(currency),
+    currency_id: pickCurrencyId(currencyId),
+  });
 }
 
 const PublicProformaLegacyViewPage: React.FC = () => {
@@ -73,10 +81,13 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
       const bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
 
+      // `get_public_legacy_proforma` returns `COALESCE(v_ac.iso_code, 'ILS')` as currency_code, so a
+      // missing accounting_currencies row hands us a confident-looking 'ILS' alongside the real
+      // currency_id. resolveProformaCurrency trusts the id over the token for exactly this reason.
       const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
         await resolveProformaCurrency({
-          currency_id: data.currency_id,
-          currency: data.currency_code,
+          currency_id: pickCurrencyId(data.payment_plan_currency_id, data.currency_id),
+          currency: pickCurrencyToken(data.currency_code),
         });
 
       const proformaPayload = {

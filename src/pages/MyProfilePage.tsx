@@ -67,8 +67,9 @@ const MyProfilePage: React.FC = () => {
     })();
     const [activeTab, setActiveTab] = useState(tabFromUrl);
     const [showFloatingTabs, setShowFloatingTabs] = useState(false);
-    const desktopTabsRef = useRef<HTMLDivElement>(null);
-    const mobileTabsRef = useRef<HTMLDivElement>(null);
+    const tabsRef = useRef<HTMLDivElement>(null);
+    // State, not a ref: WorkingHoursTab needs to re-render once the node exists to portal into it.
+    const [tabActionsSlot, setTabActionsSlot] = useState<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -77,7 +78,7 @@ const MyProfilePage: React.FC = () => {
 
     useEffect(() => {
       const handleScroll = () => {
-        const tabs = window.innerWidth >= 768 ? desktopTabsRef.current : mobileTabsRef.current;
+        const tabs = tabsRef.current;
         setShowFloatingTabs(Boolean(tabs && tabs.getBoundingClientRect().bottom <= 48));
       };
       handleScroll();
@@ -354,131 +355,135 @@ const MyProfilePage: React.FC = () => {
 
     return (
         <div className="min-h-0 w-full max-w-full min-w-0 overflow-x-hidden bg-[#ececec] flex flex-col">
-            {/* Banner Section */}
-            <div className="relative h-64 md:h-80 w-full group">
-                <div
-                    className="absolute inset-0 bg-cover bg-center"
-                    style={{
-                        backgroundImage: `url(${profile.chat_background_image_url || DEFAULT_BANNER})`,
-                    }}
-                >
-                    <div className="absolute inset-0 bg-black/20 group-hover:bg-black/30 transition-colors"></div>
-                </div>
-
-                {/* Logo */}
-                <div className="absolute top-6 left-6 z-20">
-                    <img
-                        src="/DPLOGO1.png"
-                        alt="DPL Logo"
-                        className="h-14 md:h-20 drop-shadow-lg"
-                    />
-                </div>
-
-                {/* Profile actions — single dots menu (Share / Share Card / Edit) */}
-                <div className="absolute top-4 right-4 z-20">
-                    {!isEditing && (
-                        <div className="dropdown dropdown-end">
-                            <button
-                                type="button"
-                                tabIndex={0}
-                                className="btn btn-sm btn-circle bg-white/50 text-gray-800 hover:bg-white/70 backdrop-blur-md border border-white/60 shadow-md"
-                                aria-label="Profile actions"
-                            >
-                                <EllipsisVerticalIcon className="w-5 h-5" />
-                            </button>
-                            <ul
-                                tabIndex={0}
-                                className="dropdown-content menu bg-white/90 backdrop-blur-md rounded-xl z-[30] w-52 p-2 shadow-lg border border-white/60 mt-2"
-                            >
-                                <li>
-                                    <button type="button" className="gap-2" onClick={handleShare}>
-                                        <ShareIcon className="w-4 h-4" />
-                                        Share
-                                    </button>
-                                </li>
-                                <li>
-                                    <button type="button" className="gap-2" onClick={handleShareBusinessCard}>
-                                        <ShareIcon className="w-4 h-4" />
-                                        Share Card
-                                    </button>
-                                </li>
-                                <li>
-                                    <button type="button" className="gap-2" onClick={() => setIsEditing(true)}>
-                                        <PencilIcon className="w-4 h-4" />
-                                        Edit Profile
-                                    </button>
-                                </li>
-                            </ul>
+            {/* Profile header — HR Management employee file layout, run full-bleed so the banner
+                meets the app header with no gutter */}
+            <div className="w-full">
+                {/* No overflow-hidden: the month picker portaled into the tab row opens a dropdown
+                    that has to escape this card. Nothing needs clipping now it is full-bleed. */}
+                <div className="bg-white border-b border-gray-200 shadow-sm">
+                    <div className="relative h-40 md:h-52 w-full">
+                        <div
+                            className="absolute inset-0 bg-cover bg-center"
+                            style={{
+                                backgroundImage: `url(${profile.chat_background_image_url || DEFAULT_BANNER})`,
+                            }}
+                        >
+                            <div className="absolute inset-0 bg-black/20" />
                         </div>
-                    )}
-                </div>
 
-                {/* Profile Header Content - Avatar overlaps banner and white bg */}
-                <div className="absolute -bottom-20 md:-bottom-20 left-0 right-0 px-4 md:px-8 max-w-7xl mx-auto flex flex-col md:flex-row items-center md:items-end gap-4 md:gap-6 pointer-events-none">
-                    {/* Avatar */}
-                    <div className="relative group/avatar pointer-events-auto shrink-0 z-20">
-                        <div className="w-28 h-28 md:w-40 md:h-40 rounded-full border-4 border-white shadow-xl overflow-hidden bg-white">
+                        {/* Logo */}
+                        <div className="absolute top-4 left-4 md:top-6 md:left-6 z-20">
                             <img
-                                src={profile.photo_url || DEFAULT_AVATAR}
-                                alt={profile.official_name}
-                                className="w-full h-full object-cover"
+                                src="/DPLOGO1.png"
+                                alt="DPL Logo"
+                                className="h-12 md:h-16 drop-shadow-lg"
                             />
                         </div>
-                        <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 group-hover/avatar:opacity-100 transition-opacity cursor-pointer"
-                            onClick={() => fileInputRef.current?.click()}
-                        >
-                            <CameraIcon className="w-6 h-6 md:w-8 md:h-8 text-white" />
+
+                        {/* Profile actions — single dots menu (Share / Share Card / Edit) */}
+                        <div className="absolute top-4 right-4 z-20">
+                            {!isEditing && (
+                                <div className="dropdown dropdown-end">
+                                    <button
+                                        type="button"
+                                        tabIndex={0}
+                                        className="btn btn-sm btn-circle bg-white/50 text-gray-800 hover:bg-white/70 backdrop-blur-md border border-white/60 shadow-md"
+                                        aria-label="Profile actions"
+                                    >
+                                        <EllipsisVerticalIcon className="w-5 h-5" />
+                                    </button>
+                                    <ul
+                                        tabIndex={0}
+                                        className="dropdown-content menu bg-white/90 backdrop-blur-md rounded-xl z-[30] w-52 p-2 shadow-lg border border-white/60 mt-2"
+                                    >
+                                        <li>
+                                            <button type="button" className="gap-2" onClick={handleShare}>
+                                                <ShareIcon className="w-4 h-4" />
+                                                Share
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button type="button" className="gap-2" onClick={handleShareBusinessCard}>
+                                                <ShareIcon className="w-4 h-4" />
+                                                Share Card
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button type="button" className="gap-2" onClick={() => setIsEditing(true)}>
+                                                <PencilIcon className="w-4 h-4" />
+                                                Edit Profile
+                                            </button>
+                                        </li>
+                                    </ul>
+                                </div>
+                            )}
                         </div>
-                        <input
-                            type="file"
-                            ref={fileInputRef}
-                            onChange={(e) => handleImageUpload(e, 'avatar')}
-                            className="hidden"
-                            accept="image/*"
-                        />
                     </div>
 
-                    {/* Name on banner; tabs sit beside the photo on larger screens */}
-                    <div className="flex-1 pointer-events-auto text-center md:text-left min-w-0 w-full md:h-40 flex flex-col md:justify-between">
-                        <div className="flex flex-col md:flex-row md:items-baseline md:gap-3 mt-8 md:mt-2">
-                            <h1 className="text-2xl md:text-3xl font-bold text-gray-900 md:text-white drop-shadow-lg">{profile.official_name}</h1>
-                            <p className="text-sm md:text-base text-gray-600 md:text-white/90 drop-shadow-md mt-1 md:mt-0">{getRoleDisplay(profile.bonuses_role)}</p>
+                    <div className="px-4 md:px-8 pb-5 -mt-14 md:-mt-16 flex flex-col sm:flex-row sm:items-end gap-4 relative z-10">
+                        {/* Avatar overlaps the banner */}
+                        <div className="relative group/avatar shrink-0">
+                            <div className="w-28 h-28 md:w-36 md:h-36 rounded-full border-4 border-white shadow-xl overflow-hidden bg-white">
+                                <img
+                                    src={profile.photo_url || DEFAULT_AVATAR}
+                                    alt={profile.official_name}
+                                    className="w-full h-full object-cover"
+                                />
+                            </div>
+                            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 group-hover/avatar:opacity-100 transition-opacity cursor-pointer"
+                                onClick={() => fileInputRef.current?.click()}
+                            >
+                                <CameraIcon className="w-6 h-6 md:w-8 md:h-8 text-white" />
+                            </div>
+                            <input
+                                type="file"
+                                ref={fileInputRef}
+                                onChange={(e) => handleImageUpload(e, 'avatar')}
+                                className="hidden"
+                                accept="image/*"
+                            />
                         </div>
-                        <div ref={desktopTabsRef} className="hidden md:flex w-full -translate-y-6 items-center gap-6 overflow-x-auto min-w-0">
+
+                        <div className="flex-1 min-w-0 pb-1 text-center sm:text-left">
+                            <h1 className="text-2xl md:text-3xl font-bold text-gray-900 truncate">{profile.official_name}</h1>
+                            <p className="text-sm text-gray-500 truncate">
+                                {[
+                                    profile.department_name,
+                                    getRoleDisplay(profile.bonuses_role),
+                                    profile.email,
+                                ]
+                                    .filter(Boolean)
+                                    .join(' · ') || '—'}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div ref={tabsRef} className="px-4 md:px-8 flex items-center gap-4">
+                        {/* Only the tabs scroll — the actions slot stays outside this overflow
+                            container so dropdowns opened from it are not clipped. */}
+                        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
                             {profileTabs.map((tab) => (
                                 <button
                                     key={tab}
                                     type="button"
-                                    className={`border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${activeTab === tab
-                                        ? 'border-primary text-primary'
-                                        : 'border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900'
-                                        }`}
                                     onClick={() => selectProfileTab(tab)}
+                                    className={`px-4 py-3 text-sm font-semibold whitespace-nowrap border-b-2 transition ${
+                                        activeTab === tab
+                                            ? 'border-emerald-600 text-emerald-800'
+                                            : 'border-transparent text-gray-500 hover:text-gray-800'
+                                    }`}
                                 >
                                     {tab}
                                 </button>
                             ))}
                         </div>
+                        {/* Working Hours portals its month picker / Submit month / Calendar row
+                            in here so those controls share the tab line. Empty on other tabs. */}
+                        <div
+                            ref={setTabActionsSlot}
+                            className="flex shrink-0 items-center gap-2 py-2"
+                        />
                     </div>
-                </div>
-            </div>
-
-            {/* Tabs below the photo on small screens */}
-            <div ref={mobileTabsRef} className="relative z-10 px-4 w-full mt-24 md:hidden">
-                <div className="flex gap-6 overflow-x-auto">
-                    {profileTabs.map((tab) => (
-                        <button
-                            key={tab}
-                            type="button"
-                            className={`shrink-0 border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${activeTab === tab
-                                ? 'border-primary text-primary'
-                                : 'border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-900'
-                                }`}
-                            onClick={() => selectProfileTab(tab)}
-                        >
-                            {tab}
-                        </button>
-                    ))}
                 </div>
             </div>
 
@@ -491,7 +496,7 @@ const MyProfilePage: React.FC = () => {
                                 type="button"
                                 className={`shrink-0 border-b-2 px-1 py-3 text-sm font-semibold whitespace-nowrap transition-colors ${
                                     activeTab === tab
-                                        ? 'border-primary text-primary'
+                                        ? 'border-emerald-600 text-emerald-800'
                                         : 'border-transparent text-gray-500 hover:text-gray-900'
                                 }`}
                                 onClick={() => selectProfileTab(tab, false)}
@@ -506,7 +511,7 @@ const MyProfilePage: React.FC = () => {
             {/* Main Content Area */}
             <div
               ref={contentRef}
-              className={`flex-1 w-full py-6 md:py-8 mt-4 md:mt-28 px-4 md:px-6 ${
+              className={`flex-1 w-full py-5 md:py-6 px-4 md:px-8 ${
                 activeTab === 'Working Hours' || activeTab === 'Personal' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
@@ -645,6 +650,7 @@ const MyProfilePage: React.FC = () => {
                     <WorkingHoursTab
                       employeeId={profile.id}
                       employeeName={profile.official_name || profile.display_name}
+                      headerActionsSlot={tabActionsSlot}
                     />
                 )}
                 {activeTab === 'Personal' && profile?.id && (

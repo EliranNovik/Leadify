@@ -605,17 +605,52 @@ export function buildUnavailabilityDayEffects(
   return byDate;
 }
 
-/** Hours a timed general absence removes from each day. */
-export function buildGeneralAbsenceHoursByDate(
+export type GeneralAbsenceWindow = { startHour: number; endHour: number };
+
+/**
+ * Timed general absence windows per date, as Jerusalem wall-clock hour ranges.
+ *
+ * Callers that deduct absence time from clocked hours need the windows, not just a total: an
+ * absence only costs the employee the part that overlapped a session they were clocked in for.
+ * Overlapping windows on the same date are merged so two entries covering the same slot are
+ * never counted twice.
+ */
+export function buildGeneralAbsenceWindowsByDate(
   entries: UnavailabilityDayEffectInput[],
   dateFrom: string,
   dateTo: string,
-): Map<string, number> {
-  const hours = new Map<string, number>();
-  for (const [date, effect] of buildUnavailabilityDayEffects(entries, dateFrom, dateTo)) {
-    if (effect.generalHours > 0) hours.set(date, effect.generalHours);
+): Map<string, GeneralAbsenceWindow[]> {
+  const byDate = new Map<string, GeneralAbsenceWindow[]>();
+
+  for (const row of expandUnavailabilitiesToDailyRows(
+    entries as EmployeeUnavailabilityEntry[],
+    dateFrom,
+    dateTo,
+  )) {
+    if (row.unavailability_type !== 'general') continue;
+    const startHour = parseTimeToHours(row.start_time);
+    const endHour = parseTimeToHours(row.end_time);
+    if (startHour == null || endHour == null || endHour <= startHour) continue;
+    const list = byDate.get(row.date) ?? [];
+    list.push({ startHour, endHour });
+    byDate.set(row.date, list);
   }
-  return hours;
+
+  for (const [date, list] of byDate) {
+    list.sort((a, b) => a.startHour - b.startHour);
+    const merged: GeneralAbsenceWindow[] = [];
+    for (const window of list) {
+      const last = merged[merged.length - 1];
+      if (last && window.startHour <= last.endHour) {
+        last.endHour = Math.max(last.endHour, window.endHour);
+      } else {
+        merged.push({ ...window });
+      }
+    }
+    byDate.set(date, merged);
+  }
+
+  return byDate;
 }
 
 export function timedGeneralAbsenceBadgeDetails(

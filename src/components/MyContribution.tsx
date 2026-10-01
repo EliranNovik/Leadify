@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
+import { fetchAllPagedRows, fetchAllRowsForLeadIds } from '../lib/invoicedInstallments';
 import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from './EmployeeRoleLeadsModal';
 import {
@@ -281,20 +282,22 @@ const MyContribution: React.FC<MyContributionProps> = ({
     let legacyLeadsData: any[] = [];
     const legacyIds = Array.from(legacyRecordsMap.keys());
     if (legacyIds.length > 0) {
-      const { data } = await supabase
-        .from('leads_lead')
-        .select('id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, accounting_currencies!leads_lead_currency_id_fkey(iso_code, name)')
-        .in('id', legacyIds);
-      legacyLeadsData = data || [];
+      legacyLeadsData = await fetchAllRowsForLeadIds<any>(legacyIds, (chunk) =>
+        supabase
+          .from('leads_lead')
+          .select('id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id, accounting_currencies!leads_lead_currency_id_fkey(iso_code, name)')
+          .in('id', chunk),
+      );
     }
     let newLeadsData: any[] = [];
     const newIds = Array.from(newLeadRecordsMap.keys());
     if (newIds.length > 0) {
-      const { data } = await supabase
-        .from('leads')
-        .select('id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, accounting_currencies!leads_currency_id_fkey(iso_code, name)')
-        .in('id', newIds);
-      newLeadsData = data || [];
+      newLeadsData = await fetchAllRowsForLeadIds<any>(newIds, (chunk) =>
+        supabase
+          .from('leads')
+          .select('id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, accounting_currencies!leads_currency_id_fkey(iso_code, name)')
+          .in('id', chunk),
+      );
     }
 
     let totalNIS = 0;
@@ -333,23 +336,34 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
       const leadIds = await resolveNewLeadIdsForHandler(empId, displayName);
       if (leadIds.length > 0) {
-        let q = supabase.from('payment_plans').select('id, lead_id, value, value_vat, currency, due_date, cancel_date, ready_to_pay').eq('ready_to_pay', true).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', leadIds);
-        if (fromDateTime) q = q.gte('due_date', fromDateTime);
-        if (toDateTime) q = q.lte('due_date', toDateTime);
-        const { data: newPayments } = await q;
+        // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+        // silently came out short for anyone with more rows than that in range.
+        const newPayments = await fetchAllRowsForLeadIds<any>(leadIds, (chunk) => {
+          let q = supabase.from('payment_plans').select('id, lead_id, value, value_vat, currency, due_date, cancel_date, ready_to_pay').eq('ready_to_pay', true).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+          if (fromDateTime) q = q.gte('due_date', fromDateTime);
+          if (toDateTime) q = q.lte('due_date', toDateTime);
+          return q;
+        });
         if (newPayments) {
           const processed = processNewPayments(newPayments);
           processed.forEach(amount => { totalDue += amount; });
         }
       }
 
-      const { data: legacyLeadsWithHandler } = await supabase.from('leads_lead').select('id, case_handler_id').eq('case_handler_id', empId);
-      if (legacyLeadsWithHandler && legacyLeadsWithHandler.length > 0) {
+      const legacyLeadsWithHandler = await fetchAllPagedRows<any>((from, to) =>
+        supabase.from('leads_lead').select('id, case_handler_id').eq('case_handler_id', empId)
+          .order('id', { ascending: true }).range(from, to),
+      );
+      if (legacyLeadsWithHandler.length > 0) {
         const legacyIds = legacyLeadsWithHandler.map((l: any) => Number(l.id)).filter(Boolean);
-        let q = supabase.from('finances_paymentplanrow').select('id, lead_id, value, value_base, vat_value, currency_id, due_date, cancel_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', legacyIds);
-        if (fromDateTime) q = q.gte('due_date', fromDateTime);
-        if (toDateTime) q = q.lte('due_date', toDateTime);
-        const { data: legacyPayments } = await q;
+        // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+        // silently came out short for anyone with more rows than that in range.
+        const legacyPayments = await fetchAllRowsForLeadIds<any>(legacyIds, (chunk) => {
+          let q = supabase.from('finances_paymentplanrow').select('id, lead_id, value, value_base, vat_value, currency_id, due_date, cancel_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+          if (fromDateTime) q = q.gte('due_date', fromDateTime);
+          if (toDateTime) q = q.lte('due_date', toDateTime);
+          return q;
+        });
         if (legacyPayments) {
           const processed = processLegacyPayments(legacyPayments, new Map());
           processed.forEach(amount => { totalDue += amount; });
@@ -398,38 +412,50 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
       const newLeadsMap = new Map<string, any>();
       if (newLeadIds.size > 0) {
-        const { data: newLeads } = await supabase
-          .from('leads')
-          .select(`
-            id, lead_number, name, balance, balance_currency, proposal_total, proposal_currency, currency_id,
-            closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, expert_id, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
-            accounting_currencies!leads_currency_id_fkey(name, iso_code),
-            misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-          `)
-          .in('id', Array.from(newLeadIds));
+        // Chunked and paged: a bare `.in()` select is capped at 1000 rows, and without an
+        // ORDER BY the page that comes back is arbitrary, so leads vanish silently.
+        const newLeads = await fetchAllRowsForLeadIds<any>(Array.from(newLeadIds), (chunk) =>
+          supabase
+            .from('leads')
+            .select(`
+              id, lead_number, name, balance, balance_currency, proposal_total, proposal_currency, currency_id,
+              closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, expert_id, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
+              accounting_currencies!leads_currency_id_fkey(name, iso_code),
+              misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+            `)
+            .in('id', chunk),
+        );
         (newLeads || []).forEach((l: any) => newLeadsMap.set(l.id, l));
       }
 
       const legacyLeadsMap = new Map<number, any>();
       if (legacyLeadIds.size > 0) {
-        const { data: legacyLeads } = await supabase
-          .from('leads_lead')
-          .select(`
-            id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
-            closer_id, meeting_scheduler_id, meeting_lawyer_id, case_handler_id, meeting_manager_id, expert_id, category_id, category,
-            accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
-            misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-          `)
-          .in('id', Array.from(legacyLeadIds));
+        // Chunked and paged: a bare `.in()` select is capped at 1000 rows, and without an
+        // ORDER BY the page that comes back is arbitrary, so leads vanish silently.
+        const legacyLeads = await fetchAllRowsForLeadIds<any>(Array.from(legacyLeadIds), (chunk) =>
+          supabase
+            .from('leads_lead')
+            .select(`
+              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
+              closer_id, meeting_scheduler_id, meeting_lawyer_id, case_handler_id, meeting_manager_id, expert_id, category_id, category,
+              accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+              misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+            `)
+            .in('id', chunk),
+        );
         (legacyLeads || []).forEach((l: any) => legacyLeadsMap.set(Number(l.id), l));
       }
 
       const newPaymentsMap = new Map<string, number>();
       if (newLeadIds.size > 0) {
-        let q = supabase.from('payment_plans').select('lead_id, value, value_vat, currency, due_date').eq('ready_to_pay', true).eq('paid', false).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', Array.from(newLeadIds));
-        if (fromDateTime) q = q.gte('due_date', fromDateTime);
-        if (toDateTime) q = q.lte('due_date', toDateTime);
-        const { data: newPayments } = await q;
+        // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+        // silently came out short for anyone with more rows than that in range.
+        const newPayments = await fetchAllRowsForLeadIds<any>(Array.from(newLeadIds), (chunk) => {
+          let q = supabase.from('payment_plans').select('lead_id, value, value_vat, currency, due_date').eq('ready_to_pay', true).eq('paid', false).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+          if (fromDateTime) q = q.gte('due_date', fromDateTime);
+          if (toDateTime) q = q.lte('due_date', toDateTime);
+          return q;
+        });
         if (newPayments) {
           const processed = processNewPayments(newPayments);
           processed.forEach((amount, leadId) => newPaymentsMap.set(leadId, (newPaymentsMap.get(leadId) || 0) + amount));
@@ -438,10 +464,14 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
       const legacyPaymentsMap = new Map<number, number>();
       if (legacyLeadIds.size > 0) {
-        let q = supabase.from('finances_paymentplanrow').select('lead_id, value, value_base, vat_value, currency_id, due_date').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', Array.from(legacyLeadIds));
-        if (fromDateTime) q = q.gte('due_date', fromDateTime);
-        if (toDateTime) q = q.lte('due_date', toDateTime);
-        const { data: legacyPayments } = await q;
+        // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+        // silently came out short for anyone with more rows than that in range.
+        const legacyPayments = await fetchAllRowsForLeadIds<any>(Array.from(legacyLeadIds), (chunk) => {
+          let q = supabase.from('finances_paymentplanrow').select('lead_id, value, value_base, vat_value, currency_id, due_date').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+          if (fromDateTime) q = q.gte('due_date', fromDateTime);
+          if (toDateTime) q = q.lte('due_date', toDateTime);
+          return q;
+        });
         if (legacyPayments) {
           const processed = processLegacyPayments(legacyPayments, legacyLeadsMap);
           processed.forEach((amount, leadId) => legacyPaymentsMap.set(leadId, (legacyPaymentsMap.get(leadId) || 0) + amount));
@@ -760,38 +790,50 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
         const prevNewLeadsMap = new Map<string, any>();
         if (prevNewLeadIds.size > 0) {
-          const { data: newLeads } = await supabase
-            .from('leads')
-            .select(`
-              id, lead_number, name, balance, balance_currency, proposal_total, proposal_currency, currency_id,
-              closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, expert_id, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
-              accounting_currencies!leads_currency_id_fkey(name, iso_code),
-              misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-            `)
-            .in('id', Array.from(prevNewLeadIds));
+          // Chunked and paged: a bare `.in()` select is capped at 1000 rows, and without an
+          // ORDER BY the page that comes back is arbitrary, so leads vanish silently.
+          const newLeads = await fetchAllRowsForLeadIds<any>(Array.from(prevNewLeadIds), (chunk) =>
+            supabase
+              .from('leads')
+              .select(`
+                id, lead_number, name, balance, balance_currency, proposal_total, proposal_currency, currency_id,
+                closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, expert_id, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
+                accounting_currencies!leads_currency_id_fkey(name, iso_code),
+                misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+              `)
+              .in('id', chunk),
+          );
           (newLeads || []).forEach((l: any) => prevNewLeadsMap.set(l.id, l));
         }
 
         const prevLegacyLeadsMap = new Map<number, any>();
         if (prevLegacyLeadIds.size > 0) {
-          const { data: legacyLeads } = await supabase
-            .from('leads_lead')
-            .select(`
-              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
-              closer_id, meeting_scheduler_id, meeting_lawyer_id, case_handler_id, meeting_manager_id, expert_id, category_id, category,
-              accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
-              misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-            `)
-            .in('id', Array.from(prevLegacyLeadIds));
+          // Chunked and paged: a bare `.in()` select is capped at 1000 rows, and without an
+          // ORDER BY the page that comes back is arbitrary, so leads vanish silently.
+          const legacyLeads = await fetchAllRowsForLeadIds<any>(Array.from(prevLegacyLeadIds), (chunk) =>
+            supabase
+              .from('leads_lead')
+              .select(`
+                id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
+                closer_id, meeting_scheduler_id, meeting_lawyer_id, case_handler_id, meeting_manager_id, expert_id, category_id, category,
+                accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+                misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+              `)
+              .in('id', chunk),
+          );
           (legacyLeads || []).forEach((l: any) => prevLegacyLeadsMap.set(Number(l.id), l));
         }
 
         const prevNewPaymentsMap = new Map<string, number>();
         if (prevNewLeadIds.size > 0) {
-          let q = supabase.from('payment_plans').select('lead_id, value, value_vat, currency, due_date').eq('ready_to_pay', true).eq('paid', false).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', Array.from(prevNewLeadIds));
-          if (prevFromIso) q = q.gte('due_date', prevFromIso);
-          if (prevToIso) q = q.lte('due_date', prevToIso);
-          const { data: newPayments } = await q;
+          // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+          // silently came out short for anyone with more rows than that in range.
+          const newPayments = await fetchAllRowsForLeadIds<any>(Array.from(prevNewLeadIds), (chunk) => {
+            let q = supabase.from('payment_plans').select('lead_id, value, value_vat, currency, due_date').eq('ready_to_pay', true).eq('paid', false).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+            if (prevFromIso) q = q.gte('due_date', prevFromIso);
+            if (prevToIso) q = q.lte('due_date', prevToIso);
+            return q;
+          });
           if (newPayments) {
             const processed = processNewPayments(newPayments);
             processed.forEach((amount, leadId) => prevNewPaymentsMap.set(leadId, (prevNewPaymentsMap.get(leadId) || 0) + amount));
@@ -800,10 +842,14 @@ const MyContribution: React.FC<MyContributionProps> = ({
 
         const prevLegacyPaymentsMap = new Map<number, number>();
         if (prevLegacyLeadIds.size > 0) {
-          let q = supabase.from('finances_paymentplanrow').select('lead_id, value, value_base, vat_value, currency_id, due_date').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', Array.from(prevLegacyLeadIds));
-          if (prevFromIso) q = q.gte('due_date', prevFromIso);
-          if (prevToIso) q = q.lte('due_date', prevToIso);
-          const { data: legacyPayments } = await q;
+          // Chunked and paged: an unpaged `.in()` select stops at 1000 rows, so due amounts
+          // silently came out short for anyone with more rows than that in range.
+          const legacyPayments = await fetchAllRowsForLeadIds<any>(Array.from(prevLegacyLeadIds), (chunk) => {
+            let q = supabase.from('finances_paymentplanrow').select('lead_id, value, value_base, vat_value, currency_id, due_date').not('due_date', 'is', null).is('cancel_date', null).in('lead_id', chunk);
+            if (prevFromIso) q = q.gte('due_date', prevFromIso);
+            if (prevToIso) q = q.lte('due_date', prevToIso);
+            return q;
+          });
           if (legacyPayments) {
             const processed = processLegacyPayments(legacyPayments, prevLegacyLeadsMap);
             processed.forEach((amount, leadId) => prevLegacyPaymentsMap.set(leadId, (prevLegacyPaymentsMap.get(leadId) || 0) + amount));

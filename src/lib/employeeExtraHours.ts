@@ -1,6 +1,6 @@
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { eachDayInRange, isIsraeliWorkdayIso } from './employeeClockInFormat';
-import { NINE_HOURS_MS, formatDurationMs } from './employeeClockInOvertime';
+import { formatDurationMs } from './employeeClockInOvertime';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 import { getPremiumHolidaysForYearMap, preloadHolidayYears } from './israeliJewishHolidays';
 import type {
@@ -8,36 +8,29 @@ import type {
   UnavailabilityDayEffectInput,
 } from './employeeUnavailabilities';
 import {
-  buildGeneralAbsenceHoursByDate,
+  buildGeneralAbsenceWindowsByDate,
   expandUnavailabilitiesToDailyRows,
+  type GeneralAbsenceWindow,
 } from './employeeUnavailabilities';
+import { isAutoFilledClockInRecord, jerusalemOffsetForDate } from './autoFilledWorkingHours';
 import type { ClockInExportRecord } from './workingHoursExport';
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 
-/** Required hours on a regular workday for attendance balance (missing hours). */
-export const REQUIRED_DAILY_HOURS = 8;
-const REQUIRED_DAILY_MS = REQUIRED_DAILY_HOURS * MS_PER_HOUR;
-
 /**
- * Hours worked in a day before overtime starts.
+ * Fallback daily hours when an employee has no `min_hours` on record.
  *
- * Fixed company-wide and deliberately not the employee's min_hours, so 125% and 150%
- * mean the same thing on every contract. This is the same nine-hour day the auto
- * clock-out and the overtime approval flow are built around.
+ * Both the attendance balance and the overtime threshold come from the employee's own
+ * `min_hours` — a single base per contract. Anything worked beyond it is overtime, and
+ * anything short of it is missing hours; there is no unpaid band in between.
  */
-export const OVERTIME_BASE_DAILY_HOURS = NINE_HOURS_MS / MS_PER_HOUR;
-const OVERTIME_BASE_DAILY_MS = OVERTIME_BASE_DAILY_HOURS * MS_PER_HOUR;
+export const DEFAULT_DAILY_MIN_HOURS = 8;
 
 /** First overtime hours per day pay at 125%; any above that at 150%. */
 export const OVERTIME_125_CAP_HOURS = 2;
 const OVERTIME_125_CAP_MS = OVERTIME_125_CAP_HOURS * MS_PER_HOUR;
-
-/** @deprecated Use OVERTIME_BASE_DAILY_HOURS + OVERTIME_125_CAP_HOURS (9 + 2 = 11). */
-export const DAILY_PREMIUM_150_HOUR_THRESHOLD =
-  OVERTIME_BASE_DAILY_HOURS + OVERTIME_125_CAP_HOURS;
 
 const OVERTIME_125_WEIGHT = 1.25;
 const OVERTIME_150_WEIGHT = 1.5;
@@ -157,9 +150,47 @@ function isPremiumNonWorkday(dateKey: string, holidayMap: Map<string, string[]>)
   return dayHasPremium150Holiday(dateKey, holidayMap);
 }
 
+/**
+ * How much of a clocked stretch fell inside a timed general absence.
+ *
+ * Absences are declared as Jerusalem wall-clock windows, so only the part that overlaps the
+ * session counts: clocking in after the absence began, or out before it ended, means those hours
+ * were never on the clock and must not be deducted.
+ */
+export function generalAbsenceOverlapMs(
+  startMs: number,
+  endMs: number,
+  dateKey: string,
+  windowsByDate: Map<string, GeneralAbsenceWindow[]>,
+): number {
+  const windows = windowsByDate.get(dateKey);
+  if (!windows?.length) return 0;
+
+  // Anchor on the day's UTC offset rather than local midnight plus N hours, so the October DST
+  // changeover — which lands on a Sunday workday — does not shift the window by an hour.
+  const midnightMs = Date.parse(`${dateKey}T00:00:00${jerusalemOffsetForDate(dateKey)}`);
+  if (!Number.isFinite(midnightMs)) return 0;
+
+  let overlapMs = 0;
+  for (const window of windows) {
+    const windowStartMs = midnightMs + window.startHour * MS_PER_HOUR;
+    const windowEndMs = midnightMs + window.endHour * MS_PER_HOUR;
+    overlapMs += Math.max(0, Math.min(endMs, windowEndMs) - Math.max(startMs, windowStartMs));
+  }
+  return overlapMs;
+}
+
+/**
+ * Worked milliseconds per Jerusalem day, net of any timed general absence.
+ *
+ * Absence time is taken off worked hours rather than off the day's requirement, so the overtime
+ * threshold is the employee's plain `min_hours` and an hour spent away can never be paid as
+ * overtime just because the clock kept running.
+ */
 function sumWorkedMsByJerusalemDay(
   records: ClockInExportRecord[],
   nowMs: number,
+  generalAbsenceWindowsByDate: Map<string, GeneralAbsenceWindow[]> = new Map(),
 ): Map<string, number> {
   const byDay = new Map<string, number>();
 
@@ -168,12 +199,18 @@ function sumWorkedMsByJerusalemDay(
     const end = record.clock_out_time ? new Date(record.clock_out_time).getTime() : nowMs;
     if (!Number.isFinite(start) || end <= start) continue;
 
+    // Synthetic standard hours are generated with the absence already taken out.
+    const deductAbsence = !isAutoFilledClockInRecord(record);
+
     let cursor = start;
     while (cursor < end) {
       const dateKey = getJerusalemDateKeyFromMs(cursor);
       const dayEnd = jerusalemDayStartMs(addDaysToDateKey(dateKey, 1));
       const segmentEnd = Math.min(end, dayEnd);
-      const chunkMs = segmentEnd - cursor;
+      const chunkMs = deductAbsence
+        ? segmentEnd - cursor
+          - generalAbsenceOverlapMs(cursor, segmentEnd, dateKey, generalAbsenceWindowsByDate)
+        : segmentEnd - cursor;
       if (chunkMs > 0) {
         byDay.set(dateKey, (byDay.get(dateKey) ?? 0) + chunkMs);
       }
@@ -282,13 +319,23 @@ export function calculateBaseHoursMs(
   return normalizeEmployeeMinHours(minHours) * days * MS_PER_HOUR;
 }
 
+/**
+ * The daily hours that separate missing from overtime. `normalizeEmployeeMinHours` only falls back
+ * for non-finite or negative input, so a literal `min_hours` of 0 survives — and a 0 base would
+ * turn every worked minute into overtime. Treat non-positive as "not configured".
+ */
+function resolveDailyMinMs(minHours: number): number {
+  const normalized = normalizeEmployeeMinHours(minHours);
+  return (normalized > 0 ? normalized : DEFAULT_DAILY_MIN_HOURS) * MS_PER_HOUR;
+}
+
 function accumulateDailyAttendance(
   byDay: Map<string, number>,
   from: string,
   to: string,
   holidayMap: Map<string, string[]>,
   excludedDateKeys: Set<string>,
-  generalAbsenceHoursByDate: Map<string, number> = new Map(),
+  dailyMinMs: number,
 ): { rawMissingMs: number; rawOvertime125Ms: number; rawOvertime150Ms: number } {
   let rawMissingMs = 0;
   let rawOvertime125Ms = 0;
@@ -300,29 +347,21 @@ function accumulateDailyAttendance(
     if (isDeficitTrackingWorkday(dateKey, holidayMap)) {
       if (excludedDateKeys.has(dateKey)) {
         // Sick / vacation day — no missing hours; any overtime still counts.
-        if (workedMs > OVERTIME_BASE_DAILY_MS) {
-          const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - OVERTIME_BASE_DAILY_MS);
+        if (workedMs > dailyMinMs) {
+          const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - dailyMinMs);
           rawOvertime125Ms += overtime125Ms;
           rawOvertime150Ms += overtime150Ms;
         }
         continue;
       }
 
-      // A timed general absence reduces what the day owes, so being out for three
-      // hours does not read as three missing hours. The overtime base stays at nine:
-      // an absence shortens the day, it does not make the rest of it overtime.
-      const requiredMs = Math.max(
-        0,
-        REQUIRED_DAILY_MS - hoursToMs(generalAbsenceHoursByDate.get(dateKey) ?? 0),
-      );
-
-      // Two different thresholds on purpose: attendance is owed REQUIRED_DAILY_HOURS,
-      // while overtime only starts after OVERTIME_BASE_DAILY_HOURS. Hours in between
-      // are the unpaid break window — neither missing nor payable overtime.
-      if (workedMs < requiredMs) {
-        rawMissingMs += requiredMs - workedMs;
-      } else if (workedMs > OVERTIME_BASE_DAILY_MS) {
-        const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - OVERTIME_BASE_DAILY_MS);
+      // One base per contract, compared against hours actually worked: short of min_hours is
+      // missing, past it is overtime. Timed general absences are already out of `workedMs`, so
+      // an absence reads as missing hours rather than shrinking what the day owes.
+      if (workedMs < dailyMinMs) {
+        rawMissingMs += dailyMinMs - workedMs;
+      } else if (workedMs > dailyMinMs) {
+        const { overtime125Ms, overtime150Ms } = splitOvertimeMs(workedMs - dailyMinMs);
         rawOvertime125Ms += overtime125Ms;
         rawOvertime150Ms += overtime150Ms;
       }
@@ -384,8 +423,13 @@ export function calculateEmployeeExtraHours(
   nowMs = Date.now(),
 ): EmployeeExtraHoursTotals {
   const counted = filterCountedClockInRecords(records);
-  const byDay = sumWorkedMsByJerusalemDay(counted, nowMs);
+  const byDay = sumWorkedMsByJerusalemDay(
+    counted,
+    nowMs,
+    buildGeneralAbsenceWindowsByDate(unavailabilities, from, to),
+  );
   const excludedDays = buildSickAndVacationDateKeys(unavailabilities, from, to, holidayMap);
+  const dailyMinMs = resolveDailyMinMs(minHours);
 
   const { rawMissingMs, rawOvertime125Ms, rawOvertime150Ms } = accumulateDailyAttendance(
     byDay,
@@ -393,7 +437,7 @@ export function calculateEmployeeExtraHours(
     to,
     holidayMap,
     excludedDays,
-    buildGeneralAbsenceHoursByDate(unavailabilities, from, to),
+    dailyMinMs,
   );
 
   const offset = offsetMissingAgainstOvertimeHours(
@@ -460,7 +504,7 @@ export function calculateExtraHoursByEmployee(
 ): Map<number, EmployeeExtraHoursTotals> {
   const result = new Map<number, EmployeeExtraHoursTotals>();
   for (const [employeeId, records] of recordsByEmployee) {
-    const minHours = minHoursByEmployee.get(employeeId) ?? 8;
+    const minHours = minHoursByEmployee.get(employeeId) ?? DEFAULT_DAILY_MIN_HOURS;
     result.set(
       employeeId,
       calculateEmployeeExtraHours(

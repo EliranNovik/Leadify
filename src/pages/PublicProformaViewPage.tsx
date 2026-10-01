@@ -16,7 +16,12 @@ import {
   applyNewPaymentPlanAmountsToProforma,
 } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
+import {
+  pickCurrencyId,
+  pickCurrencyToken,
+  proformaDisplayCurrency,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import { getPublicProformaMainLayoutClass } from '../lib/publicProformaLayout';
 import { resolveBankAccountFromProforma } from '../lib/bankAccounts';
 import { shareCurrentPageUrl } from '../lib/proformaPublicLink';
@@ -79,10 +84,12 @@ const PublicProformaViewPage: React.FC = () => {
           parsed = JSON.parse(parsed);
         }
 
+        // Live payment_plans row (returned by the RPC) first, proforma JSON only as a fallback — the
+        // JSON is a snapshot from creation time and goes stale when the payment's currency is edited.
         const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
           await resolveProformaCurrency({
-            currency: parsed.currency ?? data.currency,
-            currency_id: parsed.currency_id ?? data.currency_id,
+            currency: pickCurrencyToken(data.currency, parsed.currency),
+            currency_id: pickCurrencyId(data.currency_id, parsed.currency_id),
           });
 
         parsed.currency = resolvedCurrency;
@@ -229,8 +236,8 @@ const PublicProformaViewPage: React.FC = () => {
   }
 
   const currencyLabel = proformaDisplayCurrency({
-    currency: proforma.currency,
-    currency_id: proforma.currency_id ?? paymentPlanMeta?.currency_id,
+    currency: pickCurrencyToken(proforma.currency, paymentPlanMeta?.currency),
+    currency_id: pickCurrencyId(proforma.currency_id, paymentPlanMeta?.currency_id),
   });
   const leadLabel = publicLeadNumber || proforma.lead_number || '—';
   const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';

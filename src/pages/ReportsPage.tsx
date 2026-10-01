@@ -8284,6 +8284,7 @@ const reports: ReportSection[] = [
     items: [
       { label: 'All', icon: RectangleStackIcon, component: AllContributionReport },
       { label: 'M&M Contribution profitability', icon: ChartBarIcon, route: '/reports/sales-contribution' },
+      { label: 'Contribution profitability (simple)', icon: ChartBarIcon, route: '/reports/simple-contribution' },
     ],
   },
   // {

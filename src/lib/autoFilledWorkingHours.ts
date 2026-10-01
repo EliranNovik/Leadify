@@ -46,7 +46,7 @@ const JERUSALEM_OFFSET_FORMATTER = new Intl.DateTimeFormat('en-US', {
  * Sampled at midday UTC, which is on the same side of the 02:00 local DST switch as
  * the 09:00 start, so the October changeover lands on the right offset.
  */
-function jerusalemOffsetForDate(dateKey: string): string {
+export function jerusalemOffsetForDate(dateKey: string): string {
   const [year, month, day] = dateKey.split('-').map(Number);
   const parts = JERUSALEM_OFFSET_FORMATTER.formatToParts(
     new Date(Date.UTC(year, month - 1, day, 12)),

@@ -25,7 +25,12 @@ import {
   applyNewPaymentPlanAmountsToProforma,
 } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
+import {
+  pickCurrencyId,
+  pickCurrencyToken,
+  proformaDisplayCurrency,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
 import {
@@ -144,10 +149,14 @@ const ProformaViewPage: React.FC = () => {
           }
         }
 
+        // The live payment_plans row wins over the proforma JSON. That JSON is a snapshot frozen when
+        // the proforma was created, so editing the payment's currency afterwards left it stale — and
+        // since the amounts below are re-read from the same live row, a stale symbol produced the
+        // worst possible mix: the right number under the wrong currency.
         const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
           await resolveProformaCurrency({
-            currency: parsed.currency ?? data.currency,
-            currency_id: parsed.currency_id ?? data.currency_id,
+            currency: pickCurrencyToken(data.currency, parsed.currency),
+            currency_id: pickCurrencyId(data.currency_id, parsed.currency_id),
             lead_currency_id: leadCurrencyId,
             proposal_currency: proposalCurrency,
             balance_currency: balanceCurrency,
@@ -352,8 +361,8 @@ const ProformaViewPage: React.FC = () => {
   if (!proforma) return null;
 
   const currencyLabel = proformaDisplayCurrency({
-    currency: proforma.currency,
-    currency_id: proforma.currency_id ?? paymentPlanMeta?.currency_id,
+    currency: pickCurrencyToken(proforma.currency, paymentPlanMeta?.currency),
+    currency_id: pickCurrencyId(proforma.currency_id, paymentPlanMeta?.currency_id),
   });
 
   const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';

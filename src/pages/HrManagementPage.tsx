@@ -1417,7 +1417,16 @@ export default function HrManagementPage() {
             </div>
           </div>
 
-          <div className="rounded-2xl bg-white border border-gray-200 p-4 md:p-6 shadow-sm">
+          <div
+            className={
+              // Working hours brings its own surfaces: each table row is a white card and the
+              // tab wraps them in a panel, so a second white panel here flattens the header,
+              // stat cards and toolbar that are meant to sit on the page grey.
+              fileTab === 'working-hours'
+                ? 'rounded-2xl p-4 md:p-6'
+                : 'rounded-2xl bg-white border border-gray-200 p-4 md:p-6 shadow-sm'
+            }
+          >
             {fileTab === 'about' && emp && (
               <div className="space-y-4">
                 <div className="flex justify-end">
@@ -1657,6 +1666,7 @@ export default function HrManagementPage() {
                 initialYear={fileInitialYear}
                 initialMonth={fileInitialMonth}
                 embedded
+                showOvertimePremiumSplit
               />
             )}
             {fileTab === 'documents' && (

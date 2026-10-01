@@ -11,6 +11,7 @@ import {
   legacyLeadMatchesExpert,
   newLeadFieldMatchesEmployee,
   newLeadMatchesExpert,
+  resolveHelperCloserValue,
 } from './rolePercentageCalculator';
 
 export interface EmployeeCalculationInput {
@@ -672,7 +673,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 expert: lead.expert,
                 expert_id: lead.expert_id,
                 handler: lead.handler,
-                helperCloser: lead.helper ?? lead.meeting_lawyer_id,
+                helperCloser: resolveHelperCloserValue(lead),
             };
 
             const signedPortion = calculateSignedPortionAmount(
@@ -881,18 +882,19 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             : totalSignedPortion * normalizationRatio;
 
 
-    // Due portion: (1) Handler + Helper Handler share of the employee's total due pool (from fetchDueAmounts = handler leads).
+    // Due portion: (1) the Handler share of the employee's total due pool (from fetchDueAmounts = handler leads).
     // (2) Expert "second" stream: sum in-range due (NIS) on ALL leads where this person is Expert (one number for the
     // period, not 10% per plan row: maps already hold per-lead totals). Then apply company due_normalized% once, then
     // Expert% once. Additive with (1) when the same person is also Handler on a lead.
+    //
+    // HELPER_HANDLER is deliberately NOT added here. It is a separate pool for the fixed-contribution
+    // helpers in the handlers table, not extra money for the handler carrying the case — adding it
+    // paid every handler HANDLER% + HELPER_HANDLER% of their due.
     const handlerPercentage = rolePercentages && rolePercentages.has('HANDLER')
         ? (rolePercentages.get('HANDLER')! / 100)
         : 0;
-    const helperHandlerPercentage = rolePercentages && rolePercentages.has('HELPER_HANDLER')
-        ? (rolePercentages.get('HELPER_HANDLER')! / 100)
-        : 0;
 
-    const dueFromHandlerPool = dueNormalized * (handlerPercentage + helperHandlerPercentage);
+    const dueFromHandlerPool = dueNormalized * handlerPercentage;
 
     const getNewPaymentDue = (lead: any): number => {
         const m = payments.newPayments;

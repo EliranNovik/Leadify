@@ -30,7 +30,12 @@ import {
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
+import {
+  pickCurrencyId,
+  pickCurrencyToken,
+  proformaDisplayCurrency,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
 import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
@@ -245,7 +250,6 @@ const ProformaLegacyViewPage: React.FC = () => {
           client_name: clientName,
           client_email: clientEmail,
           client_phone: clientPhone,
-          currency_name: 'Israeli Shekel',
           currency_code: proformaDisplayCurrency({ currency_id: directData.currency_id }),
           lead_number: directData.lead_id?.toString() || '',
           issuedBy: issuedBy,
@@ -385,7 +389,8 @@ const ProformaLegacyViewPage: React.FC = () => {
 
       const enriched = {
         ...data,
-        currency_id: paymentCurrencyId ?? data.currency_id,
+        // The live finances_paymentplanrow currency beats the proformainvoice's own snapshot.
+        currency_id: pickCurrencyId(paymentCurrencyId, data.currency_id),
         paymentPaid,
         paid_at: paymentPaidAt,
         paymentPlanDate,
@@ -395,8 +400,8 @@ const ProformaLegacyViewPage: React.FC = () => {
       };
       const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
         await resolveProformaCurrency({
-          currency_id: enriched.currency_id ?? paymentCurrencyId,
-          currency: enriched.currency_code,
+          currency_id: pickCurrencyId(enriched.currency_id, paymentCurrencyId),
+          currency: pickCurrencyToken(enriched.currency_code),
         });
       enriched.currency_code = resolvedCurrency;
       enriched.currency_id = resolvedCurrencyId;
@@ -640,8 +645,8 @@ const ProformaLegacyViewPage: React.FC = () => {
   if (!proforma) return <div className="p-8 text-center text-yellow-600">No proforma data found.</div>;
 
   const currencyLabel = proformaDisplayCurrency({
-    currency_code: proforma.currency_code,
-    currency_id: proforma.currency_id,
+    currency_code: pickCurrencyToken(proforma.currency_code),
+    currency_id: pickCurrencyId(proforma.currency_id),
   });
 
   const displayNotes = getPublicProformaDisplayNotes(proforma.notes);

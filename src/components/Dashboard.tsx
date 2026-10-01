@@ -80,6 +80,14 @@ import {
   resolveCategoryAndDepartment,
   shouldUseScoreboardOtherColumn,
 } from '../lib/resolveCategoryDepartment';
+import {
+  dedupeRowsById,
+  fetchAllPagedRows,
+  fetchByIdChunks,
+  fetchInvoicedInstallments,
+  normalizeInvoicedCurrency,
+  parsePaymentDuePercent,
+} from '../lib/invoicedInstallments';
 import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 import { useReportDashboardWelcomeReady } from '../contexts/DashboardWelcomeReadyContext';
 import DashboardScoreboardDealsModal, {
@@ -137,51 +145,6 @@ function getDashboardTeamAvailabilityCacheTtlMs(): number {
 
 /** Virtual column for leads/payments outside the main scoreboard departments. */
 const SCOREBOARD_OTHER_COLUMN = 'Other';
-
-function dedupeRowsById<T extends { id?: string | number | null }>(rows: T[]): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const row of rows) {
-    if (row?.id == null) continue;
-    const id = String(row.id);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    out.push(row);
-  }
-  return out;
-}
-
-function parsePaymentDuePercent(value: unknown): number {
-  if (typeof value === 'number' && !Number.isNaN(value)) return value;
-  if (typeof value === 'string') {
-    const n = parseFloat(value.replace(/%/g, '').trim());
-    return Number.isNaN(n) ? 0 : n;
-  }
-  return 0;
-}
-
-function normalizeInvoicedCurrency(raw: unknown): string {
-  let c = (raw != null && String(raw).trim() !== '' ? String(raw) : 'NIS').trim();
-  if (c === '₪') return 'NIS';
-  if (c === '€') return 'EUR';
-  if (c === '$') return 'USD';
-  if (c === '£') return 'GBP';
-  return c;
-}
-
-/** Allocate lead subcontractor fee onto one payment row (prefer due_percent, else amount share). */
-function allocateInvoicedSubcontractorFeeNis(params: {
-  feeTotalNis: number;
-  rowAmountNis: number;
-  leadPlanTotalNis: number;
-  duePercent: number;
-}): number {
-  const fee = params.feeTotalNis || 0;
-  if (fee <= 0) return 0;
-  if (params.duePercent > 0) return fee * (params.duePercent / 100);
-  if (params.leadPlanTotalNis > 0) return fee * (params.rowAmountNis / params.leadPlanTotalNis);
-  return 0;
-}
 
 function getScoreboardPeriodColumnName(
   deptIndex: number,
@@ -402,77 +365,7 @@ function maxIsoDate(a: string, b: string): string {
   return a >= b ? a : b;
 }
 
-const SCOREBOARD_PAGE_SIZE = 1000;
-const SCOREBOARD_FETCH_CONCURRENCY = 6;
 
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  if (items.length === 0) return [];
-  const results: R[] = new Array(items.length);
-  let nextIndex = 0;
-  const worker = async () => {
-    while (nextIndex < items.length) {
-      const i = nextIndex++;
-      results[i] = await fn(items[i], i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-  return results;
-}
-
-/** Fetch rows in id-chunks so PostgREST `.in()` never blows past URL/body limits. */
-async function fetchByIdChunks<T>(
-  ids: Array<string | number>,
-  chunkSize: number,
-  fetchChunk: (chunk: Array<string | number>) => PromiseLike<{ data: T[] | null; error: any }>,
-): Promise<T[]> {
-  if (ids.length === 0) return [];
-  const chunks: Array<Array<string | number>> = [];
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    chunks.push(ids.slice(i, i + chunkSize));
-  }
-  const pages = await mapWithConcurrency(chunks, SCOREBOARD_FETCH_CONCURRENCY, async (chunk) => {
-    const { data, error } = await fetchChunk(chunk);
-    if (error) throw error;
-    return data || [];
-  });
-  return pages.flat();
-}
-
-type PagedQueryResult<T> = { data: T[] | null; error: any };
-
-/** Page through PostgREST results; after a full first page, remaining pages load in parallel. */
-async function fetchAllPagedRows<T>(
-  fetchPage: (from: number, to: number) => PromiseLike<PagedQueryResult<T>>,
-  pageSize = SCOREBOARD_PAGE_SIZE,
-): Promise<T[]> {
-  const first = await fetchPage(0, pageSize - 1);
-  if (first.error) throw first.error;
-  const rows = [...(first.data || [])];
-  if (rows.length < pageSize) return rows;
-
-  let offset = pageSize;
-  while (true) {
-    const starts = [0, 1, 2, 3].map((i) => offset + i * pageSize);
-    const pages = await Promise.all(starts.map((from) => fetchPage(from, from + pageSize - 1)));
-    let short = false;
-    for (const page of pages) {
-      if (page.error) throw page.error;
-      const batch = page.data || [];
-      rows.push(...batch);
-      if (batch.length < pageSize) {
-        short = true;
-        break;
-      }
-    }
-    if (short) break;
-    offset += starts.length * pageSize;
-  }
-  return rows;
-}
 
 type SharedBoiConverter = Awaited<ReturnType<typeof createBoiDateRateConverter>>;
 
@@ -4369,374 +4262,23 @@ const Dashboard: React.FC = () => {
         appendScoreboardDeal(invoicedDealsStore, selectedMonthName, 'Total', { ...row, id: `${row.id}::total` });
       };
 
-      // Fetch new + legacy payment plans in the scoreboard window only (parallel, paged).
-      const [newPayments, allLegacyPayments] = await Promise.all([
-        fetchAllPagedRows((from, to) =>
-          supabase
-            .from('payment_plans')
-            .select(`
-              id,
-              lead_id,
-              value,
-              value_vat,
-              currency,
-              due_date,
-              due_percent,
-              cancel_date,
-              ready_to_pay,
-              paid,
-              paid_at
-            `)
-            .eq('ready_to_pay', true)
-            .not('due_date', 'is', null)
-            .is('cancel_date', null)
-            .gte('due_date', invoicedDueFrom)
-            .lte('due_date', invoicedDueTo)
-            .order('id', { ascending: true })
-            .range(from, to),
-        ),
-        fetchAllPagedRows((from, to) =>
-          supabase
-            .from('finances_paymentplanrow')
-            .select(`
-              id,
-              lead_id,
-              client_id,
-              value,
-              value_base,
-              vat_value,
-              currency_id,
-              due_date,
-              due_percent,
-              date,
-              cancel_date,
-              ready_to_pay,
-              actual_date,
-              accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-            `)
-            .not('due_date', 'is', null)
-            .is('cancel_date', null)
-            .gte('due_date', invoicedDueFrom)
-            .lte('due_date', invoicedDueTo)
-            .order('id', { ascending: true })
-            .range(from, to),
-        ),
-      ]);
-
-      const filteredNewPayments = dedupeRowsById((newPayments || []).filter((p) => !p.cancel_date));
-      const filteredLegacyPayments = dedupeRowsById(allLegacyPayments.filter((p) => !p.cancel_date));
-
-      // Get unique lead IDs
-      const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
-      const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
-      const legacyContactIds = Array.from(
-        new Set(
-          filteredLegacyPayments
-            .map((p: any) => p.client_id)
-            .filter(Boolean)
-            .map((id: any) => Number(id))
-            .filter((id: number) => !Number.isNaN(id)),
-        ),
-      );
-
-      const INVOICED_NEW_LEAD_SELECT = `
-            id, lead_number, name, handler, closer, category_id, category, subcontractor_fee
-          `;
-      const INVOICED_LEGACY_LEAD_SELECT = `
-            id, lead_number, name, case_handler_id, closer_id, category_id, category, subcontractor_fee,
-            handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
-          `;
-
-      // Leads, fees, and deal-modal contact names are independent — load together.
-      const [
-        newLeadsRows,
-        legacyLeadsRows,
-        invoicedFeeMapsRaw,
-        newMainContacts,
-        newFallbackContacts,
-        legacyContactRows,
-      ] = await Promise.all([
-        fetchByIdChunks(newLeadIds, 500, (chunk) =>
-          supabase.from('leads').select(INVOICED_NEW_LEAD_SELECT).in('id', chunk as string[]),
-        ).catch((err) => {
-          console.error('❌ Invoiced Data - Error fetching new leads:', err);
-          return [] as any[];
-        }),
-        fetchByIdChunks(legacyLeadIds, 500, (chunk) =>
-          supabase.from('leads_lead').select(INVOICED_LEGACY_LEAD_SELECT).in('id', chunk as number[]),
-        ).catch((err) => {
-          console.error('❌ Invoiced Data - Error fetching legacy leads:', err);
-          return [] as any[];
-        }),
-        fetchSubcontractorFeeTotalsByLeadIds({ newLeadIds, legacyLeadIds }).catch((feeErr) => {
-          console.warn('[Dashboard] invoiced fee-table totals:', feeErr);
-          return { byNewLeadId: new Map<string, number>(), byLegacyLeadId: new Map<number, number>() };
-        }),
-        fetchByIdChunks(newLeadIds, 500, (chunk) =>
-          supabase
-            .from('lead_leadcontact')
-            .select('newlead_id, main, leads_contact:contact_id(name)')
-            .eq('main', 'true')
-            .in('newlead_id', chunk as string[]),
-        ).catch(() => [] as any[]),
-        fetchByIdChunks(newLeadIds, 500, (chunk) =>
-          supabase
-            .from('contacts')
-            .select('id, name, lead_id')
-            .in('lead_id', chunk as string[])
-            .eq('is_persecuted', false),
-        ).catch(() => [] as any[]),
-        fetchByIdChunks(legacyContactIds, 1000, (chunk) =>
-          supabase.from('leads_contact').select('id, name').in('id', chunk as number[]),
-        ).catch((err) => {
-          console.error('❌ Invoiced Data - Error fetching legacy contacts:', err);
-          return [] as any[];
-        }),
-      ]);
-
-      const newLeadsMap = new Map();
-      newLeadsRows.forEach((lead: any) => {
-        newLeadsMap.set(lead.id, lead);
+      // Which installments count, their NIS value, their scoreboard department and their share of
+      // the lead's subcontractor fee all come from the shared module, so this scoreboard and the
+      // contribution report's "Total income" cannot drift apart again.
+      const { installments: preparedInvoicedPayments } = await fetchInvoicedInstallments({
+        dueFrom: invoicedDueFrom,
+        dueTo: invoicedDueTo,
+        boiConverter: boiPromise,
+        departmentTargets,
+        allCategoriesData,
+        categoryNameToDataMap,
+        includeContactNames: true,
       });
-      const legacyLeadsMap = new Map();
-      legacyLeadsRows.forEach((lead: any) => {
-        const key = lead.id?.toString() || String(lead.id);
-        legacyLeadsMap.set(key, lead);
-        if (typeof lead.id === 'number') {
-          legacyLeadsMap.set(lead.id, lead);
-        }
-      });
-
-      const invoicedFeeMaps = invoicedFeeMapsRaw;
-      applySubcontractorFeeTotalsToLeads(
-        Array.from(new Map(Array.from(newLeadsMap.values()).map((l: any) => [String(l.id), l])).values()) as any[],
-        invoicedFeeMaps,
-        'new',
-      );
-      applySubcontractorFeeTotalsToLeads(
-        Array.from(
-          new Map(
-            Array.from(legacyLeadsMap.values()).map((l: any) => [String(l.id).replace(/^legacy_/i, ''), l]),
-          ).values(),
-        ) as any[],
-        invoicedFeeMaps,
-        'legacy',
-      );
-
-      const newLeadContactByLeadId = new Map<string, string>();
-      newMainContacts.forEach((entry: any) => {
-        const leadId = entry.newlead_id != null ? String(entry.newlead_id) : '';
-        const contactRel = Array.isArray(entry.leads_contact) ? entry.leads_contact[0] : entry.leads_contact;
-        const contactName = (contactRel?.name || '').toString().trim();
-        if (leadId && contactName) newLeadContactByLeadId.set(leadId, contactName);
-      });
-      newFallbackContacts.forEach((contact: any) => {
-        const leadId = contact.lead_id != null ? String(contact.lead_id) : '';
-        const contactName = (contact.name || '').toString().trim();
-        if (leadId && contactName && !newLeadContactByLeadId.has(leadId)) {
-          newLeadContactByLeadId.set(leadId, contactName);
-        }
-      });
-      const legacyContactById = new Map<number, string>();
-      legacyContactRows.forEach((contact: any) => {
-        if (contact.id != null && contact.name) {
-          legacyContactById.set(Number(contact.id), String(contact.name).trim());
-        }
-      });
-
-      // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
-      // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
-      // Multiple payment rows per lead are all counted and summed
-      // Guard against the same installment appearing twice (pagination dupes or new+legacy overlap).
-      // Subcontractor fee is allocated per row by due_percent (else by share of lead plan total in NIS).
-      const seenInvoicedInstallments = new Set<string>();
-      const invoicedInstallmentKey = (
-        leadNumber: string,
-        dueDate: string,
-        amountNis: number,
-      ) => `${leadNumber}|${dueDate}|${Math.round(amountNis || 0)}`;
-
-      type PreparedInvoicedPayment = {
-        kind: 'new' | 'legacy';
-        paymentId: string | number;
-        lead: any;
-        leadKey: string;
-        leadNumber: string;
-        dueDate: string;
-        amountInNIS: number;
-        duePercent: number;
-        contactName: string | null;
-        departmentId: number | null;
-        mainCategoryId: number | null;
-        mainCategoryName: string | null;
-        currencyForConversion: string;
-        rateAsOf: any;
-      };
-
-      const preparedInvoicedPayments: PreparedInvoicedPayment[] = [];
-      const leadPlanTotalNis = new Map<string, number>();
-      const leadFeeNis = new Map<string, number>();
-
-      const boiConverter = await boiPromise;
-
-      // --- Prepare new payments ---
-      for (const payment of filteredNewPayments) {
-        const lead = newLeadsMap.get(payment.lead_id);
-        if (!lead) continue;
-
-        const { departmentId, mainCategoryId, mainCategoryName } = canonicalizeScoreboardDepartment(
-          resolveCategoryAndDepartment(
-            lead.category,
-            lead.category_id,
-            lead.misc_category,
-            allCategoriesData,
-            categoryNameToDataMap,
-          ),
-          departmentTargets,
-        );
-
-        const value = Number(payment.value || 0);
-        const currencyForConversion = normalizeInvoicedCurrency(payment.currency);
-        const dueDate = payment.due_date
-          ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0])
-          : null;
-        if (!dueDate) continue;
-
-        const rateAsOf = toDateOnlyKey(resolvePaymentPlanBoiAsOfInput({
-          paid: payment.paid,
-          paid_at: payment.paid_at,
-          due_date: payment.due_date,
-        }));
-        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
-        const leadNumber = leadDisplayNumber(lead, true);
-        const installmentKey = invoicedInstallmentKey(leadNumber, dueDate, amountInNIS);
-        if (seenInvoicedInstallments.has(installmentKey)) continue;
-        seenInvoicedInstallments.add(installmentKey);
-
-        const leadKey = String(payment.lead_id || lead.id);
-        leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountInNIS);
-        if (!leadFeeNis.has(leadKey)) {
-          const feeRaw = resolveLeadSubcontractorFeeAmount(lead, invoicedFeeMaps, 'new');
-          leadFeeNis.set(
-            leadKey,
-            feeRaw > 0 ? await boiConverter.toNis(feeRaw, currencyForConversion, rateAsOf) : 0,
-          );
-        }
-
-        preparedInvoicedPayments.push({
-          kind: 'new',
-          paymentId: payment.id,
-          lead,
-          leadKey,
-          leadNumber,
-          dueDate,
-          amountInNIS,
-          duePercent: parsePaymentDuePercent(payment.due_percent),
-          contactName: newLeadContactByLeadId.get(String(payment.lead_id || lead.id)) || null,
-          departmentId,
-          mainCategoryId,
-          mainCategoryName,
-          currencyForConversion,
-          rateAsOf,
-        });
-      }
-
-      // --- Prepare legacy payments ---
-      for (const payment of filteredLegacyPayments) {
-        const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
-        const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
-        const lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
-        if (!lead) continue;
-
-        const { departmentId, mainCategoryId, mainCategoryName } = canonicalizeScoreboardDepartment(
-          resolveCategoryAndDepartment(
-            lead.category,
-            lead.category_id,
-            lead.misc_category,
-            allCategoriesData,
-            categoryNameToDataMap,
-          ),
-          departmentTargets,
-        );
-
-        const value = Number(payment.value || payment.value_base || 0);
-        const accountingCurrency: any = payment.accounting_currencies
-          ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
-          : null;
-
-        let currencyForConversion = 'NIS';
-        if (accountingCurrency?.name) currencyForConversion = accountingCurrency.name;
-        else if (accountingCurrency?.iso_code) currencyForConversion = accountingCurrency.iso_code;
-        else if (payment.currency_id) {
-          switch (payment.currency_id) {
-            case 1: currencyForConversion = 'NIS'; break;
-            case 2: currencyForConversion = 'EUR'; break;
-            case 3: currencyForConversion = 'USD'; break;
-            case 4: currencyForConversion = 'GBP'; break;
-            default: currencyForConversion = 'NIS'; break;
-          }
-        }
-        currencyForConversion = normalizeInvoicedCurrency(currencyForConversion);
-
-        const dueDate = payment.due_date
-          ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0])
-          : null;
-        if (!dueDate) continue;
-
-        const rateAsOf = toDateOnlyKey(resolvePaymentPlanBoiAsOfInput({
-          actual_date: payment.actual_date,
-          due_date: payment.due_date,
-        }));
-        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
-        const leadNumber = leadDisplayNumber(lead, false);
-        const installmentKey = invoicedInstallmentKey(leadNumber, dueDate, amountInNIS);
-        if (seenInvoicedInstallments.has(installmentKey)) continue;
-        seenInvoicedInstallments.add(installmentKey);
-
-        const leadKey = String(payment.lead_id || lead.id);
-        leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountInNIS);
-        if (!leadFeeNis.has(leadKey)) {
-          const feeRaw = resolveLeadSubcontractorFeeAmount(lead, invoicedFeeMaps, 'legacy');
-          leadFeeNis.set(
-            leadKey,
-            feeRaw > 0 ? await boiConverter.toNis(feeRaw, currencyForConversion, rateAsOf) : 0,
-          );
-        }
-
-        const contactId = payment.client_id != null ? Number(payment.client_id) : null;
-        const contactName =
-          contactId != null && !Number.isNaN(contactId) ? (legacyContactById.get(contactId) || null) : null;
-
-        preparedInvoicedPayments.push({
-          kind: 'legacy',
-          paymentId: payment.id,
-          lead,
-          leadKey,
-          leadNumber,
-          dueDate,
-          amountInNIS,
-          duePercent: parsePaymentDuePercent(payment.due_percent),
-          contactName,
-          departmentId,
-          mainCategoryId,
-          mainCategoryName,
-          currencyForConversion,
-          rateAsOf,
-        });
-      }
 
       // --- Scoreboard + deals (amounts net of proportional subcontractor fee) ---
       for (const row of preparedInvoicedPayments) {
-        const feeTotalNis = leadFeeNis.get(row.leadKey) || 0;
-        const planTotalNis = leadPlanTotalNis.get(row.leadKey) || 0;
-        const subcontractorFeeNis = allocateInvoicedSubcontractorFeeNis({
-          feeTotalNis,
-          rowAmountNis: row.amountInNIS,
-          leadPlanTotalNis: planTotalNis,
-          duePercent: row.duePercent,
-        });
-        const amountAfterFee = row.amountInNIS - subcontractorFeeNis;
-        const { dueDate } = row;
+        const { dueDate, subcontractorFeeNis } = row;
+        const amountAfterFee = row.amountNis;
 
         const deptIndex = getScoreboardPeriodDeptIndex(
           row.departmentId,
@@ -4746,7 +4288,7 @@ const Dashboard: React.FC = () => {
         );
 
         const invoicedDealBase = {
-          id: `${row.kind === 'new' ? 'newpay' : 'legpay'}-${row.paymentId}`,
+          id: `${row.source === 'new' ? 'newpay' : 'legpay'}-${row.paymentId}`,
           leadId: row.leadKey,
           leadNumber: row.leadNumber,
           name: leadDisplayName(row.lead),
@@ -4756,7 +4298,7 @@ const Dashboard: React.FC = () => {
           subcontractorFeeNis,
           categoryLabel: leadCategoryLabel(row.lead, allCategoriesData),
           ...leadRoleFields(row.lead, 'handler'),
-          isNewLead: row.kind === 'new',
+          isNewLead: row.source === 'new',
         };
 
         if (dueDate === todayStr) {

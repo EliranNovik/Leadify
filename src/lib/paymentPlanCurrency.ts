@@ -1,20 +1,58 @@
 /**
  * Resolve display currency for payment plans / proformas (aligned with FinancesTab).
  */
-import { buildCurrencyMetaFromId, loadAccountingCurrenciesMap } from './boiCurrencyConversion';
-import { getCurrencySymbol } from './currencyConversion';
+import { buildCurrencyMetaFromId, getCurrencySymbol, loadAccountingCurrenciesMap } from './boiCurrencyConversion';
 
-export function mapLeadCurrencyToSymbol(code?: string | null): string {
-  if (!code) return '₪';
-  const normalized = String(code).trim().toUpperCase();
-  if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS' || normalized === '?') {
-    return '₪';
-  }
+/**
+ * Symbol for a currency token, or null when the token tells us nothing.
+ *
+ * Blank, whitespace and `'?'` (a ₪ that lost its encoding on the way through some older column) all
+ * mean *unknown* — not shekels. Callers that also hold a `currency_id` have to be able to tell the
+ * difference, otherwise an empty token silently stamps ₪ onto a dollar amount.
+ */
+export function symbolFromCurrencyToken(code?: string | null): string | null {
+  const trimmed = String(code ?? '').trim();
+  if (!trimmed || trimmed === '?') return null;
+  const normalized = trimmed.toUpperCase();
+  if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS') return '₪';
   if (normalized === '$' || normalized === 'USD') return '$';
   if (normalized === '€' || normalized === 'EUR') return '€';
   if (normalized === '£' || normalized === 'GBP') return '£';
-  const trimmed = String(code).trim();
-  return trimmed || '₪';
+  return trimmed;
+}
+
+/** Symbol for an `accounting_currencies` id, or null when there is no usable id to read. */
+export function symbolFromCurrencyId(currencyId?: number | string | null): string | null {
+  const id = pickCurrencyId(currencyId);
+  if (id == null) return null;
+  return getCurrencySymbol(id) || null;
+}
+
+/**
+ * First token that actually names a currency.
+ *
+ * Unlike `??`, this skips `''`: a cleared text column arrives as an empty string, which `??` treats
+ * as a real value and stops on — so the next, populated source never gets consulted.
+ */
+export function pickCurrencyToken(...tokens: Array<string | null | undefined>): string | null {
+  for (const token of tokens) {
+    if (String(token ?? '').trim() !== '') return String(token);
+  }
+  return null;
+}
+
+/** First usable `accounting_currencies` id, skipping null, `''` and non-positive values. */
+export function pickCurrencyId(...ids: Array<number | string | null | undefined>): number | null {
+  for (const raw of ids) {
+    if (raw == null || String(raw).trim() === '') continue;
+    const id = Number(raw);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
+}
+
+export function mapLeadCurrencyToSymbol(code?: string | null): string {
+  return symbolFromCurrencyToken(code) ?? '₪';
 }
 
 export type PaymentPlanCurrencyInput = {
@@ -120,7 +158,13 @@ export function displaySymbolForPaymentSave(
   const id = resolveCurrencyIdForSave(input, availableCurrencies);
   const match = findAccountingCurrency(input.currency, id, availableCurrencies);
   if (match) return mapLeadCurrencyToSymbol(match.iso_code || match.name);
-  return mapLeadCurrencyToSymbol(input.currency);
+  // Token first: this is the save path, so the token is the currency the user just picked.
+  const fromToken = symbolFromCurrencyToken(input.currency);
+  if (fromToken) return fromToken;
+  // Token said nothing, so read the id the row stores. Without this the id was dropped entirely
+  // whenever `availableCurrencies` was not supplied — which is every proforma page — and a USD plan
+  // rendered as ₪.
+  return symbolFromCurrencyId(input.currencyId ?? input.currency_id) ?? '₪';
 }
 
 export function displaySymbolFromAccountingRow(
@@ -146,16 +190,23 @@ export function normalizeProformaCurrencyFields<T extends Record<string, unknown
   proforma: T,
   payment: { currency?: string | null; currency_code?: string | null; currency_id?: number | string | null },
 ): T {
+  // `pickCurrencyToken` rather than `??` so a blank token on the payment row does not stop the chain
+  // before the proforma's own currency is consulted. This runs after the page has resolved the
+  // currency, so it is the last writer before render — a wrong answer here undoes everything.
+  const token = pickCurrencyToken(
+    payment.currency,
+    payment.currency_code,
+    (proforma as { currency?: string }).currency,
+    (proforma as { currency_code?: string }).currency_code,
+  );
   const currency_id = resolveCurrencyIdForSave({
-    currency: payment.currency ?? payment.currency_code ?? (proforma as { currency?: string }).currency
-      ?? (proforma as { currency_code?: string }).currency_code,
-    currency_id: payment.currency_id ?? (proforma as { currency_id?: number | string }).currency_id,
+    currency: token,
+    currency_id: pickCurrencyId(
+      payment.currency_id,
+      (proforma as { currency_id?: number | string }).currency_id,
+    ),
   });
-  const display = displaySymbolForPaymentSave({
-    currency: payment.currency ?? payment.currency_code ?? (proforma as { currency?: string }).currency
-      ?? (proforma as { currency_code?: string }).currency_code,
-    currency_id,
-  });
+  const display = displaySymbolForPaymentSave({ currency: token, currency_id });
   return {
     ...proforma,
     currency: display,
@@ -227,7 +278,14 @@ export async function resolvePaymentPlanCurrency(
   return { displaySymbol: meta.displaySymbol || '₪', currencyId: meta.currencyId };
 }
 
-/** Create/view proforma pages: always return display symbol + numeric currency_id. */
+/**
+ * Create/view proforma pages: always return display symbol + numeric currency_id.
+ *
+ * The id wins over the text token here. `currency_id` is a foreign key into
+ * `accounting_currencies`, while the token is free text that turns up blank, mojibake'd as `'?'`, or
+ * hard-coded to `'ILS'` by `get_public_legacy_proforma`'s `COALESCE(v_ac.iso_code, 'ILS')`. Each of
+ * those used to beat a perfectly good id and print ₪ over a dollar amount.
+ */
 export async function resolveProformaCurrency(
   input: PaymentPlanCurrencyInput,
   availableCurrencies?: AccountingCurrencyRow[],
@@ -240,12 +298,13 @@ export async function resolveProformaCurrency(
     },
     availableCurrencies,
   );
-  const displaySymbol = displaySymbolForPaymentSave(
-    {
-      currency: input.currency ?? resolved.displaySymbol,
-      currency_id: currencyId,
-    },
-    availableCurrencies,
-  );
+  // Only ids we were actually given count. `currencyId` above falls back to 1 (₪) for an unknown
+  // currency, so trusting it unconditionally would reinstate the very default this guards against.
+  const knownId = pickCurrencyId(input.currency_id, resolved.currencyId);
+  const fromKnownId = knownId != null
+    ? displaySymbolForPaymentSave({ currency: null, currency_id: knownId }, availableCurrencies)
+    : null;
+  const displaySymbol =
+    fromKnownId ?? symbolFromCurrencyToken(input.currency) ?? resolved.displaySymbol;
   return { displaySymbol, currencyId };
 }
