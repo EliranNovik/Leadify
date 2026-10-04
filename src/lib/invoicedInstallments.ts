@@ -797,6 +797,12 @@ export function contributionIncomeCountsRow(
  *
  * A window spanning the cutover sums each half on its own basis rather than picking one rule for the
  * whole range, so a report covering September and October stays correct for both.
+ *
+ * Sums `amountNisGross`, not `amountNis`, and that difference is the point. The contribution report's
+ * Total income has to be the plain sum of the rows its per-employee Due / Invoiced column counts, and
+ * that column never deducts the subcontractor fee. Summing the net figure here made the report header
+ * quietly smaller than the column beneath it. The Dashboard scoreboard keeps the net measure through
+ * `sumInvoicedNisInRange`.
  */
 export function sumContributionIncomeNisInRange(
   installments: InvoicedInstallment[],
@@ -812,7 +818,7 @@ export function sumContributionIncomeNisInRange(
   for (const row of installments) {
     if (row.dueDate < start || row.dueDate > end) continue;
     if (!contributionIncomeCountsRow(row, cutover)) continue;
-    sum += row.amountNis;
+    sum += row.amountNisGross;
   }
   return Math.ceil(sum);
 }

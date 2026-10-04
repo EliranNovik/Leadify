@@ -19,8 +19,10 @@ function installment(
   amountNis: number,
   invoiceSent: boolean,
   countsAsDue = true,
+  /** Defaults to the net amount, so a test only sets this when it cares about the fee deduction. */
+  amountNisGross = amountNis,
 ): InvoicedInstallment {
-  return { dueDate, amountNis, invoiceSent, countsAsDue } as InvoicedInstallment;
+  return { dueDate, amountNis, amountNisGross, invoiceSent, countsAsDue } as InvoicedInstallment;
 }
 
 /**
@@ -100,4 +102,17 @@ test('an invoiced row that was never ready to pay is income, but is not due', ()
 test('before the cutover an invoiced row still needs the due-based flag', () => {
   const row = installment('2026-09-05', 1000, true, false);
   assert.equal(sumContributionIncomeNisInRange([row], '2026-09-01', '2026-09-30'), 0);
+});
+
+/**
+ * Income is the gross sum; the scoreboard total is net of the subcontractor fee.
+ *
+ * The contribution report's Total income must equal the plain sum of the rows its per-employee
+ * Due / Invoiced column counts, and that column deducts no fee. Summing the net figure made the
+ * header smaller than the column beneath it for any lead carrying a subcontractor fee.
+ */
+test('contribution income is gross, while the due-based total stays net of fees', () => {
+  const row = installment('2026-10-05', 700, true, true, 1000);
+  assert.equal(sumContributionIncomeNisInRange([row], '2026-10-01', '2026-10-31'), 1000);
+  assert.equal(sumInvoicedNisInRange([row], '2026-10-01', '2026-10-31'), 700);
 });
