@@ -48,7 +48,7 @@ import {
   findBestCategoryMatch as findBestCategoryMatchUtil,
   normalizeCategoryText as normalizeCategoryTextUtil
 } from '../utils/categoryResolver';
-import { fetchInvoicedTotalDueNisForDateRange } from '../lib/fetchInvoicedLast30TotalDueNis';
+import { fetchContributionIncomeNisForDateRange } from '../lib/fetchInvoicedLast30TotalDueNis';
 import { resolveNewLeadIdsForHandler } from '../utils/handlerNewLeadIds';
 import {
   applySubcontractorFeeTotalsToLeads,
@@ -281,7 +281,7 @@ const SimpleContributionReportPage = () => {
   const [searchPerformed, setSearchPerformed] = usePersistedState('simpleContribution_reportShown_v2', false, {
     storage: 'sessionStorage',
   });
-  /** 90% of invoiced total due for payment rows with due_date in the report From/To filter — see fetchInvoicedTotalDueNisForDateRange */
+  /** 90% of the invoiced income base for the report From/To filter — see fetchContributionIncomeNisForDateRange */
   const [totalIncome, setTotalIncome] = useState(0);
   const totalIncomeRef = useRef(0);
   totalIncomeRef.current = totalIncome ?? 0;
@@ -412,10 +412,17 @@ const SimpleContributionReportPage = () => {
     }
     setLoadingInvoicedIncome(true);
     try {
-      const totalDueNis = await fetchInvoicedTotalDueNisForDateRange(filters.fromDate, filters.toDate);
-      // Intentional ~10% haircut on invoiced due: income recognised for contribution purposes is
-      // deliberately below the Dashboard Invoiced total. Expect this report to read 90% of the
-      // Dashboard's Total column for the same date range, not 100%.
+      /*
+       * Must be the contribution-income fetcher, not the due-based one.
+       *
+       * They differ from October 2026 on: the due-based total counts whatever fell due, while this
+       * report counts what was actually invoiced — the same rule the per-employee Due / Invoiced cells
+       * apply. Reading the due-based total here made the header disagree with the column beneath it,
+       * showing income for money that no invoice had been sent for.
+       */
+      const totalDueNis = await fetchContributionIncomeNisForDateRange(filters.fromDate, filters.toDate);
+      // Intentional ~10% haircut: income recognised for contribution purposes sits deliberately below
+      // the invoiced total it is derived from.
       const income = Math.round(totalDueNis * INVOICED_TO_INCOME_RATE);
       setTotalIncome(income);
       return income;
