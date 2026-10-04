@@ -35,6 +35,7 @@ import {
 import { createBoiDateRateConverter } from '../lib/boiCurrencyConversion';
 import { processNewPaymentsAsync, processLegacyPaymentsAsync } from '../utils/paymentPlanProcessor';
 import {
+  DUE_INVOICED_EXTRA_COLUMNS,
   DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
   dueInvoicedAllRowsFilter,
   dueInvoicedReadyToPayFilter,
@@ -1474,20 +1475,21 @@ const SimpleContributionReportPage = () => {
             // Skip if no new lead IDs - but don't return, just continue
           } else {
             const newPayments = await fetchAllRowsForLeadIds<any>(newLeadIdsArray, (chunk) => {
-              let q = supabase
-                .from('payment_plans')
-                .select('lead_id, value, value_vat, currency, due_date')
-                .in('lead_id', chunk)
-                .eq('ready_to_pay', true)
-                .eq('paid', false)
-                .not('due_date', 'is', null)
-                .is('cancel_date', null);
+              let q = scopeDueInvoicedQuery(
+                supabase
+                  .from('payment_plans')
+                  .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                  .in('lead_id', chunk)
+                  .eq('paid', false)
+                  .not('due_date', 'is', null)
+                  .is('cancel_date', null),
+              );
               if (fromDateTime) q = q.gte('due_date', fromDateTime);
               if (toDateTime) q = q.lte('due_date', toDateTime);
               return q;
             });
 
-            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
+            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
               const current = newPaymentsMap.get(leadId) || 0;
               newPaymentsMap.set(leadId, current + amount);
@@ -1576,19 +1578,20 @@ const SimpleContributionReportPage = () => {
 
           // Fetch payment plans for these leads with due dates in range
           const allHandlerPayments = await fetchAllRowsForLeadIds<any>(allHandlerNewLeadIds, (chunk) => {
-            let q = supabase
-              .from('payment_plans')
-              .select('lead_id, value, value_vat, currency, due_date')
-              .eq('ready_to_pay', true)
-              .not('due_date', 'is', null)
-              .is('cancel_date', null)
-              .in('lead_id', chunk);
+            let q = scopeDueInvoicedQuery(
+              supabase
+                .from('payment_plans')
+                .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                .not('due_date', 'is', null)
+                .is('cancel_date', null)
+                .in('lead_id', chunk),
+            );
             if (fromDateTimeForPayments) q = q.gte('due_date', fromDateTimeForPayments);
             if (toDateTimeForPayments) q = q.lte('due_date', toDateTimeForPayments);
             return q;
           });
 
-          const processedPayments = await processNewPaymentsAsync(allHandlerPayments, boiConverter);
+          const processedPayments = await processNewPaymentsAsync(allHandlerPayments, boiConverter, dueInvoicedReadyToPayFilter);
           processedPayments.forEach((amount, leadId) => {
             // Add to map (sum if already exists from signed leads)
             const current = newPaymentsMap.get(leadId) || 0;
@@ -2223,19 +2226,20 @@ const SimpleContributionReportPage = () => {
       if (newLeadIds.length > 0) {
         // Fetch payment plans for these leads
         const newPayments = await fetchAllRowsForLeadIds<any>(newLeadIds, (chunk) => {
-            let q = supabase
-              .from('payment_plans')
-              .select('id, lead_id, value, value_vat, currency, due_date, cancel_date, ready_to_pay')
-              .eq('ready_to_pay', true)
-              .not('due_date', 'is', null)
-              .is('cancel_date', null)
-              .in('lead_id', chunk);
+            let q = scopeDueInvoicedQuery(
+              supabase
+                .from('payment_plans')
+                .select(`id, lead_id, value, value_vat, currency, due_date, cancel_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                .not('due_date', 'is', null)
+                .is('cancel_date', null)
+                .in('lead_id', chunk),
+            );
             if (fromDateTime) q = q.gte('due_date', fromDateTime);
             if (toDateTime) q = q.lte('due_date', toDateTime);
             return q;
           });
 
-          const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
+          const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
           processedPayments.forEach((amount) => {
             totalDue += amount;
           });
@@ -2868,20 +2872,21 @@ const SimpleContributionReportPage = () => {
           if (allNewLeadIds.size > 0) {
             const newLeadIdsArray = Array.from(allNewLeadIds);
             const newPayments = await fetchAllRowsForLeadIds<any>(newLeadIdsArray, (chunk) => {
-              let q = supabase
-                .from('payment_plans')
-                .select('lead_id, value, currency, due_date')
-                .eq('ready_to_pay', true)
-                .eq('paid', false)
-                .not('due_date', 'is', null)
-                .is('cancel_date', null)
-                .in('lead_id', chunk);
+              let q = scopeDueInvoicedQuery(
+                supabase
+                  .from('payment_plans')
+                  .select(`lead_id, value, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                  .eq('paid', false)
+                  .not('due_date', 'is', null)
+                  .is('cancel_date', null)
+                  .in('lead_id', chunk),
+              );
               if (fromDateTime) q = q.gte('due_date', fromDateTime);
               if (toDateTime) q = q.lte('due_date', toDateTime);
               return q;
             });
 
-            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
+            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
               const current = newPaymentsMap.get(leadId) || 0;
               newPaymentsMap.set(leadId, current + amount);
