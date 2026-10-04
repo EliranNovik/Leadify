@@ -21,11 +21,23 @@ export const DUE_INVOICED_EXTRA_COLUMNS =
   'ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at';
 
 /**
- * Same, plus the legacy-only planned `date`.
+ * Same, plus the two legacy-only columns: the planned `date` and the day the money landed.
  *
- * `payment_plans` has no such column, so this must only go into `finances_paymentplanrow` selects.
+ * `payment_plans` has neither, so this must only go into `finances_paymentplanrow` selects — it
+ * records payment as `paid` / `paid_at` instead, and asking it for these fails the whole statement.
+ *
+ * `actual_date` is needed even though nothing filters on it: it is what anchors a paid row's currency
+ * conversion to the day it was paid rather than the day it fell due.
  */
-export const DUE_INVOICED_LEGACY_EXTRA_COLUMNS = `${DUE_INVOICED_EXTRA_COLUMNS}, date`;
+export const DUE_INVOICED_LEGACY_EXTRA_COLUMNS = `${DUE_INVOICED_EXTRA_COLUMNS}, date, actual_date`;
+
+/**
+ * The new-lead columns that anchor a paid row's currency conversion, for a query that counts paid rows.
+ *
+ * Mirrors `actual_date` on the legacy side. Without these a paid row converts at its due date, which
+ * quietly disagrees with every other path that reads `paid_at`.
+ */
+export const DUE_INVOICED_PAID_COLUMNS = 'paid, paid_at';
 
 /** The three columns that each record an invoice having been sent, as a PostgREST `or` list. */
 const INVOICE_SENT_OR_FILTER =

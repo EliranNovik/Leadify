@@ -37,6 +37,7 @@ import { processNewPaymentsAsync, processLegacyPaymentsAsync } from '../utils/pa
 import {
   DUE_INVOICED_EXTRA_COLUMNS,
   DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
+  DUE_INVOICED_PAID_COLUMNS,
   dueInvoicedAllRowsFilter,
   dueInvoicedReadyToPayFilter,
   scopeDueInvoicedQuery,
@@ -1485,9 +1486,8 @@ const SimpleContributionReportPage = () => {
               let q = scopeDueInvoicedQuery(
                 supabase
                   .from('payment_plans')
-                  .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                  .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}, ${DUE_INVOICED_PAID_COLUMNS}`)
                   .in('lead_id', chunk)
-                  .eq('paid', false)
                   .not('due_date', 'is', null)
                   .is('cancel_date', null),
               );
@@ -1522,7 +1522,6 @@ const SimpleContributionReportPage = () => {
                   .from('finances_paymentplanrow')
                   .select(legacySelect)
                   .in('lead_id', chunk)
-                  .is('actual_date', null)
                   .not('due_date', 'is', null),
               );
               if (fromDateTime) q = q.gte('due_date', fromDateTime);
@@ -1536,8 +1535,7 @@ const SimpleContributionReportPage = () => {
                 supabase
                   .from('finances_paymentplanrow')
                   .select(legacySelect)
-                  .in('lead_id', chunk)
-                  .is('actual_date', null),
+                  .in('lead_id', chunk),
                 fromDateTime,
                 toDateTime,
               ),
@@ -1588,7 +1586,7 @@ const SimpleContributionReportPage = () => {
             let q = scopeDueInvoicedQuery(
               supabase
                 .from('payment_plans')
-                .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                .select(`lead_id, value, value_vat, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}, ${DUE_INVOICED_PAID_COLUMNS}`)
                 .not('due_date', 'is', null)
                 .is('cancel_date', null)
                 .in('lead_id', chunk),
@@ -2236,7 +2234,7 @@ const SimpleContributionReportPage = () => {
             let q = scopeDueInvoicedQuery(
               supabase
                 .from('payment_plans')
-                .select(`id, lead_id, value, value_vat, currency, due_date, cancel_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
+                .select(`id, lead_id, value, value_vat, currency, due_date, cancel_date, ${DUE_INVOICED_EXTRA_COLUMNS}, ${DUE_INVOICED_PAID_COLUMNS}`)
                 .not('due_date', 'is', null)
                 .is('cancel_date', null)
                 .in('lead_id', chunk),
@@ -2882,8 +2880,7 @@ const SimpleContributionReportPage = () => {
               let q = scopeDueInvoicedQuery(
                 supabase
                   .from('payment_plans')
-                  .select(`lead_id, value, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}`)
-                  .eq('paid', false)
+                  .select(`lead_id, value, currency, due_date, ${DUE_INVOICED_EXTRA_COLUMNS}, ${DUE_INVOICED_PAID_COLUMNS}`)
                   .not('due_date', 'is', null)
                   .is('cancel_date', null)
                   .in('lead_id', chunk),
@@ -2909,7 +2906,6 @@ const SimpleContributionReportPage = () => {
                 supabase
                   .from('finances_paymentplanrow')
                   .select(legacySelect)
-                  .is('actual_date', null)
                   .not('due_date', 'is', null)
                   .in('lead_id', chunk),
               );
@@ -2924,7 +2920,6 @@ const SimpleContributionReportPage = () => {
                 supabase
                   .from('finances_paymentplanrow')
                   .select(legacySelect)
-                  .is('actual_date', null)
                   .in('lead_id', chunk),
                 fromDateTime,
                 toDateTime,
