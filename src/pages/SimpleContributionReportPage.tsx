@@ -3,13 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon, TrophyIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon, TrophyIcon, FunnelIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
 import DynamicTab from '../components/DynamicTab';
 import FixedContributionModal from '../components/FixedContributionModal';
 import EmployeeDepartmentRolesModal from '../components/EmployeeDepartmentRolesModal';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   calculateSignedPortionAmount,
   legacyLeadMatchesExpert,
@@ -97,7 +98,8 @@ function buildSimpleContributionCacheKey(
   f: { fromDate: string; toDate: string },
   periodPreset: SalesContributionPeriodPreset,
   salaryFilter: { month: number; year: number },
-  dueNormalized: number
+  dueNormalized: number,
+  includeFixedContribution: boolean
 ): string {
   return JSON.stringify({
     fromDate: f.fromDate,
@@ -106,6 +108,7 @@ function buildSimpleContributionCacheKey(
     salaryMonth: salaryFilter.month,
     salaryYear: salaryFilter.year,
     dueNormalized,
+    includeFixedContribution,
   });
 }
 
@@ -238,9 +241,41 @@ const computeDateBounds = (fromDate?: string, toDate?: string) => {
   return { startIso, endIso };
 };
 
+const formatContributionGraphDate = (value: string): string => {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: 'UTC',
+  }).format(date).replace(/\//g, '.');
+};
+
+const formatContributionGraphWeekday = (value: string): string => {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short',
+    timeZone: 'UTC',
+  }).format(date);
+};
+
 /** Sticky thead — vertical scroll is on `.app-main-scroll`; do not wrap table in `overflow-x-auto`. */
 const SC_TABLE_THEAD_STICKY =
   '[&_th]:sticky [&_th]:top-0 [&_th]:z-[30] [&_th]:border-b [&_th]:border-base-300 [&_th]:align-middle [&_th]:bg-white dark:[&_th]:bg-base-100';
+
+const CONTRIBUTION_TABLE_COLUMNS = [
+  { key: 'employee', label: 'Employee' },
+  { key: 'department', label: 'Department' },
+  { key: 'signed', label: 'Signed' },
+  { key: 'due', label: 'Due' },
+  { key: 'contribution', label: 'Contribution' },
+  { key: 'contributionFixed', label: 'C. Fixed' },
+  { key: 'salaryBudget', label: 'Salary Budget' },
+  { key: 'salary', label: 'Salary (B)' },
+  { key: 'totalCost', label: 'Total Cost' },
+  { key: 'incentives', label: 'Incentives' },
+] as const;
 
 const SimpleContributionReportPage = () => {
   const navigate = useNavigate();
@@ -288,6 +323,7 @@ const SimpleContributionReportPage = () => {
   totalIncomeRef.current = totalIncome ?? 0;
   /** Monotonic counter so overlapping Search runs do not read stale total-signed ref or clobber UI state. */
   const salesContributionSearchSeqRef = useRef(0);
+  const scrollToEmployeeResultAfterSearchRef = useRef(false);
   const [loadingInvoicedIncome, setLoadingInvoicedIncome] = useState(false);
   const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('simpleContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
@@ -334,6 +370,60 @@ const SimpleContributionReportPage = () => {
   const [isFixedContributionModalOpen, setIsFixedContributionModalOpen] = useState(false);
   const [isDepartmentRolesModalOpen, setIsDepartmentRolesModalOpen] = useState(false);
   const [isCorrectionInfoModalOpen, setIsCorrectionInfoModalOpen] = useState(false);
+  const [isFiltersOpen, setIsFiltersOpen] = useState(true);
+  const [isColumnSettingsOpen, setIsColumnSettingsOpen] = useState(false);
+  const [isReportScrolled, setIsReportScrolled] = useState(false);
+  const [forceBottomFilters, setForceBottomFilters] = useState(false);
+  const [mainProgressGraphsVisible, setMainProgressGraphsVisible] = useState({
+    salesSigned: true,
+    handlersDue: true,
+  });
+  const [mainProgressDailyData, setMainProgressDailyData] = useState<{
+    salesSigned: Array<{ date: string; total: number }>;
+    handlersDue: Array<{ date: string; total: number }>;
+  }>({ salesSigned: [], handlersDue: [] });
+  const columnSettingsRef = useRef<HTMLDivElement>(null);
+  const [visibleContributionColumns, setVisibleContributionColumns] = usePersistedState<string[]>(
+    'simpleContribution_visibleColumns',
+    CONTRIBUTION_TABLE_COLUMNS.map((column) => column.key),
+    { storage: 'localStorage' }
+  );
+  const [includeFixedContribution, setIncludeFixedContribution] = usePersistedState(
+    'simpleContribution_includeFixedContribution',
+    false,
+    { storage: 'localStorage' }
+  );
+  const includeFixedContributionRef = useRef(includeFixedContribution);
+  includeFixedContributionRef.current = includeFixedContribution;
+
+  useEffect(() => {
+    if (!isColumnSettingsOpen) return;
+
+    const handleClickAway = (event: MouseEvent | TouchEvent) => {
+      if (!columnSettingsRef.current?.contains(event.target as Node)) {
+        setIsColumnSettingsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickAway);
+    document.addEventListener('touchstart', handleClickAway);
+    return () => {
+      document.removeEventListener('mousedown', handleClickAway);
+      document.removeEventListener('touchstart', handleClickAway);
+    };
+  }, [isColumnSettingsOpen]);
+
+  useEffect(() => {
+    const scrollContainer = document.querySelector<HTMLElement>('.app-main-scroll');
+    const target = scrollContainer || window;
+    const readScrollTop = () =>
+      scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+    const handleScroll = () => setIsReportScrolled(readScrollTop() > 240);
+
+    handleScroll();
+    target.addEventListener('scroll', handleScroll, { passive: true });
+    return () => target.removeEventListener('scroll', handleScroll);
+  }, []);
 
   const [useFixedContributionFromDb, setUseFixedContributionFromDb] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
@@ -839,27 +929,79 @@ const SimpleContributionReportPage = () => {
     );
   }, [filterTrophyBadgeEmployeesOnly, hasPositiveMaxIncentives, employeeSearchTerm]);
 
-  /**
-   * Same number as summing each department table’s Total row “Total salary cost” (employee view only).
-   * Mirrors `renderTable` → `filteredEmployeesForCorrection` + reduce (field view tables use empty filter for totals → 0).
-   * Uses summed row values, not `dept.totals.totalSalaryCost` (totals can lag after contribution scaling).
-   */
-  const totalCostVisibleEmployees = useMemo(() => {
+  useEffect(() => {
+    if (
+      loading ||
+      isCalculating ||
+      !searchPerformed ||
+      !scrollToEmployeeResultAfterSearchRef.current ||
+      !employeeSearchTerm.trim()
+    ) {
+      return;
+    }
+
+    const matchingDepartment = departmentNames.find((departmentName) =>
+      departmentData.get(departmentName)?.employees.some(employeeMatchesRowFilters)
+    );
+    scrollToEmployeeResultAfterSearchRef.current = false;
+    if (!matchingDepartment) return;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document
+          .getElementById(`contribution-table-${matchingDepartment.toLowerCase()}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }, [
+    loading,
+    isCalculating,
+    searchPerformed,
+    employeeSearchTerm,
+    departmentData,
+    employeeMatchesRowFilters,
+  ]);
+
+  useEffect(() => {
+    const term = employeeSearchTerm.trim();
+    if (!term || loading || isCalculating || !searchPerformed) return;
+
+    const timeout = window.setTimeout(() => {
+      const matchingDepartment = departmentNames.find((departmentName) =>
+        departmentData.get(departmentName)?.employees.some(employeeMatchesRowFilters)
+      );
+      if (!matchingDepartment) return;
+      document
+        .getElementById(`contribution-table-${matchingDepartment.toLowerCase()}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 350);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    employeeSearchTerm,
+    loading,
+    isCalculating,
+    searchPerformed,
+    departmentData,
+    employeeMatchesRowFilters,
+  ]);
+
+  /** Summary KPIs always represent the full report period, regardless of employee-name filtering. */
+  const totalCostAllEmployees = useMemo(() => {
     let sum = 0;
     for (const deptName of departmentNames) {
       const deptData = departmentData.get(deptName);
       if (!deptData) continue;
-      const filteredEmployeesForCorrection = deptData.employees.filter(employeeMatchesRowFilters);
-      sum += filteredEmployeesForCorrection.reduce(
+      sum += deptData.employees.reduce(
         (s, emp) => s + (emp.totalSalaryCost ?? 0),
         0
       );
     }
     return sum;
     // departmentNames is constant list; omit from deps to avoid new [] reference each render
-  }, [departmentData, employeeMatchesRowFilters]);
+  }, [departmentData]);
 
-  const displayTotalCostForTopBadge = totalCostVisibleEmployees;
+  const displayTotalCostForTopBadge = totalCostAllEmployees;
 
   // Sum of salary budget across all employees in all departments
   const totalSalaryBudgetAllEmployees = useMemo(() => {
@@ -2349,6 +2491,7 @@ const SimpleContributionReportPage = () => {
 
 
   const handleSearch = async () => {
+    scrollToEmployeeResultAfterSearchRef.current = Boolean(employeeSearchTerm.trim());
     // Wait for categories to be loaded before processing
     if (!categoriesLoaded) {
       console.warn('⚠️ handleSearch - Waiting for categories to load...');
@@ -2873,6 +3016,8 @@ const SimpleContributionReportPage = () => {
           // Step 4: Fetch all payment plans - ONCE
           const newPaymentsMap = new Map<string, number>();
           const legacyPaymentsMap = new Map<number, number>();
+          let allNewPaymentRows: any[] = [];
+          let allLegacyPaymentRows: any[] = [];
 
           if (allNewLeadIds.size > 0) {
             const newLeadIdsArray = Array.from(allNewLeadIds);
@@ -2889,6 +3034,7 @@ const SimpleContributionReportPage = () => {
               if (toDateTime) q = q.lte('due_date', toDateTime);
               return q;
             });
+            allNewPaymentRows = newPayments;
 
             const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
@@ -2925,13 +3071,87 @@ const SimpleContributionReportPage = () => {
                 toDateTime,
               ),
             );
+            allLegacyPaymentRows = [...legacyPayments, ...legacyInvoicedNoDueDate];
 
-            const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
+            const processedPayments = await processLegacyPaymentsAsync(allLegacyPaymentRows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
               const current = legacyPaymentsMap.get(leadId) || 0;
               legacyPaymentsMap.set(leadId, current + amount);
             });
           }
+
+          // Daily graph points: individual daily totals (not cumulative), so rises and falls remain visible.
+          const salesSignedByDay = new Map<string, number>();
+          const countedNewLeadIds = new Set<string>();
+          const countedLegacyLeadIds = new Set<number>();
+          (stageHistoryData || []).forEach((entry: any) => {
+            const day = String(entry.date || entry.cdate || '').slice(0, 10);
+            if (!day) return;
+            if (entry.newlead_id) {
+              const id = String(entry.newlead_id);
+              if (countedNewLeadIds.has(id)) return;
+              countedNewLeadIds.add(id);
+              const lead = newLeadsMap.get(id);
+              if (lead) salesSignedByDay.set(day, (salesSignedByDay.get(day) || 0) + calculateNewLeadFullAmount(lead));
+            } else if (entry.lead_id !== null && entry.lead_id !== undefined) {
+              const id = Number(entry.lead_id);
+              if (countedLegacyLeadIds.has(id)) return;
+              countedLegacyLeadIds.add(id);
+              const lead = legacyLeadsMap.get(id);
+              if (lead) salesSignedByDay.set(day, (salesSignedByDay.get(day) || 0) + calculateLegacyLeadFullAmount(lead));
+            }
+          });
+
+          const groupPaymentsByDay = (rows: any[], legacy = false) => {
+            const grouped = new Map<string, any[]>();
+            rows.forEach((row) => {
+              const rawDate = row.due_date || row.invoice_sent_at || row.invoice_send_automation_sent_at || (legacy ? row.date : null);
+              const day = String(rawDate || '').slice(0, 10);
+              if (!day) return;
+              grouped.set(day, [...(grouped.get(day) || []), row]);
+            });
+            return grouped;
+          };
+
+          const handlersDueByDay = new Map<string, number>();
+          const [newDailyTotals, legacyDailyTotals] = await Promise.all([
+            Promise.all(
+              Array.from(groupPaymentsByDay(allNewPaymentRows), async ([day, rows]) => {
+                const amounts = await processNewPaymentsAsync(rows, boiConverter, dueInvoicedReadyToPayFilter);
+                return [day, Array.from(amounts.values()).reduce((sum, amount) => sum + amount, 0)] as const;
+              })
+            ),
+            Promise.all(
+              Array.from(groupPaymentsByDay(allLegacyPaymentRows, true), async ([day, rows]) => {
+                const amounts = await processLegacyPaymentsAsync(rows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
+                return [day, Array.from(amounts.values()).reduce((sum, amount) => sum + amount, 0)] as const;
+              })
+            ),
+          ]);
+          newDailyTotals.forEach(([day, total]) => handlersDueByDay.set(day, total));
+          legacyDailyTotals.forEach(([day, total]) => {
+            handlersDueByDay.set(day, (handlersDueByDay.get(day) || 0) + total);
+          });
+
+          const buildDailySeries = (totals: Map<string, number>) => {
+            if (!filters.fromDate || !filters.toDate) {
+              return Array.from(totals, ([date, total]) => ({ date, total })).sort((a, b) => a.date.localeCompare(b.date));
+            }
+            const points: Array<{ date: string; total: number }> = [];
+            const cursor = new Date(`${filters.fromDate}T00:00:00Z`);
+            const end = new Date(`${filters.toDate}T00:00:00Z`);
+            while (cursor <= end && points.length < 400) {
+              const date = cursor.toISOString().slice(0, 10);
+              points.push({ date, total: totals.get(date) || 0 });
+              cursor.setUTCDate(cursor.getUTCDate() + 1);
+            }
+            return points;
+          };
+
+          setMainProgressDailyData({
+            salesSigned: buildDailySeries(salesSignedByDay),
+            handlersDue: buildDailySeries(handlersDueByDay),
+          });
 
           // Step 6: Fetch due amounts for all handlers in parallel
           const dueAmountsMap = new Map<number, number>();
@@ -3445,14 +3665,15 @@ const SimpleContributionReportPage = () => {
                 };
 
 
-                // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance/Partners; 100% of B for other field-assignment roles. (No 50% split from employee_handlers_sales_contributions — Partners keep full Partners fixed.)
-                updatedEmp.contributionFixed = resolveContributionFixed({
-                  departmentName: deptName,
-                  salaryBrutto: updatedEmp.salaryBrutto || 0,
-                  useFixedFromDb: useFixedFromDb,
-                  fixedFromDb: fixedContributionFromDbMap.get(emp.employeeId),
-                  hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
-                });
+                updatedEmp.contributionFixed = includeFixedContributionRef.current
+                  ? resolveContributionFixed({
+                      departmentName: deptName,
+                      salaryBrutto: updatedEmp.salaryBrutto || 0,
+                      useFixedFromDb: useFixedFromDb,
+                      fixedFromDb: fixedContributionFromDbMap.get(emp.employeeId),
+                      hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
+                    })
+                  : 0;
 
                 // Update calculation results if available
                 if (result) {
@@ -3551,7 +3772,9 @@ const SimpleContributionReportPage = () => {
               });
             });
 
-            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages);
+            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages, {
+              disableFixedContribution: !includeFixedContributionRef.current,
+            });
           });
 
           // Set loading to false ONLY after all calculations are complete
@@ -3664,14 +3887,15 @@ const SimpleContributionReportPage = () => {
                   };
 
 
-                  // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance/Partners; 100% of B for field-assignment roles.
-                  updatedEmp.contributionFixed = resolveContributionFixed({
-                    departmentName: deptName,
-                    salaryBrutto: updatedEmp.salaryBrutto || 0,
-                    useFixedFromDb: useFixedFromDbCached,
-                    fixedFromDb: fixedContributionFromDbMapCached.get(emp.employeeId),
-                    hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
-                  });
+                  updatedEmp.contributionFixed = includeFixedContributionRef.current
+                    ? resolveContributionFixed({
+                        departmentName: deptName,
+                        salaryBrutto: updatedEmp.salaryBrutto || 0,
+                        useFixedFromDb: useFixedFromDbCached,
+                        fixedFromDb: fixedContributionFromDbMapCached.get(emp.employeeId),
+                        hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
+                      })
+                    : 0;
 
                   // Salary Budget = 40% of (Contribution + Contribution Fixed)
                   updatedEmp.salaryBudget = computeSalaryBudget(
@@ -3684,17 +3908,19 @@ const SimpleContributionReportPage = () => {
                   updatedEmp.maxIncentives = computeMaxIncentives(updatedEmp.salaryBudget ?? 0, updatedEmp.totalSalaryCost ?? 0);
                   return updatedEmp;
                 }
-                // Even if no salary data, set contributionFixed based on role and recalculate salaryBudget
+                // Apply the same Fixed Contribution setting even when salary data is unavailable.
                 const updatedEmp = { ...emp };
 
 
-                updatedEmp.contributionFixed = resolveContributionFixed({
-                  departmentName: deptName,
-                  salaryBrutto: updatedEmp.salaryBrutto || 0,
-                  useFixedFromDb: useFixedFromDbCached,
-                  fixedFromDb: fixedContributionFromDbMapCached.get(emp.employeeId),
-                  hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
-                });
+                updatedEmp.contributionFixed = includeFixedContributionRef.current
+                  ? resolveContributionFixed({
+                      departmentName: deptName,
+                      salaryBrutto: updatedEmp.salaryBrutto || 0,
+                      useFixedFromDb: useFixedFromDbCached,
+                      fixedFromDb: fixedContributionFromDbMapCached.get(emp.employeeId),
+                      hasFixedContributionAssignment: employeesWithFixedContribution.has(emp.employeeId),
+                    })
+                  : 0;
 
                 // Salary Budget = 40% of (Contribution + Contribution Fixed)
                 updatedEmp.salaryBudget = computeSalaryBudget(
@@ -3725,7 +3951,9 @@ const SimpleContributionReportPage = () => {
                 },
               });
             });
-            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages);
+            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages, {
+              disableFixedContribution: !includeFixedContributionRef.current,
+            });
           });
         }
         // If no salary data, don't update - keep existing data with all calculations intact
@@ -3793,7 +4021,8 @@ const SimpleContributionReportPage = () => {
       filters,
       periodPreset,
       salaryFilter,
-      dueNormalizedPercentage
+      dueNormalizedPercentage,
+      includeFixedContribution
     );
     if (!m || m.key !== key) {
       setSearchPerformed(false);
@@ -3814,6 +4043,7 @@ const SimpleContributionReportPage = () => {
     periodPreset,
     salaryFilter,
     dueNormalizedPercentage,
+    includeFixedContribution,
   ]);
 
   // When a report search finishes, snapshot it for route remounts in this tab.
@@ -3825,7 +4055,8 @@ const SimpleContributionReportPage = () => {
             filters,
             periodPreset,
             salaryFilter,
-            dueNormalizedPercentage
+            dueNormalizedPercentage,
+            includeFixedContribution
           ),
           departmentData: new Map(departmentData),
           totalIncome,
@@ -3846,6 +4077,7 @@ const SimpleContributionReportPage = () => {
     periodPreset,
     salaryFilter,
     dueNormalizedPercentage,
+    includeFixedContribution,
   ]);
 
   // Handler for starting to edit percentage
@@ -3906,16 +4138,21 @@ const SimpleContributionReportPage = () => {
     }
   };
 
+  const scrollToDepartmentTable = (departmentName: string) => {
+    document
+      .getElementById(`contribution-table-${departmentName.toLowerCase()}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   // Render summary box with percentage and edit functionality; includes total salary budget (from total row) and total cost from table
-  const renderSummaryBox = (departmentName: string, icon: React.ReactNode, gradientClasses: string) => {
+  const renderSummaryBox = (departmentName: string, icon: React.ReactNode, accentClasses: string) => {
     const deptData = departmentData.get(departmentName);
     const deptTotal = deptData?.totals?.total || 0;
     const percentage = departmentPercentages.get(departmentName) || 0;
     const isEditing = editingPercentage === departmentName;
-    // Sum row totalSalaryCost like the table Total row (not dept.totals — can be stale vs rows after scaling)
+    // Summary cards always show full-department totals, even when employee rows are filtered.
     const totalCost =
       deptData?.employees
-        .filter(employeeMatchesRowFilters)
         .reduce((s, emp) => s + (emp.totalSalaryCost ?? 0), 0) ?? 0;
 
     const monthlyIncome = (totalIncome || 0) / summaryMonthlyDivisor;
@@ -3925,21 +4162,31 @@ const SimpleContributionReportPage = () => {
     const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * monthlyIncome : 0;
 
     return (
-      <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto min-h-[160px] md:min-h-[168px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
-        {/* Glassy attachment on top: Contribution = saved % of total income (monthly avg in preset range) */}
-        {totalIncome && totalIncome > 0 && percentage != null && (
-          <div className="absolute top-0 left-0 right-0 py-1.5 px-2 md:py-2 md:px-3 rounded-t-2xl border-b border-white/20 bg-white/20 backdrop-blur-md flex items-center gap-2">
-            <span className="hidden md:inline text-xs font-medium text-white/90">Contribution</span>
-            <span className="text-sm md:text-base font-bold text-white tabular-nums">
+      <div
+        className={`${accentClasses} min-w-0 cursor-pointer rounded-2xl p-5 text-white shadow-xl transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl`}
+        role="link"
+        tabIndex={0}
+        aria-label={`Scroll to ${departmentName} table`}
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest('button, input')) return;
+          scrollToDepartmentTable(departmentName);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            scrollToDepartmentTable(departmentName);
+          }
+        }}
+      >
+        <div className="flex min-h-9 items-start justify-between gap-2">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-base font-semibold text-white/90">{departmentName}</span>
+            <span className="shrink-0 text-sm font-bold tabular-nums text-white">
               {formatCurrency(directAmountFromIncome)}
             </span>
           </div>
-        )}
-        <div className="relative p-3 md:p-4 pt-9 md:pt-10">
-        {/* Edit button - top right */}
-        <div className="absolute top-2 right-2 z-10">
           {isEditing ? (
-            <div className="flex items-center gap-1 bg-white/20 backdrop-blur-sm rounded-lg p-1">
+            <div className="flex shrink-0 items-center gap-1">
               <input
                 type="number"
                 min="0"
@@ -3948,80 +4195,55 @@ const SimpleContributionReportPage = () => {
                 value={tempPercentage}
                 onChange={(e) => setTempPercentage(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleSavePercentage(departmentName);
-                  } else if (e.key === 'Escape') {
-                    handleCancelEditPercentage();
-                  }
+                  if (e.key === 'Enter') handleSavePercentage(departmentName);
+                  if (e.key === 'Escape') handleCancelEditPercentage();
                 }}
-                className="w-16 h-7 px-2 rounded text-sm font-semibold text-white bg-white/30 border border-white/50 focus:outline-none focus:ring-2 focus:ring-white/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                className="h-7 w-16 rounded-lg border border-white/50 bg-white/20 px-2 text-xs font-semibold text-white outline-none placeholder:text-white/60 focus:ring-2 focus:ring-white/50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 autoFocus
-                placeholder="0.00"
               />
-              <button
-                onClick={() => handleSavePercentage(departmentName)}
-                className="p-1 hover:bg-white/30 rounded transition-colors"
-                title="Save percentage"
-              >
-                <CheckIcon className="w-4 h-4 text-white" />
+              <button onClick={() => handleSavePercentage(departmentName)} className="rounded-md p-1 hover:bg-white/20" title="Save percentage">
+                <CheckIcon className="h-4 w-4" />
               </button>
-              <button
-                onClick={handleCancelEditPercentage}
-                className="p-1 hover:bg-white/30 rounded transition-colors"
-                title="Cancel"
-              >
-                <XMarkIcon className="w-4 h-4 text-white" />
+              <button onClick={handleCancelEditPercentage} className="rounded-md p-1 hover:bg-white/20" title="Cancel">
+                <XMarkIcon className="h-4 w-4" />
               </button>
             </div>
           ) : (
-            <button
-              onClick={() => handleStartEditPercentage(departmentName)}
-              className="p-2 bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-lg transition-all duration-200 hover:scale-110 group"
-              title="Edit percentage"
-            >
-              <PencilIcon className="w-4 h-4 text-white group-hover:text-yellow-200" />
-            </button>
+            <div className="flex shrink-0 items-center overflow-hidden rounded-md bg-white/20">
+              <span className="px-2.5 py-1.5 text-sm font-semibold tabular-nums">
+                {percentage % 1 === 0 ? percentage.toFixed(0) : percentage.toFixed(2)}%
+              </span>
+              <button onClick={() => handleStartEditPercentage(departmentName)} className="self-stretch border-l border-white/20 px-2 hover:bg-white/20" title="Edit percentage">
+                <PencilIcon className="h-4 w-4" />
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Percentage display - top right (below edit button when editing) */}
-        {!isEditing && (
-          <div className="absolute top-2 right-11 md:right-12 bg-white/20 backdrop-blur-sm rounded-lg px-2 py-1 shadow-sm">
-            <span className="text-xs md:text-sm font-bold text-white">
-              {percentage % 1 === 0 ? percentage.toFixed(0) : percentage.toFixed(2)}%
-            </span>
-          </div>
-        )}
-
-        <div className="flex flex-col justify-center pt-4 md:pt-5 flex-1 min-h-0">
-          {/* Icon and main amount on one line, vertically centered in content area */}
-          <div className="flex items-center gap-2 md:gap-3">
-            <div className="flex items-center justify-center w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/20 shadow flex-shrink-0">
-              {icon}
-            </div>
-            <div className="text-xl md:text-2xl font-extrabold text-white leading-tight tabular-nums">
+        <div className="relative mt-3 flex min-h-14 items-center justify-center">
+          <div className="min-w-0 max-w-[calc(100%-4.5rem)] text-center">
+            <div className="truncate text-3xl font-bold tabular-nums" title={formatCurrency(summaryAmount)}>
               {formatCurrency(summaryAmount)}
             </div>
           </div>
-          <div className="mt-2 flex flex-col items-end gap-1.5 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="text-white/90 font-medium">Salary budget</span>
-                <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
-                  {formatCurrency(summaryAmount)}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-white/90 font-medium">Total cost</span>
-                <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
-                  {formatCurrency(totalCost)}
-                </span>
-              </div>
+          <div className="absolute right-0 shrink-0 rounded-full bg-white/20 p-3.5">
+            {icon}
           </div>
         </div>
-        {/* Department name - bottom left */}
-        <div className="absolute bottom-2 left-2 md:bottom-3 md:left-3 text-white/90 text-sm md:text-base font-semibold">
-          {departmentName}
-        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/20 pt-3">
+          <div className="min-w-0">
+            <div className="text-[11px] text-white/70">Salary budget</div>
+            <div className="truncate text-sm font-semibold tabular-nums" title={formatCurrency(summaryAmount)}>
+              {formatCurrency(summaryAmount)}
+            </div>
+          </div>
+          <div className="min-w-0 border-l border-white/20 pl-3">
+            <div className="text-[11px] text-white/70">Total cost</div>
+            <div className="truncate text-sm font-semibold tabular-nums" title={formatCurrency(totalCost)}>
+              {formatCurrency(totalCost)}
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -4153,6 +4375,41 @@ const SimpleContributionReportPage = () => {
     return wrapIconInCircle(<BuildingOfficeIcon className="w-6 h-6 text-purple-500" />);
   };
 
+  const getDepartmentTableIcon = (departmentName: string) => {
+    const iconClass = 'h-6 w-6 text-white';
+    switch (departmentName) {
+      case 'Sales':
+        return <ChartBarIcon className={iconClass} />;
+      case 'Handlers':
+        return <UserGroupIcon className={iconClass} />;
+      case 'Partners':
+        return <BuildingOfficeIcon className={iconClass} />;
+      case 'Marketing':
+        return <SpeakerWaveIcon className={iconClass} />;
+      case 'Finance':
+        return <CurrencyDollarIcon className={iconClass} />;
+      default:
+        return <BuildingOfficeIcon className={iconClass} />;
+    }
+  };
+
+  const getDepartmentTableIconGradient = (departmentName: string) => {
+    switch (departmentName) {
+      case 'Sales':
+        return 'bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500';
+      case 'Handlers':
+        return 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500';
+      case 'Partners':
+        return 'bg-gradient-to-tr from-sky-600 via-cyan-500 to-blue-500';
+      case 'Marketing':
+        return 'bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500';
+      case 'Finance':
+        return 'bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500';
+      default:
+        return 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500';
+    }
+  };
+
   const renderTable = (deptData: DepartmentData) => {
     const colSpanValue = 10;
 
@@ -4239,8 +4496,15 @@ const SimpleContributionReportPage = () => {
     );
 
     return (
-      <div key={deptData.departmentName} className="mb-8">
+      <div
+        id={`contribution-table-${deptData.departmentName.toLowerCase()}`}
+        key={deptData.departmentName}
+        className="mb-8 scroll-mt-20"
+      >
         <div className="mb-3 flex flex-wrap items-center gap-3 px-1 text-2xl font-bold">
+          <span className={`flex h-11 w-11 items-center justify-center rounded-full shadow-sm ${getDepartmentTableIconGradient(deptData.departmentName)}`}>
+            {getDepartmentTableIcon(deptData.departmentName)}
+          </span>
           <span>{deptData.departmentName}</span>
           {contributionAmount > 0 && (
             <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
@@ -4248,11 +4512,9 @@ const SimpleContributionReportPage = () => {
             </span>
           )}
         </div>
-        {/* No padding, so the table and its row dividers run the full width and height of the box.
-            No overflow utility either: the thead is sticky against `.app-main-scroll`, and a scroll
-            container here would re-anchor it (see SC_TABLE_THEAD_STICKY). The corner radii live on
-            the corner cells instead of an `overflow-hidden` clip for the same reason. */}
-        <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+        {/* Mobile gets horizontal table scrolling; desktop keeps `.app-main-scroll` as the sticky
+            header's scroll container. */}
+        <div className="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-sm md:overflow-visible">
         <table className="sc-contribution-table table w-full min-w-[800px] md:min-w-0 md:table-fixed [&_tbody_tr:last-child_td:first-child]:rounded-bl-2xl [&_tbody_tr:last-child_td:last-child]:rounded-br-2xl [&_thead_th:first-child]:rounded-tl-2xl [&_thead_th:last-child]:rounded-tr-2xl">
             <thead className={SC_TABLE_THEAD_STICKY}>
               <tr>
@@ -4460,18 +4722,25 @@ const SimpleContributionReportPage = () => {
   };
 
   return (
-    <div className="w-full min-h-[calc(100dvh-3.5rem)] bg-[#ececec] px-4 py-4">
+    <div className="w-full min-h-[calc(100dvh-3.5rem)] bg-[#ececec] px-1 py-4 sm:px-2 md:px-4">
+      <style>
+        {CONTRIBUTION_TABLE_COLUMNS.map((column, index) =>
+          visibleContributionColumns.includes(column.key)
+            ? ''
+            : `.sc-contribution-table th:nth-child(${index + 1}), .sc-contribution-table td:nth-child(${index + 1}) { display: none; }`
+        ).join('\n')}
+        {`
+          @keyframes modalChartFlip {
+            from { opacity: 0; transform: perspective(1200px) rotateY(8deg) scale(0.985); }
+            to { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+          }
+        `}
+      </style>
       <div className="mb-2">
         {/* Row 1: Title top left, toggle + 3 buttons on the same line */}
         <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl md:text-3xl font-bold">Contribution profitability (simple)</h1>
-            <button
-              onClick={() => navigate('/reports')}
-              className="btn btn-ghost btn-sm"
-            >
-              ← Back to Reports
-            </button>
+            <h1 className="text-2xl md:text-3xl font-bold">Contribution profitability</h1>
             <button
               type="button"
               onClick={() => setIsCorrectionInfoModalOpen(true)}
@@ -4485,44 +4754,184 @@ const SimpleContributionReportPage = () => {
           <div className="flex flex-wrap items-center gap-4 md:gap-6">
             <div className="flex items-center gap-2">
               <button
-                onClick={async () => {
-                  await fetchRolePercentages();
-                  setIsDynamicIslandOpen(true);
-                }}
-                className="btn btn-primary btn-md btn-circle"
-                title="Open Dynamic Island"
+                onClick={() => navigate('/reports')}
+                className="btn btn-ghost btn-sm gap-1.5"
               >
-                <Squares2X2Icon className="w-5 h-5" />
+                <ArrowLeftIcon className="h-4 w-4" />
+                Back
               </button>
               <button
-                onClick={() => setIsFixedContributionModalOpen(true)}
-                className="btn btn-primary btn-md btn-circle"
-                title="Fixed contribution per employee by department role"
+                type="button"
+                onClick={() => setIsFiltersOpen((open) => !open)}
+                className={`btn btn-md gap-2 rounded-full ${isFiltersOpen ? 'btn-primary' : 'btn-ghost'}`}
+                aria-expanded={isFiltersOpen}
+                aria-controls="contribution-report-filters"
               >
-                <CurrencyDollarIcon className="w-5 h-5" />
+                <FunnelIcon className="h-5 w-5" />
+                Filters
               </button>
               <button
-                onClick={() => setIsDepartmentRolesModalOpen(true)}
-                className="btn btn-primary btn-md btn-circle"
-                title="Assign or move employees between department roles"
+                type="button"
+                className={`btn btn-md gap-2 rounded-full ${mainProgressGraphsVisible.salesSigned ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setMainProgressGraphsVisible((current) => ({ ...current, salesSigned: !current.salesSigned }))}
+                title="Toggle Sales signed graph"
               >
-                <UserGroupIcon className="w-5 h-5" />
+                <ChartBarIcon className="h-5 w-5" />
+                Sales
               </button>
+              <button
+                type="button"
+                className={`btn btn-md gap-2 rounded-full ${mainProgressGraphsVisible.handlersDue ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setMainProgressGraphsVisible((current) => ({ ...current, handlersDue: !current.handlersDue }))}
+                title="Toggle Handlers due/invoiced graph"
+              >
+                <UserGroupIcon className="h-5 w-5" />
+                Handlers
+              </button>
+              {isFiltersOpen && (
+                <>
+                  <button
+                    onClick={async () => {
+                      await fetchRolePercentages();
+                      setIsDynamicIslandOpen(true);
+                    }}
+                    className="btn btn-ghost btn-md btn-circle"
+                    title="Open Dynamic Island"
+                  >
+                    <Squares2X2Icon className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => setIsFixedContributionModalOpen(true)}
+                    className="btn btn-ghost btn-md btn-circle"
+                    title="Fixed contribution per employee by department role"
+                  >
+                    <CurrencyDollarIcon className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => setIsDepartmentRolesModalOpen(true)}
+                    className="btn btn-ghost btn-md btn-circle"
+                    title="Assign or move employees between department roles"
+                  >
+                    <UserGroupIcon className="w-5 h-5" />
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <div ref={columnSettingsRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsColumnSettingsOpen((open) => !open)}
+                  className={`btn btn-md btn-circle ${isColumnSettingsOpen ? 'btn-primary' : 'btn-ghost'}`}
+                  title="Choose visible columns"
+                  aria-label="Choose visible columns"
+                  aria-expanded={isColumnSettingsOpen}
+                >
+                  <CogIcon className="h-7 w-7" />
+                </button>
+                {isColumnSettingsOpen && (
+                  <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-2xl border border-base-300 bg-white p-3 text-base-content shadow-xl">
+                    <div className="mb-2 flex items-center justify-between px-1">
+                      <span className="text-sm font-semibold">Table columns</span>
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-primary hover:underline"
+                        onClick={() => setVisibleContributionColumns(CONTRIBUTION_TABLE_COLUMNS.map((column) => column.key))}
+                      >
+                        Show all
+                      </button>
+                    </div>
+                    <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl bg-base-200 px-3 py-2.5">
+                      <div>
+                        <div className="text-sm font-medium">Fixed contribution</div>
+                        <div className="text-[11px] text-base-content/55">
+                          {includeFixedContribution ? 'Included in calculations' : 'Excluded from calculations'}
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary toggle-sm"
+                        checked={includeFixedContribution}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          includeFixedContributionRef.current = enabled;
+                          setIncludeFixedContribution(enabled);
+                          if (searchPerformed) {
+                            void handleSearch();
+                          }
+                        }}
+                      />
+                    </label>
+                    <div className="space-y-1">
+                      {CONTRIBUTION_TABLE_COLUMNS.map((column) => {
+                        const checked = visibleContributionColumns.includes(column.key);
+                        return (
+                          <label key={column.key} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 text-sm hover:bg-base-200">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-primary checkbox-sm"
+                              checked={checked}
+                              onChange={() => {
+                                setVisibleContributionColumns((current) =>
+                                  checked
+                                    ? current.filter((key) => key !== column.key)
+                                    : [...current, column.key]
+                                );
+                              }}
+                            />
+                            <span>{column.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
         {/* Row 2: KPI badges — only after user runs Search (same data as report) */}
-        {searchPerformed && (
-        <div className="flex justify-start gap-5 md:gap-8 mb-3 flex-wrap">
-          <div className="flex flex-col items-center gap-1.5">
+        {searchPerformed && !loading && !isCalculating && (
+        <div className="relative my-5 flex flex-col items-start gap-3 lg:block">
+          {isFiltersOpen && (
+            <div className="flex items-end gap-3 lg:absolute lg:left-0 lg:top-1/2 lg:-translate-y-1/2">
+              <div className="relative w-40 pt-2 focus-within:z-10">
+                <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                  Report period
+                </span>
+                <select
+                  className="select select-bordered select-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md"
+                  value={periodPreset}
+                  onChange={(e) => handlePeriodPresetChange(e.target.value as SalesContributionPeriodPreset)}
+                >
+                  <option value="custom">Custom</option>
+                  <option value="last3months">Last 3 months</option>
+                  <option value="last6months">Last 6 months</option>
+                  <option value="last12months">One year</option>
+                </select>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 pb-1" title="Show employees with positive max incentives only">
+                <TrophyIcon className="h-4 w-4 shrink-0 text-amber-500" aria-hidden="true" />
+                <input
+                  type="checkbox"
+                  className="toggle toggle-sm toggle-warning"
+                  checked={filterTrophyBadgeEmployeesOnly}
+                  onChange={(e) => setFilterTrophyBadgeEmployeesOnly(e.target.checked)}
+                  aria-label="Show employees with positive max incentives only"
+                />
+              </label>
+            </div>
+          )}
+        <div className="mx-auto grid w-full max-w-full grid-cols-2 overflow-hidden rounded-[2rem] bg-white shadow-sm md:flex md:w-fit">
+          <div className="flex min-w-0 flex-col items-center gap-0.5 px-3 py-3 md:min-w-[170px] md:px-5">
             <div className="flex flex-col items-center">
-              <span className="text-sm font-medium text-base-content/70">Total signed</span>
+              <span className="text-sm font-medium text-gray-500">Total signed</span>
               {periodPreset !== 'custom' && (
-                <span className="text-xs text-base-content/50">avg. per month</span>
+                <span className="text-xs text-gray-400">avg. per month</span>
               )}
             </div>
-            <div className="px-5 py-2.5 bg-white border border-gray-200 rounded-xl min-w-[160px] text-center shadow-sm">
+            <div className="text-center">
               {loadingSignedValue ? (
                 <span className="loading loading-spinner loading-sm text-primary"></span>
               ) : (
@@ -4530,14 +4939,14 @@ const SimpleContributionReportPage = () => {
               )}
             </div>
           </div>
-          <div className="flex flex-col items-center gap-1.5">
+          <div className="flex min-w-0 flex-col items-center gap-0.5 border-l border-gray-200 px-3 py-3 md:min-w-[170px] md:px-5">
             <div className="flex flex-col items-center">
-              <span className="text-sm font-medium text-base-content/70">Total income</span>
+              <span className="text-sm font-medium text-gray-500">Total income</span>
               {periodPreset !== 'custom' && (
-                <span className="text-xs text-base-content/50">avg. per month</span>
+                <span className="text-xs text-gray-400">avg. per month</span>
               )}
             </div>
-            <div className="px-5 py-2.5 bg-white border border-gray-200 rounded-xl min-w-[160px] text-center shadow-sm">
+            <div className="text-center">
               {loadingInvoicedIncome ? (
                 <span className="loading loading-spinner loading-sm text-primary"></span>
               ) : (
@@ -4545,12 +4954,12 @@ const SimpleContributionReportPage = () => {
               )}
             </div>
           </div>
-          <div className="flex flex-col items-center gap-1.5">
+          <div className="flex min-w-0 flex-col items-center gap-0.5 border-t border-gray-200 px-3 py-3 md:min-w-[190px] md:border-l md:border-t-0 md:px-5">
             <div className="flex items-center gap-1.5">
               <div className="flex flex-col items-center">
-                <span className="text-sm font-medium text-base-content/70">Total salary budget</span>
+                <span className="text-sm font-medium text-gray-500">Total salary budget</span>
                 {periodPreset !== 'custom' && (
-                  <span className="text-xs text-base-content/50">avg. per month</span>
+                  <span className="text-xs text-gray-400">avg. per month</span>
                 )}
               </div>
               {displaySummaryTotalIncome > 0 && (
@@ -4559,16 +4968,16 @@ const SimpleContributionReportPage = () => {
                 </span>
               )}
             </div>
-            <div className="px-5 py-2.5 bg-white border border-gray-200 rounded-xl min-w-[160px] text-center shadow-sm">
+            <div className="text-center">
               <span className="font-semibold text-gray-900 text-lg">{formatCurrency(displaySummarySalaryBudget)}</span>
             </div>
           </div>
-          <div className="flex flex-col items-center gap-1.5">
+          <div className="flex min-w-0 flex-col items-center gap-0.5 border-l border-t border-gray-200 px-3 py-3 md:min-w-[170px] md:border-t-0 md:px-5">
             <div className="flex items-center gap-1.5">
               <div className="flex flex-col items-center">
-                <span className="text-sm font-medium text-base-content/70">Total cost</span>
+                <span className="text-sm font-medium text-gray-500">Total cost</span>
                 {periodPreset !== 'custom' && (
-                  <span className="text-xs text-base-content/50">avg. per month</span>
+                  <span className="text-xs text-gray-400">avg. per month</span>
                 )}
               </div>
               {displaySummaryTotalIncome > 0 && (
@@ -4577,10 +4986,11 @@ const SimpleContributionReportPage = () => {
                 </span>
               )}
             </div>
-            <div className="px-5 py-2.5 bg-white border border-gray-200 rounded-xl min-w-[160px] text-center shadow-sm">
+            <div className="text-center">
               <span className="font-semibold text-gray-900 text-lg">{formatCurrency(displaySummaryTotalCost)}</span>
             </div>
           </div>
+        </div>
         </div>
         )}
       </div>
@@ -4655,16 +5065,39 @@ const SimpleContributionReportPage = () => {
         fetchRolePercentages={fetchRolePercentages}
       />
 
-      {/* Filters sit directly on the page grey — no surface of their own. */}
-      <div className="mb-5" data-filters-section>
+      {/* Filters are collapsed by default to keep the report header compact. */}
+      {isFiltersOpen && (
+      <div
+        id="contribution-report-filters"
+        className={(isReportScrolled || forceBottomFilters)
+          ? 'fixed inset-x-0 bottom-0 z-[120] border-t border-base-300 bg-[#ececec] px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 shadow-[0_-12px_35px_rgba(0,0,0,0.14)]'
+          : 'mb-5'}
+        data-filters-section
+      >
+        {(isReportScrolled || forceBottomFilters) && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-sm absolute right-3 top-2"
+            onClick={() => {
+              setIsFiltersOpen(false);
+              setForceBottomFilters(false);
+            }}
+            aria-label="Close report filters"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        )}
         {/* No card-body padding, so the filter labels line up with the page title above. */}
         <div className="flex flex-col gap-2 pb-2">
-          <div className="mb-3 md:mb-4 flex flex-col items-start gap-1 w-fit max-w-full">
+          {(!searchPerformed || isReportScrolled || forceBottomFilters) && (
+          <div className="mb-3 mr-auto flex w-full max-w-[700px] flex-col items-start gap-1 md:mb-4">
             <div className="flex flex-wrap items-end gap-3">
-              <div className="flex flex-col items-start gap-1">
-                <span className="text-xs md:text-base font-semibold text-base-content">Report period</span>
+              <div className="relative w-40 pt-2 focus-within:z-10">
+                <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                  Report period
+                </span>
                 <select
-                  className="select select-bordered select-sm md:select-md w-max max-w-full md:text-base"
+                  className="select select-bordered select-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md md:select-md md:text-base"
                   value={periodPreset}
                   onChange={(e) => handlePeriodPresetChange(e.target.value as SalesContributionPeriodPreset)}
                 >
@@ -4696,40 +5129,41 @@ const SimpleContributionReportPage = () => {
               </p>
             )}
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-7 gap-3 md:gap-4">
+          )}
+          <div className="flex flex-wrap items-end gap-3 md:gap-4">
             {/* From Date - Mobile: 2 cols, Desktop: 1 col */}
-            <div className="col-span-1">
-              <label className="label py-1 md:py-2">
-                <span className="label-text text-xs md:text-base md:font-semibold">From Date</span>
-              </label>
+            <div className="relative w-[calc(50%-0.375rem)] pt-2 focus-within:z-10 sm:w-40">
+              <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                From Date
+              </span>
               <input
                 type="date"
-                className={`input input-bordered input-sm md:input-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={`input input-bordered input-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md md:input-md md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={filters.fromDate}
                 onChange={(e) => handleFilterChange('fromDate', e.target.value)}
                 disabled={periodFiltersLocked}
               />
             </div>
             {/* To Date - Mobile: 2 cols, Desktop: 1 col */}
-            <div className="col-span-1">
-              <label className="label py-1 md:py-2">
-                <span className="label-text text-xs md:text-base md:font-semibold">To Date</span>
-              </label>
+            <div className="relative w-[calc(50%-0.375rem)] pt-2 focus-within:z-10 sm:w-40">
+              <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                To Date
+              </span>
               <input
                 type="date"
-                className={`input input-bordered input-sm md:input-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={`input input-bordered input-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md md:input-md md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={filters.toDate}
                 onChange={(e) => handleFilterChange('toDate', e.target.value)}
                 disabled={periodFiltersLocked}
               />
             </div>
             {/* Salary Month - Mobile: 2 cols, Desktop: 1 col */}
-            <div className="col-span-1">
-              <label className="label py-1 md:py-2">
-                <span className="label-text text-xs md:text-base md:font-semibold">Salary Month</span>
-              </label>
+            <div className="relative w-[calc(50%-0.375rem)] pt-2 focus-within:z-10 sm:w-36">
+              <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                Salary Month
+              </span>
               <select
-                className={`select select-bordered select-sm md:select-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={`select select-bordered select-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md md:select-md md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={salaryFilter?.month || previousMonth}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
@@ -4745,12 +5179,12 @@ const SimpleContributionReportPage = () => {
               </select>
             </div>
             {/* Salary Year - Mobile: 2 cols, Desktop: 1 col */}
-            <div className="col-span-1">
-              <label className="label py-1 md:py-2">
-                <span className="label-text text-xs md:text-base md:font-semibold">Salary Year</span>
-              </label>
+            <div className="relative w-[calc(50%-0.375rem)] pt-2 focus-within:z-10 sm:w-36">
+              <span className="pointer-events-none absolute left-3 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                Salary Year
+              </span>
               <select
-                className={`select select-bordered select-sm md:select-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={`select select-bordered select-sm w-full rounded-xl border-gray-300 bg-[#ececec] shadow-sm transition-shadow focus:shadow-md md:select-md md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={salaryFilter?.year || previousYear}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
@@ -4765,24 +5199,37 @@ const SimpleContributionReportPage = () => {
                 ))}
               </select>
             </div>
-            {/* Search Employee Input - Mobile: 2 cols, Desktop: wider (2 cols) */}
-            <div className="col-span-2 md:col-span-2">
-              <label className="label py-1 md:py-2">
-                <span className="label-text text-xs md:text-base md:font-semibold">Search Employee</span>
-              </label>
-              <input
-                type="text"
-                className="input input-bordered input-sm md:input-md w-full md:text-base"
-                placeholder="Search..."
-                value={employeeSearchTerm}
-                onChange={(e) => setEmployeeSearchTerm(e.target.value)}
-              />
-            </div>
-            {/* Search Button - Icon only, far right */}
-            <div className="col-span-2 md:col-span-1 flex items-end">
+            {/* Employee search and action stay together at every screen size. */}
+            <div className="ml-auto flex w-full items-end justify-end gap-2 sm:w-auto">
+              <div className="relative w-full max-w-[240px] pt-2 focus-within:z-10">
+                <span className="pointer-events-none absolute left-4 top-2 z-20 -translate-y-1/2 bg-[#ececec] px-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                  Search Employee
+                </span>
+                <input
+                  type="text"
+                  className="input input-bordered input-sm w-full rounded-full border-gray-300 bg-[#ececec] py-2 pl-5 pr-10 shadow-sm transition-shadow focus:shadow-md md:input-md md:text-base"
+                  placeholder="Search..."
+                  value={employeeSearchTerm}
+                  onChange={(e) => setEmployeeSearchTerm(e.target.value)}
+                />
+                {employeeSearchTerm && (
+                  <button
+                    type="button"
+                    className="absolute right-3 top-[calc(50%+0.25rem)] flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-black/5 hover:text-gray-700"
+                    onClick={() => setEmployeeSearchTerm('')}
+                    aria-label="Clear employee search"
+                  >
+                    <XMarkIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
               <button
-                className="btn btn-primary btn-sm md:btn-md w-full md:w-auto flex items-center justify-center"
-                onClick={handleSearch}
+                className="btn btn-primary btn-circle btn-sm shrink-0 md:btn-md"
+                onClick={() => {
+                  setIsFiltersOpen(false);
+                  setForceBottomFilters(false);
+                  void handleSearch();
+                }}
                 disabled={loading}
                 title="Search"
               >
@@ -4796,57 +5243,189 @@ const SimpleContributionReportPage = () => {
           </div>
         </div>
       </div>
+      )}
 
-      {searchPerformed && (
+      {!isFiltersOpen && (
+        <div className="fixed bottom-4 right-4 z-[110] flex max-w-[calc(100vw-2rem)] items-center gap-2">
+          <div className="relative min-w-0">
+            <input
+              type="text"
+              className="h-12 min-w-0 w-52 rounded-full border border-base-300 bg-white py-2 pl-5 pr-11 text-sm shadow-xl outline-none placeholder:text-gray-400 focus:border-primary sm:w-64"
+              placeholder="Search employee…"
+              value={employeeSearchTerm}
+              onChange={(event) => setEmployeeSearchTerm(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !loading) void handleSearch();
+              }}
+              aria-label="Search employee"
+            />
+            {employeeSearchTerm ? (
+              <button
+                type="button"
+                className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                onClick={() => setEmployeeSearchTerm('')}
+                aria-label="Clear employee search"
+              >
+                <XMarkIcon className="h-4 w-4" />
+              </button>
+            ) : (
+              <MagnifyingGlassIcon className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+            )}
+          </div>
+          <button
+            type="button"
+            className="btn btn-circle btn-md shrink-0 bg-white shadow-xl"
+            onClick={() => {
+              setForceBottomFilters(true);
+              setIsFiltersOpen(true);
+            }}
+            aria-label="Open report filters"
+            title="Filters"
+          >
+            <FunnelIcon className="h-5 w-5" />
+          </button>
+        </div>
+      )}
+
+      {searchPerformed && ((loading || isCalculating) ? (
+        <div className="flex min-h-[55vh] flex-col gap-8" role="status" aria-label="Loading report">
+          <div className="flex flex-col items-center justify-center gap-4 pt-8">
+            <div className="relative flex h-20 w-20 items-center justify-center" aria-hidden="true">
+              <div className="absolute inset-1 animate-pulse rounded-full bg-primary/20 blur-xl" />
+              <div className="absolute inset-0 animate-spin rounded-full border-[4px] border-primary/15 border-r-violet-500 border-t-primary shadow-[0_0_20px_rgba(79,70,229,0.18)]" />
+              <div
+                className="absolute inset-2 animate-spin rounded-full border-2 border-cyan-400/20 border-b-cyan-500 border-l-transparent"
+                style={{ animationDirection: 'reverse', animationDuration: '1.35s' }}
+              />
+              <ChartBarIcon className="relative h-8 w-8 text-primary drop-shadow-sm" />
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-semibold text-base-content">Building contribution report</p>
+              <p className="mt-1 text-sm text-base-content/55">Calculating totals, graphs, and employee data…</p>
+            </div>
+          </div>
+
+          <div className="animate-pulse space-y-5" aria-hidden="true">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <div key={index} className="h-40 rounded-2xl bg-white/65 shadow-sm" />
+              ))}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="h-72 rounded-2xl bg-white/65 shadow-sm" />
+              <div className="h-72 rounded-2xl bg-white/65 shadow-sm" />
+            </div>
+            <div className="h-64 rounded-2xl bg-white/65 shadow-sm" />
+          </div>
+        </div>
+      ) : (
         <div className="space-y-6">
           {/* Summary Boxes - Rendered immediately, independent of table loading (employee view only) */}
           {(
-            <div className="flex md:grid md:grid-cols-5 gap-3 md:gap-6 mb-8 w-full overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
+            <div className="mb-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
               {/* Sales */}
               {renderSummaryBox(
                 'Sales',
-                <ChartBarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />,
-                'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600'
+                <ChartBarIcon className="h-8 w-8" />,
+                'bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500'
               )}
 
               {/* Handlers */}
               {renderSummaryBox(
                 'Handlers',
-                <UserGroupIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />,
-                'bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500'
+                <UserGroupIcon className="h-8 w-8" />,
+                'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500'
               )}
 
               {/* Partners */}
               {renderSummaryBox(
                 'Partners',
-                <BuildingOfficeIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />,
-                'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400'
+                <BuildingOfficeIcon className="h-8 w-8" />,
+                'bg-gradient-to-tr from-sky-600 via-cyan-500 to-blue-500'
               )}
 
               {/* Marketing */}
               {renderSummaryBox(
                 'Marketing',
-                <SpeakerWaveIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />,
-                'bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500'
+                <SpeakerWaveIcon className="h-8 w-8" />,
+                'bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500'
               )}
 
               {/* Finance */}
               {renderSummaryBox(
                 'Finance',
-                <CurrencyDollarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />,
-                'bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]'
+                <CurrencyDollarIcon className="h-8 w-8" />,
+                'bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-500'
               )}
             </div>
           )}
 
-          {/* Table section - show loading state until report is ready */}
-          {(loading || isCalculating) ? (
-            <div className="flex flex-col items-center justify-center py-16 gap-4 rounded-2xl bg-white border border-gray-200 shadow-sm">
-              <span className="loading loading-spinner loading-lg text-primary" />
-              <p className="text-base-content/80 font-medium">Loading report...</p>
+          {(mainProgressGraphsVisible.salesSigned || mainProgressGraphsVisible.handlersDue) && (
+            <div className="grid w-full gap-4 lg:grid-cols-2">
+              {([
+                { key: 'salesSigned' as const, title: 'Sales — signed progress', color: '#e11d48' },
+                { key: 'handlersDue' as const, title: 'Handlers — due/invoiced progress', color: '#4f46e5' },
+              ]).map((graph) => mainProgressGraphsVisible[graph.key] && (
+                <section key={graph.key} className="w-full animate-[modalChartFlip_450ms_ease-out] overflow-hidden rounded-2xl bg-white py-5 shadow-sm [transform-style:preserve-3d]">
+                  <div className="mb-3 flex items-start justify-between gap-3 px-5">
+                    <div>
+                      <h2 className="text-lg font-semibold text-base-content">{graph.title}</h2>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm btn-circle shrink-0"
+                      aria-label={`Close ${graph.title}`}
+                      onClick={() => setMainProgressGraphsVisible((current) => ({ ...current, [graph.key]: false }))}
+                    >
+                      <XMarkIcon className="h-5 w-5" />
+                    </button>
+                  </div>
+                  <div className="h-64 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={mainProgressDailyData[graph.key]} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id={`main-progress-fill-${graph.key}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={graph.color} stopOpacity={0.32} />
+                            <stop offset="95%" stopColor={graph.color} stopOpacity={0.03} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tick={({ x, y, payload }: any) => (
+                            <text x={x} y={y + 12} textAnchor="middle" fontSize={11}>
+                              <tspan fill="#374151">{formatContributionGraphDate(payload.value)}</tspan>
+                              <tspan fill={graph.color}>{` ${formatContributionGraphWeekday(payload.value)}`}</tspan>
+                            </text>
+                          )}
+                        />
+                        <YAxis tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`} tick={{ fontSize: 11 }} width={45} />
+                        <Tooltip
+                          labelFormatter={(value) =>
+                            `${formatContributionGraphDate(String(value))} · ${formatContributionGraphWeekday(String(value))}`
+                          }
+                          formatter={(value: number) => [formatCurrency(value), 'Daily total']}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="total"
+                          stroke={graph.color}
+                          strokeWidth={3}
+                          fill={`url(#main-progress-fill-${graph.key})`}
+                          dot={{ r: 3, strokeWidth: 2, fill: '#fff' }}
+                          activeDot={{ r: 5 }}
+                          animationDuration={700}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </section>
+              ))}
             </div>
-          ) : (
-            <>
+          )}
+
+          {/* Department tables */}
+          <>
             {departmentNames
               .filter(deptName => {
                 const deptData = departmentData.get(deptName);
@@ -4881,10 +5460,9 @@ const SimpleContributionReportPage = () => {
                 )}
               </p>
             </div>
-            </>
-          )}
+          </>
         </div>
-      )}
+      ))}
 
       {!searchPerformed && (
         <p className="text-center text-base-content/70 py-4">

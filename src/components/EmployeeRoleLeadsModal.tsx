@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, EyeIcon, ChartBarIcon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { useNavigate } from 'react-router-dom';
@@ -30,6 +31,7 @@ interface LeadRow {
   total: number;
   leadId: string | number;
   leadType: 'new' | 'legacy';
+  signedAt: string;
 }
 
 interface PaymentRow {
@@ -47,6 +49,7 @@ interface PaymentRow {
   notes: string;
   leadType: 'new' | 'legacy';
   leadId: string | number;
+  dueAt: string;
 }
 
 interface EmployeeRoleLeadsModalProps {
@@ -58,6 +61,36 @@ interface EmployeeRoleLeadsModalProps {
   fromDate: string;
   toDate: string;
 }
+
+const formatGraphDate = (value: string): string => {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: 'UTC',
+  }).format(date).replace(/\//g, '.');
+};
+
+const formatGraphWeekday = (value: string): string => {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-GB', {
+    weekday: 'short',
+    timeZone: 'UTC',
+  }).format(date);
+};
+
+const formatGraphPeriodDate = (value: string): string => {
+  const date = new Date(`${String(value).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    timeZone: 'UTC',
+  }).format(date).replace(/\//g, '.');
+};
 
 // Helper to convert numeric order back to descriptive text
 const getOrderText = (orderNumber: number | string | null | undefined): string => {
@@ -104,6 +137,11 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [employeePhotoUrl, setEmployeePhotoUrl] = useState<string | null>(null);
   const [headerPhotoError, setHeaderPhotoError] = useState(false);
+  const [viewMode, setViewMode] = useState<'table' | 'charts'>('table');
+
+  useEffect(() => {
+    if (isOpen) setViewMode('table');
+  }, [isOpen, employeeId, role]);
 
   // Profile image in modal title (tenants_employee)
   useEffect(() => {
@@ -456,6 +494,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 notes: payment.notes || '—',
                 leadType: 'new',
                 leadId: payment.lead_id,
+                dueAt: payment.due_date || payment.invoice_sent_at || payment.invoice_send_automation_sent_at || fromDate,
               });
             });
           }
@@ -684,6 +723,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 notes: payment.notes || '—',
                 leadType: 'legacy',
                 leadId: `legacy_${lead.id}`,
+                dueAt: payment.due_date || payment.invoice_sent_at || payment.invoice_send_automation_sent_at || payment.date || fromDate,
               });
             });
           }
@@ -773,13 +813,19 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
       const newLeadIds = new Set<string>();
       const legacyLeadIds = new Set<number>();
+      const newLeadSignedAt = new Map<string, string>();
+      const legacyLeadSignedAt = new Map<number, string>();
 
       stageHistoryData?.forEach((entry: any) => {
         if (entry.newlead_id) {
-          newLeadIds.add(entry.newlead_id.toString());
+          const id = entry.newlead_id.toString();
+          newLeadIds.add(id);
+          newLeadSignedAt.set(id, entry.date || entry.cdate || fromDate);
         }
         if (entry.lead_id !== null && entry.lead_id !== undefined) {
-          legacyLeadIds.add(Number(entry.lead_id));
+          const id = Number(entry.lead_id);
+          legacyLeadIds.add(id);
+          legacyLeadSignedAt.set(id, entry.date || entry.cdate || fromDate);
         }
       });
 
@@ -965,6 +1011,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 total: totalForSigned, // Use signed total logic (0 for handler-only)
                 leadId: lead.id,
                 leadType: 'new',
+                signedAt: newLeadSignedAt.get(String(lead.id)) || fromDate,
               });
             }
           });
@@ -1064,6 +1111,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 total: totalForSigned, // Use signed total logic (0 for handler-only, amountAfterFee for others)
                 leadId: lead.id,
                 leadType: 'legacy',
+                signedAt: legacyLeadSignedAt.get(Number(lead.id)) || fromDate,
               });
             }
           });
@@ -1152,6 +1200,127 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
     return sum + convertToNIS(row.amount, normalizedCurrency);
   }, 0);
 
+  const signedProgressData = useMemo(() => {
+    const daily = new Map<string, { amount: number; leadNumbers: Set<string> }>();
+    leads.forEach((lead) => {
+      const day = String(lead.signedAt || fromDate).slice(0, 10);
+      const entry = daily.get(day) || { amount: 0, leadNumbers: new Set<string>() };
+      entry.amount += lead.total || 0;
+      if (lead.leadNumber) entry.leadNumbers.add(lead.leadNumber);
+      daily.set(day, entry);
+    });
+    const points: Array<{ date: string; total: number; leadNumbers: string[] }> = [];
+    const cursor = new Date(`${fromDate}T00:00:00Z`);
+    const end = new Date(`${toDate}T00:00:00Z`);
+    while (cursor <= end && points.length < 400) {
+      const date = cursor.toISOString().slice(0, 10);
+      const entry = daily.get(date);
+      points.push({
+        date,
+        total: entry?.amount || 0,
+        leadNumbers: entry ? Array.from(entry.leadNumbers) : [],
+      });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return points;
+  }, [leads, fromDate, toDate]);
+
+  const dueProgressData = useMemo(() => {
+    const daily = new Map<string, { amount: number; leadNumbers: Set<string> }>();
+    paymentRows.forEach((row) => {
+      const currency = row.currency === '₪' ? 'NIS' : row.currency === '€' ? 'EUR' : row.currency === '$' ? 'USD' : row.currency === '£' ? 'GBP' : row.currency || 'NIS';
+      const day = String(row.dueAt || fromDate).slice(0, 10);
+      const entry = daily.get(day) || { amount: 0, leadNumbers: new Set<string>() };
+      entry.amount += convertToNIS(row.amount, currency);
+      if (row.case) entry.leadNumbers.add(row.case);
+      daily.set(day, entry);
+    });
+    const points: Array<{ date: string; total: number; leadNumbers: string[] }> = [];
+    const cursor = new Date(`${fromDate}T00:00:00Z`);
+    const end = new Date(`${toDate}T00:00:00Z`);
+    while (cursor <= end && points.length < 400) {
+      const date = cursor.toISOString().slice(0, 10);
+      const entry = daily.get(date);
+      points.push({
+        date,
+        total: entry?.amount || 0,
+        leadNumbers: entry ? Array.from(entry.leadNumbers) : [],
+      });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return points;
+  }, [paymentRows, fromDate, toDate]);
+
+  const renderProgressChart = (
+    title: string,
+    data: Array<{ date: string; total: number; leadNumbers: string[] }>,
+    color: string
+  ) => (
+    <section className="rounded-2xl bg-white p-5">
+      <div className="mb-4">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <span className="text-sm font-medium text-gray-500">
+            {formatGraphPeriodDate(fromDate)} – {formatGraphPeriodDate(toDate)}
+          </span>
+        </div>
+        <p className="text-sm text-gray-500">Daily totals during the selected period</p>
+      </div>
+      <div className="h-72 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data} margin={{ top: 8, right: 12, left: 12, bottom: 0 }}>
+            <defs>
+              <linearGradient id={`progress-${color.replace('#', '')}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={color} stopOpacity={0.35} />
+                <stop offset="95%" stopColor={color} stopOpacity={0.03} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+            <XAxis
+              dataKey="date"
+              tick={({ x, y, payload }: any) => (
+                <text x={x} y={y + 12} textAnchor="middle" fontSize={11}>
+                  <tspan fill="#374151">{formatGraphDate(payload.value)}</tspan>
+                  <tspan fill={color}>{` ${formatGraphWeekday(payload.value)}`}</tspan>
+                </text>
+              )}
+            />
+            <YAxis tickFormatter={(value) => `${Math.round(Number(value) / 1000)}k`} tick={{ fontSize: 11 }} width={45} />
+            <Tooltip content={({ active, payload, label }: any) => {
+              if (!active || !payload?.length) return null;
+              const point = payload[0]?.payload;
+              return (
+                <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+                  <div className="font-semibold text-gray-900">
+                    {formatGraphDate(String(label))} · {formatGraphWeekday(String(label))}
+                  </div>
+                  <div className="mt-1 font-semibold" style={{ color }}>
+                    Daily total: {formatCurrency(Number(point?.total || 0))}
+                  </div>
+                  {point?.leadNumbers?.length > 0 && (
+                    <div className="mt-1 max-w-64 text-xs text-gray-500">
+                      Lead: {point.leadNumbers.join(', ')}
+                    </div>
+                  )}
+                </div>
+              );
+            }} />
+            <Area
+              type="monotone"
+              dataKey="total"
+              stroke={color}
+              strokeWidth={3}
+              fill={`url(#progress-${color.replace('#', '')})`}
+              dot={{ r: 3, strokeWidth: 2, fill: '#fff' }}
+              activeDot={{ r: 5 }}
+              animationDuration={700}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </section>
+  );
+
   const showAllRolesSummary =
     isAllRolesMode && (leads.length > 0 || paymentRows.length > 0) && !loading;
   const showHandlerOnlyDueSummary = isHandlerRole && paymentRows.length > 0 && !loading;
@@ -1170,6 +1339,12 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
       aria-modal="true"
       aria-labelledby="employee-role-leads-modal-title"
     >
+      <style>{`
+        @keyframes modalChartFlip {
+          from { opacity: 0; transform: perspective(1200px) rotateY(8deg) scale(0.985); }
+          to { opacity: 1; transform: perspective(1200px) rotateY(0deg) scale(1); }
+        }
+      `}</style>
       <div
         className="fixed inset-0 z-0 bg-black/50 transition-opacity"
         onClick={onClose}
@@ -1177,7 +1352,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
       />
       <div className="relative z-10 flex min-h-full items-center justify-center p-4">
         <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg bg-white shadow-2xl">
-          <div className="relative flex items-start justify-between gap-3 p-6 border-b border-gray-200">
+          <div className="relative flex items-start justify-between gap-3 p-6">
             <div className="relative z-10 flex items-start gap-3 md:gap-4 min-w-0 pr-2">
               {employeePhotoUrl && !headerPhotoError ? (
                 <img
@@ -1195,30 +1370,37 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 </div>
               )}
               <div className="min-w-0">
-                <h2 id="employee-role-leads-modal-title" className="text-2xl font-bold text-gray-900 leading-tight">
-                  {employeeName}
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 id="employee-role-leads-modal-title" className="truncate text-2xl font-bold leading-tight text-gray-900">
+                    {employeeName}
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode((current) => current === 'table' ? 'charts' : 'table')}
+                    className="btn btn-ghost btn-sm btn-circle shrink-0"
+                    title={viewMode === 'table' ? 'Show progress charts' : 'Show tables'}
+                    aria-label={viewMode === 'table' ? 'Show progress charts' : 'Show tables'}
+                  >
+                    {viewMode === 'table' ? <ChartBarIcon className="h-5 w-5" /> : <TableCellsIcon className="h-5 w-5" />}
+                  </button>
+                </div>
                 <p className="text-sm font-medium text-gray-700 mt-0.5">
                   {isAllRolesMode
                     ? 'All leads & handler payments'
                     : `${role} ${isHandlerRole ? 'Payment Rows' : 'Leads'}`}
                 </p>
-                <p className="text-sm text-gray-600 mt-1">
-                  {displayCount}{isAllRolesMode ? ' item' : isHandlerRole ? ' payment row' : ' lead'}
-                  {displayCount !== 1 ? 's' : ''} • {formatDateDdMmYy(fromDate)} to {formatDateDdMmYy(toDate)}
-                </p>
               </div>
             </div>
-            {showAllRolesSummary && (
-              <div
-                className="absolute left-1/2 top-6 z-[1] w-[min(100%-10rem,28rem)] -translate-x-1/2"
-                role="status"
-                aria-label={`Total signed NIS ${totalSignedNis}, total due NIS ${totalDueNis}`}
-              >
-                <div className="flex items-baseline sm:items-baseline justify-center gap-x-2 sm:gap-x-4 gap-y-1 text-center text-xs sm:text-sm leading-tight flex-wrap sm:flex-nowrap">
+            <div className="relative z-10 ml-auto flex shrink-0 items-start gap-4">
+              {showAllRolesSummary && (
+                <div
+                  className="pt-1"
+                  role="status"
+                  aria-label={`Total signed NIS ${totalSignedNis}, total due NIS ${totalDueNis}`}
+                >
+                  <div className="flex flex-wrap items-baseline justify-end gap-x-2 gap-y-1 text-right text-xs leading-tight sm:flex-nowrap sm:gap-x-4 sm:text-sm">
                   <span className="text-gray-600 font-medium">
                     Total signed
-                    <span className="ms-1.5 sm:ms-1 text-gray-500">(NIS)</span>
                     <span className="ms-1.5 sm:ms-2 font-bold text-gray-900 tabular-nums">
                       {formatCurrency(totalSignedNis)}
                     </span>
@@ -1228,36 +1410,35 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                   </span>
                   <span className="text-gray-600 font-medium">
                     Total due
-                    <span className="ms-1.5 sm:ms-1 text-gray-500">(NIS)</span>
                     <span className="ms-1.5 sm:ms-2 font-bold text-gray-900 tabular-nums">
                       {formatCurrency(totalDueNis)}
                     </span>
                   </span>
                 </div>
-              </div>
-            )}
-            {showHandlerOnlyDueSummary && !isAllRolesMode && (
-              <div
-                className="absolute left-1/2 top-6 z-[1] w-[min(18rem,40vw)] -translate-x-1/2 text-center"
-                role="status"
-                aria-label={`Total due NIS ${totalDueNis}`}
+                </div>
+              )}
+              {showHandlerOnlyDueSummary && !isAllRolesMode && (
+                <div
+                  className="pt-1 text-right"
+                  role="status"
+                  aria-label={`Total due NIS ${totalDueNis}`}
+                >
+                  <p className="text-xs sm:text-sm text-gray-600 font-medium leading-tight">
+                    Total due
+                    <span className="ms-1.5 sm:ms-2 font-bold text-gray-900 tabular-nums">
+                      {formatCurrency(totalDueNis)}
+                    </span>
+                  </p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
               >
-                <p className="text-xs sm:text-sm text-gray-600 font-medium leading-tight">
-                  Total due
-                  <span className="ms-1 text-gray-500">(NIS)</span>
-                  <span className="ms-1.5 sm:ms-2 font-bold text-gray-900 tabular-nums">
-                    {formatCurrency(totalDueNis)}
-                  </span>
-                </p>
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="relative z-10 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
-            >
-              <XMarkIcon className="h-6 w-6" />
-            </button>
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
           </div>
 
           <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
@@ -1268,6 +1449,13 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               </div>
             ) : (isHandlerRole ? paymentRows.length > 0 : isAllRolesMode ? leads.length + paymentRows.length > 0 : leads.length > 0) ? (
               <div className="overflow-x-auto space-y-8">
+                {viewMode === 'charts' ? (
+                  <div className="grid grid-cols-1 animate-[modalChartFlip_450ms_ease-out] gap-5 [transform-style:preserve-3d]">
+                    {!isHandlerRole && leads.length > 0 && renderProgressChart('Signed leads', signedProgressData, '#4f46e5')}
+                    {(isHandlerRole || isAllRolesMode) && paymentRows.length > 0 && renderProgressChart('Due/Invoiced payments', dueProgressData, '#0d9488')}
+                  </div>
+                ) : (
+                <>
                 {isHandlerRole ? (
                   <table className="table w-full">
                     <thead>
@@ -1435,6 +1623,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                       </div>
                     )}
                   </>
+                )}
+                </>
                 )}
               </div>
             ) : (

@@ -676,6 +676,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         });
         if (tab.path === '/reports' && isSuperUser) {
           items.push({
+            id: 'report_contribution_profitability',
+            label: 'Contribution Profitability',
+            description: '/reports/simple-contribution',
+            keywords: [
+              'contribution',
+              'profitability',
+              'sales',
+              'handlers',
+              'salary budget',
+              'reports',
+            ],
+            icon: DocumentChartBarIcon,
+            onSelect: () => {
+              setShowQuickActionsDropdown(false);
+              navigate('/reports/simple-contribution');
+            },
+          });
+          items.push({
             id: 'report_external_firms',
             label: 'External Firms',
             description: '/reports/external-firms',
@@ -4854,6 +4872,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                             </React.Fragment>
                           );
                         })}
+                        {isSuperUser && (
+                          <>
+                            <div className="border-t border-base-300" />
+                            <Link
+                              to="/reports/simple-contribution"
+                              onClick={() => setShowQuickActionsDropdown(false)}
+                              className="flex w-full items-center gap-3 px-4 py-3 text-left text-gray-700 transition-all duration-150 hover:bg-base-200 dark:text-base-content"
+                            >
+                              <DocumentChartBarIcon className="h-5 w-5 text-gray-500" />
+                              <span className="text-sm font-medium">Contribution Profitability</span>
+                            </Link>
+                          </>
+                        )}
                       </>
                     )}
                   </div>

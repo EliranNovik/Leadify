@@ -179,7 +179,8 @@ export function recomputeDepartmentTotals(deptData: DepartmentData): DepartmentD
 export function scaleDepartmentsToInvoicedIncome(
   prev: Map<string, DepartmentData>,
   totalInvoicedIncome: number,
-  departmentPercentages: Map<string, number>
+  departmentPercentages: Map<string, number>,
+  options: { disableFixedContribution?: boolean } = {}
 ): Map<string, DepartmentData> {
   if (!prev.size || totalInvoicedIncome <= 0) return prev;
 
@@ -191,7 +192,7 @@ export function scaleDepartmentsToInvoicedIncome(
     const targetBasis = roundContributionMoney((totalInvoicedIncome * pct) / 100);
     let rawBasis = 0;
     dept.employees.forEach((emp) => {
-      rawBasis += (emp.contribution ?? 0) + (emp.contributionFixed ?? 0);
+      rawBasis += (emp.contribution ?? 0) + (options.disableFixedContribution ? 0 : (emp.contributionFixed ?? 0));
     });
     if (rawBasis <= 0) {
       // A department can own a slice of income with nothing to scale it onto — Marketing, whose
@@ -204,9 +205,12 @@ export function scaleDepartmentsToInvoicedIncome(
         let remaining = targetBasis;
         dept.employees.forEach((emp, index) => {
           // The last row absorbs the rounding residue so the department lands exactly on target.
-          const f = index === headcount - 1 ? roundContributionMoney(remaining) : share;
-          remaining = roundContributionMoney(remaining - f);
-          byEmployeeId.set(emp.employeeId, { c: 0, f });
+          const allocated = index === headcount - 1 ? roundContributionMoney(remaining) : share;
+          remaining = roundContributionMoney(remaining - allocated);
+          byEmployeeId.set(
+            emp.employeeId,
+            options.disableFixedContribution ? { c: allocated, f: 0 } : { c: 0, f: allocated }
+          );
         });
         return;
       }
@@ -223,7 +227,7 @@ export function scaleDepartmentsToInvoicedIncome(
     const k = targetBasis / rawBasis;
     dept.employees.forEach((emp) => {
       const c = emp.contribution ?? 0;
-      const f = emp.contributionFixed ?? 0;
+      const f = options.disableFixedContribution ? 0 : (emp.contributionFixed ?? 0);
       byEmployeeId.set(emp.employeeId, {
         c: roundContributionMoney(c * k),
         f: roundContributionMoney(f * k),

@@ -259,6 +259,27 @@ export async function fetchInvoicedDepartmentTargets(): Promise<{
   return { departmentTargets, departmentIds: departmentTargets.map((d) => d.id) };
 }
 
+/*
+ * The three invoice_sent columns are load-bearing, not informational.
+ *
+ * From the October cutover, `contributionIncomeCountsRow` counts a row only if an invoice was sent, so
+ * omitting them makes `isPaymentPlanInvoiceSent` false for every row and Total income exactly zero —
+ * with no error, because the `or` filter that widens the fetch is evaluated server-side and does not
+ * need them selected. Listed inline rather than imported from `contributionDueInvoiced`, which imports
+ * from this module.
+ */
+const INVOICE_SENT_SELECT_COLUMNS = 'invoice_sent, invoice_sent_at, invoice_send_automation_sent_at';
+
+/** Exported for the test that asserts the invoice_sent columns stay in both selects. */
+export const INVOICED_SELECTS_FOR_TEST = {
+  get new() {
+    return NEW_PAYMENT_SELECT;
+  },
+  get legacy() {
+    return LEGACY_PAYMENT_SELECT;
+  },
+};
+
 const NEW_PAYMENT_SELECT = `
   id,
   lead_id,
@@ -270,7 +291,8 @@ const NEW_PAYMENT_SELECT = `
   cancel_date,
   ready_to_pay,
   paid,
-  paid_at
+  paid_at,
+  ${INVOICE_SENT_SELECT_COLUMNS}
 `;
 
 const LEGACY_PAYMENT_SELECT = `
@@ -287,6 +309,7 @@ const LEGACY_PAYMENT_SELECT = `
   cancel_date,
   ready_to_pay,
   actual_date,
+  ${INVOICE_SENT_SELECT_COLUMNS},
   accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
 `;
 

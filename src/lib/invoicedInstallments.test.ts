@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   INVOICE_SENT_INCOME_START_DATE,
+  INVOICED_SELECTS_FOR_TEST,
   sumContributionIncomeNisInRange,
   sumInvoicedNisInRange,
   type InvoicedInstallment,
@@ -115,4 +116,22 @@ test('contribution income is gross, while the due-based total stays net of fees'
   const row = installment('2026-10-05', 700, true, true, 1000);
   assert.equal(sumContributionIncomeNisInRange([row], '2026-10-01', '2026-10-31'), 1000);
   assert.equal(sumInvoicedNisInRange([row], '2026-10-01', '2026-10-31'), 700);
+});
+
+/**
+ * Both payment queries must select the columns that record an invoice being sent.
+ *
+ * Dropping them is silent and total: the `or` filter that widens the fetch is evaluated server-side,
+ * so nothing errors, but every row comes back with no invoice flags, and from the cutover on income is
+ * exactly zero. That failure has happened, which is why it is pinned here.
+ */
+test('both payment selects carry the invoice_sent columns', () => {
+  for (const [name, select] of Object.entries(INVOICED_SELECTS_FOR_TEST)) {
+    for (const column of ['invoice_sent', 'invoice_sent_at', 'invoice_send_automation_sent_at']) {
+      assert.ok(
+        new RegExp(`\\b${column}\\b`).test(select),
+        `${name} payment select is missing ${column}, which silently zeroes contribution income`,
+      );
+    }
+  }
 });
