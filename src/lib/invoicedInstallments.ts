@@ -31,6 +31,11 @@ import {
   resolveLeadSubcontractorFeeAmount,
   type LeadSubcontractorFeeTotalsMaps,
 } from './leadSubcontractorFees';
+import { isPaymentPlanInvoiceSent } from './markPaymentPlanInvoiceSent';
+
+/** The three columns that each record an invoice having been sent, as a PostgREST `or` list. */
+const INVOICE_SENT_OR_FILTER =
+  'invoice_sent.eq.true,invoice_sent_at.not.is.null,invoice_send_automation_sent_at.not.is.null';
 
 export const INVOICED_PAGE_SIZE = 1000;
 const INVOICED_FETCH_CONCURRENCY = 6;
@@ -316,6 +321,15 @@ export type InvoicedInstallment = {
   mainCategoryName: string | null;
   currency: string;
   rateAsOf: string | null;
+  /** Whether an invoice was actually sent for this row, by any of the three columns that record it. */
+  invoiceSent: boolean;
+  /**
+   * Whether the row reached finance and so belongs in the due-based total.
+   *
+   * Separate from `invoiceSent` because the two measures diverge: a legacy row can be invoiced while
+   * still carrying no due date, which makes it income but never makes it due.
+   */
+  countsAsDue: boolean;
 };
 
 export type FetchInvoicedInstallmentsOptions = {
@@ -329,6 +343,13 @@ export type FetchInvoicedInstallmentsOptions = {
   categoryNameToDataMap?: Map<string, any>;
   /** Contact names cost two extra queries and are only needed for the deals modal. */
   includeContactNames?: boolean;
+  /**
+   * Also fetch rows that were invoiced but never reached finance.
+   *
+   * Only the Simple Contribution report's income measure wants these. The Dashboard scoreboard and
+   * `SalesContributionPage` must keep the pure due-based set, so this stays off by default.
+   */
+  includeInvoiceSentNotReadyToPay?: boolean;
 };
 
 export type FetchInvoicedInstallmentsResult = {
@@ -380,22 +401,31 @@ export async function fetchInvoicedInstallments(
         return null;
       });
 
-  const [{ departmentTargets, departmentIds }, allCategoriesData, newPaymentsRaw, legacyPaymentsRaw] =
-    await Promise.all([
+  const [
+    { departmentTargets, departmentIds },
+    allCategoriesData,
+    newPaymentsRaw,
+    legacyPaymentsRaw,
+    legacyInvoicedNoDueDateRaw,
+  ] = await Promise.all([
       departmentsPromise,
       categoriesPromise,
-      fetchAllPagedRows((from, to) =>
-        supabase
+      fetchAllPagedRows((from, to) => {
+        const query = supabase
           .from('payment_plans')
           .select(NEW_PAYMENT_SELECT)
-          .eq('ready_to_pay', true)
           .not('due_date', 'is', null)
           .is('cancel_date', null)
           .gte('due_date', dueFrom)
           .lte('due_date', dueTo)
           .order('id', { ascending: true })
-          .range(from, to),
-      ),
+          .range(from, to);
+        // For the invoiced measure a row counts once its invoice went out, which does not reliably set
+        // `ready_to_pay`; `countsAsDue` below still keeps those rows out of the due-based total.
+        return options.includeInvoiceSentNotReadyToPay
+          ? query.or(`ready_to_pay.eq.true,${INVOICE_SENT_OR_FILTER}`)
+          : query.eq('ready_to_pay', true);
+      }),
       fetchAllPagedRows((from, to) =>
         supabase
           .from('finances_paymentplanrow')
@@ -407,13 +437,41 @@ export async function fetchInvoicedInstallments(
           .order('id', { ascending: true })
           .range(from, to),
       ),
+      /*
+       * Legacy rows invoiced in the window that never got a due date.
+       *
+       * A legacy row keeps `due_date` NULL until someone sends it to finance, holding only the planned
+       * `date`. Those rows are invisible to the query above, yet an invoice really was sent for them,
+       * so for the invoiced measure they are income. Anchored on `date`, which is where the period
+       * lives while `due_date` is still NULL.
+       *
+       * Only fetched for the widened (invoiced) measure — the due-based total must keep counting
+       * exactly the rows it always did.
+       */
+      options.includeInvoiceSentNotReadyToPay
+        ? fetchAllPagedRows((from, to) =>
+            supabase
+              .from('finances_paymentplanrow')
+              .select(LEGACY_PAYMENT_SELECT)
+              .is('due_date', null)
+              .is('cancel_date', null)
+              .not('date', 'is', null)
+              .gte('date', dueFrom)
+              .lte('date', dueTo)
+              .or(INVOICE_SENT_OR_FILTER)
+              .order('id', { ascending: true })
+              .range(from, to),
+          )
+        : Promise.resolve([] as any[]),
     ]);
 
   const categoryNameToDataMap =
     options.categoryNameToDataMap ?? buildCategoryNameToDataMap(allCategoriesData);
 
   const newPayments = dedupeRowsById((newPaymentsRaw || []).filter((p: any) => !p.cancel_date));
-  const legacyPayments = dedupeRowsById((legacyPaymentsRaw || []).filter((p: any) => !p.cancel_date));
+  const legacyPayments = dedupeRowsById(
+    [...(legacyPaymentsRaw || []), ...(legacyInvoicedNoDueDateRaw || [])].filter((p: any) => !p.cancel_date),
+  );
 
   const newLeadIds = Array.from(new Set(newPayments.map((p: any) => p.lead_id).filter(Boolean)));
   const legacyLeadIds = Array.from(
@@ -561,7 +619,16 @@ export async function fetchInvoicedInstallments(
     value: number,
     contactName: string | null,
   ) => {
-    const dueDate = toDateOnlyKey(payment.due_date);
+    /*
+     * Which period this installment belongs to.
+     *
+     * Legacy rows fall back to the planned `date`, because `due_date` stays NULL until someone sends
+     * the row to finance — an invoice can be sent well before that, and it still has to land in the
+     * month it went out. New-lead rows always carry a `due_date`, so the fallback never applies.
+     */
+    const dueDate =
+      toDateOnlyKey(payment.due_date) ||
+      (source === 'legacy' ? toDateOnlyKey(payment.date) : null);
     if (!dueDate) return;
 
     const rateAsOf = rateAsOfInput;
@@ -611,6 +678,11 @@ export async function fetchInvoicedInstallments(
       mainCategoryName: resolved.mainCategoryName,
       currency,
       rateAsOf,
+      invoiceSent: isPaymentPlanInvoiceSent(payment),
+      // A legacy row with no `due_date` never fell due, so it must not reach the due-based total even
+      // though the widened fetch pulled it in for the invoiced one.
+      countsAsDue:
+        source === 'legacy' ? Boolean(toDateOnlyKey(payment.due_date)) : Boolean(payment.ready_to_pay),
     });
   };
 
@@ -649,7 +721,9 @@ export async function fetchInvoicedInstallments(
       toDateOnlyKey(
         resolvePaymentPlanBoiAsOfInput({
           actual_date: payment.actual_date,
-          due_date: payment.due_date,
+          // Falls back to the planned date so a row still awaiting finance converts at its own date
+          // rather than at today's rate.
+          due_date: payment.due_date ?? payment.date,
         }),
       ),
       Number(payment.value || payment.value_base || 0),
@@ -688,7 +762,57 @@ export function sumInvoicedNisInRange(
   if (!start || !end || start > end) return 0;
   let sum = 0;
   for (const row of installments) {
+    // Invoiced-but-never-due rows are income, not due money — see `countsAsDue`.
+    if (!row.countsAsDue) continue;
     if (row.dueDate >= start && row.dueDate <= end) sum += row.amountNis;
+  }
+  return Math.ceil(sum);
+}
+
+/**
+ * The day the contribution report's income measure switches from "fell due" to "invoice was sent".
+ *
+ * Before this date the only signal available was the due date, so re-deciding history on invoice data
+ * that was never recorded would silently rewrite every past month's numbers.
+ */
+export const INVOICE_SENT_INCOME_START_DATE = '2026-10-01';
+
+/**
+ * Whether one installment counts as contribution income.
+ *
+ * Split out from the sum so the per-employee Due / Invoiced column and the report total cannot drift:
+ * both ask this same question of each row.
+ */
+export function contributionIncomeCountsRow(
+  row: Pick<InvoicedInstallment, 'dueDate' | 'invoiceSent' | 'countsAsDue'>,
+  invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
+): boolean {
+  const cutover = String(invoiceSentFrom || '').split('T')[0];
+  if (cutover && row.dueDate >= cutover) return row.invoiceSent;
+  return row.countsAsDue;
+}
+
+/**
+ * Contribution income in a window: due-based before the cutover, invoice-based from it.
+ *
+ * A window spanning the cutover sums each half on its own basis rather than picking one rule for the
+ * whole range, so a report covering September and October stays correct for both.
+ */
+export function sumContributionIncomeNisInRange(
+  installments: InvoicedInstallment[],
+  from: string,
+  to: string,
+  invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
+): number {
+  const start = String(from || '').split('T')[0];
+  const end = String(to || '').split('T')[0];
+  if (!start || !end || start > end) return 0;
+  const cutover = String(invoiceSentFrom || '').split('T')[0];
+  let sum = 0;
+  for (const row of installments) {
+    if (row.dueDate < start || row.dueDate > end) continue;
+    if (!contributionIncomeCountsRow(row, cutover)) continue;
+    sum += row.amountNis;
   }
   return Math.ceil(sum);
 }

@@ -41,14 +41,20 @@ export const processNewPayments = (payments: any[]): Map<string, number> => {
 
 /**
  * Process new payment plans with BOI rate on due_date.
+ *
+ * `shouldInclude` lets a caller decide per row whether the payment counts, which the Simple
+ * Contribution report needs for its Due / Invoiced rule. Optional, so every other caller keeps the
+ * plain due-based total it has always produced.
  */
 export const processNewPaymentsAsync = async (
     payments: any[],
     converter: BoiDateRateConverter,
+    shouldInclude?: (payment: any) => boolean,
 ): Promise<Map<string, number>> => {
     const paymentsMap = new Map<string, number>();
 
     for (const payment of payments) {
+        if (shouldInclude && !shouldInclude(payment)) continue;
         const leadId = payment.lead_id;
         const value = Number(payment.value || 0);
         const normalizedCurrency = normalizePaymentCurrency(payment.currency);
@@ -117,22 +123,28 @@ export const processLegacyPayments = (payments: any[], legacyLeadsMap?: Map<numb
 
 /**
  * Process legacy payment plans with BOI rate on due_date.
+ *
+ * See `processNewPaymentsAsync` for `shouldInclude`.
  */
 export const processLegacyPaymentsAsync = async (
     payments: any[],
     converter: BoiDateRateConverter,
     legacyLeadsMap?: Map<number, any>,
+    shouldInclude?: (payment: any) => boolean,
 ): Promise<Map<number, number>> => {
     const paymentsMap = new Map<number, number>();
 
     for (const payment of payments) {
+        if (shouldInclude && !shouldInclude(payment)) continue;
         const leadId = Number(payment.lead_id);
         const value = Number(payment.value || payment.value_base || 0);
         const currency = extractCurrencyFromLegacyPayment(payment, legacyLeadsMap?.get(leadId));
         const normalizedCurrency = normalizePaymentCurrency(currency);
         const rateAsOf = resolvePaymentPlanBoiAsOfInput({
             actual_date: payment.actual_date,
-            due_date: payment.due_date,
+            // Falls back to the planned date for a row still awaiting finance, which has no due date
+            // yet, so it converts at its own date rather than at today's rate.
+            due_date: payment.due_date ?? payment.date,
         });
         const amountNIS = await converter.toNis(value, normalizedCurrency, rateAsOf);
         const current = paymentsMap.get(leadId) || 0;

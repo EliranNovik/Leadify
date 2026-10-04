@@ -35,6 +35,13 @@ import {
 import { createBoiDateRateConverter } from '../lib/boiCurrencyConversion';
 import { processNewPaymentsAsync, processLegacyPaymentsAsync } from '../utils/paymentPlanProcessor';
 import {
+  DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
+  dueInvoicedAllRowsFilter,
+  dueInvoicedReadyToPayFilter,
+  scopeDueInvoicedQuery,
+  scopeLegacyInvoicedWithoutDueDate,
+} from '../utils/contributionDueInvoiced';
+import {
   resolveMainCategory as resolveMainCategoryUtil,
   preprocessLeadsCategories as preprocessLeadsCategoriesUtil,
   findBestCategoryMatch as findBestCategoryMatchUtil,
@@ -1498,20 +1505,36 @@ const SimpleContributionReportPage = () => {
         try {
           const legacyLeadIdsArray = Array.from(legacyLeadIds);
           if (legacyLeadIdsArray.length > 0) {
+            const legacySelect = `lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code), ${DUE_INVOICED_LEGACY_EXTRA_COLUMNS}`;
+
             const legacyPayments = await fetchAllRowsForLeadIds<any>(legacyLeadIdsArray, (chunk) => {
-              let q = supabase
-                .from('finances_paymentplanrow')
-                .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
-                .in('lead_id', chunk)
-                .is('actual_date', null)
-                .eq('ready_to_pay', true)
-                .not('due_date', 'is', null);
+              let q = scopeDueInvoicedQuery(
+                supabase
+                  .from('finances_paymentplanrow')
+                  .select(legacySelect)
+                  .in('lead_id', chunk)
+                  .is('actual_date', null)
+                  .not('due_date', 'is', null),
+              );
               if (fromDateTime) q = q.gte('due_date', fromDateTime);
               if (toDateTime) q = q.lte('due_date', toDateTime);
               return q;
             });
 
-            const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, legacyLeadsMap);
+            // Plus rows invoiced in the window that never reached finance, so carry no due date.
+            const legacyInvoicedNoDueDate = await fetchAllRowsForLeadIds<any>(legacyLeadIdsArray, (chunk) =>
+              scopeLegacyInvoicedWithoutDueDate(
+                supabase
+                  .from('finances_paymentplanrow')
+                  .select(legacySelect)
+                  .in('lead_id', chunk)
+                  .is('actual_date', null),
+                fromDateTime,
+                toDateTime,
+              ),
+            );
+
+            const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
               const current = legacyPaymentsMap.get(leadId) || 0;
               legacyPaymentsMap.set(leadId, current + amount);
@@ -1587,10 +1610,12 @@ const SimpleContributionReportPage = () => {
           const allHandlerLegacyLeadIds = allHandlerLegacyLeads.map(l => l.id).filter(Boolean).map(id => Number(id));
 
           // Fetch payment plans for these leads with due dates in range
+          const allHandlerLegacySelect = `lead_id, value, value_base, vat_value, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code), ${DUE_INVOICED_LEGACY_EXTRA_COLUMNS}`;
+
           const allHandlerLegacyPayments = await fetchAllRowsForLeadIds<any>(allHandlerLegacyLeadIds, (chunk) => {
             let q = supabase
               .from('finances_paymentplanrow')
-              .select('lead_id, value, value_base, vat_value, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
+              .select(allHandlerLegacySelect)
               .not('due_date', 'is', null)
               .is('cancel_date', null)
               .in('lead_id', chunk);
@@ -1599,7 +1624,20 @@ const SimpleContributionReportPage = () => {
             return q;
           });
 
-          const processedPayments = await processLegacyPaymentsAsync(allHandlerLegacyPayments, boiConverter, legacyLeadsMap);
+          // Plus rows invoiced in the window that never reached finance, so carry no due date.
+          const allHandlerLegacyInvoicedNoDueDate = await fetchAllRowsForLeadIds<any>(allHandlerLegacyLeadIds, (chunk) =>
+            scopeLegacyInvoicedWithoutDueDate(
+              supabase
+                .from('finances_paymentplanrow')
+                .select(allHandlerLegacySelect)
+                .is('cancel_date', null)
+                .in('lead_id', chunk),
+              fromDateTimeForPayments,
+              toDateTimeForPayments,
+            ),
+          );
+
+          const processedPayments = await processLegacyPaymentsAsync([...allHandlerLegacyPayments, ...allHandlerLegacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedAllRowsFilter);
           processedPayments.forEach((amount, leadId) => {
             // Add to map (sum if already exists from signed leads)
             const current = legacyPaymentsMap.get(leadId) || 0;
@@ -2218,10 +2256,7 @@ const SimpleContributionReportPage = () => {
 
         if (legacyLeadIds.length > 0) {
           // Fetch payment plans for these leads
-          const legacyPayments = await fetchAllRowsForLeadIds<any>(legacyLeadIds, (chunk) => {
-            let q = supabase
-              .from('finances_paymentplanrow')
-              .select(`
+          const legacySelect = `
                 id,
                 lead_id,
                 value,
@@ -2230,8 +2265,14 @@ const SimpleContributionReportPage = () => {
                 currency_id,
                 due_date,
                 cancel_date,
-                accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-              `)
+                accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code),
+                ${DUE_INVOICED_LEGACY_EXTRA_COLUMNS}
+              `;
+
+          const legacyPayments = await fetchAllRowsForLeadIds<any>(legacyLeadIds, (chunk) => {
+            let q = supabase
+              .from('finances_paymentplanrow')
+              .select(legacySelect)
               .not('due_date', 'is', null)
               .is('cancel_date', null)
               .in('lead_id', chunk);
@@ -2240,8 +2281,21 @@ const SimpleContributionReportPage = () => {
             return q;
           });
 
+          // Plus rows invoiced in the window that never reached finance, so carry no due date.
+          const legacyInvoicedNoDueDate = await fetchAllRowsForLeadIds<any>(legacyLeadIds, (chunk) =>
+            scopeLegacyInvoicedWithoutDueDate(
+              supabase
+                .from('finances_paymentplanrow')
+                .select(legacySelect)
+                .is('cancel_date', null)
+                .in('lead_id', chunk),
+              fromDateTime,
+              toDateTime,
+            ),
+          );
+
           const emptyLegacyLeadsMap = new Map<number, any>();
-          const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, emptyLegacyLeadsMap);
+          const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, emptyLegacyLeadsMap, dueInvoicedAllRowsFilter);
           processedPayments.forEach((amount) => {
             totalDue += amount;
           });
@@ -2836,20 +2890,36 @@ const SimpleContributionReportPage = () => {
 
           if (allLegacyLeadIds.size > 0) {
             const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
+            const legacySelect = `lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code), ${DUE_INVOICED_LEGACY_EXTRA_COLUMNS}`;
+
             const legacyPayments = await fetchAllRowsForLeadIds<any>(legacyLeadIdsArray, (chunk) => {
-              let q = supabase
-                .from('finances_paymentplanrow')
-                .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
-                .is('actual_date', null)
-                .eq('ready_to_pay', true)
-                .not('due_date', 'is', null)
-                .in('lead_id', chunk);
+              let q = scopeDueInvoicedQuery(
+                supabase
+                  .from('finances_paymentplanrow')
+                  .select(legacySelect)
+                  .is('actual_date', null)
+                  .not('due_date', 'is', null)
+                  .in('lead_id', chunk),
+              );
               if (fromDateTime) q = q.gte('due_date', fromDateTime);
               if (toDateTime) q = q.lte('due_date', toDateTime);
               return q;
             });
 
-            const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, legacyLeadsMap);
+            // Plus rows invoiced in the window that never reached finance, so carry no due date.
+            const legacyInvoicedNoDueDate = await fetchAllRowsForLeadIds<any>(legacyLeadIdsArray, (chunk) =>
+              scopeLegacyInvoicedWithoutDueDate(
+                supabase
+                  .from('finances_paymentplanrow')
+                  .select(legacySelect)
+                  .is('actual_date', null)
+                  .in('lead_id', chunk),
+                fromDateTime,
+                toDateTime,
+              ),
+            );
+
+            const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
             processedPayments.forEach((amount, leadId) => {
               const current = legacyPaymentsMap.get(leadId) || 0;
               legacyPaymentsMap.set(leadId, current + amount);
