@@ -23,10 +23,12 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import ReactDOM from 'react-dom';
 import { PencilLine, Trash2 } from 'lucide-react';
-import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
+import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon, CalendarDaysIcon, RectangleStackIcon } from '@heroicons/react/24/outline';
 import EditPaymentModal from '../modals/EditPaymentModal';
 import AddPaymentModal from '../modals/AddPaymentModal';
 import VatIncludeToggle from '../modals/VatIncludeToggle';
+import SegmentedToggle from '../modals/SegmentedToggle';
+import FloatingLabelField from '../FloatingLabelField';
 import NotesModal from '../modals/NotesModal';
 import {
   PaymentPlanSummaryCards,
@@ -166,6 +168,13 @@ interface PaymentPlan {
   value: number;
   valueVat: number;
   client: string;
+  /**
+   * Which of the contact's plans this installment belongs to, numbered from 1.
+   *
+   * A contact can hold several independent plans; rows that predate the `plan_number` column read as
+   * 1, so every existing plan stays intact as the contact's first plan.
+   */
+  planNumber: number;
   order: string;
   proforma?: string | null;
   notes: string;
@@ -257,6 +266,159 @@ function persistFinancesTabCache(clientId: string | number, state: FinancesTabCa
   }
 }
 
+/** How the auto finance plan decides each row's due date. */
+type AutoPlanDueDateMode = 'interval' | 'manual';
+type AutoPlanIntervalUnit = 'days' | 'months';
+
+/**
+ * Parse a `YYYY-MM-DD` value into a local Date, or null when it is not a complete date.
+ *
+ * Anchored at local noon on purpose. `new Date('2026-10-01')` is parsed as UTC midnight, which in
+ * Israel reads back as the previous day, and a date sitting at midnight can also cross a day
+ * boundary when a DST shift is applied. Noon leaves ~12 hours of slack in both directions.
+ */
+function parseDateInputValue(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** `YYYY-MM-DD` from a Date's local calendar fields, never via `toISOString`. */
+function formatDateInputValue(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/** Today as `YYYY-MM-DD`, in the user's own timezone. */
+function todayDateInputValue(): string {
+  return formatDateInputValue(new Date());
+}
+
+/**
+ * `base` shifted by `steps` intervals of `value` `unit`s.
+ *
+ * Month steps keep the day of the month, clamped to the target month's length, so a plan starting on
+ * the 31st yields the 28th/30th rather than rolling over into the following month — which is what
+ * bare `setMonth` does, and it compounds across rows.
+ */
+function shiftDueDate(
+  base: string,
+  steps: number,
+  value: number,
+  unit: AutoPlanIntervalUnit,
+): string {
+  const date = parseDateInputValue(base);
+  if (!date) return base;
+  const amount = Math.round(steps * value);
+  if (!amount) return formatDateInputValue(date);
+  if (unit === 'days') {
+    date.setDate(date.getDate() + amount);
+    return formatDateInputValue(date);
+  }
+  const dayOfMonth = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + amount);
+  const lastDayOfTargetMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  date.setDate(Math.min(dayOfMonth, lastDayOfTargetMonth));
+  return formatDateInputValue(date);
+}
+
+/**
+ * The due date for every row of the auto plan.
+ *
+ * In `interval` mode the whole schedule is derived from the first date and the gap, so it is rebuilt
+ * from scratch. In `manual` mode the dates the user typed are authoritative: the list is only resized
+ * to the payment count, and any new row continues the gap from the last date already set rather than
+ * landing on top of it.
+ */
+function buildAutoPlanDueDates(input: {
+  numberOfPayments: number;
+  dueDateMode: AutoPlanDueDateMode;
+  firstDueDate: string;
+  intervalValue: number;
+  intervalUnit: AutoPlanIntervalUnit;
+  paymentDueDates: string[];
+}): string[] {
+  const count = Math.max(0, Math.floor(input.numberOfPayments) || 0);
+  const start = parseDateInputValue(input.firstDueDate)
+    ? input.firstDueDate
+    : todayDateInputValue();
+  const gap = Number.isFinite(input.intervalValue) ? Math.max(0, input.intervalValue) : 0;
+
+  if (input.dueDateMode === 'interval') {
+    return Array.from({ length: count }, (_, i) => shiftDueDate(start, i, gap, input.intervalUnit));
+  }
+
+  const existing = input.paymentDueDates || [];
+  const resolved: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const current = existing[i];
+    if (parseDateInputValue(current)) {
+      resolved.push(current);
+      continue;
+    }
+    // Chain off the row above as already resolved, not off `existing`, so a run of new rows steps
+    // forward one gap at a time instead of all collapsing onto the same date.
+    const previous = i > 0 ? resolved[i - 1] : null;
+    resolved.push(previous ? shiftDueDate(previous, 1, gap, input.intervalUnit) : start);
+  }
+  return resolved;
+}
+
+/**
+ * Which plan a stored row belongs to.
+ *
+ * Rows written before the `plan_number` column existed read as null, and anything non-numeric is not
+ * trustworthy either — both mean "the contact's first plan", which is what those rows always were.
+ */
+function normalizePlanNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 1;
+}
+
+function ordinalSuffix(value: number): string {
+  // 11th/12th/13th are the exceptions to the 1st/2nd/3rd pattern, and they repeat every century.
+  const lastTwo = value % 100;
+  if (lastTwo >= 11 && lastTwo <= 13) return 'th';
+  switch (value % 10) {
+    case 1: return 'st';
+    case 2: return 'nd';
+    case 3: return 'rd';
+    default: return 'th';
+  }
+}
+
+/** Heading for one of a contact's plans, e.g. `2nd plan`. */
+function planOrdinalLabel(planNumber: number): string {
+  const n = Math.max(1, Math.floor(planNumber));
+  return `${n}${ordinalSuffix(n)} plan`;
+}
+
+/**
+ * Grouping key for one plan belonging to one contact.
+ *
+ * Due percentages have to sum to 100 within a plan, not across every plan a contact holds, so the
+ * percentage pass keys off this rather than the contact alone. A newline cannot appear in a contact
+ * name, which keeps the two halves unambiguous.
+ */
+function planGroupKey(contactName: string, planNumber: unknown): string {
+  return `${contactName}\n${normalizePlanNumber(planNumber)}`;
+}
+
+/** Groups a contact's rows by plan, ascending. */
+function groupPaymentsByPlan(payments: PaymentPlan[]): Array<[number, PaymentPlan[]]> {
+  const byPlan = new Map<number, PaymentPlan[]>();
+  payments.forEach((payment) => {
+    const planNumber = normalizePlanNumber(payment.planNumber);
+    const bucket = byPlan.get(planNumber);
+    if (bucket) bucket.push(payment);
+    else byPlan.set(planNumber, [payment]);
+  });
+  return Array.from(byPlan.entries()).sort((a, b) => a[0] - b[0]);
+}
+
 interface FinancesTabProps extends ClientTabProps {
   onPaymentMarkedPaid?: (paymentId: string | number) => void;
   onCreateFinancePlan?: () => void;
@@ -320,7 +482,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     primary: string;
     secondary?: string;
     loading: boolean;
-  }>({ primary: '?', loading: true });
+  }>({ primary: '₪', loading: true });
   const [expenseNoVatNisDisplay, setExpenseNoVatNisDisplay] = useState<{
     primary?: string;
     loading: boolean;
@@ -328,7 +490,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [outstandingNisDisplay, setOutstandingNisDisplay] = useState<{
     primary: string;
     loading: boolean;
-  }>({ primary: '?', loading: true });
+  }>({ primary: '₪', loading: true });
   const [contactTotalNisByName, setContactTotalNisByName] = useState<
     Record<string, { primary: string; office?: string; loading: boolean }>
   >({});
@@ -455,15 +617,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     },
   });
 
-  // Initialize all contacts as collapsed by default
+  // Seed the collapse state, keyed per plan rather than per contact: a contact can hold several
+  // plans, each folding independently.
   useEffect(() => {
     if (financePlan && financePlan.payments.length > 0) {
-      const contacts = [...new Set(financePlan.payments.map(p => p.client))];
+      const planKeys = [
+        ...new Set(financePlan.payments.map(p => planGroupKey(p.client, p.planNumber))),
+      ];
 
       // Only initialize if we haven't set up collapse state yet
       if (Object.keys(collapsedContacts).length === 0) {
-        const initialCollapsedState = contacts.reduce((acc, contactName) => {
-          acc[contactName] = false; // false means open (expanded)
+        const initialCollapsedState = planKeys.reduce((acc, planKey) => {
+          acc[planKey] = false; // false means open (expanded)
           return acc;
         }, {} as { [key: string]: boolean });
         setCollapsedContacts(initialCollapsedState);
@@ -476,9 +641,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     if (!financePlan?.payments?.length) {
       lastNisSigRef.current = signature;
-      setContractTotalNisDisplay({ primary: '?', loading: false });
+      setContractTotalNisDisplay({ primary: '₪', loading: false });
       setExpenseNoVatNisDisplay({ loading: false });
-      setOutstandingNisDisplay({ primary: '?', loading: false });
+      setOutstandingNisDisplay({ primary: '₪', loading: false });
       setContactTotalNisByName({});
       return;
     }
@@ -498,7 +663,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setContactTotalNisByName(
       contactNames.reduce(
         (acc, name) => {
-          acc[name] = { primary: '?', loading: true };
+          acc[name] = { primary: '₪', loading: true };
           return acc;
         },
         {} as Record<string, { primary: string; office?: string; loading: boolean }>,
@@ -547,9 +712,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } catch (err) {
         console.error('[FinancesTab] NIS summary totals:', err);
         if (!cancelled) {
-          setContractTotalNisDisplay({ primary: '?', loading: false });
+          setContractTotalNisDisplay({ primary: '₪', loading: false });
           setExpenseNoVatNisDisplay({ loading: false });
-          setOutstandingNisDisplay({ primary: '?', loading: false });
+          setOutstandingNisDisplay({ primary: '₪', loading: false });
           setContactTotalNisByName({});
         }
       }
@@ -591,13 +756,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Helper: map lead currency codes/names to the symbols used in the auto?plan selector
   const mapLeadCurrencyToSymbol = (code?: string | null): string => {
-    if (!code) return '?';
+    if (!code) return '₪';
     const normalized = String(code).trim().toUpperCase();
-    if (normalized === '?' || normalized === 'NIS' || normalized === 'ILS') return '?';
+    if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS') return '₪';
     if (normalized === '$' || normalized === 'USD') return '$';
-    if (normalized === '?' || normalized === 'EUR') return '?';
-    if (normalized === '?' || normalized === 'GBP') return '?';
-    return '?';
+    if (normalized === '€' || normalized === 'EUR') return '€';
+    if (normalized === '£' || normalized === 'GBP') return '£';
+    return '₪';
   };
 
   // Helper to convert numeric order back to descriptive text (used for both legacy and new leads)
@@ -659,7 +824,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
     totalAmount: '',
-    currency: '?',
+    currency: '₪',
     numberOfPayments: 3,
     // Per?payment percentages, must always sum to 100
     paymentPercents: [50, 25, 25],
@@ -669,9 +834,38 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
     includeVat: true,
     contact: '', // Contact name for the auto plan
+    // Due dates: either one gap applied to every row ('interval') or a date typed per row ('manual').
+    dueDateMode: 'interval' as AutoPlanDueDateMode,
+    firstDueDate: todayDateInputValue(),
+    intervalValue: 3,
+    intervalUnit: 'months' as AutoPlanIntervalUnit,
+    // Always the list actually written to the database, in both modes.
+    paymentDueDates: [] as string[],
   });
   const [isCustomPaymentCount, setIsCustomPaymentCount] = useState(false);
   const [customPaymentCount, setCustomPaymentCount] = useState<number>(6);
+
+  /*
+   * Keep `paymentDueDates` in step with the controls that drive it. In interval mode the schedule is
+   * regenerated; in manual mode the list is only resized to the payment count, leaving typed dates
+   * alone. Returning `prev` untouched when nothing actually moved is what stops this effect from
+   * re-triggering on its own output.
+   */
+  useEffect(() => {
+    setAutoPlanData(prev => {
+      const next = buildAutoPlanDueDates(prev);
+      const unchanged =
+        next.length === (prev.paymentDueDates || []).length &&
+        next.every((date, index) => date === prev.paymentDueDates[index]);
+      return unchanged ? prev : { ...prev, paymentDueDates: next };
+    });
+  }, [
+    autoPlanData.numberOfPayments,
+    autoPlanData.dueDateMode,
+    autoPlanData.firstDueDate,
+    autoPlanData.intervalValue,
+    autoPlanData.intervalUnit,
+  ]);
 
   // Add state for percentage calculation feature
   const [showPercentageModal, setShowPercentageModal] = useState(false);
@@ -825,18 +1019,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Helper function to get currency name from accounting_currencies table (similar to ClientHeader)
   const getCurrencyName = (currencyId: string | number | null | undefined): string => {
     if (!currencyId || currencyId === null || currencyId === undefined) {
-      return '?'; // Default fallback
+      return '₪'; // Default fallback
     }
 
     // If currencies haven't loaded yet, return default
     if (!availableCurrencies || availableCurrencies.length === 0) {
-      return '?'; // Default fallback until currencies load
+      return '₪'; // Default fallback until currencies load
     }
 
     // Convert currencyId to number for comparison (handle bigint)
     const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
     if (isNaN(currencyIdNum)) {
-      return '?'; // Default fallback
+      return '₪'; // Default fallback
     }
 
     // Find currency in loaded currencies - compare as numbers
@@ -852,14 +1046,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     // Fallback to default if currency not found
-    return '?';
+    return '₪';
   };
 
   // Update autoPlanData currency and contact when client changes
   useEffect(() => {
     if (client) {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      let currency = '?'; // Default
+      let currency = '₪'; // Default
       let suggestedTotal = 0;
 
       if (isLegacyLead) {
@@ -870,7 +1064,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Priority 1: Try currency_id (most reliable)
         if ((client as any)?.currency_id) {
           const currencyFromId = getCurrencyName((client as any).currency_id);
-          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '?') {
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
             resolvedCurrency = currencyFromId;
           }
         }
@@ -878,7 +1072,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Priority 2: For legacy leads, also check currency_id from legacy field
         if (!resolvedCurrency && (client as any)?.currency_id) {
           const currencyFromId = getCurrencyName((client as any).currency_id);
-          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '?') {
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
             resolvedCurrency = currencyFromId;
           }
         }
@@ -898,7 +1092,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
           resolvedCurrency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
             ? defaultCurrency.name.trim()
-            : '?'; // Ultimate fallback if currency_id 1 not found
+            : '₪'; // Ultimate fallback if currency_id 1 not found
         }
 
         currency = resolvedCurrency;
@@ -1024,7 +1218,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         planContactId: payment.client_id ?? null,
         value: payment.value,
         valueVat: payment.valueVat,
-        currency: payment.currency === '?' || !payment.currency ? '?' : payment.currency,
+        currency: payment.currency === '₪' || !payment.currency ? '₪' : payment.currency,
         order: payment.order,
         clientName: client?.name || '',
         leadNumber: client?.lead_number || '',
@@ -1281,14 +1475,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return;
       }
 
-      await handleMarkAsReadyToPay(payment, { skipToast: true });
+      // The send itself marks the row sent to finance, so only local state needs catching up here.
       setFinancePlan((prev) =>
         prev
           ? {
               ...prev,
               payments: prev.payments.map((row) =>
                 String(row.id) === String(payment.id)
-                  ? { ...row, invoice_sent: true, invoice_sent_at: new Date().toISOString(), ready_to_pay: true }
+                  ? {
+                      ...row,
+                      invoice_sent: true,
+                      invoice_sent_at: new Date().toISOString(),
+                      ready_to_pay: true,
+                      dueDate: result.readyToPay.dueDate ?? row.dueDate,
+                    }
                   : row,
               ),
             }
@@ -1296,6 +1496,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
       toast.success(buildProformaSendSuccessMessage(result, language));
       setSentToFinancePayment(null);
+      if (client?.id) {
+        window.dispatchEvent(
+          new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }),
+        );
+      }
+      await refreshPaymentPlans();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to send invoice';
       if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
@@ -2331,7 +2537,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const value = Number(plan.value || 0);
 
               // Get currency from the joined accounting_currencies table
-              let currency = '?'; // Default fallback
+              let currency = '₪'; // Default fallback
               let currencyId = plan.currency_id;
 
               if (plan.accounting_currencies && plan.accounting_currencies.name) {
@@ -2340,11 +2546,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               } else if (plan.currency_id) {
                 // If we have currency_id but no joined data, use a simple mapping
                 switch (plan.currency_id) {
-                  case 1: currency = '?'; break; // NIS
-                  case 2: currency = '?'; break; // EUR
+                  case 1: currency = '₪'; break; // NIS
+                  case 2: currency = '€'; break; // EUR
                   case 3: currency = '$'; break; // USD
-                  case 4: currency = '?'; break; // GBP
-                  default: currency = '?'; break;
+                  case 4: currency = '£'; break; // GBP
+                  default: currency = '₪'; break;
                 }
               }
 
@@ -2381,19 +2587,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               vat += processed.valueVat;
             });
 
-            // Group payments by contact to calculate percentages per contact
+            // Group payments by contact *and plan*: percentages belong to a plan, not to a contact
+            // holding several of them.
             const paymentsByContact = new Map<string, typeof processedPayments>();
             processedPayments.forEach(processed => {
               const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
-              if (!paymentsByContact.has(contactName)) {
-                paymentsByContact.set(contactName, []);
+              const key = planGroupKey(contactName, processed.plan.plan_number);
+              if (!paymentsByContact.has(key)) {
+                paymentsByContact.set(key, []);
               }
-              paymentsByContact.get(contactName)!.push(processed);
+              paymentsByContact.get(key)!.push(processed);
             });
 
-            // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+            // Per plan: distribute percentages so they sum to 100% (largest-remainder)
             const contactPercentsMap = new Map<string, Map<number, number>>();
-            paymentsByContact.forEach((contactPayments, contactName) => {
+            paymentsByContact.forEach((contactPayments, groupKey) => {
               const contactTotal = contactPayments.reduce((sum, p) => {
                 const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
                 if (isExpenseNoVatPayment(p.plan.order) || isExpenseNoVatPayment(orderText)) return sum;
@@ -2407,7 +2615,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const rounded = distributePercentagesTo100(exactPercents);
               const byPlanId = new Map<number, number>();
               eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
-              contactPercentsMap.set(contactName, byPlanId);
+              contactPercentsMap.set(groupKey, byPlanId);
             });
 
             // Calculate total per contact and then calculate percentages
@@ -2420,7 +2628,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
               const calculatedDuePercent = isExpenseNoVatPayment(plan.order) || isExpenseNoVatPayment(orderText)
                 ? ''
-                : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
+                : (contactPercentsMap.get(planGroupKey(contactName, plan.plan_number))?.get(plan.id) ?? 0).toString() + '%';
 
               // Debug: Log employee data if available
               if (plan.ready_to_pay && plan.ready_to_pay_by) {
@@ -2453,6 +2661,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 value,
                 valueVat,
                 client: contactName, // Use contact name from client_id mapping
+                planNumber: normalizePlanNumber(plan.plan_number),
                 order: plan.order ? getOrderText(plan.order) : 'First Payment',
                 proforma: null, // Legacy doesn't have proforma
                 notes: plan.notes || '',
@@ -2488,7 +2697,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const processedPayments = data.map(plan => {
               const value = Number(plan.value);
               const valueVat = readPaymentPlanVatFromRow(plan, false);
-              const currency = mapPaymentCurrencyToSymbol(plan.currency || '?');
+              const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
 
               const paymentTotal = value + valueVat;
 
@@ -2505,19 +2714,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
             vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
 
-            // Group payments by contact to calculate percentages per contact
+            // Group payments by contact *and plan*: percentages belong to a plan, not to a contact
+            // holding several of them.
             const paymentsByContact = new Map<string, typeof processedPayments>();
             processedPayments.forEach(processed => {
               const contactName = processed.plan.client_name || 'Unknown Contact';
-              if (!paymentsByContact.has(contactName)) {
-                paymentsByContact.set(contactName, []);
+              const key = planGroupKey(contactName, processed.plan.plan_number);
+              if (!paymentsByContact.has(key)) {
+                paymentsByContact.set(key, []);
               }
-              paymentsByContact.get(contactName)!.push(processed);
+              paymentsByContact.get(key)!.push(processed);
             });
 
-            // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+            // Per plan: distribute percentages so they sum to 100% (largest-remainder)
             const contactPercentsMap = new Map<string, Map<number, number>>();
-            paymentsByContact.forEach((contactPayments, contactName) => {
+            paymentsByContact.forEach((contactPayments, groupKey) => {
               const contactTotal = contactPayments.reduce((sum, p) => {
                 const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
                 if (isExpenseNoVatPayment(p.plan.payment_order) || isExpenseNoVatPayment(orderText)) return sum;
@@ -2531,7 +2742,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const rounded = distributePercentagesTo100(exactPercents);
               const byPlanId = new Map<number, number>();
               eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
-              contactPercentsMap.set(contactName, byPlanId);
+              contactPercentsMap.set(groupKey, byPlanId);
             });
 
             // Calculate total per contact and then calculate percentages
@@ -2542,7 +2753,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
               const duePercentStr = isExpenseNoVatPayment(plan.payment_order) || isExpenseNoVatPayment(orderText)
                 ? ''
-                : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
+                : (contactPercentsMap.get(planGroupKey(contactName, plan.plan_number))?.get(plan.id) ?? 0).toString() + '%';
 
               return {
                 id: plan.id,
@@ -2551,6 +2762,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 value,
                 valueVat,
                 client: contactName,
+                planNumber: normalizePlanNumber(plan.plan_number),
                 order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : getOrderText(plan.payment_order || 'First Payment'),
                 proforma: plan.proforma || null,
                 notes: plan.notes || '',
@@ -2768,30 +2980,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           console.error('Error fetching currencies:', error);
           // Set fallback currencies
           setAvailableCurrencies([
-            { id: 1, name: '?', iso_code: 'ILS' },
-            { id: 2, name: '?', iso_code: 'EUR' },
+            { id: 1, name: '₪', iso_code: 'ILS' },
+            { id: 2, name: '€', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: '?', iso_code: 'GBP' },
+            { id: 4, name: '£', iso_code: 'GBP' },
           ]);
         } else if (data && data.length > 0) {
           setAvailableCurrencies(data);
         } else {
           // Set fallback currencies if no data
           setAvailableCurrencies([
-            { id: 1, name: '?', iso_code: 'ILS' },
-            { id: 2, name: '?', iso_code: 'EUR' },
+            { id: 1, name: '₪', iso_code: 'ILS' },
+            { id: 2, name: '€', iso_code: 'EUR' },
             { id: 3, name: '$', iso_code: 'USD' },
-            { id: 4, name: '?', iso_code: 'GBP' },
+            { id: 4, name: '£', iso_code: 'GBP' },
           ]);
         }
       } catch (error) {
         console.error('Error fetching currencies:', error);
         // Set fallback currencies
         setAvailableCurrencies([
-          { id: 1, name: '?', iso_code: 'ILS' },
-          { id: 2, name: '?', iso_code: 'EUR' },
+          { id: 1, name: '₪', iso_code: 'ILS' },
+          { id: 2, name: '€', iso_code: 'EUR' },
           { id: 3, name: '$', iso_code: 'USD' },
-          { id: 4, name: '?', iso_code: 'GBP' },
+          { id: 4, name: '£', iso_code: 'GBP' },
         ]);
       }
     };
@@ -2955,7 +3167,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const value = Number(plan.value || 0);
 
             // Get currency from the joined accounting_currencies table
-            let currency = '?'; // Default fallback
+            let currency = '₪'; // Default fallback
             let currencyId = plan.currency_id;
 
             if (plan.accounting_currencies && plan.accounting_currencies.name) {
@@ -2963,11 +3175,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               currencyId = plan.accounting_currencies.id;
             } else if (plan.currency_id) {
               switch (plan.currency_id) {
-                case 1: currency = '?'; break;
-                case 2: currency = '?'; break;
+                case 1: currency = '₪'; break;
+                case 2: currency = '€'; break;
                 case 3: currency = '$'; break;
-                case 4: currency = '?'; break;
-                default: currency = '?'; break;
+                case 4: currency = '£'; break;
+                default: currency = '₪'; break;
               }
             }
 
@@ -3004,19 +3216,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             vat += processed.valueVat;
           });
 
-          // Group payments by contact to calculate percentages per contact
+          // Group payments by contact *and plan*: percentages belong to a plan, not to a contact
+          // holding several of them.
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
             const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
-            if (!paymentsByContact.has(contactName)) {
-              paymentsByContact.set(contactName, []);
+            const key = planGroupKey(contactName, processed.plan.plan_number);
+            if (!paymentsByContact.has(key)) {
+              paymentsByContact.set(key, []);
             }
-            paymentsByContact.get(contactName)!.push(processed);
+            paymentsByContact.get(key)!.push(processed);
           });
 
-          // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+          // Per plan: distribute percentages so they sum to 100% (largest-remainder)
           const contactPercentsMap = new Map<string, Map<number, number>>();
-          paymentsByContact.forEach((contactPayments, contactName) => {
+          paymentsByContact.forEach((contactPayments, groupKey) => {
             const contactTotal = contactPayments.reduce((sum, p) => {
               const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
               if (isExpenseNoVatPayment(p.plan.order) || isExpenseNoVatPayment(orderText)) return sum;
@@ -3030,7 +3244,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const rounded = distributePercentagesTo100(exactPercents);
             const byPlanId = new Map<number, number>();
             eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
-            contactPercentsMap.set(contactName, byPlanId);
+            contactPercentsMap.set(groupKey, byPlanId);
           });
 
           // Calculate total per contact and then calculate percentages
@@ -3041,7 +3255,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
             const calculatedDuePercent = isExpenseNoVatPayment(plan.order) || isExpenseNoVatPayment(orderText)
               ? ''
-              : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
+              : (contactPercentsMap.get(planGroupKey(contactName, plan.plan_number))?.get(plan.id) ?? 0).toString() + '%';
 
             // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
@@ -3064,6 +3278,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               client: contactName, // Use contact name from client_id mapping
+              planNumber: normalizePlanNumber(plan.plan_number),
               order: plan.order ? getOrderText(plan.order) : 'First Payment',
               proforma: null,
               notes: plan.notes || '',
@@ -3093,7 +3308,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const processedPayments = data.map(plan => {
             const value = Number(plan.value);
             const valueVat = readPaymentPlanVatFromRow(plan, false);
-            const currency = mapPaymentCurrencyToSymbol(plan.currency || '?');
+            const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
 
             const paymentTotal = value + valueVat;
 
@@ -3110,19 +3325,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
           vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
 
-          // Group payments by contact to calculate percentages per contact
+          // Group payments by contact *and plan*: percentages belong to a plan, not to a contact
+          // holding several of them.
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
             const contactName = processed.plan.client_name || 'Unknown Contact';
-            if (!paymentsByContact.has(contactName)) {
-              paymentsByContact.set(contactName, []);
+            const key = planGroupKey(contactName, processed.plan.plan_number);
+            if (!paymentsByContact.has(key)) {
+              paymentsByContact.set(key, []);
             }
-            paymentsByContact.get(contactName)!.push(processed);
+            paymentsByContact.get(key)!.push(processed);
           });
 
-          // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+          // Per plan: distribute percentages so they sum to 100% (largest-remainder)
           const contactPercentsMap = new Map<string, Map<number, number>>();
-          paymentsByContact.forEach((contactPayments, contactName) => {
+          paymentsByContact.forEach((contactPayments, groupKey) => {
             const contactTotal = contactPayments.reduce((sum, p) => {
               const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
               if (isExpenseNoVatPayment(p.plan.payment_order) || isExpenseNoVatPayment(orderText)) return sum;
@@ -3136,7 +3353,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const rounded = distributePercentagesTo100(exactPercents);
             const byPlanId = new Map<number, number>();
             eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
-            contactPercentsMap.set(contactName, byPlanId);
+            contactPercentsMap.set(groupKey, byPlanId);
           });
 
           // Calculate total per contact and then calculate percentages
@@ -3147,7 +3364,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
             const duePercentStr = isExpenseNoVatPayment(plan.payment_order) || isExpenseNoVatPayment(orderText)
               ? ''
-              : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
+              : (contactPercentsMap.get(planGroupKey(contactName, plan.plan_number))?.get(plan.id) ?? 0).toString() + '%';
 
             return {
               id: plan.id,
@@ -3156,6 +3373,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               client: contactName,
+              planNumber: normalizePlanNumber(plan.plan_number),
               order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : getOrderText(plan.payment_order || 'First Payment'),
               proforma: plan.proforma || null,
               notes: plan.notes || '',
@@ -3237,7 +3455,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!client?.id) return;
     try {
       // Get the currency from the first payment in the finance plan
-      const currency = financePlan?.payments?.[0]?.currency || '?';
+      const currency = financePlan?.payments?.[0]?.currency || '₪';
 
       // Check if this is a legacy lead
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -3418,11 +3636,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    let currency = '?'; // Default
+    let currency = '₪'; // Default
     if (isLegacyLead) {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     } else {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     }
 
     // Only apply VAT for Israeli Shekels (?), not for other currencies like USD ($)
@@ -3457,11 +3675,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    let currency = '?'; // Default
+    let currency = '₪'; // Default
     if (isLegacyLead) {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     } else {
-      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '?';
+      currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     }
 
     // Only apply VAT for Israeli Shekels (?), not for other currencies like USD ($); 17% before 2025-01-01, 18% on or after
@@ -3694,6 +3912,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (aMain !== bMain) return aMain ? 1 : -1;
       return nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
     });
+
+  /**
+   * The plan number a newly created plan should take for this contact.
+   *
+   * One past the highest the contact already has, so creating a plan never merges into an existing
+   * one — a contact with no rows yet gets plan 1. Read from the loaded rows rather than the database
+   * because this runs while the modal is open, against exactly the plans the user can see.
+   */
+  const nextPlanNumberForContact = (contactName: string): number => {
+    const existing = (financePlan?.payments ?? [])
+      .filter((p) => p.client === contactName)
+      .map((p) => normalizePlanNumber(p.planNumber));
+    return existing.length > 0 ? Math.max(...existing) + 1 : 1;
+  };
 
   // Helper function to get client_id for a contact name
   const getClientIdForContact = (contactName: string): number | null => {
@@ -4111,11 +4343,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (originalCurrencyId !== editCurrencyId) {
           const getCurrencyName = (currencyId: number): string => {
             switch (currencyId) {
-              case 1: return '?';
-              case 2: return '?';
+              case 1: return '₪';
+              case 2: return '€';
               case 3: return '$';
-              case 4: return '?';
-              default: return '?';
+              case 4: return '£';
+              default: return '₪';
             }
           };
           changes.push({
@@ -4129,7 +4361,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
       } else {
         // For new payments, compare currency string
-        const originalCurrency = mapPaymentCurrencyToSymbol(originalPayment.currency || '?');
+        const originalCurrency = mapPaymentCurrencyToSymbol(originalPayment.currency || '₪');
         const editCurrency = displaySymbolForPaymentSave(paymentDataToUse, availableCurrencies);
         if (originalCurrency !== editCurrency) {
           changes.push({
@@ -4368,19 +4600,86 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  // Handler to delete all payments for a specific contact
-  const handleDeletePaymentPlan = async (contactName: string) => {
+  /**
+   * Close gaps in a contact's plan numbering after one of their plans is deleted.
+   *
+   * Plans are shown to the user as "2nd plan", "3rd plan", so a hole would render a contact owning a
+   * 1st and a 3rd plan with no 2nd. Only the rows whose number actually moves are written.
+   *
+   * Deliberately forgiving: renumbering is cosmetic, so a failure here is swallowed rather than
+   * reported as a failed delete, which has already succeeded by this point.
+   */
+  const renumberContactPlans = async (contactName: string): Promise<void> => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    let rows: Array<{ id: string | number; plan_number?: unknown }> = [];
+    let applyPlanNumber: (ids: Array<string | number>, planNumber: number) => Promise<void>;
+
+    if (isLegacyLead) {
+      const legacyId = client?.id?.toString().replace('legacy_', '');
+      const clientIdForContact = getClientIdForContact(contactName);
+      if (clientIdForContact === null) return;
+      const { data, error } = await supabase
+        .from('finances_paymentplanrow')
+        .select('id, plan_number')
+        .eq('lead_id', legacyId)
+        .eq('client_id', clientIdForContact)
+        .is('cancel_date', null);
+      if (error || !data) return;
+      rows = data;
+      applyPlanNumber = async (ids, planNumber) => {
+        await supabase.from('finances_paymentplanrow').update({ plan_number: planNumber }).in('id', ids);
+      };
+    } else {
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .select('id, plan_number')
+        .eq('lead_id', client?.id)
+        .eq('client_name', contactName)
+        .is('cancel_date', null);
+      if (error || !data) return;
+      rows = data;
+      applyPlanNumber = async (ids, planNumber) => {
+        await supabase.from('payment_plans').update({ plan_number: planNumber }).in('id', ids);
+      };
+    }
+
+    const present = Array.from(
+      new Set(rows.map((row) => normalizePlanNumber(row.plan_number))),
+    ).sort((a, b) => a - b);
+    const remap = new Map<number, number>();
+    present.forEach((planNumber, index) => {
+      if (planNumber !== index + 1) remap.set(planNumber, index + 1);
+    });
+    if (remap.size === 0) return;
+
+    await Promise.all(
+      Array.from(remap.entries()).map(([from, to]) =>
+        applyPlanNumber(
+          rows.filter((row) => normalizePlanNumber(row.plan_number) === from).map((row) => row.id),
+          to,
+        ),
+      ),
+    );
+  };
+
+  // Handler to delete one of a contact's payment plans
+  const handleDeletePaymentPlan = async (contactName: string, planNumber: number = 1) => {
+    const plan = normalizePlanNumber(planNumber);
     const contactPayments =
-      financePlan?.payments?.filter((p) => p.client === contactName) ?? [];
+      financePlan?.payments?.filter(
+        (p) => p.client === contactName && normalizePlanNumber(p.planNumber) === plan,
+      ) ?? [];
     const hasClientPaidViaLink = contactPayments.some((p) => isPaidViaPaymentLink(p));
     if (hasClientPaidViaLink) {
       toast.error(
-        'Cannot delete this payment plan ? the client has completed payment via a payment link.',
+        'Cannot delete this payment plan — the client has completed payment via a payment link.',
       );
       return;
     }
 
-    if (!window.confirm(`Are you sure you want to delete all payment rows for "${contactName}"? This action cannot be undone.`)) return;
+    // Name the plan in the prompt: a contact can hold several, and this only deletes one of them.
+    const planDescription = `${planOrdinalLabel(plan)} for "${contactName}"`;
+    if (!window.confirm(`Are you sure you want to delete all payment rows in the ${planDescription}? This action cannot be undone.`)) return;
 
     try {
       const currentUserName = await getCurrentUserName();
@@ -4402,6 +4701,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .select('*')
           .eq('lead_id', legacyId)
           .eq('client_id', clientIdForContact)
+          .eq('plan_number', plan)
           .is('cancel_date', null);
 
         if (fetchError) {
@@ -4411,21 +4711,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         if (!paymentsToDelete || paymentsToDelete.length === 0) {
-          toast.success('No payments found for this contact.');
+          toast.success('No payments found in this plan.');
           return;
         }
 
-        // Soft delete all payments for this contact
+        // Soft delete this plan's payments, leaving the contact's other plans alone
         const { error: deleteError } = await supabase
           .from('finances_paymentplanrow')
           .update({ cancel_date: new Date().toISOString().split('T')[0] })
           .eq('lead_id', legacyId)
           .eq('client_id', clientIdForContact)
+          .eq('plan_number', plan)
           .is('cancel_date', null);
 
         if (deleteError) throw deleteError;
 
-        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
+        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) in the ${planDescription}`);
       } else {
         // For new leads, use client_name to identify payments
         // Get all payments for this contact before deletion (for logging)
@@ -4434,6 +4735,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .select('*')
           .eq('lead_id', client?.id)
           .eq('client_name', contactName)
+          .eq('plan_number', plan)
           .is('cancel_date', null);
 
         if (fetchError) {
@@ -4443,7 +4745,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         if (!paymentsToDelete || paymentsToDelete.length === 0) {
-          toast.success('No payments found for this contact.');
+          toast.success('No payments found in this plan.');
           return;
         }
 
@@ -4478,19 +4780,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         }
 
-        // Soft delete all payments for this contact
+        // Soft delete this plan's payments, leaving the contact's other plans alone
         const { error: deleteError } = await supabase
           .from('payment_plans')
           .update({ cancel_date: new Date().toISOString().split('T')[0] })
           .eq('lead_id', client?.id)
           .eq('client_name', contactName)
+          .eq('plan_number', plan)
           .is('cancel_date', null);
 
         if (deleteError) throw deleteError;
 
-        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
+        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) in the ${planDescription}`);
       }
 
+      await renumberContactPlans(contactName);
       await refreshPaymentPlans();
       if (typeof window !== 'undefined' && client?.id) {
         console.log('[paymentPlan] changed (deletePlan)', { leadId: String(client.id), isLegacyLead });
@@ -4558,7 +4862,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         { description: payment.order, qty: 1, rate: payment.value, total: payment.value },
       ],
       addVat: true,
-      currency: '?',
+      currency: '₪',
       bankAccount: '',
       notes: '',
     });
@@ -4666,6 +4970,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [showDrawerNewPayment, setShowDrawerNewPayment] = useState(false); // finance-plan drawer context
   const [newPaymentData, setNewPaymentData] = useState<any>({}); // Keep for backward compatibility
   const [addingPaymentModalContact, setAddingPaymentModalContact] = useState<string | null>(null); // Modal context
+  /** Which of the contact's plans the Add Payment modal is adding to. */
+  const [addingPaymentModalPlanNumber, setAddingPaymentModalPlanNumber] = useState<number>(1);
 
   // Add superuser state
   const [isSuperuser, setIsSuperuser] = useState(false);
@@ -4676,8 +4982,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const initNewPaymentData = (contactName: string) => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     const rawCurrency = isLegacyLead
-      ? (client?.balance_currency || '?')
-      : (client?.proposal_currency || '?');
+      ? (client?.balance_currency || '₪')
+      : (client?.proposal_currency || '₪');
     const currencyMatch = findAccountingCurrency(
       rawCurrency,
       (client as any)?.currency_id,
@@ -4718,8 +5024,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   // Handler to start adding a new payment in the main table for a contact
-  const handleAddNewPayment = (contactName: string) => {
+  const handleAddNewPayment = (contactName: string, planNumber: number = 1) => {
     // Open modal instead of inline editing
+    setAddingPaymentModalPlanNumber(normalizePlanNumber(planNumber));
     setAddingPaymentModalContact(contactName);
   };
 
@@ -4727,9 +5034,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const getDefaultCurrency = (): string => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (isLegacyLead) {
-      return client?.balance_currency || '?';
+      return client?.balance_currency || '₪';
     } else {
-      return client?.proposal_currency || '?';
+      return client?.proposal_currency || '₪';
     }
   };
 
@@ -4777,7 +5084,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     // Use the payment data from modal
     const dataToSave = { ...paymentData, includeVat };
-    await handleSaveNewPaymentWithData(dataToSave, contactForPayment);
+    await handleSaveNewPaymentWithData(dataToSave, contactForPayment, addingPaymentModalPlanNumber);
     setAddingPaymentModalContact(null);
   };
 
@@ -4811,8 +5118,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  // Handler to save new payment (original, now accepts data parameter)
-  const handleSaveNewPaymentWithData = async (dataToSave: any, contactForPayment: string) => {
+  /**
+   * Save one new payment row.
+   *
+   * `planNumber` says which of the contact's plans the row joins. It defaults to the contact's first
+   * plan, which is where the inline (non-modal) add path still writes.
+   */
+  const handleSaveNewPaymentWithData = async (
+    dataToSave: any,
+    contactForPayment: string,
+    planNumber: number = 1,
+  ) => {
     if ((dataToSave?.paymentOrder === 'Expense' || dataToSave?.paymentOrder === 'Expense (no VAT)')) {
       openAddExpenseDrawer(contactForPayment);
       return;
@@ -4884,6 +5200,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           order: getOrderNumber(dataToSave.paymentOrder || 'Intermediate Payment'), // Convert string to numeric
           currency_id: currencyId,
           client_id: clientIdForContact, // Set client_id to separate payments by contact
+          plan_number: normalizePlanNumber(planNumber), // Which of this contact's plans the row joins
         };
 
         const { data, error } = await supabase
@@ -4953,6 +5270,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           currency: savedCurrency,
           currency_id: savedCurrencyId,
           created_by: currentUserName,
+          plan_number: normalizePlanNumber(planNumber), // Which of this contact's plans the row joins
         };
 
         // Add client_id if available (int8 column for contact_id)
@@ -5053,11 +5371,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Show warning but allow creation if amounts don't match
     if (!amountsMatch) {
       const difference = Math.abs(sumOfAmounts - totalAmount);
-      const confirmMessage = `The sum of payment amounts (${sumOfAmounts.toFixed(2)} ${autoPlanData.currency || '?'}) doesn't match the total amount (${totalAmount.toFixed(2)} ${autoPlanData.currency || '?'}). Difference: ${difference.toFixed(2)} ${autoPlanData.currency || '?'}. Do you want to proceed anyway?`;
+      const confirmMessage = `The sum of payment amounts (${sumOfAmounts.toFixed(2)} ${autoPlanData.currency || '₪'}) doesn't match the total amount (${totalAmount.toFixed(2)} ${autoPlanData.currency || '₪'}). Difference: ${difference.toFixed(2)} ${autoPlanData.currency || '₪'}. Do you want to proceed anyway?`;
       if (!window.confirm(confirmMessage)) {
         return;
       }
     }
+
+    /*
+     * The due date for every row, from the modal's own controls.
+     *
+     * Rebuilt here rather than read straight off state so a row the user never touched still gets a
+     * date: the same function backs the inputs, so what is saved is what the modal showed.
+     */
+    const scheduledDueDates = buildAutoPlanDueDates(autoPlanData);
+
+    /*
+     * Always a new plan, never an addition to an existing one.
+     *
+     * This modal is the only way to create a plan, and the contact may already hold some, so it takes
+     * the next free number. That is what makes a second run render as a second table under the first
+     * rather than merging its rows into it.
+     */
+    const planNumber = nextPlanNumberForContact(autoPlanData.contact);
 
     setIsSavingPaymentRow(true);
     try {
@@ -5109,7 +5444,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         };
 
         const legacyPayments = [];
-        const today = new Date();
 
         // Get client_id for the selected contact (outside the loop since it's the same for all payments)
         const selectedContactName = autoPlanData.contact || client?.name || '';
@@ -5198,10 +5532,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Convert to numeric for database storage
           const orderValue = getOrderNumber(orderText);
 
-          // Calculate due date: 3 months apart for each payment (i * 3 months from today)
-          const dueDate = new Date(today);
-          dueDate.setMonth(dueDate.getMonth() + (i * 3));
-          const dueDateStr = dueDate.toISOString().split('T')[0];
+          const dueDateStr = scheduledDueDates[i];
 
           const paymentRow = {
             cdate: new Date().toISOString().split('T')[0], // Current date
@@ -5218,6 +5549,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             order: orderValue, // Convert text order to numeric for database
             currency_id: currencyId,
             client_id: clientIdForContact, // Set client_id to separate payments by contact
+            plan_number: planNumber, // Which of this contact's plans these rows belong to
           };
 
           console.log('?? handleCreateAutoPlan: Adding payment row', {
@@ -5274,7 +5606,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         // For new leads, save to payment_plans table
         const payments = [];
-        const today = new Date();
 
         // Get client_id for the selected contact (for new leads)
         // Use currentContacts array (from fetchContacts) instead of state to ensure we have the latest data
@@ -5322,10 +5653,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const value = paymentAmounts[i] !== undefined ? paymentAmounts[i] : (totalAmount * Number(activePercents[i] || 0)) / 100;
           const paymentPercent = totalAmount > 0 ? Math.round((value / totalAmount) * 100 * 100) / 100 : 0;
 
-          // Calculate due date: 3 months apart for each payment (i * 3 months from today)
-          const dueDate = new Date(today);
-          dueDate.setMonth(dueDate.getMonth() + (i * 3));
-          const dueDateStr = dueDate.toISOString().split('T')[0];
+          const dueDateStr = scheduledDueDates[i];
 
           // Calculate VAT based on checkbox state (includeVat); 17% before 2025-01-01, 18% on or after (due_date for new leads)
           const vatValue = autoPlanData.includeVat
@@ -5360,6 +5688,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               availableCurrencies,
             ),
             created_by: currentUserName,
+            plan_number: planNumber, // Which of this contact's plans these rows belong to
           };
 
           // Add client_id if available (int8 column for contact_id)
@@ -5438,13 +5767,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       setShowStagesDrawer(false);
       setAutoPlanData({
         totalAmount: '',
-        currency: '?',
+        currency: '₪',
         numberOfPayments: 3,
         paymentPercents: [50, 25, 25],
         paymentAmounts: [],
         paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
         includeVat: true,
         contact: '', // Reset contact
+        dueDateMode: 'interval' as AutoPlanDueDateMode,
+        firstDueDate: todayDateInputValue(),
+        intervalValue: 3,
+        intervalUnit: 'months' as AutoPlanIntervalUnit,
+        paymentDueDates: [],
       });
       setIsCustomPaymentCount(false);
       setCustomPaymentCount(6);
@@ -5461,7 +5795,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  const handleOpenStagesDrawer = () => {
+  /**
+   * Open the auto finance plan modal.
+   *
+   * `contactName` preselects the contact, which is what the per-card "New Plan" button uses: the plan
+   * it creates then lands under that contact's existing plans rather than wherever the modal's
+   * contact dropdown happened to be left.
+   */
+  const handleOpenStagesDrawer = (contactName?: string) => {
+    if (contactName) {
+      setAutoPlanData(prev => ({ ...prev, contact: contactName }));
+    }
     setShowStagesDrawer(true);
   };
 
@@ -5469,13 +5813,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setShowStagesDrawer(false);
     setAutoPlanData({
       totalAmount: '',
-      currency: '?',
+      currency: '₪',
       numberOfPayments: 3,
       paymentPercents: [50, 25, 25],
       paymentAmounts: [],
       paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
       includeVat: true,
       contact: '', // Reset contact
+      dueDateMode: 'interval' as AutoPlanDueDateMode,
+      // Re-read today rather than reusing the initial state's value: the tab can stay mounted
+      // across midnight.
+      firstDueDate: todayDateInputValue(),
+      intervalValue: 3,
+      intervalUnit: 'months' as AutoPlanIntervalUnit,
+      paymentDueDates: [],
     });
     setIsCustomPaymentCount(false);
     setCustomPaymentCount(6);
@@ -5945,16 +6296,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               <div className="flex-1 p-6 overflow-y-auto bg-white">
                 {/* Auto Plan Section */}
                 <div className="mb-6">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <ChartPieIcon className="w-5 h-5 text-gray-600" />
-                    Create Auto Finance Plan
-                  </h3>
                   <div className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="form-control">
-                        <label className="label">
-                          <span className="label-text font-medium">Total Amount</span>
-                        </label>
+                      <FloatingLabelField label="Total Amount" hasValue={!!autoPlanData.totalAmount}>
                         <input
                           type="number"
                           className="input input-bordered w-full no-arrows"
@@ -6012,13 +6356,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               };
                             });
                           }}
-                          placeholder="Enter total amount"
                         />
-                      </div>
-                      <div className="form-control">
-                        <label className="label">
-                          <span className="label-text font-medium">Currency</span>
-                        </label>
+                      </FloatingLabelField>
+                      <FloatingLabelField label="Currency" hasValue>
                         <select
                           className="select select-bordered w-full"
                           value={autoPlanData.currency}
@@ -6026,10 +6366,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         >
                           {availableCurrencies.length === 0 ? (
                             <>
-                              <option value="?">? (ILS)</option>
-                              <option value="?">? (EUR)</option>
+                              <option value="₪">₪ (ILS)</option>
+                              <option value="€">€ (EUR)</option>
                               <option value="$">$ (USD)</option>
-                              <option value="?">? (GBP)</option>
+                              <option value="£">£ (GBP)</option>
                             </>
                           ) : (
                             availableCurrencies.map((curr) => (
@@ -6039,13 +6379,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             ))
                           )}
                         </select>
-                      </div>
+                      </FloatingLabelField>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="form-control">
-                        <label className="label">
-                          <span className="label-text font-medium">Contact</span>
-                        </label>
+                      <FloatingLabelField label="Contact" hasValue>
                         <select
                           className="select select-bordered w-full"
                           value={autoPlanData.contact}
@@ -6058,11 +6395,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             </option>
                           ))}
                         </select>
-                      </div>
-                      <div className="form-control">
-                        <label className="label">
-                          <span className="label-text font-medium">Number of Payments</span>
-                        </label>
+                      </FloatingLabelField>
+                      <FloatingLabelField label="Number of Payments" hasValue>
                         <select
                           className="select select-bordered w-full"
                           value={isCustomPaymentCount ? 'custom' : autoPlanData.numberOfPayments}
@@ -6188,11 +6522,66 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             />
                           </div>
                         )}
+                      </FloatingLabelField>
+                      <div className="md:col-span-2">
+                        {/* Section heading, deliberately not a field label: it titles a group of controls. */}
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Due Dates</div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <SegmentedToggle
+                            ariaLabel="Due dates"
+                            options={[
+                              { value: 'interval', label: 'Same gap for all' },
+                              { value: 'manual', label: 'Set each row' },
+                            ]}
+                            value={autoPlanData.dueDateMode}
+                            onChange={(mode) => setAutoPlanData(prev => ({ ...prev, dueDateMode: mode }))}
+                          />
+                          <label className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-600">First due</span>
+                            <span className="relative inline-flex items-center">
+                              {/* Decorative only: the input keeps its own native picker, so the icon
+                                  must not swallow clicks aimed at the field. */}
+                              <CalendarDaysIcon className="pointer-events-none absolute left-2.5 h-4 w-4 text-gray-400" />
+                              <input
+                                type="date"
+                                className="input input-bordered input-sm w-44 pl-9"
+                                value={autoPlanData.firstDueDate}
+                                onChange={(e) => setAutoPlanData(prev => ({ ...prev, firstDueDate: e.target.value }))}
+                              />
+                            </span>
+                          </label>
+                          {autoPlanData.dueDateMode === 'interval' && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <span className="text-gray-600">Every</span>
+                              <input
+                                type="number"
+                                min={0}
+                                className="input input-bordered input-sm w-20 no-arrows"
+                                value={autoPlanData.intervalValue}
+                                onFocus={(e) => e.target.select()}
+                                onChange={(e) => setAutoPlanData(prev => ({
+                                  ...prev,
+                                  intervalValue: Math.max(0, Number(e.target.value) || 0),
+                                }))}
+                              />
+                              <select
+                                className="select select-bordered select-sm w-28"
+                                value={autoPlanData.intervalUnit}
+                                onChange={(e) => setAutoPlanData(prev => ({
+                                  ...prev,
+                                  intervalUnit: e.target.value as AutoPlanIntervalUnit,
+                                }))}
+                              >
+                                <option value="days">Days</option>
+                                <option value="months">Months</option>
+                              </select>
+                            </label>
+                          )}
+                        </div>
                       </div>
-                      <div className="form-control">
-                        <label className="label">
-                          <span className="label-text font-medium">Payment Percentages & Amounts</span>
-                        </label>
+                      {/* Full width: the rows need the horizontal room, so they get a grid row to themselves. */}
+                      <div className="md:col-span-2">
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Payment Percentages &amp; Amounts</div>
                         <div className="space-y-2">
                           {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => {
                             const isFirst = index === 0;
@@ -6201,7 +6590,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
                             const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                             return (
-                              <div key={index} className="flex items-center gap-2">
+                              <div key={index} className="flex flex-wrap items-center gap-2">
+                                <input
+                                  type="date"
+                                  className="input input-bordered w-40 text-sm"
+                                  // Read-only in interval mode: the gap owns the schedule there, and
+                                  // an editable field the effect would immediately overwrite reads as
+                                  // a bug. Still shown, so the dates are visible before saving.
+                                  disabled={autoPlanData.dueDateMode === 'interval'}
+                                  title={autoPlanData.dueDateMode === 'interval'
+                                    ? 'Switch to "Set each row" to edit due dates individually'
+                                    : 'Due date'}
+                                  value={autoPlanData.paymentDueDates?.[index] || ''}
+                                  onChange={(e) => {
+                                    const nextDate = e.target.value;
+                                    setAutoPlanData(prev => {
+                                      const nextDates = buildAutoPlanDueDates(prev);
+                                      nextDates[index] = nextDate;
+                                      return { ...prev, paymentDueDates: nextDates };
+                                    });
+                                  }}
+                                />
                                 <select
                                   className="select select-bordered w-48 text-sm"
                                   value={currentOrder}
@@ -6326,7 +6735,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   }}
                                   placeholder="0"
                                 />
-                                <span className="text-sm">{autoPlanData.currency || '?'}</span>
+                                <span className="text-sm">{autoPlanData.currency || '₪'}</span>
                               </div>
                             )
                           })}
@@ -6348,15 +6757,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
                                     <ExclamationTriangleIcon className="w-4 h-4" />
                                     <span>
-                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '?'})
-                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '?'}).
-                                      Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '?'}
+                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'})
+                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}).
+                                      Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
                                     </span>
                                   </div>
                                 )}
-                                <div className="text-xs text-gray-500">
-                                  You can freely edit payment amounts. The system will use the actual amounts you enter.
-                                </div>
                               </div>
                             );
                           })()}
@@ -6402,7 +6808,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Group payments by currency for overall total
   const paymentsByCurrency = financePlan.payments.reduce((acc: { [currency: string]: number }, p: PaymentPlan) => {
-    const currency = p.currency || '?';
+    const currency = p.currency || '₪';
     acc[currency] = (acc[currency] || 0) + Number(p.value) + Number(p.valueVat);
     return acc;
   }, {});
@@ -6581,6 +6987,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     let sent = 0;
     let failed = 0;
+    /*
+     * How many rows the sends also moved into finance.
+     *
+     * Marking is done by the send itself (see `markPaymentPlanInvoiceSent`); this only counts the rows
+     * it actually changed, so the summary toast can mention the due dates that moved to today.
+     */
+    let markedReadyToPay = 0;
 
     try {
       for (const payment of selectedSendInvoicePayments) {
@@ -6610,13 +7023,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           if (result.emailSent || result.whatsAppSent) {
             sent += 1;
             toast.success(buildProformaSendSuccessMessage(result, language));
+            if (result.readyToPay.markedReadyToPay) markedReadyToPay += 1;
             setFinancePlan((prev) =>
               prev
                 ? {
                     ...prev,
                     payments: prev.payments.map((row) =>
                       String(row.id) === String(payment.id)
-                        ? { ...row, invoice_sent: true, invoice_sent_at: new Date().toISOString() }
+                        ? {
+                            ...row,
+                            invoice_sent: true,
+                            invoice_sent_at: new Date().toISOString(),
+                            ready_to_pay: true,
+                            dueDate: result.readyToPay.dueDate ?? row.dueDate,
+                          }
                         : row,
                     ),
                   }
@@ -6639,8 +7059,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (sent > 0) {
         toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
       }
+      if (markedReadyToPay > 0) {
+        toast.success(
+          `${markedReadyToPay} row${markedReadyToPay === 1 ? '' : 's'} also marked sent to finance, due today`,
+        );
+      }
       if (failed > 0 && sent === 0) {
         toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);
+      }
+
+      // One refresh for the whole batch, since the sends changed due dates and finance flags.
+      if (markedReadyToPay > 0) {
+        if (client?.id) {
+          window.dispatchEvent(
+            new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }),
+          );
+        }
+        await refreshPaymentPlans();
       }
 
       setSendInvoiceModalOpen(false);
@@ -7026,7 +7461,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     ).length ?? 0;
 
   const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
-    if (!p.id) return <span className="text-slate-400">?</span>;
+    if (!p.id) return <span className="text-slate-400">—</span>;
 
     const renderAdminMenuItems = () => {
       if (!showPaymentAdminMenu(p, isPaid)) return null;
@@ -7448,9 +7883,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   return acc;
                 }, {});
 
+                /*
+                 * One card per plan, contacts in their usual order and a contact's plans ascending.
+                 *
+                 * A contact can hold several independent plans, each its own table stacked under the
+                 * previous one. `planLabel` is only set from the second plan on, so a contact with a
+                 * single plan renders exactly as before.
+                 */
+                const planCards = sortPaymentContactEntries(Object.entries(paymentsByContact)).flatMap(
+                  ([contactName, contactPayments]) => {
+                    const plans = groupPaymentsByPlan(contactPayments);
+                    return plans.map(([planNumber, payments]) => ({
+                      contactName,
+                      planNumber,
+                      planKey: planGroupKey(contactName, planNumber),
+                      planLabel: plans.length > 1 ? planOrdinalLabel(planNumber) : undefined,
+                      payments,
+                    }));
+                  },
+                );
+
                 return (
                   <div className="flex flex-col gap-6">
-                    {sortPaymentContactEntries(Object.entries(paymentsByContact)).map(([contactName, payments], contactIndex) => {
+                    {planCards.map(({ contactName, planNumber, planKey, planLabel, payments }) => {
                   // Sort this contact's payments by due date (or fallback to original order if no due dates)
                   // Robust due date parsing and sorting
                   const parseDueDate = (dateStr: string | null | undefined) => {
@@ -7488,9 +7943,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     <ContactPlanHeader
                       contactName={contactName}
                       payments={sortedContactPayments}
-                      collapsed={!!collapsedContacts[contactName]}
+                      planLabel={planLabel}
+                      // Collapse is per plan, not per contact: one of a contact's plans being folded
+                      // away must not fold the others with it.
+                      collapsed={!!collapsedContacts[planKey]}
                       onToggle={() =>
-                        setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
+                        setCollapsedContacts((prev) => ({ ...prev, [planKey]: !prev[planKey] }))
                       }
                       totalNis={contactTotalNisByName[contactName]}
                       profileImageUrl={resolveContactProfileImageUrl(
@@ -7567,7 +8025,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   );
                   return (
                     <div
-                      key={contactName}
+                      key={planKey}
                       className="w-full overflow-hidden rounded-2xl bg-white"
                     >
                       {viewMode === 'table' ? (
@@ -7582,7 +8040,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       {contactPlanHeader}
                                     </th>
                                   </tr>
-                                  {!collapsedContacts[contactName] && (
+                                  {!collapsedContacts[planKey] && (
                                   <tr className="border-0 text-xs uppercase tracking-wider text-slate-400">
                                     {paymentRowPickMode && (
                                       <th className="w-10 border-0 bg-transparent px-2" aria-label="Select" />
@@ -7600,7 +8058,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   </tr>
                                   )}
                                 </thead>
-                                {!collapsedContacts[contactName] && (
+                                {!collapsedContacts[planKey] && (
                                 <tbody>
                                   {visibleContactPayments.map((p: PaymentPlan, idx: number) => {
                                     const isPaid = !!p.paid;
@@ -7643,7 +8101,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <td className="whitespace-nowrap align-middle">
                                           {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || '?'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '—'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -7808,7 +8266,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <input type="number" className="input input-bordered input-sm w-28 text-right no-arrows" value={newPaymentData.value} onChange={e => {
                                             const value = e.target.value;
                                             let vat = 0;
-                                            const currency = newPaymentData.currency || '?';
+                                            const currency = newPaymentData.currency || '₪';
                                             const includeVat = newPaymentData.includeVat !== false;
                                             if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                               const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
@@ -7820,13 +8278,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           }} />
                                           {Number(newPaymentData.valueVat) > 0 ? (
                                             <div className="mt-1 text-xs font-normal text-slate-400">
-                                              + {getCurrencySymbol(newPaymentData.currency || '?')}
+                                              + {getCurrencySymbol(newPaymentData.currency || '₪')}
                                               {Number(newPaymentData.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             </div>
                                           ) : null}
                                         </td>
                                         <td className="whitespace-nowrap text-right align-middle font-semibold tabular-nums text-slate-900">
-                                          {getCurrencySymbol(newPaymentData.currency || '?')}
+                                          {getCurrencySymbol(newPaymentData.currency || '₪')}
                                           {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
                                         <td className="align-middle text-slate-400">—</td>
@@ -7852,14 +8310,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense">Expense</option>
                                           </select>
                                         </td>
-                                        <td className="align-middle text-slate-400">?</td>
-                                        <td className="align-middle text-slate-400">?</td>
+                                        <td className="align-middle text-slate-400">—</td>
+                                        <td className="align-middle text-slate-400">—</td>
                                         <td className="align-middle">
                                           <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
                                           <div className="flex flex-wrap items-center gap-2">
                                             <select
                                               className="select select-bordered select-xs w-20"
-                                              value={newPaymentData.currency || '?'}
+                                              value={newPaymentData.currency || '₪'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
                                                 const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
@@ -7885,10 +8343,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             >
                                               {availableCurrencies.length === 0 ? (
                                                 <>
-                                                  <option value="?">?</option>
-                                                  <option value="?">?</option>
+                                                  <option value="₪">₪</option>
+                                                  <option value="€">€</option>
                                                   <option value="$">$</option>
-                                                  <option value="?">?</option>
+                                                  <option value="£">£</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -7971,7 +8429,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
                                               const value = e.target.value;
                                               let vat = 0;
-                                              const currency = newPaymentData.currency || '?';
+                                              const currency = newPaymentData.currency || '₪';
                                               const includeVat = newPaymentData.includeVat !== false;
                                               if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                                 const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
@@ -7990,7 +8448,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</span>
                                             <select
                                               className="select select-bordered w-full"
-                                              value={newPaymentData.currency || '?'}
+                                              value={newPaymentData.currency || '₪'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
                                                 const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
@@ -8016,10 +8474,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             >
                                               {availableCurrencies.length === 0 ? (
                                                 <>
-                                                  <option value="?">? (ILS)</option>
-                                                  <option value="?">? (EUR)</option>
+                                                  <option value="₪">₪ (ILS)</option>
+                                                  <option value="€">€ (EUR)</option>
                                                   <option value="$">$ (USD)</option>
-                                                  <option value="?">? (GBP)</option>
+                                                  <option value="£">£ (GBP)</option>
                                                 </>
                                               ) : (
                                                 availableCurrencies.map((curr) => (
@@ -8087,21 +8545,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 </tbody>
                                 )}
                               </table>
-                              {!collapsedContacts[contactName] ? (
+                              {!collapsedContacts[planKey] ? (
                                 <div className="px-4">{contactPaymentHistory}</div>
                               ) : null}
 
                               {/* Add payment / delete plan (table view) */}
-                              {!collapsedContacts[contactName] && !addingPaymentContact && (
+                              {!collapsedContacts[planKey] && !addingPaymentContact && (
                                 <div className="mt-4 flex items-center justify-between gap-3 px-4 pb-4">
                                   <div className="flex flex-wrap items-center gap-1">
                                     <button
                                       type="button"
                                       className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
-                                      onClick={() => handleAddNewPayment(contactName)}
+                                      onClick={() => handleAddNewPayment(contactName, planNumber)}
                                     >
                                       <PlusIcon className="h-6 w-6 shrink-0" />
                                       Add Payment
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
+                                      onClick={() => handleOpenStagesDrawer(contactName)}
+                                      title="Create another payment plan for this contact"
+                                    >
+                                      <RectangleStackIcon className="h-6 w-6 shrink-0" />
+                                      New Plan
                                     </button>
                                     <button
                                       type="button"
@@ -8120,7 +8587,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 [&_svg]:h-6 [&_svg]:w-6"
-                                    onClick={() => handleDeletePaymentPlan(contactName)}
+                                    onClick={() => handleDeletePaymentPlan(contactName, planNumber)}
                                   >
                                     <TrashIcon className="h-6 w-6 shrink-0" />
                                     Delete Plan
@@ -8129,7 +8596,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               )}
 
                               {/* Total and Left to Plan Display - Below Payment Table */}
-                              {!collapsedContacts[contactName] && addingPaymentContact === contactName && (
+                              {!collapsedContacts[planKey] && addingPaymentContact === contactName && (
                                 <div className="mt-6 p-6">
                                   <div className="flex flex-col md:flex-row gap-6 items-center justify-center">
                                     {/* Total Amount */}
@@ -8141,7 +8608,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       <div className="flex flex-col items-center">
                                         <span className="text-base font-medium text-gray-600">Total Amount</span>
                                         <span className="text-2xl font-bold text-purple-600">
-                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}{getTotalAmount().toLocaleString()}
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getTotalAmount().toLocaleString()}
                                         </span>
                                       </div>
                                       <button
@@ -8165,7 +8632,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       <div className="flex flex-col items-center">
                                         <span className="text-base font-medium text-gray-600">Left to Plan</span>
                                         <span className="text-2xl font-bold text-green-600">
-                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
                                         </span>
                                       </div>
                                       <button
@@ -8189,7 +8656,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 {contactPlanHeader}
                                 {contactPaymentHistory}
                               </div>
-                              {!collapsedContacts[contactName] && (
+                              {!collapsedContacts[planKey] && (
                             <>
                               <div className="divide-y divide-slate-100 rounded-xl border border-slate-100">
                                 {visibleContactPayments.map((p: PaymentPlan, idx: number) => {
@@ -8259,7 +8726,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
                                             {isPaid ? (
                                             <span className="text-sm font-semibold text-slate-900">
-                                              {formatDateDDMMYYYY(p.dueDate) || '?'}
+                                              {formatDateDDMMYYYY(p.dueDate) || '—'}
                                             </span>
                                           ) : (
                                             <DueDateBadge
@@ -8412,10 +8879,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     <button
                                       type="button"
                                       className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
-                                      onClick={() => handleAddNewPayment(contactName)}
+                                      onClick={() => handleAddNewPayment(contactName, planNumber)}
                                     >
                                       <PlusIcon className="h-6 w-6 shrink-0" />
                                       Add Payment
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-ghost rounded-xl border-0 text-indigo-700 hover:bg-indigo-50 [&_svg]:h-6 [&_svg]:w-6"
+                                      onClick={() => handleOpenStagesDrawer(contactName)}
+                                      title="Create another payment plan for this contact"
+                                    >
+                                      <RectangleStackIcon className="h-6 w-6 shrink-0" />
+                                      New Plan
                                     </button>
                                     <button
                                       type="button"
@@ -8434,7 +8910,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600 [&_svg]:h-6 [&_svg]:w-6"
-                                    onClick={() => handleDeletePaymentPlan(contactName)}
+                                    onClick={() => handleDeletePaymentPlan(contactName, planNumber)}
                                   >
                                     <TrashIcon className="h-6 w-6 shrink-0" />
                                     Delete Plan
@@ -8525,8 +9001,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     {(() => {
                                       const isLegacyPayment = p.accounting_currencies;
                                       const currency = isLegacyPayment
-                                        ? p.accounting_currencies?.iso_code || '?'
-                                        : p.currency || '?';
+                                        ? p.accounting_currencies?.iso_code || '₪'
+                                        : p.currency || '₪';
                                       const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
 
                                       return (
@@ -8545,8 +9021,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     {(() => {
                                       const isLegacyPayment = p.accounting_currencies;
                                       const currency = isLegacyPayment
-                                        ? p.accounting_currencies?.iso_code || '?'
-                                        : p.currency || '?';
+                                        ? p.accounting_currencies?.iso_code || '₪'
+                                        : p.currency || '₪';
                                       const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
 
                                       return (
@@ -8940,16 +9416,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             <div className="flex-1 p-6 overflow-y-auto bg-white">
               {/* Auto Plan Section */}
               <div className="mb-6">
-                <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                  <ChartPieIcon className="w-5 h-5 text-gray-600" />
-                  Create Auto Finance Plan
-                </h3>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Total Amount</span>
-                      </label>
+                    <FloatingLabelField label="Total Amount" hasValue={!!autoPlanData.totalAmount}>
                       <input
                         type="number"
                         className="input input-bordered w-full no-arrows"
@@ -9007,13 +9476,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             };
                           });
                         }}
-                        placeholder="Enter total amount"
                       />
-                    </div>
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Currency</span>
-                      </label>
+                    </FloatingLabelField>
+                    <FloatingLabelField label="Currency" hasValue>
                       <select
                         className="select select-bordered w-full"
                         value={autoPlanData.currency}
@@ -9021,10 +9486,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       >
                         {availableCurrencies.length === 0 ? (
                           <>
-                            <option value="?">? (ILS)</option>
-                            <option value="?">? (EUR)</option>
+                            <option value="₪">₪ (ILS)</option>
+                            <option value="€">€ (EUR)</option>
                             <option value="$">$ (USD)</option>
-                            <option value="?">? (GBP)</option>
+                            <option value="£">£ (GBP)</option>
                           </>
                         ) : (
                           availableCurrencies.map((curr) => (
@@ -9034,13 +9499,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           ))
                         )}
                       </select>
-                    </div>
+                    </FloatingLabelField>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Contact</span>
-                      </label>
+                    <FloatingLabelField label="Contact" hasValue>
                       <select
                         className="select select-bordered w-full"
                         value={autoPlanData.contact}
@@ -9053,11 +9515,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </option>
                         ))}
                       </select>
-                    </div>
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Number of Payments</span>
-                      </label>
+                    </FloatingLabelField>
+                    <FloatingLabelField label="Number of Payments" hasValue>
                       <select
                         className="select select-bordered w-full"
                         value={isCustomPaymentCount ? 'custom' : autoPlanData.numberOfPayments}
@@ -9183,11 +9642,66 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           />
                         </div>
                       )}
+                    </FloatingLabelField>
+                    <div className="md:col-span-2">
+                      {/* Section heading, deliberately not a field label: it titles a group of controls. */}
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Due Dates</div>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <SegmentedToggle
+                          ariaLabel="Due dates"
+                          options={[
+                            { value: 'interval', label: 'Same gap for all' },
+                            { value: 'manual', label: 'Set each row' },
+                          ]}
+                          value={autoPlanData.dueDateMode}
+                          onChange={(mode) => setAutoPlanData(prev => ({ ...prev, dueDateMode: mode }))}
+                        />
+                        <label className="flex items-center gap-2 text-sm">
+                          <span className="text-gray-600">First due</span>
+                          <span className="relative inline-flex items-center">
+                            {/* Decorative only: the input keeps its own native picker, so the icon must
+                                not swallow clicks aimed at the field. */}
+                            <CalendarDaysIcon className="pointer-events-none absolute left-2.5 h-4 w-4 text-gray-400" />
+                            <input
+                              type="date"
+                              className="input input-bordered input-sm w-44 pl-9"
+                              value={autoPlanData.firstDueDate}
+                              onChange={(e) => setAutoPlanData(prev => ({ ...prev, firstDueDate: e.target.value }))}
+                            />
+                          </span>
+                        </label>
+                        {autoPlanData.dueDateMode === 'interval' && (
+                          <label className="flex items-center gap-2 text-sm">
+                            <span className="text-gray-600">Every</span>
+                            <input
+                              type="number"
+                              min={0}
+                              className="input input-bordered input-sm w-20 no-arrows"
+                              value={autoPlanData.intervalValue}
+                              onFocus={(e) => e.target.select()}
+                              onChange={(e) => setAutoPlanData(prev => ({
+                                ...prev,
+                                intervalValue: Math.max(0, Number(e.target.value) || 0),
+                              }))}
+                            />
+                            <select
+                              className="select select-bordered select-sm w-28"
+                              value={autoPlanData.intervalUnit}
+                              onChange={(e) => setAutoPlanData(prev => ({
+                                ...prev,
+                                intervalUnit: e.target.value as AutoPlanIntervalUnit,
+                              }))}
+                            >
+                              <option value="days">Days</option>
+                              <option value="months">Months</option>
+                            </select>
+                          </label>
+                        )}
+                      </div>
                     </div>
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Payment Percentages & Amounts</span>
-                      </label>
+                    {/* Full width: the rows need the horizontal room, so they get a grid row to themselves. */}
+                    <div className="md:col-span-2">
+                      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Payment Percentages &amp; Amounts</div>
                       <div className="space-y-2">
                         {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => {
                           const isFirst = index === 0;
@@ -9196,7 +9710,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
                           const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                           return (
-                            <div key={index} className="flex items-center gap-2">
+                            <div key={index} className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="date"
+                                className="input input-bordered w-40 text-sm"
+                                // Read-only in interval mode: the gap owns the schedule there, and an
+                                // editable field the effect would immediately overwrite reads as a
+                                // bug. Still shown, so the dates are visible before saving.
+                                disabled={autoPlanData.dueDateMode === 'interval'}
+                                title={autoPlanData.dueDateMode === 'interval'
+                                  ? 'Switch to "Set each row" to edit due dates individually'
+                                  : 'Due date'}
+                                value={autoPlanData.paymentDueDates?.[index] || ''}
+                                onChange={(e) => {
+                                  const nextDate = e.target.value;
+                                  setAutoPlanData(prev => {
+                                    const nextDates = buildAutoPlanDueDates(prev);
+                                    nextDates[index] = nextDate;
+                                    return { ...prev, paymentDueDates: nextDates };
+                                  });
+                                }}
+                              />
                               <select
                                 className="select select-bordered w-48 text-sm"
                                 value={currentOrder}
@@ -9321,7 +9855,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 }}
                                 placeholder="0"
                               />
-                              <span className="text-sm">{autoPlanData.currency || '?'}</span>
+                              <span className="text-sm">{autoPlanData.currency || '₪'}</span>
                             </div>
                           )
                         })}
@@ -9343,15 +9877,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
                                   <ExclamationTriangleIcon className="w-4 h-4" />
                                   <span>
-                                    <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '?'})
-                                    doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '?'}).
-                                    Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '?'}
+                                    <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'})
+                                    doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}).
+                                    Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
                                   </span>
                                 </div>
                               )}
-                              <div className="text-xs text-gray-500">
-                                You can freely edit payment amounts. The system will use the actual amounts you enter.
-                              </div>
                             </div>
                           );
                         })()}
@@ -9446,12 +9977,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               {/* Base Amount Info */}
               <div className="bg-blue-50 rounded-lg p-3">
                 <div className="text-sm text-gray-600">
-                  <span className="font-medium">Base amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}
+                  <span className="font-medium">Base amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
                   <span className="font-bold text-lg">{(percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)).toLocaleString()}</span>
                 </div>
                 {percentageValue > 0 && (
                   <div className="text-sm text-gray-600 mt-1">
-                    <span className="font-medium">Calculated amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '?')}
+                    <span className="font-medium">Calculated amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
                     <span className="font-bold text-lg text-green-600">
                       {Math.round(((percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)) * percentageValue) / 100).toLocaleString()}
                     </span>
@@ -9721,9 +10252,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             const total = baseAmt + vatAmt;
                             return (
                               <tr key={String(p.id)} className="hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-700">{p.order || '?'}</td>
-                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '?'}</td>
-                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '?'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.order || '—'}</td>
+                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '—'}</td>
+                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '—'}</td>
                                 <td className="px-3 py-2">
                                   <PaidPaymentDateBadge date={p.paid_at} />
                                 </td>
@@ -9731,14 +10262,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   {sym}{baseAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">
-                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '?'}
+                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
                                 </td>
                                 <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
                                   {sym}{total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
-                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '?'}</td>
+                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '—'}</td>
                                 <td className="max-w-[16rem] truncate px-3 py-2 text-slate-600" title={p.notes || ''}>
-                                  {p.notes || '?'}
+                                  {p.notes || '—'}
                                 </td>
                               </tr>
                             );

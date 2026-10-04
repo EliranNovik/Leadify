@@ -12,6 +12,14 @@ import {
   paymentDueDateBoundsUtc,
   resolveNewLeadIdsForHandler,
 } from '../utils/handlerNewLeadIds';
+import {
+  DUE_INVOICED_EXTRA_COLUMNS,
+  DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
+  dueInvoicedAllRowsFilter,
+  dueInvoicedReadyToPayFilter,
+  scopeDueInvoicedQuery,
+  scopeLegacyInvoicedWithoutDueDate,
+} from '../utils/contributionDueInvoiced';
 
 interface LeadRow {
   role: string;
@@ -251,10 +259,14 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
       if (handlerNewLeadIds && handlerNewLeadIds.length > 0) {
 
-        // Fetch payment plans for these leads with due dates in range
-        let newPaymentsQuery = supabase
-          .from('payment_plans')
-          .select(`
+        // Fetch payment plans for these leads with due dates in range.
+        // Scoped by the same Due / Invoiced rule as the report behind this modal: from October 2026 a row
+        // counts because its invoice went out, not because it reached finance. The query only widens the
+        // net — `dueInvoicedReadyToPayFilter` below makes the actual call, per row.
+        let newPaymentsQuery = scopeDueInvoicedQuery(
+          supabase
+            .from('payment_plans')
+            .select(`
             id,
             lead_id,
             value,
@@ -262,14 +274,14 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             currency,
             due_date,
             cancel_date,
-            ready_to_pay,
             payment_order,
-            notes
+            notes,
+            ${DUE_INVOICED_EXTRA_COLUMNS}
           `)
-          .eq('ready_to_pay', true)
-          .not('due_date', 'is', null)
-          .is('cancel_date', null)
-          .in('lead_id', handlerNewLeadIds);
+            .not('due_date', 'is', null)
+            .is('cancel_date', null)
+            .in('lead_id', handlerNewLeadIds),
+        );
 
         if (fromDateTimeForPayments) {
           newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTimeForPayments);
@@ -377,6 +389,10 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
             // Process each payment row
             newPayments.forEach(payment => {
+              // The widened query above also returns rows that are merely invoiced or merely due; this is
+              // where the period's rule decides which of them is income.
+              if (!dueInvoicedReadyToPayFilter(payment)) return;
+
               const lead = newLeads.find(l => l.id === payment.lead_id);
               if (!lead) return;
 
@@ -456,9 +472,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
         const handlerLegacyLeadIds = handlerLegacyLeads.map(l => l.id).filter(Boolean).map(id => Number(id));
 
         // Fetch payment plans for these leads with due dates in range
-        let legacyPaymentsQuery = supabase
-          .from('finances_paymentplanrow')
-          .select(`
+        const legacySelect = `
             id,
             lead_id,
             client_id,
@@ -470,8 +484,13 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             cancel_date,
             order,
             notes,
-            accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-          `)
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code),
+            ${DUE_INVOICED_LEGACY_EXTRA_COLUMNS}
+          `;
+
+        let legacyPaymentsQuery = supabase
+          .from('finances_paymentplanrow')
+          .select(legacySelect)
           .not('due_date', 'is', null)
           .is('cancel_date', null)
           .in('lead_id', handlerLegacyLeadIds);
@@ -483,9 +502,29 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
           legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTimeForPayments);
         }
 
-        const { data: legacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
+        const { data: legacyDuePayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
 
-        if (!legacyPaymentsError && legacyPayments && legacyPayments.length > 0) {
+        /*
+         * Plus legacy rows invoiced in the window that carry no due date.
+         *
+         * A legacy row holds only its planned `date` until someone sends it to finance, which is what
+         * fills `due_date` in — so an invoice sent before that is invisible to the query above. Fetched
+         * separately rather than folded into one filter: the two are disjoint on `due_date` being null,
+         * and a single query cannot express both date anchors at once.
+         */
+        const { data: legacyInvoicedNoDueDate } = await scopeLegacyInvoicedWithoutDueDate(
+          supabase
+            .from('finances_paymentplanrow')
+            .select(legacySelect)
+            .is('cancel_date', null)
+            .in('lead_id', handlerLegacyLeadIds),
+          fromDateTimeForPayments,
+          toDateTimeForPayments,
+        );
+
+        const legacyPayments = [...(legacyDuePayments || []), ...(legacyInvoicedNoDueDate || [])];
+
+        if (!legacyPaymentsError && legacyPayments.length > 0) {
           const uniqueLegacyLeadIds = Array.from(new Set(legacyPayments.map((p: any) => p.lead_id).filter(Boolean)));
 
           // Fetch lead metadata
@@ -564,7 +603,11 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             }
 
             // Process each payment row
-            legacyPayments.forEach(payment => {
+            legacyPayments.forEach((payment: any) => {
+              // `dueInvoicedAllRowsFilter`, not the ready-to-pay one: this query never gated on
+              // `ready_to_pay`, and pre-October periods have to keep counting exactly what they did.
+              if (!dueInvoicedAllRowsFilter(payment)) return;
+
               const lead = legacyLeads.find(l => {
                 if (l.id === payment.lead_id) return true;
                 if (String(l.id) === String(payment.lead_id)) return true;

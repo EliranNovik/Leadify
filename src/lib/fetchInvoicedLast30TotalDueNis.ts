@@ -1,4 +1,8 @@
-import { fetchInvoicedInstallments, sumInvoicedNisInRange } from './invoicedInstallments';
+import {
+  fetchInvoicedInstallments,
+  sumContributionIncomeNisInRange,
+  sumInvoicedNisInRange,
+} from './invoicedInstallments';
 
 function normalizeDateOnly(s: string): string {
   if (!s || !String(s).trim()) return '';
@@ -36,4 +40,37 @@ export async function fetchInvoicedTotalDueNisForDateRange(
       console.error('fetchInvoicedTotalDueNisForDateRange failed:', e);
       return 0;
     }
+}
+
+/**
+ * Income base in NIS for the contribution report, for payments due in [fromDateStr, toDateStr].
+ *
+ * Same installments and same window as `fetchInvoicedTotalDueNisForDateRange`, but from October 2026
+ * only those whose invoice was actually sent count — see `sumContributionIncomeNisInRange`.
+ *
+ * Kept separate from the due-based total on purpose: that one feeds the Dashboard Invoiced scoreboard
+ * and the Sales contribution report, which must keep reporting everything that fell due.
+ */
+export async function fetchContributionIncomeNisForDateRange(
+  fromDateStr: string,
+  toDateStr: string,
+): Promise<number> {
+  const rangeStart = normalizeDateOnly(fromDateStr);
+  const rangeEnd = normalizeDateOnly(toDateStr);
+  if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
+    return 0;
+  }
+
+  try {
+    const { installments } = await fetchInvoicedInstallments({
+      dueFrom: rangeStart,
+      dueTo: rangeEnd,
+      // An invoiced row that was never flagged ready to pay is still income from October on.
+      includeInvoiceSentNotReadyToPay: true,
+    });
+    return sumContributionIncomeNisInRange(installments, rangeStart, rangeEnd);
+  } catch (e) {
+    console.error('fetchContributionIncomeNisForDateRange failed:', e);
+    return 0;
+  }
 }

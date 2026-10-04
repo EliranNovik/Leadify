@@ -59,6 +59,13 @@ interface SidebarProps {
   dockedSurfaceClassName?: string;
   /** Light (white) docked rail — active/hover use gray fills instead of white chips. */
   dockedOnLight?: boolean;
+  /**
+   * Clicks inside anything matching this selector do not close the docked panel.
+   *
+   * Needed by any owner that keeps its own chrome beside the panel — the toggle that opened it, or a
+   * surrounding menu — since a click there is not really "outside".
+   */
+  dockedCloseIgnoreSelector?: string;
 }
 
 interface SidebarItem {
@@ -192,6 +199,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   dockedPositionClassName = 'fixed bottom-0 left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)]',
   dockedSurfaceClassName = 'bg-white dark:bg-base-100',
   dockedOnLight = false,
+  dockedCloseIgnoreSelector = '[data-clients-app-nav-toggle]',
 }) => {
   const isDockedPresentation = presentation === 'docked';
   const showDockedDesktop = isDockedPresentation && dockedOpen;
@@ -664,7 +672,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       const target = e.target as Node | null;
       if (!target) return;
       if (sidebarRef.current?.contains(target)) return;
-      if ((target as Element).closest?.('[data-clients-app-nav-toggle]')) return;
+      if ((target as Element).closest?.(dockedCloseIgnoreSelector)) return;
       onDockedClose?.();
     };
     window.addEventListener('keydown', onKeyDown);
@@ -673,7 +681,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [showDockedDesktop, onDockedClose]);
+  }, [showDockedDesktop, onDockedClose, dockedCloseIgnoreSelector]);
 
   const labelsAlwaysVisible = isDockedPresentation || isSidebarHovered;
 

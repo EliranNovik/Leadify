@@ -343,6 +343,10 @@ const ProformaViewPage: React.FC = () => {
         showReconnectModal('Connect Outlook to send invoices by email.');
       }
       toast.success(buildProformaSendSuccessMessage(result, language));
+      // Sending also sends the payment to finance, which moves its due date — say so explicitly.
+      if (result.readyToPay.markedReadyToPay) {
+        toast.success('Payment also marked sent to finance, due today.');
+      }
       setSendLanguageModalOpen(false);
     } catch (e: unknown) {
       const err = e as Error & { code?: string };

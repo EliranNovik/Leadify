@@ -17,6 +17,13 @@ export type ProformaSendBundleResult = {
   whatsAppSent: boolean;
   whatsAppPhone: string;
   whatsAppError: Error | null;
+  /**
+   * Whether the send also marked the payment sent to finance, and the due date it set.
+   *
+   * `markedReadyToPay` is false when the row was already marked, so a caller can tell the difference
+   * between "I just moved this payment's due date to today" and "nothing changed".
+   */
+  readyToPay: { markedReadyToPay: boolean; dueDate: string | null };
 };
 
 const inFlightInvoiceSends = new Map<string, Promise<ProformaSendBundleResult>>();
@@ -77,7 +84,7 @@ async function sendProformaInvoiceBundleOnce(
     throw new Error('Failed to send invoice.');
   }
 
-  await markPaymentPlanInvoiceSent(input);
+  const invoiceSent = await markPaymentPlanInvoiceSent(input);
 
   return {
     emailSent,
@@ -85,6 +92,10 @@ async function sendProformaInvoiceBundleOnce(
     whatsAppSent,
     whatsAppPhone,
     whatsAppError,
+    readyToPay: {
+      markedReadyToPay: invoiceSent.markedReadyToPay,
+      dueDate: invoiceSent.dueDate,
+    },
   };
 }
 

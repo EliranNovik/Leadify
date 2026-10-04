@@ -602,11 +602,18 @@ export function ContactPlanHeader({
   onToggle,
   profileImageUrl,
   automationActiveCount = 0,
+  planLabel,
 }: {
   contactName: string;
   payments: PaymentPlanRowLike[];
   collapsed: boolean;
   onToggle: () => void;
+  /**
+   * Names this plan when the contact holds more than one, e.g. `2nd plan`.
+   *
+   * Left undefined for a contact's only plan, so the common case keeps the header it always had.
+   */
+  planLabel?: string;
   /** Unused by the header display; kept so existing callers can still pass NIS totals. */
   totalNis?: { primary: string; office?: string; loading?: boolean };
   profileImageUrl?: string | null;
@@ -668,6 +675,11 @@ export function ContactPlanHeader({
             >
               {contactName}
             </button>
+            {planLabel ? (
+              <span className="shrink-0 rounded-full bg-purple-100 px-2.5 py-0.5 text-xs font-semibold text-purple-800">
+                {planLabel}
+              </span>
+            ) : null}
             <>
               <span className="text-slate-300" aria-hidden>
                 |

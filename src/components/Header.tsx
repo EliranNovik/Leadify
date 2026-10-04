@@ -33,6 +33,8 @@ import {
   FunnelIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
+  ChevronDoubleLeftIcon,
+  ChevronDoubleRightIcon,
   BoltIcon,
   ChatBubbleLeftRightIcon,
   StarIcon,
@@ -53,6 +55,7 @@ import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import WhatsAppDoubleCheckIcon from './whatsapp/WhatsAppDoubleCheckIcon';
 import AdminChangeUserModal from './AdminChangeUserModal';
 import EmployeeModal from './EmployeeModal';
+import Sidebar from './Sidebar';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import TeamStatusModal from './TeamStatusModal';
@@ -289,6 +292,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const [quickMenuSearchValue, setQuickMenuSearchValue] = useState('');
   const [showQuickMenuAllDropdown, setShowQuickMenuAllDropdown] = useState(false);
+  /** Desktop hamburger panel: whether the full app sidebar is docked open beside it. */
+  const [quickMenuSidebarExpanded, setQuickMenuSidebarExpanded] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
@@ -1143,6 +1148,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (!showQuickActionsDropdown) {
       setQuickMenuSearchValue('');
       setShowQuickMenuAllDropdown(false);
+      setQuickMenuSidebarExpanded(false);
     }
   }, [showQuickActionsDropdown]);
 
@@ -4677,12 +4683,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* RMQ 2.0 at top */}
-                <div className="flex-shrink-0 pt-3 px-4 pb-2 border-b border-base-300">
+                <div className="flex-shrink-0 pt-3 px-4 pb-2 flex items-center justify-between gap-2">
                   <span className="text-xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+                  <button
+                    type="button"
+                    onClick={() => setQuickMenuSidebarExpanded((prev) => !prev)}
+                    className={`btn btn-ghost btn-square min-h-8 h-8 w-8 p-0 rounded-lg ${quickMenuSidebarExpanded ? 'bg-base-200 text-base-content' : 'text-base-content/60 hover:text-base-content'}`}
+                    aria-label={quickMenuSidebarExpanded ? 'Hide full navigation' : 'Show full navigation'}
+                    aria-expanded={quickMenuSidebarExpanded}
+                    title={quickMenuSidebarExpanded ? 'Hide full navigation' : 'Show full navigation'}
+                  >
+                    {quickMenuSidebarExpanded ? (
+                      <ChevronDoubleLeftIcon className="w-5 h-5" />
+                    ) : (
+                      <ChevronDoubleRightIcon className="w-5 h-5" />
+                    )}
+                  </button>
                 </div>
                 {/* Menu search + links/results */}
                 <div className="flex-1 min-h-0 flex flex-col">
-                  <div className="px-4 py-3 border-b border-base-300 bg-white dark:bg-gray-900">
+                  <div className="px-4 py-3 bg-white dark:bg-gray-900">
                     <div className="relative">
                       <div className="flex items-center gap-2">
                         <div className="relative flex-1 min-w-0">
@@ -4712,8 +4732,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         </button>
                       </div>
                     </div>
-                    <p className="text-[11px] text-base-content/60 mt-1">
-                    </p>
                   </div>
                   <div className="flex-1 overflow-y-auto py-2">
                     {showQuickMenuAllDropdown ? (
@@ -4841,7 +4859,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 </div>
                 {/* Employee profile at bottom */}
-                <div className="flex-shrink-0 px-4 py-4 pb-6 border-t border-base-300 flex items-center gap-3">
+                <div className="flex-shrink-0 px-4 py-4 pb-6 flex items-center gap-3">
                   <button
                     type="button"
                     className="flex-shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 hover:opacity-90 transition-opacity"
@@ -4885,6 +4903,32 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     )}
                   </div>
                 </div>
+              </div>
+              {/*
+                Full app navigation docked immediately right of the panel.
+                Desktop only, matching the panel itself. `data-dropdown-menu` keeps the existing
+                click-outside handler from treating clicks in here as a dismissal of the panel, and the
+                ignore selector does the same in the other direction for the sidebar's own handler.
+              */}
+              <div
+                className="hidden md:block"
+                data-dropdown-menu
+                // Same guard the panel uses: expanding a nav group is a button click, which would
+                // otherwise reach the document handler and dismiss the whole menu. Navigating still
+                // closes it, via the route-change effect.
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Sidebar
+                  userName={authUserFullName || userFullName}
+                  userInitials={authUserInitials}
+                  presentation="docked"
+                  dockedOpen={quickMenuSidebarExpanded}
+                  onDockedClose={() => setQuickMenuSidebarExpanded(false)}
+                  dockedPositionClassName="fixed left-72 top-0 bottom-0 z-[9999]"
+                  dockedSurfaceClassName="border-l border-base-300 bg-white shadow-2xl dark:border-base-content/10 dark:bg-base-100"
+                  dockedOnLight
+                  dockedCloseIgnoreSelector="[data-dropdown-menu]"
+                />
               </div>
             </>,
             document.body

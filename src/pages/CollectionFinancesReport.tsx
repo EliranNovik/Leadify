@@ -2032,6 +2032,8 @@ const loadPayments = async ({
       setSendingInvoice(true);
       let sent = 0;
       let failed = 0;
+      // Rows the sends also moved into finance; counted so the summary can mention the new due dates.
+      let markedReadyToPay = 0;
 
       try {
         for (const row of sendableInvoiceRows) {
@@ -2055,10 +2057,18 @@ const loadPayments = async ({
             if (result.emailSent || result.whatsAppSent) {
               sent += 1;
               toast.success(buildProformaSendSuccessMessage(result, language));
+              if (result.readyToPay.markedReadyToPay) markedReadyToPay += 1;
+              // Sending also marks the row sent to finance, which moves its due date to today.
               setRows((prev) =>
                 prev.map((existing) =>
                   existing.id === row.id
-                    ? { ...existing, invoiceSent: true, invoiceSentAt: new Date().toISOString() }
+                    ? {
+                        ...existing,
+                        invoiceSent: true,
+                        invoiceSentAt: new Date().toISOString(),
+                        readyToPay: true,
+                        dueDate: result.readyToPay.dueDate ?? existing.dueDate,
+                      }
                     : existing,
                 ),
               );
@@ -2078,6 +2088,11 @@ const loadPayments = async ({
 
         if (sent > 0) {
           toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
+        }
+        if (markedReadyToPay > 0) {
+          toast.success(
+            `${markedReadyToPay} row${markedReadyToPay === 1 ? '' : 's'} also marked sent to finance, due today`,
+          );
         }
         if (failed > 0 && sent === 0) {
           toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);

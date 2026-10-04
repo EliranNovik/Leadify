@@ -232,15 +232,21 @@ function renderContactGrid(items: ContactItem[], origin?: string): string {
   const paired = items.filter((item) => !item.fullWidth);
   const solo = items.filter((item) => item.fullWidth);
 
-  const separator = `<td valign="top" style="padding:${CONTACT_ROW_PAD_PX}px ${CONTACT_SEPARATOR_PAD_PX}px;vertical-align:top;font-family:${FONT};font-size:${CONTACT_FONT_PX}px;line-height:${CONTACT_LINE_PX}px;color:${DIVIDER};">|</td>`;
+  // The separator has to take the row's own top padding too, or it floats above its neighbours.
+  const separator = (topPad: number) =>
+    `<td valign="top" style="padding:${topPad}px ${CONTACT_SEPARATOR_PAD_PX}px ${CONTACT_ROW_PAD_PX}px ${CONTACT_SEPARATOR_PAD_PX}px;vertical-align:top;font-family:${FONT};font-size:${CONTACT_FONT_PX}px;line-height:${CONTACT_LINE_PX}px;color:${DIVIDER};">|</td>`;
 
   const rows: string[] = [];
   for (let i = 0; i < paired.length; i += CONTACT_COLUMNS) {
     const group = paired.slice(i, i + CONTACT_COLUMNS);
+    const gap = i === 0 ? 0 : CONTACT_ROW_GAP_PX;
     const cells = group
       .map((item, index) => {
         const needsSeparator = index < group.length - 1;
-        return contactItemCells(item, origin) + (needsSeparator ? separator : '');
+        return (
+          contactItemCells(item, origin, 1, gap) +
+          (needsSeparator ? separator(CONTACT_ROW_PAD_PX + gap) : '')
+        );
       })
       .join('');
     rows.push(`<tr>${cells}</tr>`);
@@ -250,8 +256,9 @@ function renderContactGrid(items: ContactItem[], origin?: string): string {
   // columns. A solo item's text cell has to span everything the icon cell leaves over.
   const widestColumns = Math.min(CONTACT_COLUMNS, paired.length);
   const cellsPerRow = widestColumns > 0 ? widestColumns * 2 + (widestColumns - 1) : 2;
-  solo.forEach((item) => {
-    rows.push(`<tr>${contactItemCells(item, origin, cellsPerRow - 1)}</tr>`);
+  solo.forEach((item, index) => {
+    const gap = rows.length === 0 && index === 0 ? 0 : CONTACT_ROW_GAP_PX;
+    rows.push(`<tr>${contactItemCells(item, origin, cellsPerRow - 1, gap)}</tr>`);
   });
 
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0">${rows.join('')}</table>`;
