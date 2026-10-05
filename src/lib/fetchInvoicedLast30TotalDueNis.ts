@@ -55,10 +55,38 @@ export async function fetchContributionIncomeNisForDateRange(
   fromDateStr: string,
   toDateStr: string,
 ): Promise<number> {
+  const breakdown = await fetchContributionIncomeBreakdownNisForDateRange(fromDateStr, toDateStr);
+  return breakdown.total;
+}
+
+export type ContributionIncomeBreakdown = {
+  total: number;
+  germanAustrian: number;
+  other: number;
+};
+
+function isGermanOrAustrianCitizenship(mainCategoryName: string | null): boolean {
+  const normalized = String(mainCategoryName || '').trim().toLowerCase();
+  return (
+    normalized === 'germany' ||
+    normalized === 'austria' ||
+    normalized === 'germany & austria' ||
+    normalized === 'german\\austrian' ||
+    normalized === 'german/austrian' ||
+    normalized === 'german citizenship' ||
+    normalized === 'austrian citizenship'
+  );
+}
+
+/** Contribution income split for the category-dependent Sales / Handlers allocation rules. */
+export async function fetchContributionIncomeBreakdownNisForDateRange(
+  fromDateStr: string,
+  toDateStr: string,
+): Promise<ContributionIncomeBreakdown> {
   const rangeStart = normalizeDateOnly(fromDateStr);
   const rangeEnd = normalizeDateOnly(toDateStr);
   if (!rangeStart || !rangeEnd || rangeStart > rangeEnd) {
-    return 0;
+    return { total: 0, germanAustrian: 0, other: 0 };
   }
 
   try {
@@ -68,9 +96,23 @@ export async function fetchContributionIncomeNisForDateRange(
       // An invoiced row that was never flagged ready to pay is still income from October on.
       includeInvoiceSentNotReadyToPay: true,
     });
-    return sumContributionIncomeNisInRange(installments, rangeStart, rangeEnd);
+    const germanAustrianRows = installments.filter((row) =>
+      isGermanOrAustrianCitizenship(row.mainCategoryName),
+    );
+    const otherRows = installments.filter(
+      (row) => !isGermanOrAustrianCitizenship(row.mainCategoryName),
+    );
+    const total = sumContributionIncomeNisInRange(installments, rangeStart, rangeEnd);
+    const germanAustrian = sumContributionIncomeNisInRange(germanAustrianRows, rangeStart, rangeEnd);
+    const otherCalculated = sumContributionIncomeNisInRange(otherRows, rangeStart, rangeEnd);
+    const other = Math.max(0, total - germanAustrian);
+    return {
+      total,
+      germanAustrian,
+      other: Number.isFinite(other) ? other : otherCalculated,
+    };
   } catch (e) {
-    console.error('fetchContributionIncomeNisForDateRange failed:', e);
-    return 0;
+    console.error('fetchContributionIncomeBreakdownNisForDateRange failed:', e);
+    return { total: 0, germanAustrian: 0, other: 0 };
   }
 }

@@ -182,17 +182,67 @@ class UserService {
    */
   async updateUser(userId, updateData) {
     try {
+      const { data: existingUser, error: fetchError } = await supabase
+        .from('users')
+        .select('id, auth_id, email')
+        .eq('id', userId)
+        .single();
+
+      if (fetchError || !existingUser) {
+        throw new Error('User not found');
+      }
+
+      const nextEmail = String(updateData.email || '').trim().toLowerCase();
+      if (!nextEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+        throw new Error('A valid email address is required');
+      }
+
+      const emailChanged = nextEmail !== String(existingUser.email || '').trim().toLowerCase();
+      if (emailChanged && !existingUser.auth_id) {
+        throw new Error('This CRM user is not linked to a Supabase Auth user');
+      }
+
+      if (emailChanged) {
+        const { error: authError } = await supabase.auth.admin.updateUserById(
+          existingUser.auth_id,
+          { email: nextEmail, email_confirm: true }
+        );
+        if (authError) {
+          throw new Error(`Failed to update auth email: ${authError.message}`);
+        }
+      }
+
+      const safeUpdateData = {
+        email: nextEmail,
+        full_name: updateData.full_name,
+        first_name: updateData.first_name,
+        last_name: updateData.last_name,
+        role: updateData.role,
+        is_active: updateData.is_active,
+        is_staff: updateData.is_staff,
+        is_superuser: updateData.is_superuser,
+        groups: updateData.groups,
+        user_permissions: updateData.user_permissions,
+        updated_at: new Date().toISOString()
+      };
+
       const { data: user, error } = await supabase
         .from('users')
-        .update({
-          ...updateData,
-          updated_at: new Date().toISOString()
-        })
+        .update(safeUpdateData)
         .eq('id', userId)
         .select()
         .single();
 
       if (error) {
+        if (emailChanged) {
+          const { error: rollbackError } = await supabase.auth.admin.updateUserById(
+            existingUser.auth_id,
+            { email: existingUser.email, email_confirm: true }
+          );
+          if (rollbackError) {
+            console.error('Failed to roll back auth email:', rollbackError);
+          }
+        }
         throw new Error(`Failed to update user: ${error.message}`);
       }
 

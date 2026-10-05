@@ -180,18 +180,153 @@ export function scaleDepartmentsToInvoicedIncome(
   prev: Map<string, DepartmentData>,
   totalInvoicedIncome: number,
   departmentPercentages: Map<string, number>,
-  options: { disableFixedContribution?: boolean } = {}
+  options: {
+    disableFixedContribution?: boolean;
+    categoryIncomeSplit?: { germanAustrian: number; other: number };
+    preserveRoleCalculatedDepartments?: string[];
+    normalizeContributorsGlobally?: boolean;
+    distributeRemainderToDepartments?: string[];
+    salaryWeightedDepartments?: string[];
+  } = {}
 ): Map<string, DepartmentData> {
   if (!prev.size || totalInvoicedIncome <= 0) return prev;
 
   const byEmployeeId = new Map<number, { c: number; f: number }>();
-  const deptSkipDrift = new Set<string>();
+  const groupSkipDrift = new Set<string>();
+  const isGermanAustrianTeam = (department: string | undefined) => {
+    const normalized = String(department || '').toLowerCase();
+    return (
+      normalized.includes('german') ||
+      normalized.includes('germany') ||
+      normalized.includes('austria')
+    );
+  };
+  const allocationGroups: Array<{
+    key: string;
+    employees: EmployeeData[];
+    targetBasis: number;
+  }> = [];
 
-  prev.forEach((dept, deptName) => {
-    const pct = departmentPercentages.get(deptName) ?? 0;
-    const targetBasis = roundContributionMoney((totalInvoicedIncome * pct) / 100);
+  const remainderDepartments = options.distributeRemainderToDepartments || [];
+  if (remainderDepartments.length > 0) {
+    let rawTotal = 0;
+    prev.forEach((dept) => {
+      dept.employees.forEach((emp) => {
+        const c = emp.contribution ?? 0;
+        const f = options.disableFixedContribution ? 0 : (emp.contributionFixed ?? 0);
+        byEmployeeId.set(emp.employeeId, { c, f });
+        rawTotal += c + f;
+      });
+    });
+
+    let remainder = roundContributionMoney(Math.max(0, totalInvoicedIncome - rawTotal));
+    const configuredWeightTotal = remainderDepartments.reduce(
+      (sum, name) => sum + Math.max(0, departmentPercentages.get(name) ?? 0),
+      0,
+    );
+
+    remainderDepartments.forEach((deptName, deptIndex) => {
+      const dept = prev.get(deptName);
+      if (!dept || dept.employees.length === 0 || remainder <= 0) return;
+      const configuredWeight = Math.max(0, departmentPercentages.get(deptName) ?? 0);
+      const deptShare =
+        deptIndex === remainderDepartments.length - 1
+          ? remainder
+          : roundContributionMoney(
+              configuredWeightTotal > 0
+                ? (Math.max(0, totalInvoicedIncome - rawTotal) * configuredWeight) / configuredWeightTotal
+                : Math.max(0, totalInvoicedIncome - rawTotal) / remainderDepartments.length,
+            );
+      remainder = roundContributionMoney(remainder - deptShare);
+
+      // Support-field remainder belongs to the field, not to whichever employee happened to have
+      // one signed lead. Spread it by salary cost; retain every employee's role-based amount above.
+      let employeeWeights = dept.employees.map((emp) => Math.max(0, emp.totalSalaryCost ?? 0));
+      let employeeWeightTotal = employeeWeights.reduce((sum, value) => sum + value, 0);
+      if (employeeWeightTotal <= 0) {
+        employeeWeights = dept.employees.map((emp) => {
+          const value = byEmployeeId.get(emp.employeeId);
+          return Math.max(0, (value?.c ?? 0) + (value?.f ?? 0));
+        });
+        employeeWeightTotal = employeeWeights.reduce((sum, value) => sum + value, 0);
+      }
+      if (employeeWeightTotal <= 0) {
+        employeeWeights = dept.employees.map(() => 1);
+        employeeWeightTotal = dept.employees.length;
+      }
+
+      let deptRemaining = deptShare;
+      dept.employees.forEach((emp, index) => {
+        const allocated =
+          index === dept.employees.length - 1
+            ? deptRemaining
+            : roundContributionMoney((deptShare * employeeWeights[index]) / employeeWeightTotal);
+        deptRemaining = roundContributionMoney(deptRemaining - allocated);
+        const current = byEmployeeId.get(emp.employeeId) || { c: 0, f: 0 };
+        byEmployeeId.set(emp.employeeId, {
+          c: roundContributionMoney(current.c + allocated),
+          f: current.f,
+        });
+      });
+    });
+  } else if (options.normalizeContributorsGlobally) {
+    allocationGroups.push({
+      key: 'all-contributors',
+      employees: Array.from(prev.values()).flatMap((dept) => dept.employees),
+      targetBasis: roundContributionMoney(totalInvoicedIncome),
+    });
+  } else {
+    prev.forEach((dept, deptName) => {
+      if (options.preserveRoleCalculatedDepartments?.includes(deptName)) {
+        return;
+      }
+      const split = options.categoryIncomeSplit;
+      if ((deptName === 'Sales' || deptName === 'Handlers') && split) {
+        const specialRate = deptName === 'Sales' ? 0.3 : 0.4;
+        const otherRate = deptName === 'Sales' ? 0.5 : 0.2;
+        allocationGroups.push({
+          key: `${deptName}:german-austrian`,
+          employees: dept.employees.filter((emp) => isGermanAustrianTeam(emp.department)),
+          targetBasis: roundContributionMoney(split.germanAustrian * specialRate),
+        });
+        allocationGroups.push({
+          key: `${deptName}:other`,
+          employees: dept.employees.filter((emp) => !isGermanAustrianTeam(emp.department)),
+          targetBasis: roundContributionMoney(split.other * otherRate),
+        });
+        return;
+      }
+      const pct = departmentPercentages.get(deptName) ?? 0;
+      allocationGroups.push({
+        key: deptName,
+        employees: dept.employees,
+        targetBasis: roundContributionMoney((totalInvoicedIncome * pct) / 100),
+      });
+    });
+  }
+
+  allocationGroups.forEach(({ key, employees, targetBasis }) => {
+    if (options.salaryWeightedDepartments?.includes(key) && employees.length > 0) {
+      let weights = employees.map((emp) => Math.max(0, emp.totalSalaryCost ?? 0));
+      let weightTotal = weights.reduce((sum, value) => sum + value, 0);
+      if (weightTotal <= 0) {
+        weights = employees.map(() => 1);
+        weightTotal = employees.length;
+      }
+      let remaining = targetBasis;
+      employees.forEach((emp, index) => {
+        const allocated =
+          index === employees.length - 1
+            ? remaining
+            : roundContributionMoney((targetBasis * weights[index]) / weightTotal);
+        remaining = roundContributionMoney(remaining - allocated);
+        byEmployeeId.set(emp.employeeId, { c: allocated, f: 0 });
+      });
+      return;
+    }
+
     let rawBasis = 0;
-    dept.employees.forEach((emp) => {
+    employees.forEach((emp) => {
       rawBasis += (emp.contribution ?? 0) + (options.disableFixedContribution ? 0 : (emp.contributionFixed ?? 0));
     });
     if (rawBasis <= 0) {
@@ -199,11 +334,11 @@ export function scaleDepartmentsToInvoicedIncome(
       // fixed contribution is a share of Salary (B), reads zero until those salaries are entered.
       // Split the slice evenly as fixed contribution rather than dropping it: discarding it was
       // what made the report total come up short of Total income.
-      const headcount = dept.employees.length;
+      const headcount = employees.length;
       if (targetBasis > 0 && headcount > 0) {
         const share = roundContributionMoney(targetBasis / headcount);
         let remaining = targetBasis;
-        dept.employees.forEach((emp, index) => {
+        employees.forEach((emp, index) => {
           // The last row absorbs the rounding residue so the department lands exactly on target.
           const allocated = index === headcount - 1 ? roundContributionMoney(remaining) : share;
           remaining = roundContributionMoney(remaining - allocated);
@@ -215,17 +350,17 @@ export function scaleDepartmentsToInvoicedIncome(
         return;
       }
 
-      dept.employees.forEach((emp) => {
+      employees.forEach((emp) => {
         byEmployeeId.set(emp.employeeId, { c: 0, f: 0 });
       });
       // Nobody to park the slice on, so the drift pass must not try either.
       if (targetBasis > 0) {
-        deptSkipDrift.add(deptName);
+        groupSkipDrift.add(key);
       }
       return;
     }
     const k = targetBasis / rawBasis;
-    dept.employees.forEach((emp) => {
+    employees.forEach((emp) => {
       const c = emp.contribution ?? 0;
       const f = options.disableFixedContribution ? 0 : (emp.contributionFixed ?? 0);
       byEmployeeId.set(emp.employeeId, {
@@ -235,21 +370,19 @@ export function scaleDepartmentsToInvoicedIncome(
     });
   });
 
-  // Park each department's rounding drift on its largest row so the table total is exact.
-  prev.forEach((dept, deptName) => {
-    const pct = departmentPercentages.get(deptName) ?? 0;
-    const targetBasis = roundContributionMoney((totalInvoicedIncome * pct) / 100);
-    if (dept.employees.length === 0) return;
+  // Park each allocation group's rounding drift on its largest row so every category slice is exact.
+  allocationGroups.forEach(({ key, employees, targetBasis }) => {
+    if (employees.length === 0) return;
     let sumInDept = 0;
     const idsInDept: number[] = [];
-    dept.employees.forEach((emp) => {
+    employees.forEach((emp) => {
       const v = byEmployeeId.get(emp.employeeId);
       if (v) {
         sumInDept += v.c + v.f;
         idsInDept.push(emp.employeeId);
       }
     });
-    if (deptSkipDrift.has(deptName)) return;
+    if (groupSkipDrift.has(key)) return;
     const drift = roundContributionMoney(targetBasis - sumInDept);
     if (Math.abs(drift) < 0.005 || idsInDept.length === 0) return;
     idsInDept.sort((a, b) => a - b);

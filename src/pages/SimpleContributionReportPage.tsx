@@ -56,6 +56,7 @@ import {
   applySubcontractorFeeTotalsToLeads,
   fetchSubcontractorFeeTotalsByLeadIds,
 } from '../lib/leadSubcontractorFees';
+import { fetchStage60RecordsInRange } from '../lib/stage60SignDate';
 
 // Types and every Signed / Due / Contribution / Contribution Fixed rule live in the calculation
 // module so this file stays a report view. See simpleContributionCalculator for why there is no
@@ -76,6 +77,28 @@ import {
  * expected to sit below the Dashboard Invoiced scoreboard's Total for the same date range.
  */
 const INVOICED_TO_INCOME_RATE = 0.9;
+
+const CATEGORY_PERCENTAGE_KEYS = {
+  Sales: {
+    germanAustrian: 'Sales - German/Austrian',
+    other: 'Sales - Other',
+    defaults: { germanAustrian: 30, other: 50 },
+  },
+  Handlers: {
+    germanAustrian: 'Handlers - German/Austrian',
+    other: 'Handlers - Other',
+    defaults: { germanAustrian: 40, other: 20 },
+  },
+} as const;
+
+function getCategoryDepartmentPercentage(
+  percentages: Map<string, number>,
+  department: 'Sales' | 'Handlers',
+  category: 'germanAustrian' | 'other',
+): number {
+  const config = CATEGORY_PERCENTAGE_KEYS[department];
+  return percentages.get(config[category]) ?? config.defaults[category];
+}
 
 /** Preset ranges lock From/To dates and use averaged salary over the same calendar months. */
 export type SalesContributionPeriodPreset = 'custom' | 'last3months' | 'last6months' | 'last12months';
@@ -129,14 +152,24 @@ function formatYmdLocalFromDate(d: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-/** First day of (current − (N−1) months) through today, for N = 3 | 6 | 12. */
+/** Rolling N-month range through today, matching the Dashboard scoreboard period. */
 export function computeSalesContributionPresetDateRange(
   preset: Exclude<SalesContributionPeriodPreset, 'custom'>,
   ref: Date = new Date()
 ): { fromDate: string; toDate: string } {
   const n = getPresetMonthCount(preset);
   const toDate = formatYmdLocalFromDate(new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()));
-  const from = new Date(ref.getFullYear(), ref.getMonth() - (n - 1), 1);
+  const targetMonthFirst = new Date(ref.getFullYear(), ref.getMonth() - n, 1);
+  const lastDayOfTargetMonth = new Date(
+    targetMonthFirst.getFullYear(),
+    targetMonthFirst.getMonth() + 1,
+    0
+  ).getDate();
+  const from = new Date(
+    targetMonthFirst.getFullYear(),
+    targetMonthFirst.getMonth(),
+    Math.min(ref.getDate(), lastDayOfTargetMonth)
+  );
   return { fromDate: formatYmdLocalFromDate(from), toDate };
 }
 
@@ -176,6 +209,12 @@ async function fetchSalaryDataMapForSalesReport(
   } else {
     if (!filters.fromDate || !filters.toDate) return result;
     months = enumerateMonthsFromRange(filters.fromDate, filters.toDate);
+    const presetMonthCount = getPresetMonthCount(periodPreset);
+    if (presetMonthCount > 0 && months.length > presetMonthCount) {
+      // A rolling period touches one extra partial calendar month at its end. Salary is stored
+      // monthly, so use exactly N salary months and exclude that current partial endpoint month.
+      months = months.slice(0, presetMonthCount);
+    }
   }
   if (months.length === 0) return result;
 
@@ -511,7 +550,10 @@ const SimpleContributionReportPage = () => {
        * apply. Reading the due-based total here made the header disagree with the column beneath it,
        * showing income for money that no invoice had been sent for.
        */
-      const totalDueNis = await fetchContributionIncomeNisForDateRange(filters.fromDate, filters.toDate);
+      const totalDueNis = await fetchContributionIncomeNisForDateRange(
+        filters.fromDate,
+        filters.toDate,
+      );
       // Intentional ~10% haircut: income recognised for contribution purposes sits deliberately below
       // the invoiced total it is derived from.
       const income = Math.round(totalDueNis * INVOICED_TO_INCOME_RATE);
@@ -900,16 +942,12 @@ const SimpleContributionReportPage = () => {
   const scPrevLoadingForScCacheRef = useRef(false);
   const imageErrorCache = useRef<Map<number, boolean>>(new Map());
 
-  /** Preset reports span multiple months; top summary badges show monthly averages (same month count as avg. salary). */
+  /** Divide rolling preset totals by their stated duration, not by the number of calendar-month names touched. */
   const summaryMonthlyDivisor = useMemo(() => {
     if (periodPreset === 'custom') return 1;
-    if (filters.fromDate && filters.toDate) {
-      const n = enumerateMonthsFromRange(filters.fromDate, filters.toDate).length;
-      return n > 0 ? n : 1;
-    }
     const n = getPresetMonthCount(periodPreset);
     return n > 0 ? n : 1;
-  }, [periodPreset, filters.fromDate, filters.toDate]);
+  }, [periodPreset]);
 
   const hasPositiveMaxIncentives = useCallback((emp: EmployeeData) => {
     const periodScale = periodPreset === 'custom' ? 1 : summaryMonthlyDivisor;
@@ -1138,37 +1176,11 @@ const SimpleContributionReportPage = () => {
 
     setLoadingSignedValue(true);
     try {
-      // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
-      // IMPORTANT: Filter by sign date (when stage 60 was set), NOT creation date
-      const { startIso, endIso } = computeDateBounds(filters.fromDate, filters.toDate);
-      const fromDateTime = startIso;
-      const toDateTime = endIso;
-
-      // Fetch legacy leads stage records (stage 60) - same as Dashboard
-      const { data: legacyStageRecords, error: legacyStageError } = await supabase
-        .from('leads_leadstage')
-        .select('id, date, cdate, lead_id')
-        .eq('stage', 60)
-        .not('lead_id', 'is', null)
-        .gte('date', fromDateTime)
-        .lte('date', toDateTime);
-
-      if (legacyStageError) {
-        console.error('Error fetching legacy stage records:', legacyStageError);
-      }
-
-      // Fetch new leads stage records (stage 60) - same as Dashboard
-      const { data: newLeadStageRecords, error: newLeadStageError } = await supabase
-        .from('leads_leadstage')
-        .select('id, date, cdate, newlead_id')
-        .eq('stage', 60)
-        .not('newlead_id', 'is', null)
-        .gte('date', fromDateTime)
-        .lte('date', toDateTime);
-
-      if (newLeadStageError) {
-        console.error('Error fetching new lead stage records:', newLeadStageError);
-      }
+      // Use the Dashboard's shared stage-60 date logic. Besides applying Jerusalem calendar
+      // boundaries, it includes older rows whose sign timestamp exists only in `cdate`.
+      const stageRecords = await fetchStage60RecordsInRange(filters.fromDate, filters.toDate);
+      const legacyStageRecords = stageRecords.filter((record) => record.lead_id != null);
+      const newLeadStageRecords = stageRecords.filter((record) => record.newlead_id != null);
 
       // Deduplicate legacy leads - keep only latest date for each lead_id (same as Dashboard)
       const legacyRecordsMap = new Map<number, any>();
@@ -1248,6 +1260,19 @@ const SimpleContributionReportPage = () => {
         if (newLeads.length > 0) {
           newLeadsData = newLeads;
         }
+      }
+
+      // Dashboard totals use the subcontractor-fee aggregate tables when available. Applying the
+      // same enrichment here keeps Total signed identical for the same date range.
+      try {
+        const feeMaps = await fetchSubcontractorFeeTotalsByLeadIds({
+          newLeadIds,
+          legacyLeadIds,
+        });
+        applySubcontractorFeeTotalsToLeads(newLeadsData, feeMaps, 'new');
+        applySubcontractorFeeTotalsToLeads(legacyLeadsData, feeMaps, 'legacy');
+      } catch (feeError) {
+        console.warn('Unable to enrich Total signed with subcontractor fee totals:', feeError);
       }
 
       const signDates = buildSignDateMapsFromStageHistory([
@@ -2235,8 +2260,26 @@ const SimpleContributionReportPage = () => {
 
       // Apply department % from sales_contribution_settings: use Sales % for Partners, Marketing, Finance; own % for Sales and Handlers
       const deptNameForEmployee = Array.from(departmentData.entries()).find(([, d]) => d.employees.some((e: { employeeId: number }) => e.employeeId === employeeId))?.[0] ?? 'Sales';
-      const pctDept = ['Partners', 'Marketing', 'Finance'].includes(deptNameForEmployee) ? 'Sales' : deptNameForEmployee;
-      const deptPctForRoleCache = (departmentPercentages.get(pctDept) ?? 35) / 100;
+      const employeeTeamName = (employeeMap.get(employeeId)?.department || '').toLowerCase();
+      const isGermanAustrianTeam =
+        employeeTeamName.includes('german') ||
+        employeeTeamName.includes('germany') ||
+        employeeTeamName.includes('austria');
+      const deptPctForRoleCache = (
+        deptNameForEmployee === 'Sales'
+          ? getCategoryDepartmentPercentage(
+              departmentPercentages,
+              'Sales',
+              isGermanAustrianTeam ? 'germanAustrian' : 'other',
+            )
+          : deptNameForEmployee === 'Handlers'
+            ? getCategoryDepartmentPercentage(
+                departmentPercentages,
+                'Handlers',
+                isGermanAustrianTeam ? 'germanAustrian' : 'other',
+              )
+            : (departmentPercentages.get('Sales') ?? 35)
+      ) / 100;
       const contribution = baseContribution * deptPctForRoleCache;
 
       // Calculate Salary Budget from Contribution
@@ -2309,7 +2352,7 @@ const SimpleContributionReportPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash, categoriesLoaded, categoryNameToDataMap, allCategories]);
+  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash, categoriesLoaded, categoryNameToDataMap, allCategories, departmentData, departmentPercentages, employeeMap]);
 
   // Report refresh: user clicks Search only (no auto-run on income / due-% / entry).
 
@@ -2864,21 +2907,12 @@ const SimpleContributionReportPage = () => {
           // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
           const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
-          // Step 1: Fetch all signed leads (stage 60) - ONCE for all employees
-          let stageHistoryQuery = supabase
-            .from('leads_leadstage')
-            .select('id, stage, date, cdate, lead_id, newlead_id')
-            .eq('stage', 60);
-
-          if (fromDateTime) {
-            stageHistoryQuery = stageHistoryQuery.gte('date', fromDateTime);
-          }
-          if (toDateTime) {
-            stageHistoryQuery = stageHistoryQuery.lte('date', toDateTime);
-          }
-
-          const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
-          if (stageHistoryError) throw stageHistoryError;
+          // Step 1: Fetch every signed lead in the period. The shared helper pages beyond
+          // PostgREST's 1,000-row cap and applies the same Jerusalem date logic as Dashboard.
+          const stageHistoryData = await fetchStage60RecordsInRange(
+            filters.fromDate,
+            filters.toDate,
+          );
 
           // Separate new and legacy lead IDs
           const allNewLeadIds = new Set<string>();
@@ -3199,8 +3233,12 @@ const SimpleContributionReportPage = () => {
 
           // Map employeeId -> department name (for department % from sales_contribution_settings)
           const employeeIdToDepartment = new Map<number, string>();
+          const employeeIdToTeam = new Map<number, string>();
           finalDepartmentData.forEach((data, deptName) => {
-            data.employees.forEach(emp => employeeIdToDepartment.set(emp.employeeId, deptName));
+            data.employees.forEach((emp) => {
+              employeeIdToDepartment.set(emp.employeeId, deptName);
+              employeeIdToTeam.set(emp.employeeId, emp.department || '');
+            });
           });
 
           // DEBUG: Check if "Adi" is in the employees list and what their ID is
@@ -3485,8 +3523,27 @@ const SimpleContributionReportPage = () => {
             }
 
             const deptName = employeeIdToDepartment.get(employeeId) ?? 'Sales';
-            // Use Sales % for Partners, Marketing, Finance; own department % for Sales and Handlers (from sales_contribution_settings)
-            const departmentPercentage = (['Partners', 'Marketing', 'Finance'].includes(deptName) ? departmentPercentages.get('Sales') : departmentPercentages.get(deptName)) ?? 35;
+            const teamName = (employeeIdToTeam.get(employeeId) || '').toLowerCase();
+            const isGermanAustrianTeam =
+              teamName.includes('german') ||
+              teamName.includes('germany') ||
+              teamName.includes('austria');
+            // Role percentages are calculated first. This percentage is applied only to that
+            // role-weighted base, so Scheduler / Expert work remains lower than Closer work.
+            const departmentPercentage =
+              deptName === 'Sales'
+                ? getCategoryDepartmentPercentage(
+                    departmentPercentages,
+                    'Sales',
+                    isGermanAustrianTeam ? 'germanAustrian' : 'other',
+                  )
+                : deptName === 'Handlers'
+                  ? getCategoryDepartmentPercentage(
+                      departmentPercentages,
+                      'Handlers',
+                      isGermanAustrianTeam ? 'germanAustrian' : 'other',
+                    )
+                  : (departmentPercentages.get('Sales') ?? 35);
             calculationInputs.push({
               employeeId,
               employeeName,
@@ -3772,9 +3829,15 @@ const SimpleContributionReportPage = () => {
               });
             });
 
-            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages, {
-              disableFixedContribution: !includeFixedContributionRef.current,
-            });
+            return scaleDepartmentsToInvoicedIncome(
+              updated,
+              totalIncome || 0,
+              departmentPercentages,
+              {
+                disableFixedContribution: !includeFixedContributionRef.current,
+                salaryWeightedDepartments: ['Partners', 'Marketing', 'Finance'],
+              },
+            );
           });
 
           // Set loading to false ONLY after all calculations are complete
@@ -3951,9 +4014,15 @@ const SimpleContributionReportPage = () => {
                 },
               });
             });
-            return scaleDepartmentsToInvoicedIncome(updated, totalIncome || 0, departmentPercentages, {
-              disableFixedContribution: !includeFixedContributionRef.current,
-            });
+            return scaleDepartmentsToInvoicedIncome(
+              updated,
+              totalIncome || 0,
+              departmentPercentages,
+              {
+                disableFixedContribution: !includeFixedContributionRef.current,
+                salaryWeightedDepartments: ['Partners', 'Marketing', 'Finance'],
+              },
+            );
           });
         }
         // If no salary data, don't update - keep existing data with all calculations intact
@@ -4081,8 +4150,8 @@ const SimpleContributionReportPage = () => {
   ]);
 
   // Handler for starting to edit percentage
-  const handleStartEditPercentage = (departmentName: string) => {
-    const currentPercentage = departmentPercentages.get(departmentName) || 0;
+  const handleStartEditPercentage = (departmentName: string, fallback = 0) => {
+    const currentPercentage = departmentPercentages.get(departmentName) ?? fallback;
     setEditingPercentage(departmentName);
     setTempPercentage(currentPercentage.toString());
   };
@@ -4155,11 +4224,57 @@ const SimpleContributionReportPage = () => {
       deptData?.employees
         .reduce((s, emp) => s + (emp.totalSalaryCost ?? 0), 0) ?? 0;
 
-    const monthlyIncome = (totalIncome || 0) / summaryMonthlyDivisor;
-    const baseAmount = monthlyIncome * 0.4;
-    const summaryAmount = baseAmount * (percentage / 100);
-
-    const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * monthlyIncome : 0;
+    const directAmountFromIncome =
+      ((deptData?.totals?.contribution || 0) + (deptData?.totals?.contributionFixed || 0)) /
+      summaryMonthlyDivisor;
+    const summaryAmount = (deptData?.totals?.salaryBudget || 0) / summaryMonthlyDivisor;
+    const categoryConfig =
+      departmentName === 'Sales' || departmentName === 'Handlers'
+        ? CATEGORY_PERCENTAGE_KEYS[departmentName]
+        : null;
+    const renderPercentageControl = (key: string, label: string, fallback: number) => {
+      const value = departmentPercentages.get(key) ?? fallback;
+      if (editingPercentage === key) {
+        return (
+          <div key={key} className="flex shrink-0 items-center gap-1 rounded-md bg-white/20 px-1">
+            <span className="pl-1 text-[10px] font-medium text-white/80">{label}</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              value={tempPercentage}
+              onChange={(e) => setTempPercentage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSavePercentage(key);
+                if (e.key === 'Escape') handleCancelEditPercentage();
+              }}
+              className="h-7 w-12 rounded-md border border-white/50 bg-white/20 px-1 text-xs font-semibold text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              autoFocus
+            />
+            <button onClick={() => handleSavePercentage(key)} className="rounded p-1 hover:bg-white/20" title={`Save ${label} percentage`}>
+              <CheckIcon className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={handleCancelEditPercentage} className="rounded p-1 hover:bg-white/20" title="Cancel">
+              <XMarkIcon className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        );
+      }
+      return (
+        <button
+          key={key}
+          type="button"
+          onClick={() => handleStartEditPercentage(key, fallback)}
+          className="flex items-center gap-1 rounded-md bg-white/20 px-2 py-1.5 text-xs font-semibold hover:bg-white/30"
+          title={`Edit ${label} percentage`}
+        >
+          <span className="text-white/75">{label}</span>
+          <span className="tabular-nums">{value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}%</span>
+          <PencilIcon className="h-3 w-3" />
+        </button>
+      );
+    };
 
     return (
       <div
@@ -4185,7 +4300,20 @@ const SimpleContributionReportPage = () => {
               {formatCurrency(directAmountFromIncome)}
             </span>
           </div>
-          {isEditing ? (
+          {categoryConfig ? (
+            <div className="flex shrink-0 flex-wrap justify-end gap-1">
+              {renderPercentageControl(
+                categoryConfig.germanAustrian,
+                'G/A',
+                categoryConfig.defaults.germanAustrian,
+              )}
+              {renderPercentageControl(
+                categoryConfig.other,
+                'Other',
+                categoryConfig.defaults.other,
+              )}
+            </div>
+          ) : isEditing ? (
             <div className="flex shrink-0 items-center gap-1">
               <input
                 type="number"
@@ -4233,14 +4361,14 @@ const SimpleContributionReportPage = () => {
 
         <div className="mt-4 grid grid-cols-2 gap-3 border-t border-white/20 pt-3">
           <div className="min-w-0">
-            <div className="text-[11px] text-white/70">Salary budget</div>
-            <div className="truncate text-sm font-semibold tabular-nums" title={formatCurrency(summaryAmount)}>
+            <div className="text-xs font-medium text-white/75">Salary budget</div>
+            <div className="truncate text-base font-semibold tabular-nums" title={formatCurrency(summaryAmount)}>
               {formatCurrency(summaryAmount)}
             </div>
           </div>
           <div className="min-w-0 border-l border-white/20 pl-3">
-            <div className="text-[11px] text-white/70">Total cost</div>
-            <div className="truncate text-sm font-semibold tabular-nums" title={formatCurrency(totalCost)}>
+            <div className="text-xs font-medium text-white/75">Total cost</div>
+            <div className="truncate text-base font-semibold tabular-nums" title={formatCurrency(totalCost)}>
               {formatCurrency(totalCost)}
             </div>
           </div>
@@ -4456,7 +4584,6 @@ const SimpleContributionReportPage = () => {
         </div>
       ) : null;
 
-    const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
     /** Multi-month presets: period totals (signed, contribution, etc.) ÷ months; salary B / total cost stay monthly from DB. */
     const periodScale = periodPreset === 'custom' ? 1 : summaryMonthlyDivisor;
     const scalePeriodSum = (n: number) => (Number(n) || 0) / periodScale;
@@ -4473,9 +4600,9 @@ const SimpleContributionReportPage = () => {
       (s, emp) => s + (emp.contributionFixed ?? 0),
       0
     );
-    const contributionAmountBase =
-      totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
-    const contributionAmount = scalePeriodSum(contributionAmountBase);
+    const contributionAmount = scalePeriodSum(
+      totalRowContribution + totalRowContributionFixed
+    );
     // Sum of row salary budgets (matches the department summary hero).
     const totalRowSalaryBudget = roundContributionMoney(
       filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0)

@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { getJerusalemDateFromTimestamp, getJerusalemTodayIsoDate } from './boiCurrencyConversion';
+import { fetchAllPagedRows } from './invoicedInstallments';
 
 export type Stage60Record = {
   id: number;
@@ -85,32 +86,37 @@ export async function fetchStage60RecordsInRange(
     signal ? query.abortSignal(signal) : query;
 
   if (anyCalendarFilter && wideStartIso && wideEndIso) {
-    const qDate = withSignal(
-      supabase
-        .from('leads_leadstage')
-        .select(STAGE60_SELECT)
-        .eq('stage', 60)
-        .gte('date', wideStartIso)
-        .lte('date', wideEndIso),
+    const dateRowsPromise = fetchAllPagedRows<Stage60Record>((from, to) =>
+      withSignal(
+        supabase
+          .from('leads_leadstage')
+          .select(STAGE60_SELECT)
+          .eq('stage', 60)
+          .gte('date', wideStartIso)
+          .lte('date', wideEndIso)
+          .order('id', { ascending: true })
+          .range(from, to),
+      ),
     );
 
-    const qCdateWhenDateNull = withSignal(
-      supabase
-        .from('leads_leadstage')
-        .select(STAGE60_SELECT)
-        .eq('stage', 60)
-        .is('date', null)
-        .gte('cdate', wideStartIso)
-        .lte('cdate', wideEndIso),
+    const cdateRowsPromise = fetchAllPagedRows<Stage60Record>((from, to) =>
+      withSignal(
+        supabase
+          .from('leads_leadstage')
+          .select(STAGE60_SELECT)
+          .eq('stage', 60)
+          .is('date', null)
+          .gte('cdate', wideStartIso)
+          .lte('cdate', wideEndIso)
+          .order('id', { ascending: true })
+          .range(from, to),
+      ),
     );
 
-    const [resDate, resCdate] = await Promise.all([qDate, qCdateWhenDateNull]);
-
-    if (resDate.error) throw resDate.error;
-    if (resCdate.error) throw resCdate.error;
+    const [dateRows, cdateRows] = await Promise.all([dateRowsPromise, cdateRowsPromise]);
 
     const byId = new Map<number, Stage60Record>();
-    for (const row of [...(resDate.data || []), ...(resCdate.data || [])]) {
+    for (const row of [...dateRows, ...cdateRows]) {
       const id = Number(row.id);
       if (Number.isFinite(id)) byId.set(id, row as Stage60Record);
     }
@@ -120,12 +126,17 @@ export async function fetchStage60RecordsInRange(
     );
   }
 
-  let query = withSignal(supabase.from('leads_leadstage').select(STAGE60_SELECT).eq('stage', 60));
-  if (startIso) query = query.gte('date', startIso);
-  if (endIso) query = query.lte('date', endIso);
-  const { data, error } = await query;
-  if (error) throw error;
-  return (data || []) as Stage60Record[];
+  return fetchAllPagedRows<Stage60Record>((from, to) => {
+    let query = supabase
+      .from('leads_leadstage')
+      .select(STAGE60_SELECT)
+      .eq('stage', 60)
+      .order('id', { ascending: true })
+      .range(from, to);
+    if (startIso) query = query.gte('date', startIso);
+    if (endIso) query = query.lte('date', endIso);
+    return withSignal(query);
+  });
 }
 
 export function getJerusalemScoreboardDates(reference = new Date()) {

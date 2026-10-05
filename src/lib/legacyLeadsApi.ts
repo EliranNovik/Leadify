@@ -1638,11 +1638,25 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
         prefetchedLegacy = [];
       }
 
+      const isExactSublead =
+        intent.master != null &&
+        intent.suffix != null &&
+        !Number.isNaN(intent.master) &&
+        !Number.isNaN(intent.suffix);
+      const hasExactLeadHit = newRows.length > 0 || prefetchedLegacy.length > 0;
+
       let leadFlow;
-      try {
-        leadFlow = await findContactsForLeadSearch(intent, newRows, opts, prefetchedLegacy);
-      } catch {
+      if (isExactSublead && hasExactLeadHit) {
+        // The lead itself is already known. Contact/junction enrichment adds
+        // multiple requests and can make an exact header lookup unnecessarily
+        // expensive (and previously surfaced a leads_contact 400).
         leadFlow = { contacts: [], rels: [], legacyLeads: prefetchedLegacy };
+      } else {
+        try {
+          leadFlow = await findContactsForLeadSearch(intent, newRows, opts, prefetchedLegacy);
+        } catch {
+          leadFlow = { contacts: [], rels: [], legacyLeads: prefetchedLegacy };
+        }
       }
       contactRows = leadFlow.contacts;
       rels = leadFlow.rels;

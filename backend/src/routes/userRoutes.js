@@ -14,7 +14,7 @@ router.get('/users', userController.getAllUsers);
 router.put('/users/:userId/password', requireSuperuser, userController.updateUserPassword);
 
 // Update user details
-router.put('/users/:userId', userController.updateUser);
+router.put('/users/:userId', requireSuperuser, userController.updateUser);
 
 // Delete user
 router.delete('/users/:userId', userController.deleteUser);

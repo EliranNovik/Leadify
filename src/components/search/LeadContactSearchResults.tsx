@@ -24,6 +24,8 @@ type Props = {
   minLength?: number;
   className?: string;
   showTypeFilter?: boolean;
+  /** Signed profile-image requests are unnecessary in compact/global search UIs. */
+  loadProfileImages?: boolean;
   /** When true, list grows with content (parent scrolls) — use for mobile full-page search. */
   unboundedList?: boolean;
 };
@@ -75,6 +77,7 @@ const LeadContactSearchResults: React.FC<Props> = ({
   minLength = 2,
   className = '',
   showTypeFilter = true,
+  loadProfileImages = true,
   unboundedList = false,
 }) => {
   const trimmed = query.trim();
@@ -109,8 +112,10 @@ const LeadContactSearchResults: React.FC<Props> = ({
   }, [results, typeFilter]);
 
   const profilePaths = useMemo(
-    () => filteredResults.map((lead) => lead.portal_profile_image_path),
-    [filteredResults],
+    () => loadProfileImages
+      ? filteredResults.map((lead) => lead.portal_profile_image_path)
+      : [],
+    [filteredResults, loadProfileImages],
   );
   const profileImageUrls = useContactProfileImageUrls(profilePaths);
 

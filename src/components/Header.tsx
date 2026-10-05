@@ -2880,6 +2880,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       onSelect={handleSearchResultClick}
       unboundedList={opts?.unboundedList}
       minLength={headerSearchMinLength}
+      loadProfileImages={false}
     />
   );
 

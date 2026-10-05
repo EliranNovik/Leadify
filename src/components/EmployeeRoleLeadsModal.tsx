@@ -5,7 +5,8 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { useNavigate } from 'react-router-dom';
-import { calculateNewLeadFullAmount, calculateLegacyLeadFullAmount } from '../utils/salesContributionCalculator';
+import { calculateNewLeadAmount, calculateLegacyLeadAmount } from '../utils/salesContributionCalculator';
+import { fetchInvoicedInstallments } from '../lib/invoicedInstallments';
 import { legacyLeadMatchesExpert, newLeadFieldMatchesEmployee, newLeadMatchesExpert } from '../utils/rolePercentageCalculator';
 import {
   collectHandlerEmployeeIdsForLookup,
@@ -274,6 +275,19 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
         fromDate,
         toDate
       );
+      const netInstallmentByPayment = new Map<string, { amountNis: number }>();
+      try {
+        const { installments } = await fetchInvoicedInstallments({
+          dueFrom: fromDate,
+          dueTo: toDate,
+          includeInvoiceSentNotReadyToPay: true,
+        });
+        installments.forEach((row) => {
+          netInstallmentByPayment.set(`${row.source}:${row.paymentId}`, row);
+        });
+      } catch (error) {
+        console.warn('Unable to load subcontractor-fee-adjusted modal installments:', error);
+      }
 
       // Get employee display name for matching
       const { data: employeeData } = await supabase
@@ -457,7 +471,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
               // Calculate amount - value only (no VAT)
               const value = Number(payment.value || 0);
-              const amount = value;
+              const netInstallment = netInstallmentByPayment.get(`new:${payment.id}`);
+              const amount = netInstallment?.amountNis ?? value;
 
               const orderCode = payment.payment_order ? getOrderText(payment.payment_order) : '—';
 
@@ -484,7 +499,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 name: lead.name || '—',
                 client: contactName || '—',
                 amount,
-                currency: payment.currency || '₪',
+                currency: netInstallment ? 'NIS' : (payment.currency || '₪'),
                 order: orderCode,
                 handler: handlerName,
                 case: caseNumber,
@@ -677,12 +692,13 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
               // Calculate amount - value only (no VAT)
               const value = Number(payment.value || payment.value_base || 0);
-              const amount = value;
+              const netInstallment = netInstallmentByPayment.get(`legacy:${payment.id}`);
+              const amount = netInstallment?.amountNis ?? value;
 
               const accountingCurrency: any = payment.accounting_currencies
                 ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
                 : null;
-              const currency = accountingCurrency?.name || accountingCurrency?.iso_code ||
+              const currency = netInstallment ? 'NIS' : accountingCurrency?.name || accountingCurrency?.iso_code ||
                 (payment.currency_id === 2 ? '€' :
                   payment.currency_id === 3 ? '$' :
                     payment.currency_id === 4 ? '£' : '₪');
@@ -962,7 +978,11 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               }
             }
             // Fallback to meeting_manager_id if manager is not set
-            if (lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId) {
+            if (
+              lead.meeting_manager_id &&
+              Number(lead.meeting_manager_id) === employeeId &&
+              !roles.includes('Meeting Manager')
+            ) {
               roles.push('Meeting Manager');
             }
 
@@ -978,8 +998,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 return; // Show handler-only in "Handler — due payments" only, not in Signed leads
               }
 
-              // Same as calculateEmployeeMetrics totalSigned: full NIS (no subcontractor fee) per salesContributionCalculator
-              const amountNIS = calculateNewLeadFullAmount(lead);
+              const amountNIS = calculateNewLeadAmount(lead);
               const totalForSigned = isHandlerOnly ? 0 : amountNIS;
               const displayRoleLabel =
                 isAllRolesMode ? roles.filter((r) => r !== 'Handler').join(', ') : roles.join(', ');
@@ -1084,7 +1103,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 return;
               }
 
-              const amountNIS = calculateLegacyLeadFullAmount(lead);
+              const amountNIS = calculateLegacyLeadAmount(lead);
               const totalForSigned = isHandlerOnly ? 0 : amountNIS;
               const displayRoleLabel =
                 isAllRolesMode ? roles.filter((r) => r !== 'Handler').join(', ') : roles.join(', ');

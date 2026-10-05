@@ -185,11 +185,19 @@ const UserManagement: React.FC = () => {
 
     try {
       if (editingUser && editingUser.id) {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          throw new Error('Your admin session has expired. Please sign in again.');
+        }
+
         // Update existing user
         const response = await fetch(`${API_BASE_URL}/users/${editingUser.id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({
             email: formData.email,
@@ -571,8 +579,12 @@ const UserManagement: React.FC = () => {
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                       required
-                      disabled={!!editingUser.id}
                     />
+                    {editingUser.id && (
+                      <span className="mt-1 text-xs text-gray-500">
+                        Updates both the login email and the CRM user email.
+                      </span>
+                    )}
                   </div>
 
                   <div className="form-control">
