@@ -13,7 +13,7 @@ type ComposeSignaturePreviewProps = {
   className?: string;
 };
 
-const PREVIEW_WIDTH = 820;
+const PREVIEW_WIDTH = 920;
 
 export const COMPOSE_ACTION_BUTTON_CLASS =
   'btn btn-circle border-0 text-gray-600 hover:bg-gray-300 transition-all hover:scale-105';
@@ -117,7 +117,10 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
   className = '',
 }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string | null>(null);
+  const [previewScale, setPreviewScale] = useState(1);
+  const [previewHeight, setPreviewHeight] = useState(compact ? 120 : 160);
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   useEffect(() => {
@@ -148,8 +151,26 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
       doc.documentElement.scrollHeight,
       compact ? 120 : 160,
     );
-    iframe.style.height = `${height + 8}px`;
+    const nextHeight = height + 8;
+    iframe.style.height = `${nextHeight}px`;
+    setPreviewHeight(nextHeight);
   };
+
+  useLayoutEffect(() => {
+    const container = previewContainerRef.current;
+    if (!container) return;
+
+    const updateScale = () => {
+      const horizontalPadding = 32;
+      const availableWidth = Math.max(0, container.clientWidth - horizontalPadding);
+      setPreviewScale(Math.min(1, availableWidth / PREVIEW_WIDTH));
+    };
+
+    updateScale();
+    const observer = new ResizeObserver(updateScale);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -172,17 +193,29 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
 
   return (
     <div className={`bg-white ${className}`}>
-      <div className="overflow-x-auto px-4 pb-1 pt-2">
-        <iframe
-          ref={iframeRef}
-          title="Your email signature"
-          srcDoc={srcDoc}
-          sandbox="allow-same-origin"
-          onLoad={resizeIframe}
-          className="pointer-events-none block border-0 bg-white"
-          style={{ width: PREVIEW_WIDTH, minHeight: compact ? 120 : 160 }}
-          tabIndex={-1}
-        />
+      <div ref={previewContainerRef} className="overflow-hidden px-4 pb-1 pt-2">
+        <div
+          style={{
+            width: PREVIEW_WIDTH * previewScale,
+            height: previewHeight * previewScale,
+          }}
+        >
+          <iframe
+            ref={iframeRef}
+            title="Your email signature"
+            srcDoc={srcDoc}
+            sandbox="allow-same-origin"
+            onLoad={resizeIframe}
+            className="pointer-events-none block origin-top-left border-0 bg-white"
+            style={{
+              width: PREVIEW_WIDTH,
+              height: previewHeight,
+              minHeight: compact ? 120 : 160,
+              transform: `scale(${previewScale})`,
+            }}
+            tabIndex={-1}
+          />
+        </div>
       </div>
     </div>
   );

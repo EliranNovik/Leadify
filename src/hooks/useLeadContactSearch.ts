@@ -405,11 +405,9 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       setLoading(true);
     }
 
-    const waitMs = queryIsEmail
-      ? Math.max(debounceMs, 90)
-      : instant.length > 0 || resultsRef.current.length > 0
-        ? debounceMs
-        : 0;
+    // Always debounce network requests. Firing immediately on every uncached
+    // keystroke can create an abort/retry storm and stall the application.
+    const waitMs = queryIsEmail ? Math.max(debounceMs, 90) : debounceMs;
     debounceRef.current = window.setTimeout(() => {
       void refresh(trimmedQuery);
     }, waitMs);

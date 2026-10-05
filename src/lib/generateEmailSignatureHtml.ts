@@ -35,6 +35,8 @@ const CONTACT_FONT_PX = 14;
 const CONTACT_LINE_PX = 20;
 const CONTACT_ICON_GAP_PX = 9;
 const CONTACT_ROW_PAD_PX = 4;
+/** Additional vertical space between contact-detail rows. */
+const CONTACT_ROW_GAP_PX = 4;
 const CONTACT_SEPARATOR_PAD_PX = 16;
 /**
  * Contact details are laid out two per row: phone beside email, then website. The address takes a

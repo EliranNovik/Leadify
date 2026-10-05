@@ -301,17 +301,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
+  const trimmedHeaderSearch = searchValue.trim();
+  const headerSearchMinLength = /^\d+$/.test(trimmedHeaderSearch) ? 4 : 2;
+  const headerSearchReady = trimmedHeaderSearch.length >= headerSearchMinLength;
   const { results: textSearchResults, loading: textSearchLoading } = useLeadContactSearch(searchValue, {
-    enabled: searchValue.trim().length >= 1 && !hasAppliedFilters,
+    enabled: headerSearchReady && !hasAppliedFilters,
     pause: !supabaseSessionReady,
     limit: 20,
-    debounceMs: 40,
-    minLength: 1,
+    debounceMs: 300,
+    minLength: headerSearchMinLength,
   });
   const activeSearchResults =
-    searchValue.trim().length >= 1 && !hasAppliedFilters ? textSearchResults : searchResults;
+    headerSearchReady && !hasAppliedFilters ? textSearchResults : searchResults;
   const activeSearchLoading =
-    searchValue.trim().length >= 1 && !hasAppliedFilters ? textSearchLoading : isAdvancedSearching;
+    headerSearchReady && !hasAppliedFilters ? textSearchLoading : isAdvancedSearching;
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
   const [externalUserProfile, setExternalUserProfile] = useState<{ photo_url?: string | null } | null>(null);
   /** Prefer live employee row; fall back to auth display cache so avatar matches name on first paint after refresh */
@@ -2876,7 +2879,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       query={searchValue}
       onSelect={handleSearchResultClick}
       unboundedList={opts?.unboundedList}
-      minLength={1}
+      minLength={headerSearchMinLength}
     />
   );
 
