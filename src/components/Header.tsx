@@ -5354,7 +5354,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                             legacyQuery = legacyQuery.filter('cdate', 'lte', advancedFilters.toDate);
                           }
                           if (advancedFilters.fileId) {
-                            legacyQuery = legacyQuery.ilike('id', `%${advancedFilters.fileId}%`);
+                            // leads_lead.id is bigint, so it cannot be pattern-matched; manual_id carries the text form.
+                            const legacyFileId = String(advancedFilters.fileId).trim();
+                            legacyQuery = /^\d+$/.test(legacyFileId)
+                              ? legacyQuery.eq('id', Number(legacyFileId))
+                              : legacyQuery.ilike('manual_id', `%${legacyFileId}%`);
                           }
                           if (advancedFilters.topic) {
                             legacyQuery = legacyQuery.ilike('topic', `%${advancedFilters.topic}%`);

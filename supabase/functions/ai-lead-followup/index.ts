@@ -7,7 +7,7 @@ import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MEETING_SELECT =
-  'id, meeting_date, meeting_time, status, meeting_amount, meeting_currency, meeting_brief, expert_notes, meeting_summary_notes, meeting_location, scheduler, expert';
+  'id, meeting_date, meeting_time, status, meeting_amount, meeting_currency, meeting_brief, meeting_summary_notes, meeting_location, scheduler, expert';
 
 const STAGE_FALLBACK: Record<string, string> = {
   '0': 'Created',
@@ -58,7 +58,6 @@ type MeetingRow = {
   meeting_amount?: number | string | null;
   meeting_currency?: string | null;
   meeting_brief?: string | null;
-  expert_notes?: string | null;
   meeting_summary_notes?: string | null;
   meeting_location?: string | null;
   scheduler?: string | null;
@@ -229,7 +228,6 @@ function mapMeeting(row: MeetingRow) {
     scheduler: clip(row.scheduler, 80) || null,
     expert: clip(row.expert, 80) || null,
     brief: clip(row.meeting_brief, 900) || null,
-    expertNotes: clip(row.expert_notes, 900) || null,
     summaryNotes: clip(row.meeting_summary_notes, 2200) || null,
   };
 }
@@ -292,7 +290,7 @@ function assembleCaseFile(args: {
     args.meetings
       .map((m) => {
         const header = formatLine([String(m.date || ''), String(m.status || '')]);
-        const body = [m.summaryNotes, m.brief, m.expertNotes].filter(Boolean).join('\n');
+        const body = [m.summaryNotes, m.brief].filter(Boolean).join('\n');
         if (!body) return header ? `${header}: (no notes)` : '';
         return `${header}\n${body}`;
       })
@@ -755,7 +753,7 @@ serve(async (req) => {
         direction: null,
         at: meetingAt(row),
         preview: clip(
-          [row.status, row.meeting_location, row.meeting_summary_notes, row.meeting_brief, row.expert_notes]
+          [row.status, row.meeting_location, row.meeting_summary_notes, row.meeting_brief]
             .filter(Boolean)
             .join(' · '),
           700,

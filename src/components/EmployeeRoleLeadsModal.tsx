@@ -890,13 +890,13 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             try {
               const { data: contacts, error: contactsError } = await supabase
                 .from('leads_contact')
-                .select('lead_id, name')
-                .in('lead_id', newLeadIdsArray);
+                .select('newlead_id, name')
+                .in('newlead_id', newLeadIdsArray);
 
               if (!contactsError && contacts) {
                 contacts?.forEach(contact => {
-                  if (!contactsMap.has(contact.lead_id)) {
-                    contactsMap.set(contact.lead_id, contact.name);
+                  if (!contactsMap.has(contact.newlead_id)) {
+                    contactsMap.set(contact.newlead_id, contact.name);
                   }
                 });
               }

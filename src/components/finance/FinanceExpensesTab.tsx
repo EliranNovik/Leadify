@@ -19,6 +19,7 @@ import {
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import AddExpenseDrawer from './AddExpenseDrawer';
+import CashBoxPage from './CashBoxPage';
 import ExpenseDocumentsDrawer from './ExpenseDocumentsDrawer';
 import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
 import {
@@ -34,6 +35,15 @@ import {
 import { FINANCE_EXPENSE_DOCUMENTS_BUCKET } from '../../lib/financeExpenseDocuments';
 import { buildClientFinancesTabPath } from '../../lib/proformaClientNavigation';
 import { useAdminRole } from '../../hooks/useAdminRole';
+import {
+  fetchCashBoxTransactions,
+  formatCashBoxNis,
+  type CashBoxTransaction,
+} from '../../lib/financeCashBox';
+import {
+  convertToNIS,
+  createBoiDateRateConverter,
+} from '../../lib/boiCurrencyConversion';
 
 const TABLE_COLGROUP = (
   <colgroup>
@@ -61,19 +71,6 @@ const KIND_TOTALS: Array<{
   { id: 'rent', label: FINANCE_EXPENSE_KIND_LABEL.rent, icon: HomeModernIcon },
   { id: 'partner_draws', label: FINANCE_EXPENSE_KIND_LABEL.partner_draws, icon: UserGroupIcon },
 ];
-
-function formatTotalsMap(map: Map<string, number>): string {
-  if (map.size === 0) return formatFinanceExpenseAmount(0, 'ILS');
-  return [...map.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([code, amount]) => formatFinanceExpenseAmount(amount, code))
-    .join(' · ');
-}
-
-function isTotalsMapZero(map: Map<string, number>): boolean {
-  if (map.size === 0) return true;
-  return [...map.values()].every((amount) => !amount);
-}
 
 const EXPENSE_SUMMARY_THEMES: Record<
   'total' | FinanceExpenseKind,
@@ -188,7 +185,7 @@ function TotalPill({
           </p>
         )}
       </div>
-      <div className={`shrink-0 rounded-full border border-white p-2.5 shadow-sm ${theme.iconBg}`}>
+      <div className="shrink-0 p-1">
         <Icon className={`h-8 w-8 ${theme.icon}`} aria-hidden />
       </div>
     </button>
@@ -214,6 +211,25 @@ function localDateIso(d = new Date()): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+type FinanceExpensesViewCache = {
+  rows: FinanceExpenseEntryRow[];
+  cashBoxRows: CashBoxTransaction[];
+  nisAmountByRow: Map<string, number>;
+  cachedAt: number;
+};
+
+const FINANCE_EXPENSES_CACHE_TTL_MS = 5 * 60 * 1000;
+const financeExpensesViewCache = new Map<string, FinanceExpensesViewCache>();
+
+function financeExpensesCacheKey(
+  search: string,
+  dateFrom: string,
+  dateTo: string,
+  canManageRestrictedKinds: boolean,
+): string {
+  return `${canManageRestrictedKinds ? 'restricted' : 'standard'}|${dateFrom}|${dateTo}|${search.trim().toLowerCase()}`;
 }
 
 function markOpenFinancesExpensesSubTab() {
@@ -429,8 +445,12 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
   canManageRestrictedKinds = false,
 }) => {
   const { isSuperUser } = useAdminRole();
-  const [rows, setRows] = useState<FinanceExpenseEntryRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialDate = localDateIso();
+  const initialCache = financeExpensesViewCache.get(
+    financeExpensesCacheKey('', initialDate, initialDate, canManageRestrictedKinds),
+  );
+  const [rows, setRows] = useState<FinanceExpenseEntryRow[]>(() => initialCache?.rows || []);
+  const [loading, setLoading] = useState(() => !initialCache);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editRow, setEditRow] = useState<FinanceExpenseEntryRow | null>(null);
   const [docsRow, setDocsRow] = useState<FinanceExpenseEntryRow | null>(null);
@@ -440,22 +460,83 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
   const [selectedKinds, setSelectedKinds] = useState<FinanceExpenseKind[]>([]);
   const [dateFrom, setDateFrom] = useState(localDateIso);
   const [dateTo, setDateTo] = useState(localDateIso);
+  const [cashBoxRows, setCashBoxRows] = useState<CashBoxTransaction[]>(() => initialCache?.cashBoxRows || []);
+  const [cashBoxOpen, setCashBoxOpen] = useState(false);
+  const [openCashTransactionOnEntry, setOpenCashTransactionOnEntry] = useState(false);
+  const [cashTransactionDirection, setCashTransactionDirection] = useState<'add' | 'remove'>('add');
+  const [nisAmountByRow, setNisAmountByRow] = useState<Map<string, number>>(
+    () => initialCache?.nisAmountByRow || new Map(),
+  );
 
   const visibleKindTotals = useMemo(
     () => KIND_TOTALS.filter((k) => canViewFinanceExpenseKind(k.id, canManageRestrictedKinds)),
     [canManageRestrictedKinds],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (force = false) => {
+    const cacheKey = financeExpensesCacheKey(search, dateFrom, dateTo, canManageRestrictedKinds);
+    const cached = financeExpensesViewCache.get(cacheKey);
+    if (!force && cached && Date.now() - cached.cachedAt < FINANCE_EXPENSES_CACHE_TTL_MS) {
+      setRows(cached.rows);
+      setCashBoxRows(cached.cashBoxRows);
+      setNisAmountByRow(new Map(cached.nisAmountByRow));
+      setLoading(false);
+      return;
+    }
+    setLoading(rows.length === 0);
     try {
-      const data = await fetchFinanceExpenseEntries({
-        search,
-        dateFrom,
-        dateTo,
-        hidePartnerDraws: !canManageRestrictedKinds,
-      });
+      const [data, cashRows] = await Promise.all([
+        fetchFinanceExpenseEntries({
+          search,
+          dateFrom,
+          dateTo,
+          hidePartnerDraws: !canManageRestrictedKinds,
+        }),
+        fetchCashBoxTransactions().catch((error) => {
+          console.error('[FinanceExpensesTab] cash box load:', error);
+          return [];
+        }),
+      ]);
       setRows(data);
+      setCashBoxRows(cashRows);
+      try {
+        const converter = await createBoiDateRateConverter({
+          dateWindow: { from: dateFrom, to: dateTo },
+        });
+        const converted = await Promise.all(
+          data.map(async (row) => [
+            row.listKey,
+            await converter.toNis(
+              Number(row.amount) || 0,
+              row.currency_code || 'ILS',
+              row.expense_date,
+            ),
+          ] as const),
+        );
+        const nisMap = new Map(converted);
+        setNisAmountByRow(nisMap);
+        financeExpensesViewCache.set(cacheKey, {
+          rows: data,
+          cashBoxRows: cashRows,
+          nisAmountByRow: nisMap,
+          cachedAt: Date.now(),
+        });
+      } catch (conversionError) {
+        console.warn('[FinanceExpensesTab] BOI conversion fallback:', conversionError);
+        const nisMap = new Map(
+          data.map((row) => [
+            row.listKey,
+            convertToNIS(Number(row.amount) || 0, row.currency_code || 'ILS'),
+          ]),
+        );
+        setNisAmountByRow(nisMap);
+        financeExpensesViewCache.set(cacheKey, {
+          rows: data,
+          cashBoxRows: cashRows,
+          nisAmountByRow: nisMap,
+          cachedAt: Date.now(),
+        });
+      }
       setDocsRow((prev) => {
         if (!prev) return prev;
         return data.find((r) => r.listKey === prev.listKey) ?? prev;
@@ -467,7 +548,7 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
     } finally {
       setLoading(false);
     }
-  }, [canManageRestrictedKinds, dateFrom, dateTo, search]);
+  }, [canManageRestrictedKinds, dateFrom, dateTo, rows.length, search]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -501,7 +582,7 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
       await deleteFinanceExpense(row);
       toast.success('Expense deleted');
       if (docsRow?.listKey === row.listKey) setDocsRow(null);
-      await load();
+      await load(true);
     } catch (err: any) {
       console.error('[FinanceExpensesTab] delete:', err);
       toast.error(err?.message || 'Failed to delete expense');
@@ -513,26 +594,22 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
     [canManageRestrictedKinds, rows],
   );
 
-  const totalsByCurrency = useMemo(() => {
-    const map = new Map<string, number>();
-    visibleRows.forEach((row) => {
-      const code = (row.currency_code || 'ILS').trim().toUpperCase() || 'ILS';
-      map.set(code, (map.get(code) || 0) + (Number(row.amount) || 0));
-    });
-    return map;
-  }, [visibleRows]);
+  const totalNis = useMemo(
+    () => visibleRows.reduce((sum, row) => sum + (nisAmountByRow.get(row.listKey) || 0), 0),
+    [nisAmountByRow, visibleRows],
+  );
 
   const totalsByKind = useMemo(() => {
-    const byKind = new Map<FinanceExpenseKind, Map<string, number>>();
-    visibleKindTotals.forEach((k) => byKind.set(k.id, new Map()));
+    const byKind = new Map<FinanceExpenseKind, number>();
+    visibleKindTotals.forEach((k) => byKind.set(k.id, 0));
     visibleRows.forEach((row) => {
-      const code = (row.currency_code || 'ILS').trim().toUpperCase() || 'ILS';
-      const map = byKind.get(row.kind) ?? new Map<string, number>();
-      map.set(code, (map.get(code) || 0) + (Number(row.amount) || 0));
-      byKind.set(row.kind, map);
+      byKind.set(
+        row.kind,
+        (byKind.get(row.kind) || 0) + (nisAmountByRow.get(row.listKey) || 0),
+      );
     });
     return byKind;
-  }, [visibleKindTotals, visibleRows]);
+  }, [nisAmountByRow, visibleKindTotals, visibleRows]);
 
   const filteredRows = useMemo(() => {
     if (selectedKinds.length === 0) return visibleRows;
@@ -546,83 +623,151 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
     );
   };
 
+  const cashBoxBalance = useMemo(
+    () => cashBoxRows.reduce((sum, row) => sum + row.amount_nis, 0),
+    [cashBoxRows],
+  );
+
+  if (cashBoxOpen) {
+    return (
+      <CashBoxPage
+        openCreateOnMount={openCashTransactionOnEntry}
+        initialTransactionDirection={cashTransactionDirection}
+        onBack={() => {
+          setCashBoxOpen(false);
+          setOpenCashTransactionOnEntry(false);
+          void load(true);
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-          <button
-            type="button"
-            className="btn btn-primary col-start-2 row-start-1 h-12 min-h-12 w-auto justify-self-end self-center gap-1.5 rounded-full border-none px-6 text-sm font-semibold sm:col-start-5 sm:h-14 sm:min-h-14 sm:px-7 sm:text-base"
-            onClick={openCreate}
-          >
-            <PlusIcon className="h-5 w-5 sm:h-6 sm:w-6" />
-            Add expense
-          </button>
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,4fr)_1px_minmax(17rem,1fr)] sm:gap-x-3">
+        <div className="flex flex-col gap-3">
+          <div className="order-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <label className="form-control w-full max-w-xs lg:w-64 lg:max-w-none">
+              <span className="label py-1">
+                <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">Search</span>
+              </span>
+              <div className="relative">
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400" />
+                <input
+                  className="input input-bordered w-full rounded-full bg-white pl-11"
+                  placeholder="Search..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+            </label>
+            <div className="flex w-full flex-col gap-3 sm:flex-row sm:justify-end lg:w-auto">
+              <label className="form-control w-full lg:w-40">
+                <span className="label py-1">
+                  <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">From</span>
+                </span>
+                <input
+                  type="date"
+                  className="input input-bordered w-full bg-white"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                />
+              </label>
+              <label className="form-control w-full lg:w-40">
+                <span className="label py-1">
+                  <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">To</span>
+                </span>
+                <input
+                  type="date"
+                  className="input input-bordered w-full bg-white"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+          <div className="order-1 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <TotalPill
             label="Total"
             icon={BanknotesIcon}
             theme={EXPENSE_SUMMARY_THEMES.total}
-            value={formatTotalsMap(totalsByCurrency)}
-            isZero={isTotalsMapZero(totalsByCurrency)}
+            value={formatFinanceExpenseAmount(totalNis, 'ILS')}
+            isZero={!totalNis}
             loading={loading && rows.length === 0}
             active={selectedKinds.length === 0}
             onClick={() => setSelectedKinds([])}
           />
           {visibleKindTotals.map((kindMeta) => {
-            const kindTotals = totalsByKind.get(kindMeta.id) ?? new Map();
+            const kindTotalNis = totalsByKind.get(kindMeta.id) || 0;
             return (
               <TotalPill
                 key={kindMeta.id}
                 label={kindMeta.label}
                 icon={kindMeta.icon}
                 theme={EXPENSE_SUMMARY_THEMES[kindMeta.id]}
-                value={formatTotalsMap(kindTotals)}
-                isZero={isTotalsMapZero(kindTotals)}
+                value={formatFinanceExpenseAmount(kindTotalNis, 'ILS')}
+                isZero={!kindTotalNis}
                 loading={loading && rows.length === 0}
                 active={selectedKinds.includes(kindMeta.id)}
                 onClick={() => toggleKind(kindMeta.id)}
               />
             );
           })}
-      </div>
+          </div>
+        </div>
 
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <label className="form-control w-full max-w-xs lg:w-64 lg:max-w-none">
-          <span className="label py-1">
-            <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">Search</span>
-          </span>
-            <div className="relative">
-              <MagnifyingGlassIcon className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <input
-                className="input input-bordered w-full rounded-full bg-white pl-11"
-                placeholder="Search..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+        <div className="hidden bg-gray-300/80 sm:block" aria-hidden />
+
+        <div className="grid grid-rows-[4.5rem_4.5rem] gap-2">
+          <div className="grid min-h-[4.5rem] grid-cols-[1.35fr_2fr] overflow-hidden rounded-2xl bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500 shadow-xl">
+            <button
+              type="button"
+              onClick={() => {
+                setOpenCashTransactionOnEntry(false);
+                setCashBoxOpen(true);
+              }}
+              className="group flex min-h-[4.5rem] flex-col items-start justify-center px-3 py-2.5 text-left text-white transition hover:bg-white/10"
+            >
+              <p className="text-xs font-semibold uppercase tracking-wide text-white/80">Cash box</p>
+              <p className="text-left text-lg font-bold tabular-nums text-white">
+                {formatCashBoxNis(cashBoxBalance)}
+              </p>
+            </button>
+            <div className="grid grid-cols-2">
+              <button
+                type="button"
+                className="flex items-center justify-center bg-emerald-600 px-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                onClick={() => {
+                  setCashTransactionDirection('add');
+                  setOpenCashTransactionOnEntry(true);
+                  setCashBoxOpen(true);
+                }}
+              >
+                Add
+              </button>
+              <button
+                type="button"
+                className="flex items-center justify-center bg-rose-600 px-2 text-sm font-semibold text-white transition hover:bg-rose-700"
+                onClick={() => {
+                  setCashTransactionDirection('remove');
+                  setOpenCashTransactionOnEntry(true);
+                  setCashBoxOpen(true);
+                }}
+              >
+                Remove
+              </button>
             </div>
-        </label>
-        <div className="flex w-full flex-col gap-3 sm:flex-row sm:justify-end lg:w-auto">
-        <label className="form-control w-full lg:w-40">
-          <span className="label py-1">
-            <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">From</span>
-          </span>
-          <input
-            type="date"
-            className="input input-bordered w-full bg-white"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-          />
-        </label>
-        <label className="form-control w-full lg:w-40">
-          <span className="label py-1">
-            <span className="label-text text-xs font-semibold uppercase tracking-wide text-gray-500">To</span>
-          </span>
-          <input
-            type="date"
-            className="input input-bordered w-full bg-white"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-          />
-        </label>
+          </div>
+          <button
+            type="button"
+            className="row-start-2 flex min-h-[4.5rem] w-full items-center justify-center gap-2 rounded-2xl border-none bg-[#391BC8] px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#2f16aa]"
+            onClick={openCreate}
+          >
+            <span className="rounded-full bg-white/20 p-2">
+              <PlusIcon className="h-5 w-5" />
+            </span>
+            Add expense
+          </button>
         </div>
       </div>
 
@@ -754,13 +899,13 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
         editRow={editRow}
         canManageRestrictedKinds={canManageRestrictedKinds}
         onClose={closeDrawer}
-        onSaved={() => void load()}
+        onSaved={() => void load(true)}
       />
       <ExpenseDocumentsDrawer
         open={Boolean(docsRow)}
         row={docsRow}
         onClose={() => setDocsRow(null)}
-        onChanged={() => void load()}
+        onChanged={() => void load(true)}
         onOpenDocument={(docs, index) => {
           setViewerDocs(docs);
           setViewerIndex(index);

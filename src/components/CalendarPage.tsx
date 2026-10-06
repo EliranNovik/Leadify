@@ -83,10 +83,10 @@ async function fetchCrmUserByAuthUser(
   select: string,
 ): Promise<Record<string, unknown> | null> {
   const byAuth = await supabase.from('users').select(select).eq('auth_id', user.id).maybeSingle();
-  if (byAuth.data) return byAuth.data as Record<string, unknown>;
+  if (byAuth.data) return byAuth.data as unknown as Record<string, unknown>;
   if (user.email) {
     const byEmail = await supabase.from('users').select(select).eq('email', user.email).maybeSingle();
-    if (byEmail.data) return byEmail.data as Record<string, unknown>;
+    if (byEmail.data) return byEmail.data as unknown as Record<string, unknown>;
   }
   return null;
 }
@@ -369,6 +369,15 @@ const calendarMeetingsByRangeCache: Map<
 > = new Map();
 const calendarLastMeetingsFetchedAtMsByRange: Map<string, number> = new Map();
 
+type CalendarMeetingLocationCache = {
+  locations: Record<number, string>;
+  links: Record<string, string>;
+  nameToId: Record<string, number>;
+  physical: Record<number, boolean>;
+};
+
+let calendarMeetingLocationCache: CalendarMeetingLocationCache | null = null;
+
 /** In-memory meetings cache TTL — shorter on mobile so resume shows fresher data. */
 function getCalendarMeetingsCacheTtlMs(): number {
   if (typeof window === 'undefined') return 10 * 60 * 1000;
@@ -457,7 +466,9 @@ const CalendarPage: React.FC = () => {
   const calendarGlobalSearchSeqRef = useRef(0);
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
   const [totalAmount, setTotalAmount] = useState(0);
-  const [isLoading, setIsLoading] = useState(true);
+  // Persisted meetings are available synchronously on Back navigation, so render
+  // them immediately instead of flashing "Loading meetings".
+  const [isLoading, setIsLoading] = useState(() => meetings.length === 0);
   const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
   const [isLegacyLoading, setIsLegacyLoading] = useState(false);
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
@@ -639,8 +650,8 @@ const CalendarPage: React.FC = () => {
 
     const patchLeadIntoMeetings = (leadId: any, leadType: 'new' | 'legacy', patch: any) => {
       if (leadId == null || !patch) return;
-      setMeetings(prev =>
-        prev.map((m: any) => {
+      const patchRows = (rows: any[]) =>
+        rows.map((m: any) => {
           const lead = m?.lead;
           if (!lead) return m;
           if (leadType === 'new') {
@@ -654,8 +665,18 @@ const CalendarPage: React.FC = () => {
           const normalizedPayloadId = String(leadId || '');
           if (normalizedMeetingLeadId.replace(/^legacy_/, '') !== normalizedPayloadId.replace(/^legacy_/, '')) return m;
           return { ...m, lead: { ...lead, ...patch } };
-        })
-      );
+        });
+
+      setMeetings(prev => patchRows(prev));
+
+      // Keep every date-range cache synchronized while Calendar is mounted.
+      // Otherwise navigating away and back can restore pre-update role data.
+      calendarMeetingsByRangeCache.forEach((cached, key) => {
+        calendarMeetingsByRangeCache.set(key, {
+          ...cached,
+          meetings: patchRows(cached.meetings),
+        });
+      });
     };
 
     // Lightweight in-place refresh of the past-stages set so we never need to
@@ -896,12 +917,20 @@ const CalendarPage: React.FC = () => {
   const [showMoreUnavailableDropdown, setShowMoreUnavailableDropdown] = useState(false);
   const [meetingCounts, setMeetingCounts] = useState<{ [clientId: string]: number }>({});
   const [previousManagers, setPreviousManagers] = useState<{ [meetingId: number]: string }>({});
-  const [meetingLocations, setMeetingLocations] = useState<{ [locationId: number]: string }>({});
-  const [meetingLocationIsPhysical, setMeetingLocationIsPhysical] = useState<{ [locationId: number]: boolean }>({});
+  const [meetingLocations, setMeetingLocations] = useState<{ [locationId: number]: string }>(
+    () => calendarMeetingLocationCache?.locations || {},
+  );
+  const [meetingLocationIsPhysical, setMeetingLocationIsPhysical] = useState<{ [locationId: number]: boolean }>(
+    () => calendarMeetingLocationCache?.physical || {},
+  );
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
-  const [meetingLocationLinks, setMeetingLocationLinks] = useState<{ [locationName: string]: string }>({});
+  const [meetingLocationLinks, setMeetingLocationLinks] = useState<{ [locationName: string]: string }>(
+    () => calendarMeetingLocationCache?.links || {},
+  );
   // Map of meeting location name -> location ID (for reverse lookup)
-  const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{ [locationName: string]: number }>({});
+  const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{ [locationName: string]: number }>(
+    () => calendarMeetingLocationCache?.nameToId || {},
+  );
   // Set of location IDs that should show a meeting link button (from tenants_meetinglocation with default_link)
   const meetingLocationIdsWithLink = new Set([3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number; openUpward?: boolean } | null>(null);
@@ -1525,6 +1554,9 @@ const CalendarPage: React.FC = () => {
   /** Ignore stale responses when date range changes quickly (staff meetings are a separate query). */
   const staffMeetingsFetchSeqRef = useRef(0);
   const meetingsFetchSeqRef = useRef(0);
+  // Realtime events are missed while this route is unmounted. Show cached rows
+  // immediately, but validate them once in the background on every page visit.
+  const needsMountMeetingsRevalidationRef = useRef(true);
   // Reference the module-level cache map so cached meetings survive unmount/remount.
   const meetingsByDateRangeRef = useRef(calendarMeetingsByRangeCache);
   const legacyFetchRangeKeyRef = useRef<string | null>(null);
@@ -2843,7 +2875,7 @@ const CalendarPage: React.FC = () => {
     // Realtime patches (meetings + leads + leads_lead) keep the cached data in sync.
     // Staff meetings (Outlook) are still refreshed lightly in the background so internal
     // attendees stay up-to-date.
-    if (rangeCache && !isStale) {
+    if (rangeCache && !isStale && !needsMountMeetingsRevalidationRef.current) {
       if (rangeCache.meetings !== meetings) {
         setMeetings(rangeCache.meetings);
       }
@@ -2859,6 +2891,7 @@ const CalendarPage: React.FC = () => {
     }
 
     const canSkipFullFetch =
+      !needsMountMeetingsRevalidationRef.current &&
       depsUnchanged &&
       !isStale &&
       meetings.length > 0 &&
@@ -2873,6 +2906,7 @@ const CalendarPage: React.FC = () => {
     }
 
     if (
+      !needsMountMeetingsRevalidationRef.current &&
       navType === 'POP' &&
       meetings.length > 0 &&
       !isStale &&
@@ -2883,7 +2917,9 @@ const CalendarPage: React.FC = () => {
       return;
     }
 
+    const isMountRevalidation = needsMountMeetingsRevalidationRef.current;
     prevFetchDepsRef.current = { pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger };
+    needsMountMeetingsRevalidationRef.current = false;
 
     const fetchSeq = ++meetingsFetchSeqRef.current;
     legacyFetchRangeKeyRef.current = rangeKey;
@@ -3327,7 +3363,23 @@ const CalendarPage: React.FC = () => {
         if (fetchSeq !== meetingsFetchSeqRef.current) return;
 
         const dedupedMeetings = dedupeMeetingsByLeadAndDate(allProcessedMeetings);
-        setMeetings(dedupedMeetings);
+        // A mount revalidation fetches legacy meetings separately. Keep their
+        // cached rows visible instead of briefly removing and adding them again.
+        const cachedLegacyMeetings = isMountRevalidation
+          ? meetings.filter((meeting: any) => {
+              const lead = meeting?.lead || meeting?.legacy_lead || {};
+              return Boolean(
+                meeting?.legacy_lead_id ||
+                lead?.lead_type === 'legacy' ||
+                String(lead?.id || '').startsWith('legacy_'),
+              );
+            })
+          : [];
+        const visibleMeetings =
+          cachedLegacyMeetings.length > 0
+            ? combineMeetingsWithoutDuplicates(dedupedMeetings, cachedLegacyMeetings)
+            : dedupedMeetings;
+        setMeetings(visibleMeetings);
         setIsLoading(false);
         setIsBackgroundLoading(false);
 
@@ -3340,7 +3392,27 @@ const CalendarPage: React.FC = () => {
             if (legacyFetchRangeKeyRef.current !== legacyRangeKey) return;
             if (legacyMeetings.length > 0) {
               setMeetings((prev) => {
-                const next = combineMeetingsWithoutDuplicates(prev, legacyMeetings);
+                const freshLegacyIds = new Set(
+                  legacyMeetings.map((meeting: any) =>
+                    String(meeting?.id || meeting?.legacy_lead_id || '').replace(/^legacy_/, ''),
+                  ),
+                );
+                const base = isMountRevalidation
+                  ? prev.filter((meeting: any) => {
+                      const lead = meeting?.lead || meeting?.legacy_lead || {};
+                      const isLegacy = Boolean(
+                        meeting?.legacy_lead_id ||
+                        lead?.lead_type === 'legacy' ||
+                        String(lead?.id || meeting?.id || '').startsWith('legacy_'),
+                      );
+                      if (!isLegacy) return true;
+                      const legacyId = String(
+                        meeting?.legacy_lead_id || lead?.id || meeting?.id || '',
+                      ).replace(/^legacy_/, '');
+                      return !freshLegacyIds.has(legacyId);
+                    })
+                  : prev;
+                const next = combineMeetingsWithoutDuplicates(base, legacyMeetings);
                 const cached = meetingsByDateRangeRef.current.get(legacyRangeKey);
                 if (cached) {
                   meetingsByDateRangeRef.current.set(legacyRangeKey, { ...cached, meetings: next });
@@ -3358,7 +3430,7 @@ const CalendarPage: React.FC = () => {
         // Staff meetings: same window as applied dates (was today-only and raced the range effect).
         const staffRows = await fetchStaffMeetings(dateRangeFrom, dateRangeTo);
         if (fetchSeq !== meetingsFetchSeqRef.current) return;
-        saveMeetingsRangeCache(dateRangeFrom, dateRangeTo, dedupedMeetings, staffRows);
+        saveMeetingsRangeCache(dateRangeFrom, dateRangeTo, visibleMeetings, staffRows);
 
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
@@ -4919,6 +4991,12 @@ const CalendarPage: React.FC = () => {
         }
       });
 
+      calendarMeetingLocationCache = {
+        locations: locationsMap,
+        links: linksMap,
+        nameToId: nameToIdMap,
+        physical: physicalMap,
+      };
       setMeetingLocations(locationsMap);
       setMeetingLocationLinks(linksMap);
       setMeetingLocationNameToId(nameToIdMap);

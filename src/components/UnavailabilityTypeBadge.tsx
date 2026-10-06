@@ -19,6 +19,7 @@ interface UnavailabilityTypeBadgeProps {
   tooltip?: string;
   displayLabel?: string;
   subtitle?: string;
+  deductedBadgePosition?: 'left' | 'right';
 }
 
 export function UnavailabilityTypeIcon({
@@ -50,10 +51,12 @@ const UnavailabilityTypeBadge: React.FC<UnavailabilityTypeBadgeProps> = ({
   tooltip,
   displayLabel,
   subtitle,
+  deductedBadgePosition = 'right',
 }) => {
   const sizeClass =
     size === 'xs' ? 'badge-xs' : size === 'md' ? 'badge-md text-sm font-medium' : 'badge-sm';
   const iconSize = size === 'md' ? 'h-5 w-5 shrink-0' : size === 'xs' ? 'h-4 w-4 shrink-0' : 'h-5 w-5 shrink-0';
+  const subtitleIsHebrew = Boolean(subtitle && /[\u0590-\u05FF]/.test(subtitle));
 
   const badge = (
     <span
@@ -66,7 +69,10 @@ const UnavailabilityTypeBadge: React.FC<UnavailabilityTypeBadgeProps> = ({
         <span className="flex min-w-0 flex-col items-start leading-tight">
           <span className="font-semibold">{displayLabel || unavailabilityTypeLabel(type)}</span>
           <span
-            className="max-w-[9rem] truncate text-xs font-normal opacity-75"
+            dir={subtitleIsHebrew ? 'rtl' : undefined}
+            className={`max-w-[9rem] truncate text-xs font-normal opacity-75 ${
+              subtitleIsHebrew ? 'w-full text-right' : ''
+            }`}
             title={subtitle}
           >
             {subtitle}
@@ -87,7 +93,9 @@ const UnavailabilityTypeBadge: React.FC<UnavailabilityTypeBadgeProps> = ({
       aria-label={tooltip}
     >
       {badge}
-      <span className="badge badge-error badge-xs absolute -right-2 -top-2 z-10 border-0 font-bold text-white shadow-sm">
+      <span className={`badge badge-error badge-xs absolute -top-2 z-10 border-0 font-bold text-white shadow-sm ${
+        deductedBadgePosition === 'left' ? '-left-2' : '-right-2'
+      }`}>
         -{deductedHoursLabel}
       </span>
     </span>

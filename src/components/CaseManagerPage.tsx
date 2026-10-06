@@ -4983,24 +4983,10 @@ const CaseManagerPage: React.FC = () => {
     }
   };
 
-  // Fetch new messages
+  // public.communications was never created, so this list has always rendered empty.
+  // Left empty rather than querying a missing relation on every dashboard load.
   const fetchNewMessages = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('communications')
-        .select('*')
-        .eq('status', 'new')
-        .order('created_at', { ascending: false })
-        .limit(10);
-      
-      if (error) {
-        console.error('Error fetching new messages:', error);
-      } else if (data) {
-        setNewMessages(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch new messages:', err);
-    }
+    setNewMessages([]);
   };
 
   // Fetch tasks due today and tomorrow

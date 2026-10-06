@@ -276,6 +276,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             const displayName = emp?.display_name;
             setCurrentUser({
               id: userRow.id,
+              db_user_id: userRow.id,
               full_name: displayName || userRow.full_name || userRow.email,
               email: userRow.email,
             });
@@ -285,6 +286,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
         const fallbackUser = {
           id: user.id,
+          // No users row, so there is no valid value for columns that FK onto users(id).
+          db_user_id: null,
           full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
           email: user.email
         };
@@ -1351,7 +1354,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 .update({
                   is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id
+                  read_by: currentUser.db_user_id ?? null
                 })
                 .in('id', incomingMessageIds);
 

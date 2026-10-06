@@ -194,6 +194,35 @@ test('a general absence without times leaves the day at full hours', () => {
   assert.equal(records[0].clock_out_time, '2026-10-05T17:00:00+03:00');
 });
 
+test('general absences outside working hours do not shorten the filled day', () => {
+  const beforeWork = fill({
+    dateFrom: '2026-10-05',
+    dateTo: '2026-10-05',
+    unavailabilities: [unavailability('general', '2026-10-05', '2026-10-05', '06:00', '08:00')],
+  });
+  const afterWork = fill({
+    dateFrom: '2026-10-05',
+    dateTo: '2026-10-05',
+    unavailabilities: [unavailability('general', '2026-10-05', '2026-10-05', '17:00', '20:00')],
+  });
+
+  assert.equal(beforeWork[0].clock_out_time, '2026-10-05T17:00:00+03:00');
+  assert.equal(afterWork[0].clock_out_time, '2026-10-05T17:00:00+03:00');
+});
+
+test('only the part of a general absence inside working hours is deducted', () => {
+  const records = fill({
+    dateFrom: '2026-10-05',
+    dateTo: '2026-10-05',
+    unavailabilities: [
+      unavailability('general', '2026-10-05', '2026-10-05', '08:00', '10:00'),
+      unavailability('general', '2026-10-05', '2026-10-05', '16:00', '18:00'),
+    ],
+  });
+
+  assert.equal(records[0].clock_out_time, '2026-10-05T15:00:00+03:00');
+});
+
 test('a general absence covering the whole day fills nothing', () => {
   const records = fill({
     dateFrom: '2026-10-05',

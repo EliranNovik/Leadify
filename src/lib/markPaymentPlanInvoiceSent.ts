@@ -154,11 +154,17 @@ export async function markPaymentPlanInvoiceSent(
    * decide the row was unmarked and double-stamp it. Paid and cancelled rows are excluded as well:
    * re-dating money that has already landed would move it into the wrong reporting period.
    */
+  /*
+   * `IS NOT TRUE` rather than `.or('ready_to_pay.is.null,ready_to_pay.eq.false')`: PostgREST
+   * table-qualifies the conditions inside an `or` group, and that qualifier is out of scope in
+   * the UPDATE it generates, so the whole statement failed with 42703 and nothing was ever
+   * marked. A plain negated filter covers both NULL and false and renders correctly.
+   */
   const guarded = supabase
     .from(table)
     .update({ invoice_sent: true, invoice_sent_at: sentAt, ...readyToPayFields })
     .eq('id', planId)
-    .or('ready_to_pay.is.null,ready_to_pay.eq.false')
+    .not('ready_to_pay', 'is', true)
     .is('cancel_date', null);
 
   // Each table records payment differently: new leads carry a `paid` flag, while legacy rows have no

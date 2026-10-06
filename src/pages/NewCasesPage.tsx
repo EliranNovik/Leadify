@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { resolveEmployeePhotoUrl } from '../lib/employeePhotoUrl';
-import { ChevronDownIcon, ChevronRightIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon, FolderIcon, TagIcon, LinkIcon, FunnelIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon, FolderIcon, TagIcon, LinkIcon, FunnelIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon, Bars3Icon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
@@ -91,6 +91,11 @@ const NewCasesPage: React.FC = () => {
   const [expandedCategoryBreakdowns, setExpandedCategoryBreakdowns] = useState<Map<string, boolean>>(new Map());
   const [categorySelectedLeads, setCategorySelectedLeads] = useState<Map<string, Set<string>>>(new Map());
   const [categoryEmployeeSearch, setCategoryEmployeeSearch] = useState<Map<string, string>>(new Map());
+  const [expandedEmployeePickerCategory, setExpandedEmployeePickerCategory] = useState<string | null>(null);
+  const [employeePickerSizes, setEmployeePickerSizes] = useState<Map<string, { width: number; height: number; offsetX: number }>>(new Map());
+  const [collapsedEmployeePickerCategories, setCollapsedEmployeePickerCategories] = useState<Set<string>>(new Set());
+  const [collapsedLeadTableCategories, setCollapsedLeadTableCategories] = useState<Set<string>>(new Set());
+  const [employeePickerColumnCounts, setEmployeePickerColumnCounts] = useState<Map<string, 1 | 2>>(new Map());
   const [selectedLeadBoxes, setSelectedLeadBoxes] = useState<Set<string>>(new Set());
   const [showActionButtons, setShowActionButtons] = useState(false);
   const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
@@ -2355,6 +2360,52 @@ const NewCasesPage: React.FC = () => {
 
   const isPageLoading = loading || !stageIdsResolved;
 
+  const startEmployeePickerResize = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    categoryName: string,
+    side: 'left' | 'right',
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const picker = event.currentTarget.closest('[data-employee-picker]') as HTMLElement | null;
+    if (!picker) return;
+
+    const rect = picker.getBoundingClientRect();
+    const categoryRow = picker.closest('[data-category-assignment-row]') as HTMLElement | null;
+    const minimumLeft = categoryRow?.getBoundingClientRect().left ?? 16;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = rect.width;
+    const startHeight = rect.height;
+    const startOffsetX = employeePickerSizes.get(categoryName)?.offsetX || 0;
+    const rightOverflow = Math.max(0, rect.right - (window.innerWidth - 16));
+    const anchoredRight = Math.min(rect.right, window.innerWidth - 16);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const horizontalDelta = side === 'left'
+        ? startX - moveEvent.clientX
+        : moveEvent.clientX - startX;
+      const width = Math.min(anchoredRight - minimumLeft, Math.max(360, startWidth + horizontalDelta));
+      const height = Math.min(window.innerHeight - 24, Math.max(280, startHeight + moveEvent.clientY - startY));
+      const offsetX = startOffsetX - (width - startWidth) - rightOverflow;
+
+      setEmployeePickerSizes((previous) => {
+        const next = new Map(previous);
+        next.set(categoryName, { width, height, offsetX });
+        return next;
+      });
+    };
+
+    const handlePointerUp = () => {
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerUp);
+  };
+
   return (
     <div className="bg-gray-100 min-h-[calc(100dvh-5rem)] md:min-h-full p-2 sm:p-4 md:p-6 lg:p-8">
       {/* Loading state: show spinner and text until leads and stages are ready */}
@@ -2685,22 +2736,77 @@ const NewCasesPage: React.FC = () => {
             </>
           ) : (
             <>
-          <h2 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 md:mb-8 px-1">
-            Assign Leads to Employees ({Array.from(categoryGroupedLeads.values()).reduce((sum, leads) => sum + leads.length, 0)} total leads)
-          </h2>
+          <div className="mb-4 flex items-center gap-4 px-1 sm:mb-6 md:mb-8">
+            <h2 className="shrink-0 text-xl font-bold sm:text-2xl">
+              Assign Leads to Employees ({Array.from(categoryGroupedLeads.values()).reduce((sum, leads) => sum + leads.length, 0)} total leads)
+            </h2>
+            <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
+              {Array.from(categoryGroupedLeads.keys()).map((categoryName, categoryIndex) => (
+                <button
+                  key={categoryName}
+                  type="button"
+                  className="btn btn-sm shrink-0 rounded-full border-base-300 bg-base-100 px-4 font-medium shadow-sm hover:border-primary hover:bg-primary/5 hover:text-primary"
+                  onClick={() => {
+                    document.getElementById(`assignment-category-${categoryIndex}`)?.scrollIntoView({
+                      behavior: 'smooth',
+                      block: 'start',
+                    });
+                  }}
+                >
+                  {categoryName}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="space-y-6 sm:space-y-8 md:space-y-12">
-            {Array.from(categoryGroupedLeads.entries()).map(([categoryName, categoryLeads]) => (
-              <div key={categoryName} className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 md:gap-8">
+            {Array.from(categoryGroupedLeads.entries()).map(([categoryName, categoryLeads], categoryIndex) => (
+              <div
+                key={categoryName}
+                id={`assignment-category-${categoryIndex}`}
+                data-category-assignment-row
+                className={`grid scroll-mt-24 grid-cols-1 gap-4 sm:gap-6 md:gap-8 ${
+                  collapsedLeadTableCategories.has(categoryName)
+                    ? 'lg:grid-cols-[max-content_minmax(0,1fr)]'
+                    : 'lg:grid-cols-2'
+                }`}
+              >
                 {/* Category Table */}
-                <div className="lg:col-span-1">
-                  <div className="card bg-base-100 shadow-lg">
-                    <div className="card-header p-3 sm:p-4 md:p-6 border-b border-base-200">
-                      <h3 className="text-lg sm:text-xl font-semibold flex items-center gap-2">
+                <div className={`lg:col-span-1 ${collapsedLeadTableCategories.has(categoryName) ? 'w-fit' : ''}`}>
+                  <div className={`card bg-base-100 shadow-lg ${collapsedLeadTableCategories.has(categoryName) ? 'w-fit' : ''}`}>
+                    <div className="card-header flex items-center justify-between border-b border-base-200 p-3 sm:p-4 md:p-6">
+                      <h3 className="flex items-center gap-2 whitespace-nowrap text-lg font-semibold sm:text-xl">
                         <CalendarIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         <span className="break-words">{categoryName} ({categoryLeads.length} leads)</span>
                       </h3>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-circle btn-sm hidden shrink-0 lg:inline-flex"
+                        onClick={() => {
+                          if (!collapsedLeadTableCategories.has(categoryName)) {
+                            setEmployeePickerColumnCounts((previous) => {
+                              const next = new Map(previous);
+                              next.set(categoryName, 2);
+                              return next;
+                            });
+                          }
+                          setCollapsedLeadTableCategories((previous) => {
+                            const next = new Set(previous);
+                            if (next.has(categoryName)) next.delete(categoryName);
+                            else next.add(categoryName);
+                            return next;
+                          });
+                        }}
+                        title={collapsedLeadTableCategories.has(categoryName) ? 'Open leads table' : 'Collapse leads table'}
+                        aria-label={collapsedLeadTableCategories.has(categoryName) ? 'Open leads table' : 'Collapse leads table'}
+                      >
+                        <ChevronDownIcon className={`h-5 w-5 transition-transform ${
+                          collapsedLeadTableCategories.has(categoryName) ? '' : 'rotate-180'
+                        }`} />
+                      </button>
       </div>
-                    <div className="card-body p-3 sm:p-4 md:p-6">
+                    <div className={`card-body px-0 py-3 sm:py-4 md:py-6 ${
+                      collapsedLeadTableCategories.has(categoryName) ? 'hidden' : ''
+                    }`}>
                       {categoryLeads.length === 0 ? (
         <div className="text-center py-12 text-base-content/60">
                           No leads in this category.
@@ -2793,14 +2899,131 @@ const NewCasesPage: React.FC = () => {
 
                 {/* Category Employee Selection */}
                 <div className="lg:col-span-1">
-                  <div className="card bg-base-100 shadow-lg">
-                    <div className="card-header p-3 sm:p-4 md:p-6 border-b border-base-200">
+                  {expandedEmployeePickerCategory === categoryName ? (
+                    <button
+                      type="button"
+                      className="fixed inset-0 z-[90] hidden bg-black/15 lg:block"
+                      onClick={() => setExpandedEmployeePickerCategory(null)}
+                      aria-label="Close expanded employee picker"
+                    />
+                  ) : null}
+                  <div
+                    data-employee-picker
+                    style={expandedEmployeePickerCategory === categoryName ? undefined : {
+                      width: employeePickerSizes.get(categoryName)?.width,
+                      height: collapsedEmployeePickerCategories.has(categoryName)
+                        ? undefined
+                        : employeePickerSizes.get(categoryName)?.height,
+                      maxWidth: 'calc(100vw - 3rem)',
+                      transform: `translateX(${employeePickerSizes.get(categoryName)?.offsetX || 0}px)`,
+                    }}
+                    className={`card bg-base-100 shadow-lg ${
+                    expandedEmployeePickerCategory === categoryName
+                      ? '!fixed !bottom-0 !left-[25vw] !right-0 !top-0 z-[100] hidden !h-screen !max-h-screen !w-auto overflow-hidden rounded-none lg:flex'
+                      : `relative w-full justify-self-end ${employeePickerSizes.has(categoryName) ? 'overflow-hidden' : ''}`
+                  }`}
+                  >
+                    <div className="card-header flex flex-col gap-2 border-b border-base-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                       <h3 className="text-lg sm:text-xl font-semibold flex items-center gap-2">
-                        <UserIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         <span className="break-words">{categoryName} - Employee Selection</span>
                       </h3>
+                      <div className="flex w-full items-center gap-2 sm:w-auto">
+                      {categoryName.toLowerCase() === 'no category' && (
+                        <div className="relative w-full sm:w-60">
+                          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                          <input
+                            type="text"
+                            placeholder="Search employee..."
+                            className="input input-bordered input-sm w-full rounded-full bg-white pl-9"
+                            value={categoryEmployeeSearch.get(categoryName) || ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setCategoryEmployeeSearch(prev => {
+                                const next = new Map(prev);
+                                next.set(categoryName, value);
+                                return next;
+                              });
+                            }}
+                          />
+                        </div>
+                      )}
+                        <div className="hidden shrink-0 items-center gap-0.5 rounded-full bg-gray-200 p-1 lg:flex" aria-label="Employee card columns">
+                          {([1, 2] as const).map((columnCount) => (
+                            <button
+                              key={columnCount}
+                              type="button"
+                              className={`flex h-7 w-8 items-center justify-center rounded-full transition-all ${
+                                (employeePickerColumnCounts.get(categoryName) ?? (collapsedLeadTableCategories.has(categoryName) ? 2 : 1)) === columnCount
+                                  ? 'bg-white text-gray-700 shadow-sm'
+                                  : 'text-gray-500 hover:text-gray-700'
+                              }`}
+                              onClick={() => {
+                                setEmployeePickerColumnCounts((previous) => {
+                                  const next = new Map(previous);
+                                  next.set(categoryName, columnCount);
+                                  return next;
+                                });
+                              }}
+                              title={`Show ${columnCount} column${columnCount === 1 ? '' : 's'}`}
+                              aria-label={`Show ${columnCount} column${columnCount === 1 ? '' : 's'}`}
+                            >
+                              {columnCount === 1 ? (
+                                <Bars3Icon className="h-4 w-4" />
+                              ) : (
+                                <Squares2X2Icon className="h-4 w-4" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-circle btn-sm hidden shrink-0 lg:inline-flex"
+                          onClick={() => {
+                            if (expandedEmployeePickerCategory === categoryName) {
+                              setExpandedEmployeePickerCategory(null);
+                            }
+                            if (!collapsedEmployeePickerCategories.has(categoryName)) {
+                              setEmployeePickerSizes((previous) => {
+                                const next = new Map(previous);
+                                next.delete(categoryName);
+                                return next;
+                              });
+                            }
+                            setCollapsedEmployeePickerCategories((previous) => {
+                              const next = new Set(previous);
+                              if (next.has(categoryName)) next.delete(categoryName);
+                              else next.add(categoryName);
+                              return next;
+                            });
+                          }}
+                          title={collapsedEmployeePickerCategories.has(categoryName) ? 'Open employee selection' : 'Collapse employee selection'}
+                          aria-label={collapsedEmployeePickerCategories.has(categoryName) ? 'Open employee selection' : 'Collapse employee selection'}
+                        >
+                          <ChevronDownIcon className={`h-5 w-5 transition-transform ${
+                            collapsedEmployeePickerCategories.has(categoryName) ? '' : 'rotate-180'
+                          }`} />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-circle btn-sm hidden shrink-0 lg:inline-flex"
+                          onClick={() => setExpandedEmployeePickerCategory(
+                            expandedEmployeePickerCategory === categoryName ? null : categoryName,
+                          )}
+                          title={expandedEmployeePickerCategory === categoryName ? 'Restore size' : 'Expand employee picker'}
+                        >
+                          {expandedEmployeePickerCategory === categoryName ? (
+                            <ArrowsPointingInIcon className="h-5 w-5" />
+                          ) : (
+                            <ArrowsPointingOutIcon className="h-5 w-5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <div className="card-body p-3 sm:p-4 md:p-6">
+                    <div className={`card-body rounded-b-2xl bg-gray-100 px-3 pb-3 pt-0 ${
+                      collapsedEmployeePickerCategories.has(categoryName)
+                        ? 'hidden'
+                        : expandedEmployeePickerCategory === categoryName ? 'min-h-0 flex-1' : ''
+                    }`}>
 
                       {categoryLoadingStats.get(categoryName) ? (
                         <div className="text-center py-8">
@@ -2809,25 +3032,21 @@ const NewCasesPage: React.FC = () => {
                         </div>
                       ) : (
                         <>
-                          {categoryName.toLowerCase() === 'no category' && (
-                            <div className="mb-4">
-                              <input
-                                type="text"
-                                placeholder="Search employee..."
-                                className="input input-bordered input-sm w-full"
-                                value={categoryEmployeeSearch.get(categoryName) || ''}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  setCategoryEmployeeSearch(prev => {
-                                    const next = new Map(prev);
-                                    next.set(categoryName, value);
-                                    return next;
-                                  });
-                                }}
-                              />
-                            </div>
-                          )}
-                          <div className="space-y-4 max-h-96 overflow-y-auto">
+                          <div
+                            style={expandedEmployeePickerCategory !== categoryName && employeePickerSizes.has(categoryName) ? {
+                              maxHeight: Math.max(140, (employeePickerSizes.get(categoryName)?.height || 0) - 170),
+                            } : undefined}
+                            className={`w-full overflow-y-auto px-1 pb-2 ${
+                              expandedEmployeePickerCategory === categoryName
+                                ? 'max-h-[calc(100vh-11rem)]'
+                                : 'max-h-[28rem]'
+                            } ${
+                              expandedEmployeePickerCategory === categoryName ||
+                              (employeePickerColumnCounts.get(categoryName) ?? (collapsedLeadTableCategories.has(categoryName) ? 2 : 1)) === 2
+                                ? 'grid grid-cols-2 items-start gap-4'
+                                : 'space-y-4'
+                          }`}
+                          >
                             {getEmployeesForCategory(categoryName)
                               .filter(emp => {
                                 const searchTerm = (categoryEmployeeSearch.get(categoryName) || '').toLowerCase();
@@ -2853,11 +3072,11 @@ const NewCasesPage: React.FC = () => {
                               return (
                                 <div 
                                   key={index} 
-                                  className={`border rounded-lg p-4 transition-all duration-300 border-base-200 hover:border-primary/50 bg-base-100 shadow-lg hover:shadow-xl hover:-translate-y-1 transform`}
+                                  className={`relative w-full border rounded-lg p-4 transition-all duration-300 border-base-200 hover:border-primary/50 bg-base-100 shadow-lg hover:shadow-xl hover:-translate-y-1 transform`}
                                 >
-                                  <div className="flex items-center justify-between mb-3">
+                                  <div className={`flex items-center justify-between ${breakdown.length > 0 ? 'mb-3' : ''}`}>
                                     <div className="flex items-center gap-3">
-                                      <div className="avatar flex-shrink-0">
+                                      <div className="avatar relative flex-shrink-0">
                                         <div className="w-14 h-14 rounded-full overflow-hidden bg-base-200">
                                           {hasValidPhotoUrl ? (
                                             <img
@@ -2878,17 +3097,23 @@ const NewCasesPage: React.FC = () => {
                                             {initial}
                                           </div>
                                         </div>
+                                        {isSelected && (
+                                          <span className="absolute -left-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-green-600 text-white shadow-md ring-2 ring-white">
+                                            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
+                                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                            </svg>
+                                          </span>
+                                        )}
                                       </div>
-                                      {isSelected && (
-                                        <svg className="w-6 h-6 text-green-600 font-bold flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                        </svg>
-                                      )}
                                       <h4 className="font-semibold text-base">{emp.display_name}</h4>
                                     </div>
                                     <div className="flex items-center gap-2">
                                       <button
-                                        className={`btn btn-xs ${isSelected ? 'btn-primary' : 'btn-outline'}`}
+                                        className={`btn btn-sm rounded-full px-4 ${
+                                          isSelected
+                                            ? 'btn-primary'
+                                            : 'border-green-600 bg-green-600 text-white hover:border-green-700 hover:bg-green-700'
+                                        }`}
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           const currentSelection = categorySelectedEmployees.get(categoryName) || new Set();
@@ -2907,17 +3132,17 @@ const NewCasesPage: React.FC = () => {
                                       >
                                         {isSelected ? 'Unselect' : 'Select'}
                                       </button>
-                                      <span className="badge badge-primary">
+                                      <span className="whitespace-nowrap text-sm font-semibold text-primary tabular-nums">
                                         {totalAssigned} leads
                                       </span>
                                     </div>
                                   </div>
                                   
                                   {breakdown.length > 0 ? (
-                                    <div className="bg-base-200/50 rounded-lg border border-base-300">
+                                    <div>
                                       {/* Collapsible Header */}
                                       <button
-                                        className="w-full p-3 flex items-center justify-between hover:bg-base-200/70 transition-colors rounded-t-lg"
+                                        className="flex w-full items-center justify-between border-b border-gray-300 p-3 transition-colors hover:bg-base-200/50"
                                         onClick={() => {
                                           const key = `${categoryName}-${emp.display_name}`;
                                           setExpandedCategoryBreakdowns(prev => {
@@ -2944,9 +3169,9 @@ const NewCasesPage: React.FC = () => {
                                       {expandedCategoryBreakdowns.get(`${categoryName}-${emp.display_name}`) && (
                                         <div className="p-3 pt-0 space-y-2">
                                           {breakdown.map((cat: any, catIndex: number) => (
-                                            <div key={catIndex} className="flex flex-wrap items-center gap-2 bg-base-100 rounded-md px-3 py-2 border border-base-300">
+                                            <div key={catIndex} className="flex flex-wrap items-center gap-2 border-b border-gray-300 px-3 py-2 last:border-b-0">
                                               <span className="text-sm font-medium text-base-content truncate flex-1">{cat.category}</span>
-                                              <span className="badge badge-secondary badge-sm font-semibold min-w-[2rem] justify-center">{cat.count}</span>
+                                              <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-gray-200 px-2 text-xs font-semibold text-gray-600">{cat.count}</span>
                                               <button
                                                 className="btn btn-ghost btn-xs text-primary"
                                                 onClick={(e) => {
@@ -2961,13 +3186,7 @@ const NewCasesPage: React.FC = () => {
                                         </div>
                                       )}
                                     </div>
-                                  ) : (
-                                    <div className="bg-base-200/30 rounded-lg p-3 border border-base-300">
-                                      <p className="text-sm text-base-content/60 italic text-center">
-                                        No assignments in this period
-                                      </p>
-                                    </div>
-                                  )}
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -2977,17 +3196,18 @@ const NewCasesPage: React.FC = () => {
                       
                       {/* Category Assign Button */}
                       {categorySelectedEmployees.get(categoryName) && categorySelectedEmployees.get(categoryName)!.size > 0 && (categorySelectedLeads.get(categoryName)?.size || 0) > 0 && (
-                        <div className="mt-6 p-4 border-t border-base-200">
-                          <div className="text-center">
-                            <p className="text-sm text-base-content/70 mb-3">
+                        <div className="-mx-3 -mb-3 rounded-b-2xl border-t border-base-200 bg-white p-4">
+                          <div className="flex items-center gap-3">
+                            <p className="min-w-0 flex-1 text-left text-sm text-base-content/70">
                               {categorySelectedEmployees.get(categoryName)?.size === 1 ? (
-                                <>Assign {categorySelectedLeads.get(categoryName)?.size || 0} selected {categoryName} leads to <span className="font-semibold text-primary">{Array.from(categorySelectedEmployees.get(categoryName) || [])[0]}</span> as scheduler?</>
+                                <>Assign {categorySelectedLeads.get(categoryName)?.size || 0} leads to <span className="font-semibold text-primary">{Array.from(categorySelectedEmployees.get(categoryName) || [])[0]}</span>?</>
                               ) : (
-                                <>Assign {categorySelectedLeads.get(categoryName)?.size || 0} selected {categoryName} leads to <span className="font-semibold text-primary">{categorySelectedEmployees.get(categoryName)?.size} selected employees</span> as scheduler?</>
+                                <>Assign {categorySelectedLeads.get(categoryName)?.size || 0} leads to <span className="font-semibold text-primary">{categorySelectedEmployees.get(categoryName)?.size} employees</span>?</>
                               )}
                             </p>
-                <button 
-                              className={`btn btn-primary w-full ${categoryAssigning.get(categoryName) ? 'loading' : ''}`}
+                            <div className="flex items-center justify-end gap-3">
+                              <button 
+                              className={`btn btn-primary rounded-full px-8 ${categoryAssigning.get(categoryName) ? 'loading' : ''}`}
                               onClick={() => handleCategoryAssignLeads(categoryName)}
                               disabled={categoryAssigning.get(categoryName) || (categorySelectedLeads.get(categoryName)?.size || 0) === 0}
                             >
@@ -2999,13 +3219,9 @@ const NewCasesPage: React.FC = () => {
                               ) : (
                                 `Assign ${categorySelectedLeads.get(categoryName)?.size || 0} Lead${(categorySelectedLeads.get(categoryName)?.size || 0) !== 1 ? 's' : ''}`
                               )}
-                            </button>
-                            {categoryLeads.length === 0 && (
-                              <p className="text-xs text-base-content/50 mt-2">No leads available to assign</p>
-                            )}
-                            <div className="mt-2">
+                              </button>
                               <button 
-                                className="btn btn-sm btn-outline"
+                                className="btn btn-sm btn-ghost shrink-0"
                                 onClick={() => {
                                   setCategorySelectedEmployees(prev => {
                                     const newMap = new Map(prev);
@@ -3017,10 +3233,35 @@ const NewCasesPage: React.FC = () => {
                                 Clear Selection
                               </button>
                             </div>
+                            {categoryLeads.length === 0 && (
+                              <p className="text-xs text-base-content/50 mt-2">No leads available to assign</p>
+                            )}
                           </div>
                         </div>
                       )}
                     </div>
+                    {expandedEmployeePickerCategory !== categoryName && !collapsedEmployeePickerCategories.has(categoryName) && (
+                      <>
+                        <button
+                          type="button"
+                          aria-label="Resize employee selection from left corner"
+                          title="Drag to resize"
+                          onPointerDown={(event) => startEmployeePickerResize(event, categoryName, 'left')}
+                          className="absolute -bottom-2 -left-2 z-20 hidden h-8 w-8 touch-none cursor-nesw-resize items-center justify-center text-gray-300 transition-colors hover:text-gray-400 lg:flex"
+                        >
+                          <ChevronLeftIcon className="h-5 w-5 -rotate-45" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Resize employee selection from right corner"
+                          title="Drag to resize"
+                          onPointerDown={(event) => startEmployeePickerResize(event, categoryName, 'right')}
+                          className="absolute -bottom-2 -right-2 z-20 hidden h-8 w-8 touch-none cursor-nwse-resize items-center justify-center text-gray-300 transition-colors hover:text-gray-400 lg:flex"
+                        >
+                          <ChevronRightIcon className="h-5 w-5 rotate-45" />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

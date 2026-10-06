@@ -30,17 +30,25 @@ async function resolveCreatedByEmployee(lead: any, isLegacyLead: boolean): Promi
     }
 
     if (createdBy.includes('@')) {
-        const { data } = await supabase
-            .from('tenants_employee')
-            .select('display_name, photo_url, photo, email')
+        // tenants_employee has no email column; the address lives on the linked users row.
+        const { data: userRow } = await supabase
+            .from('users')
+            .select('employee_id')
             .eq('email', createdBy)
             .maybeSingle();
-        if (data?.display_name) {
-            return {
-                name: String(data.display_name),
-                photo_url: data.photo_url || data.photo || null,
-                isAutomation: false,
-            };
+        if (userRow?.employee_id != null) {
+            const { data } = await supabase
+                .from('tenants_employee')
+                .select('display_name, photo_url, photo')
+                .eq('id', userRow.employee_id)
+                .maybeSingle();
+            if (data?.display_name) {
+                return {
+                    name: String(data.display_name),
+                    photo_url: data.photo_url || data.photo || null,
+                    isAutomation: false,
+                };
+            }
         }
     }
 

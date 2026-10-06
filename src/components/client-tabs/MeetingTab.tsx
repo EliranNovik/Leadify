@@ -5034,7 +5034,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           clientId: client.id,
           isLegacyLead,
           preferredMeetingId: null,
-          select: 'id, meeting_date, meeting_time, meeting_location, meeting_location_old, scheduler, status',
+          select: 'id, meeting_date, meeting_time, meeting_location, scheduler, status',
         });
         if (priorMeeting?.id != null) {
           meetingIdsToCancel = [Number(priorMeeting.id)];

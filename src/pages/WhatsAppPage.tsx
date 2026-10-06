@@ -1573,13 +1573,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
 
       if (userRow) {
-        applyUserRow({ ...userRow, auth_id: userRow.auth_id || user.id });
+        applyUserRow({ ...userRow, auth_id: userRow.auth_id || user.id, db_user_id: userRow.id });
         return;
       }
 
       console.log('❌ User not found in database, using auth metadata');
       const fallbackUser = {
         id: user.id,
+        // No users row, so there is no valid value for columns that FK onto users(id).
+        db_user_id: null,
         full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
         email: user.email,
       };
@@ -3312,7 +3314,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 .update({
                   is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id
+                  read_by: currentUser.db_user_id ?? null
                 })
                 .in('id', incomingMessageIds);
 

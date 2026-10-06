@@ -64,7 +64,6 @@ export type MeetingCancelCandidate = {
   meeting_date?: string | null;
   meeting_time?: string | null;
   meeting_location?: string | null;
-  meeting_location_old?: string | null;
   scheduler?: string | null;
   status?: string | null;
   [key: string]: unknown;
@@ -99,7 +98,7 @@ export async function findMeetingToCancelOnReschedule(
     clientId,
     isLegacyLead,
     preferredMeetingId = null,
-    select = 'id, meeting_date, meeting_time, meeting_location, meeting_location_old, scheduler, status',
+    select = 'id, meeting_date, meeting_time, meeting_location, scheduler, status',
   } = args;
 
   const withLead = (query: any) => {

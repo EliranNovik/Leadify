@@ -217,6 +217,14 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
     const current = queryRef.current;
     const fetched = fetchedQuery.trim();
     rememberPrefix(fetched, rows);
+    /*
+     * Record the fetch before any of the result-application branches below. This ref is what
+     * `refresh` uses to decide whether anything still needs fetching; leaving it stale on the
+     * branches that bail out early made that check permanently true, so `refresh` re-fetched
+     * the same query forever. Because repeats are prefix-cache hits they resolve as microtasks,
+     * which starves the macrotask queue and takes the whole page down with it.
+     */
+    lastFetchedQueryRef.current = fetched;
 
     const currentEmail = isEmailLikeQuery(current);
     const fetchedEmail = isEmailLikeQuery(fetched);
@@ -231,14 +239,10 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       const instant = instantHitsForQuery(current);
       const merged = mergeInstantHits(matching, instant);
       resultsRef.current = merged;
-      if (current.toLowerCase().startsWith(fetched.toLowerCase()) && currentEmail === fetchedEmail) {
-        lastFetchedQueryRef.current = fetched;
-      }
       setResults(merged);
       return;
     }
 
-    lastFetchedQueryRef.current = fetched;
     const instant = current ? instantHitsForQuery(current) : [];
     const merged = mergeInstantHits(rows, instant);
     if (merged.length > 0) {
@@ -285,10 +289,13 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
     }
     inFlightRef.current = true;
 
+    let attempted = '';
+
     try {
       while (true) {
         const q = pendingQueryRef.current;
         if (!enabled || pause || q.length < minLength) break;
+        attempted = q;
 
         const requestId = ++requestIdRef.current;
         const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -336,6 +343,9 @@ export function useLeadContactSearch(query: string, options: Options = {}) {
       !pause &&
       leftover.length >= minLength &&
       leftover !== lastFetchedQueryRef.current &&
+      // Never hand the loop back the query it just ran. Repeats are served from the prefix
+      // cache, so a self-call chain would spin in microtasks and never yield to timers.
+      leftover !== attempted &&
       !inFlightRef.current
     ) {
       void refresh(leftover);

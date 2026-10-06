@@ -2,6 +2,7 @@ import { toDateInputValue } from './employeeClockInFormat';
 import { isDeficitTrackingWorkday } from './employeeExtraHours';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 import {
+  buildGeneralAbsenceWindowsByDate,
   buildUnavailabilityDayEffects,
   type UnavailabilityDayEffectInput,
 } from './employeeUnavailabilities';
@@ -102,6 +103,11 @@ export function buildAutoFilledClockInRecords(options: AutoFillOptions): ClockIn
     existingRecords.map((record) => toDateInputValue(new Date(record.clock_in_time))),
   );
   const absenceByDate = buildUnavailabilityDayEffects(options.unavailabilities ?? [], from, to);
+  const generalAbsenceWindowsByDate = buildGeneralAbsenceWindowsByDate(
+    options.unavailabilities ?? [],
+    from,
+    to,
+  );
 
   const records: ClockInExportRecord[] = [];
 
@@ -112,7 +118,20 @@ export function buildAutoFilledClockInRecords(options: AutoFillOptions): ClockIn
     const absence = absenceByDate.get(dateKey);
     if (absence?.fullDay) continue;
 
-    const filledHours = minHours - (absence?.generalHours ?? 0);
+    const standardDayEndHour = AUTO_FILL_START_HOUR + minHours;
+    const generalHoursWithinWorkingTime = (
+      generalAbsenceWindowsByDate.get(dateKey) ?? []
+    ).reduce(
+      (total, window) =>
+        total +
+        Math.max(
+          0,
+          Math.min(window.endHour, standardDayEndHour) -
+            Math.max(window.startHour, AUTO_FILL_START_HOUR),
+        ),
+      0,
+    );
+    const filledHours = minHours - generalHoursWithinWorkingTime;
     if (filledHours <= 0) continue;
 
     const offset = jerusalemOffsetForDate(dateKey);

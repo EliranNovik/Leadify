@@ -2492,11 +2492,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         <div
           className={[
             'hidden md:block w-full',
-            // The thead is transparent (see the style block below), so the column titles take
-            // the colour of whatever sits behind them. In the HR employee file that is the grey
-            // page background, so the table gets its own panel to keep headers and rows on one
-            // white surface.
-            embedded ? 'rounded-2xl border border-gray-200 bg-white p-4 shadow-sm' : '',
+            // Keep week and column headings on the page background. Only the data rows form
+            // the white table surface.
+            embedded ? 'bg-transparent' : '',
           ]
             .filter(Boolean)
             .join(' ')}
@@ -2731,6 +2729,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                                     size="md"
                                     borderless
                                     deductedHoursLabel={details?.deductedLabel}
+                                    deductedBadgePosition="left"
                                     tooltip={details?.tooltip}
                                     displayLabel={details?.periodLabel}
                                     subtitle={details ? unavail.general_reason?.trim() || 'No details' : undefined}
@@ -2897,12 +2896,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-select { width: 2.5rem; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-date { width: 8%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-status { width: 12%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-unavailability { width: 11%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-in { width: 17%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-out { width: 17%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-status { width: 11%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-unavailability { width: 15%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-in { width: 16%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-out { width: 16%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-total { width: 7%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-notes { width: 12%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-notes { width: 11%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-document { width: 16%; }
 
         .my-profile-hours-shell table.my-profile-hours-table thead,

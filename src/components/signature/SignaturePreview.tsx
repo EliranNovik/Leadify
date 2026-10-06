@@ -15,8 +15,8 @@ type SignaturePreviewProps = {
   showCopyActions?: boolean;
 };
 
-/** Must stay at or above the signature table's own width, or the preview clips it. */
-const PREVIEW_WIDTH = 940;
+/** Must stay at or above the signature table's own width (740px), or the preview clips it. */
+const PREVIEW_WIDTH = 780;
 
 function buildPreviewDocument(html: string, origin?: string): string {
   const base = origin ? `<base href="${origin.replace(/"/g, '')}/" />` : '';

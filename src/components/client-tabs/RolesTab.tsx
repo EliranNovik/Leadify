@@ -16,6 +16,67 @@ import {
   fetchLeadSubEffortContributors,
   type LeadSubEffortContributor,
 } from '../../lib/leadSubEfforts';
+import { resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+
+const loadedRoleAvatarUrls = new Set<string>();
+
+const RoleEmployeeAvatar: React.FC<{
+  employee: any | null;
+  displayName?: string | null;
+  size?: 'sm' | 'md' | 'lg';
+  onOpenProfile: (employeeId: string | number) => void;
+}> = ({ employee, displayName, size = 'md', onOpenProfile }) => {
+  const name = employee?.display_name || employee?.official_name || displayName || '';
+  const initials = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part: string) => part.match(/[\p{L}\p{N}]/u)?.[0] || '')
+    .join('')
+    .toUpperCase();
+  const photoUrl = resolveEmployeePhotoUrl(employee?.photo_url, employee?.photo) || '';
+  const [failedUrl, setFailedUrl] = useState('');
+  const [imageLoaded, setImageLoaded] = useState(() => Boolean(photoUrl && loadedRoleAvatarUrls.has(photoUrl)));
+  const usablePhotoUrl = photoUrl && failedUrl !== photoUrl ? photoUrl : '';
+  const sizeClasses =
+    size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+  useEffect(() => {
+    setImageLoaded(Boolean(photoUrl && loadedRoleAvatarUrls.has(photoUrl)));
+    if (failedUrl && failedUrl !== photoUrl) setFailedUrl('');
+  }, [failedUrl, photoUrl]);
+
+  if (!initials && !usablePhotoUrl) return null;
+
+  return (
+    <div
+      className={`${sizeClasses} relative flex flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-gray-200 font-medium text-gray-600 transition-opacity hover:opacity-80`}
+      onClick={() => {
+        if (employee?.id) onOpenProfile(employee.id);
+      }}
+      title={name ? `View ${name}'s profile` : undefined}
+    >
+      {(!usablePhotoUrl || !imageLoaded) && initials}
+      {usablePhotoUrl ? (
+        <img
+          src={usablePhotoUrl}
+          alt=""
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-150 ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+          onLoad={() => {
+            loadedRoleAvatarUrls.add(usablePhotoUrl);
+            setImageLoaded(true);
+          }}
+          onError={() => {
+            // Remember only this exact failed URL. A refreshed URL can retry.
+            setFailedUrl(usablePhotoUrl);
+            setImageLoaded(false);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+};
 
 /** Cached light slice for Roles — avoids re-flashing permission gate on remount. */
 type RolesTabCacheSlice = {
@@ -110,24 +171,6 @@ const RolesTab: React.FC<ClientTabProps> = ({
     return null;
   };
 
-  const firstInitialChar = (word: string): string => {
-    const match = word.match(/[\p{L}\p{N}]/u);
-    return match?.[0] ?? '';
-  };
-
-  // Helper function to get employee initials
-  const getEmployeeInitials = (name: string | null | undefined): string => {
-    if (isUnassignedValue(name)) return '';
-    const parts = (name ?? '').trim().split(/\s+/).filter((part) => part.length > 0);
-    if (parts.length === 0) return '';
-    if (parts.length >= 2) {
-      return `${firstInitialChar(parts[0])}${firstInitialChar(parts[parts.length - 1])}`.toUpperCase();
-    }
-    const word = parts[0];
-    const letters = [...word].filter((ch) => /[\p{L}\p{N}]/u.test(ch)).slice(0, 2).join('');
-    return (letters || word.substring(0, 2)).toUpperCase();
-  };
-
   // Helper to get employee ID from role assignee — ID columns first (new and legacy)
   const getEmployeeIdFromRole = (role: Role): string | number | null => {
     const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
@@ -145,60 +188,6 @@ const RolesTab: React.FC<ClientTabProps> = ({
       return emp.display_name && emp.display_name.trim().toLowerCase() === role.assignee.trim().toLowerCase();
     });
     return employee?.id || null;
-  };
-
-  // Initials always paint; a photo only covers them after it actually loads.
-  const EmployeeAvatar: React.FC<{
-    employeeId: string | number | null | undefined;
-    displayName?: string | null;
-    size?: 'sm' | 'md' | 'lg';
-  }> = ({ employeeId, displayName, size = 'md' }) => {
-    const [imageError, setImageError] = useState(false);
-    const [imageLoaded, setImageLoaded] = useState(false);
-    const employee = getEmployeeById(employeeId) || getEmployeeById(displayName);
-    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
-    const name = employee?.display_name || employee?.official_name || displayName || '';
-    const initials = getEmployeeInitials(name);
-    const rawPhoto = employee?.photo_url || employee?.photo;
-    const trimmedPhoto = rawPhoto != null ? String(rawPhoto).trim() : '';
-    const photoUrl = !imageError && trimmedPhoto && trimmedPhoto !== 'null' && trimmedPhoto !== 'undefined'
-      ? trimmedPhoto
-      : null;
-
-    useEffect(() => {
-      setImageError(false);
-      setImageLoaded(false);
-    }, [employeeId, displayName]);
-
-    if (!initials && !photoUrl) {
-      return null;
-    }
-
-    return (
-      <div
-        className={`${sizeClasses} relative rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity`}
-        onClick={() => {
-          if (employee?.id) {
-            navigate(`/my-profile/${employee.id}`);
-          }
-        }}
-        title={name ? `View ${name}'s profile` : undefined}
-      >
-        {(!photoUrl || !imageLoaded) && initials}
-        {photoUrl ? (
-          <img
-            src={photoUrl}
-            alt=""
-            className={`absolute inset-0 h-full w-full object-cover ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
-            onLoad={() => setImageLoaded(true)}
-            onError={() => {
-              setImageError(true);
-              setImageLoaded(false);
-            }}
-          />
-        ) : null}
-      </div>
-    );
   };
 
   // Update local employees state when prop changes (employees are loaded in parent)
@@ -1078,7 +1067,12 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
                       <div className="flex items-center gap-3">
                         {hasAssignee ? (
-                          <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} displayName={role.assignee} size="md" />
+                          <RoleEmployeeAvatar
+                            employee={getEmployeeById(getEmployeeIdFromRole(role)) || getEmployeeById(role.assignee)}
+                            displayName={role.assignee}
+                            size="md"
+                            onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
+                          />
                         ) : (
                           <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 flex-shrink-0">
                             {React.createElement(getRoleIcon(role.id), { className: 'w-6 h-6 text-gray-500' })}
@@ -1165,10 +1159,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
                           <tr key={row.employeeName}>
                             <td className="align-middle">
                               <div className="flex items-center gap-3 min-w-0">
-                                <EmployeeAvatar
-                                  employeeId={row.employeeId}
+                                <RoleEmployeeAvatar
+                                  employee={getEmployeeById(row.employeeId) || getEmployeeById(row.employeeName)}
                                   displayName={row.employeeName}
                                   size="md"
+                                  onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
                                 />
                                 <span className="font-medium text-gray-900 truncate">
                                   {row.employeeName}

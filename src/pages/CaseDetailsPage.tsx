@@ -727,37 +727,10 @@ const CaseDetailsPage: React.FC = () => {
   }, []);
 
   // Check if case is in highlights
+  // public.highlights was never created and nothing writes to it, so this flag has
+  // always resolved to false. Kept false rather than querying a missing relation.
   useEffect(() => {
-    const checkHighlights = async () => {
-      if (!selectedCase?.id) return;
-
-      try {
-        const isLegacyLead = selectedCase.lead_type === 'legacy' || selectedCase.id?.toString().startsWith('legacy_');
-        const leadId = isLegacyLead
-          ? (typeof selectedCase.id === 'string' ? parseInt(selectedCase.id.replace('legacy_', '')) : selectedCase.id)
-          : selectedCase.id;
-
-        const { data: highlights, error } = await supabase
-          .from('highlights')
-          .select('id')
-          .eq('lead_id', leadId)
-          .eq('is_legacy', isLegacyLead)
-          .maybeSingle();
-
-        if (!error && highlights) {
-          setIsInHighlightsState(true);
-        } else {
-          setIsInHighlightsState(false);
-        }
-      } catch (error) {
-        console.error('Error checking highlights:', error);
-        setIsInHighlightsState(false);
-      }
-    };
-
-    if (selectedCase) {
-      checkHighlights();
-    }
+    setIsInHighlightsState(false);
   }, [selectedCase?.id]);
 
   // Handlers for actions

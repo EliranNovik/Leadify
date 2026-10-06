@@ -295,7 +295,60 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
     typeof Request !== 'undefined' && input instanceof Request ? input.clone() : null;
 
   const performNetworkRequest = async (): Promise<Response> => {
+    // #region agent log
+    const __agentCallerStack = new Error().stack || '';
+    // #endregion
     let response = await baseFetch(input as RequestInfo, init);
+
+    // #region agent log
+    if (isRestRequest && response.status >= 400 && response.status !== 401) {
+      void (async () => {
+        try {
+          const redact = (text: string) =>
+            text
+              .replace(/[\w.+-]+%40[\w.-]+/gi, '<email>')
+              .replace(/[\w.+-]+@[\w.-]+/g, '<email>')
+              .replace(/\d{7,}/g, '<num>');
+          const body = await response.clone().json().catch(() => ({} as any));
+          let bodyKeys: string[] = [];
+          if (method !== 'GET' && typeof init?.body === 'string') {
+            try {
+              const parsed = JSON.parse(init.body);
+              const first = Array.isArray(parsed) ? parsed[0] : parsed;
+              bodyKeys = first && typeof first === 'object' ? Object.keys(first) : [];
+            } catch { /* non-JSON body */ }
+          }
+          const appFrames = __agentCallerStack
+            .split('\n')
+            .filter((line) => /\/src\/|\.tsx|\.ts:/.test(line) && !/lib\/supabase\.ts/.test(line))
+            .slice(0, 6)
+            .map((line) => line.trim());
+          await fetch('http://127.0.0.1:7270/ingest/eeb50a38-afe4-4c94-8d17-bf7f20d90d0c', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '0da584' },
+            body: JSON.stringify({
+              sessionId: '0da584',
+              runId: 'supabase-errors',
+              hypothesisId: 'rest-error',
+              location: 'src/lib/supabase.ts:performNetworkRequest',
+              message: `PostgREST ${response.status} ${body?.code || ''} on ${requestUrl.pathname.replace('/rest/v1/', '')}`,
+              data: {
+                method,
+                table: requestUrl.pathname.replace('/rest/v1/', ''),
+                query: redact(decodeURIComponent(requestUrl.search)).slice(0, 700),
+                pgCode: body?.code ?? null,
+                pgMessage: redact(String(body?.message ?? '')).slice(0, 300),
+                pgDetails: redact(String(body?.details ?? '')).slice(0, 300),
+                bodyKeys,
+                appFrames,
+              },
+              timestamp: Date.now(),
+            }),
+          }).catch(() => {});
+        } catch { /* instrumentation must never break the request */ }
+      })();
+    }
+    // #endregion
 
     if (DEBUG_AUTH) {
       const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - DEBUG_AUTH_START_MS;

@@ -36,6 +36,9 @@ const rowClass = (active = false) =>
       : 'text-gray-600 hover:bg-gray-200/80',
   ].join(' ');
 
+const labelClass =
+  'max-w-0 overflow-hidden whitespace-nowrap text-sm font-semibold opacity-0 transition-all duration-200 group-hover:max-w-44 group-hover:opacity-100';
+
 const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
   tabs,
   activeTab,
@@ -65,7 +68,7 @@ const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
 
   return (
     <aside
-      className="hidden lg:fixed lg:left-0 lg:top-14 lg:bottom-0 lg:z-40 lg:flex lg:w-56 lg:flex-col lg:border-r lg:border-gray-200 lg:bg-white lg:overflow-visible"
+      className="group hidden lg:fixed lg:bottom-0 lg:left-0 lg:top-14 lg:z-40 lg:flex lg:w-16 lg:flex-col lg:overflow-visible lg:border-r lg:border-gray-200 lg:bg-white lg:transition-[width] lg:duration-200 lg:ease-out lg:hover:w-56"
       aria-label="HR navigation"
     >
       <div className="flex w-full flex-col gap-1 px-2 pt-4">
@@ -77,7 +80,7 @@ const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
           className={rowClass()}
         >
           <PlusIcon className="h-6 w-6 shrink-0 text-emerald-600" />
-          <span className="whitespace-nowrap text-sm font-semibold">Add employee</span>
+          <span className={labelClass}>Add employee</span>
         </button>
         <button
           type="button"
@@ -87,7 +90,7 @@ const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
           className={rowClass()}
         >
           <UserPlusIcon className="h-6 w-6 shrink-0" />
-          <span className="whitespace-nowrap text-sm font-semibold">Add user</span>
+          <span className={labelClass}>Add user</span>
         </button>
       </div>
 
@@ -108,11 +111,11 @@ const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
               className={rowClass(active)}
             >
               <Icon className="h-6 w-6 shrink-0" />
-              <span className="whitespace-nowrap text-sm font-semibold">{tab.label}</span>
+              <span className={labelClass}>{tab.label}</span>
               {tab.id === 'approvals' && pendingApprovals > 0 && (
                 <span
                   className={[
-                    'ml-auto inline-flex min-h-7 min-w-7 items-center justify-center rounded-full px-2.5 text-sm font-bold leading-none',
+                    'ml-auto hidden min-h-7 min-w-7 items-center justify-center rounded-full px-2.5 text-sm font-bold leading-none group-hover:inline-flex',
                     active ? 'bg-white/25 text-white' : 'bg-emerald-100 text-emerald-800',
                   ].join(' ')}
                 >
@@ -134,7 +137,7 @@ const HrManagementSideRail: React.FC<HrManagementSideRailProps> = ({
           className={rowClass(showSettings)}
         >
           <Cog6ToothIcon className="h-6 w-6 shrink-0" />
-          <span className="whitespace-nowrap text-sm font-semibold">Settings</span>
+          <span className={labelClass}>Settings</span>
         </button>
         {showSettings && (
           <div

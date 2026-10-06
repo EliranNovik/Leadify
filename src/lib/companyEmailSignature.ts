@@ -4,6 +4,19 @@ import { isUsableEmployeePhotoUrl, resolveEmployeePhotoUrl } from './employeePho
 export const COMPANY_SIGNATURE_SETTINGS_ID = 1;
 export const SIGNATURE_IMAGES_BUCKET = 'signature-templates';
 
+/**
+ * The firm-wide confidentiality notice. Text wrapped in `**` renders bold, which is the only
+ * markup the disclaimer accepts — the stored value is escaped before it reaches the email HTML.
+ */
+export const DEFAULT_SIGNATURE_DISCLAIMER =
+  '**Confidential. Attorney-Client Privilege This e-mail** (including any attachments) is for the ' +
+  'sole use of the intended recipient and may contain confidential information which may be ' +
+  'protected by legal privilege. If you are not the intended recipient, or the employee or agent ' +
+  'responsible for delivering it to the intended recipient, you are hereby notified that any use, ' +
+  'dissemination, distribution or copying of this communication and/or its content is strictly ' +
+  'prohibited. If you are not the intended recipient, please immediately notify us by reply ' +
+  'e-mail or by telephone, delete this e-mail and destroy any copies. Thank you';
+
 export const DEFAULT_COMPANY_SIGNATURE_SETTINGS: CompanySignatureSettings = {
   id: COMPANY_SIGNATURE_SETTINGS_ID,
   company_name: 'Decker Pex Levi Law Offices',
@@ -16,7 +29,7 @@ export const DEFAULT_COMPANY_SIGNATURE_SETTINGS: CompanySignatureSettings = {
   instagram_url: null,
   office_phone: null,
   office_address: 'Twin Towers, 2 Jabotinsky St., Ramat Gan, Israel',
-  signature_disclaimer: null,
+  signature_disclaimer: DEFAULT_SIGNATURE_DISCLAIMER,
   signature_enabled: true,
   show_logo: true,
   show_secondary_logo: true,
@@ -158,7 +171,11 @@ function mapSettings(row: Record<string, unknown> | null | undefined): CompanySi
     instagram_url: asNullableString(row.instagram_url),
     office_phone: asNullableString(row.office_phone),
     office_address: asNullableString(row.office_address),
-    signature_disclaimer: asNullableString(row.signature_disclaimer),
+    // Falls back like the social URLs above: a blank column restores the standard notice rather
+    // than dropping the confidentiality wording off everyone's outgoing mail.
+    signature_disclaimer:
+      asNullableString(row.signature_disclaimer) ||
+      DEFAULT_COMPANY_SIGNATURE_SETTINGS.signature_disclaimer,
     signature_enabled: asBool(row.signature_enabled, true),
     show_logo: asBool(row.show_logo, true),
     show_secondary_logo: asBool(row.show_secondary_logo, true),

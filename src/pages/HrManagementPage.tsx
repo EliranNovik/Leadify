@@ -88,6 +88,7 @@ import {
   type ClockInExportRecord,
 } from '../lib/workingHoursExport';
 import { withAutoFilledClockInRecordsByEmployee } from '../lib/autoFilledWorkingHours';
+import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
 import HrApprovalsPanel from '../components/hr/HrApprovalsPanel';
 import HrEmployeeAboutEditModal from '../components/hr/HrEmployeeAboutEditModal';
 import HrManagementSideRail from '../components/hr/HrManagementSideRail';
@@ -110,6 +111,7 @@ import DocumentViewerModal from '../components/DocumentViewerModal';
 import TeamStatusModal from '../components/TeamStatusModal';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
+import SignatureProfileForm from '../components/signature/SignatureProfileForm';
 import MyContribution from '../components/MyContribution';
 import EmployeeSalariesManager from '../components/admin/EmployeeSalariesManager';
 import HrEntryKioskPanel from '../components/hr/HrEntryKioskPanel';
@@ -125,7 +127,7 @@ type HubTab =
   | 'status'
   | 'salaries'
   | 'entry-kiosk';
-type FileTab = 'about' | 'working-hours' | 'documents' | 'contribution';
+type FileTab = 'about' | 'working-hours' | 'documents' | 'signature' | 'contribution';
 
 type HoursBoardEmployee = {
   employeeId: number;
@@ -278,6 +280,7 @@ const FILE_TABS: Array<{ id: FileTab; label: string }> = [
   { id: 'about', label: 'About' },
   { id: 'working-hours', label: 'Working Hours' },
   { id: 'documents', label: 'Documents' },
+  { id: 'signature', label: 'Signature' },
   { id: 'contribution', label: 'Contribution' },
 ];
 
@@ -325,6 +328,10 @@ export default function HrManagementPage() {
   const fileTab = (searchParams.get('fileTab') as FileTab) || 'about';
 
   const [employees, setEmployees] = useState<OrganizationEmployee[]>([]);
+  const [selectedEmployeeFallback, setSelectedEmployeeFallback] = useState<OrganizationEmployee | null>(null);
+  const [employeeProfileFallbacks, setEmployeeProfileFallbacks] = useState<
+    Map<number, { name: string; photoUrl: string | null }>
+  >(() => new Map());
   const [avgMonthlySalaryByEmployeeId, setAvgMonthlySalaryByEmployeeId] = useState<
     Map<number, number>
   >(() => new Map());
@@ -739,9 +746,62 @@ export default function HrManagementPage() {
     });
   }, [employees, employeeSearch, deptFilter, superuserFilter, wfhFilter]);
 
+  useEffect(() => {
+    if (
+      selectedEmployeeId == null ||
+      employees.some((employee) => employee.id === selectedEmployeeId)
+    ) {
+      setSelectedEmployeeFallback(null);
+      return;
+    }
+
+    let cancelled = false;
+    void fetchEmployeeProfileById(selectedEmployeeId).then((profile) => {
+      if (cancelled || !profile) return;
+      setSelectedEmployeeFallback({
+        id: profile.id,
+        display_name: profile.display_name,
+        official_name: profile.official_name || null,
+        photo_url: profile.photo_url,
+        email: profile.email || '',
+        phone: profile.phone || null,
+        mobile: profile.mobile || null,
+        employee_mobile: null,
+        phone_ext: profile.phone_ext || null,
+        linkedin_url: profile.linkedin_url,
+        chat_background_image_url: profile.chat_background_image_url,
+        diplom: null,
+        school: null,
+        bonuses_role: profile.bonuses_role || null,
+        department: profile.department_name || null,
+        department_id: null,
+        min_hours: profile.min_hours,
+        works_from_home: false,
+        is_superuser: false,
+        date_of_birth: null,
+        fired: false,
+        fired_at: null,
+        fired_by_employee_id: null,
+        fired_by_name: null,
+        fieldRoles: [],
+        chatUserId: null,
+        isClockedIn: false,
+        unavailabilityType: null,
+        unavailabilityStartDate: null,
+        unavailabilityEndDate: null,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [employees, selectedEmployeeId]);
+
   const selectedEmployee = useMemo(
-    () => employees.find((e) => e.id === selectedEmployeeId) ?? null,
-    [employees, selectedEmployeeId],
+    () =>
+      employees.find((employee) => employee.id === selectedEmployeeId) ??
+      (selectedEmployeeFallback?.id === selectedEmployeeId ? selectedEmployeeFallback : null),
+    [employees, selectedEmployeeFallback, selectedEmployeeId],
   );
 
   const hoursSubmittedCount = useMemo(
@@ -847,18 +907,70 @@ export default function HrManagementPage() {
     prevMonthMissingSalaries,
   ]);
 
+  useEffect(() => {
+    const knownEmployeeIds = new Set(employees.map((employee) => employee.id));
+    const missingIds = Array.from(
+      new Set(
+        outTodayRows
+          .map((row) => row.employee_id)
+          .filter(
+            (employeeId) =>
+              !knownEmployeeIds.has(employeeId) && !employeeProfileFallbacks.has(employeeId),
+          ),
+      ),
+    );
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    void Promise.all(
+      missingIds.map(async (employeeId) => ({
+        employeeId,
+        profile: await fetchEmployeeProfileById(employeeId),
+      })),
+    ).then((results) => {
+      if (cancelled) return;
+      setEmployeeProfileFallbacks((previous) => {
+        const next = new Map(previous);
+        results.forEach(({ employeeId, profile }) => {
+          if (!profile) {
+            next.set(employeeId, { name: `Employee #${employeeId}`, photoUrl: null });
+            return;
+          }
+          const name =
+            profile.official_name?.trim() ||
+            profile.display_name?.trim() ||
+            `Employee #${employeeId}`;
+          next.set(employeeId, { name, photoUrl: profile.photo_url });
+        });
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [employees, employeeProfileFallbacks, outTodayRows]);
+
   const outTodayDisplay = useMemo(() => {
     return [...outTodayRows]
       .map((row) => {
         const emp = employees.find((e) => e.id === row.employee_id);
+        const hoursEmployee = hoursBoardEmployees.find(
+          (employee) => employee.employeeId === row.employee_id,
+        );
+        const profileFallback = employeeProfileFallbacks.get(row.employee_id);
         return {
           row,
-          name: emp ? getEmployeeDisplayLabel(emp) : `Employee #${row.employee_id}`,
-          photoUrl: emp?.photo_url ?? null,
+          name: emp
+            ? getEmployeeDisplayLabel(emp)
+            : profileFallback?.name ||
+              hoursEmployee?.employeeName ||
+              `Employee #${row.employee_id}`,
+          photoUrl: emp?.photo_url ?? profileFallback?.photoUrl ?? hoursEmployee?.photoUrl ?? null,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-  }, [outTodayRows, employees]);
+  }, [outTodayRows, employees, employeeProfileFallbacks, hoursBoardEmployees]);
 
   const filteredHoursBoard = useMemo(() => {
     const q = hoursSearch.trim().toLowerCase();
@@ -1241,10 +1353,10 @@ export default function HrManagementPage() {
       ? salaryToHourlyRateNis(aboutAvgMonthlySalaryNis, emp.min_hours)
       : null;
     return (
-      <div className="hr-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-56">
+      <div className="hr-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-16">
         {hrSideRail}
         {hrCreateDrawers}
-        <div className="px-4 md:px-8 py-6 space-y-5 mx-auto w-full max-w-none">
+        <div className="mx-auto w-full max-w-none space-y-5 px-2 py-6">
           <button
             type="button"
             className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900"
@@ -1297,7 +1409,7 @@ export default function HrManagementPage() {
                   {emp?.email ? ` · ${emp.email}` : ''}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2 pb-1">
+              <div className="flex flex-wrap items-center gap-1 rounded-full border border-white/80 bg-white/70 px-3 py-1.5 shadow-xl backdrop-blur-xl sm:absolute sm:-top-32 sm:right-6">
                 {(() => {
                   const whatsAppNumber =
                     emp?.employee_mobile?.trim() || emp?.mobile?.trim() || '';
@@ -1309,7 +1421,7 @@ export default function HrManagementPage() {
                   const email = emp?.email?.trim() || '';
                   const canRmq = Boolean(emp?.chatUserId);
                   const iconBtn =
-                    'inline-flex h-9 w-9 items-center justify-center rounded-full border transition disabled:opacity-40 disabled:pointer-events-none';
+                    'tooltip tooltip-bottom inline-flex h-10 w-10 items-center justify-center !border-0 !bg-transparent transition-all duration-200 hover:scale-110 hover:brightness-75 disabled:pointer-events-none disabled:opacity-40';
                   return (
                     <>
                       <a
@@ -1320,13 +1432,14 @@ export default function HrManagementPage() {
                           !whatsAppUrl ? 'pointer-events-none opacity-40' : ''
                         }`}
                         title={whatsAppUrl ? 'WhatsApp' : 'No WhatsApp number'}
+                        data-tip={whatsAppUrl ? 'WhatsApp' : 'No WhatsApp number'}
                         aria-label="WhatsApp"
                         aria-disabled={!whatsAppUrl}
                         onClick={(e) => {
                           if (!whatsAppUrl) e.preventDefault();
                         }}
                       >
-                        <FaWhatsapp className="h-4 w-4" aria-hidden />
+                        <FaWhatsapp className="h-6 w-6" aria-hidden />
                       </a>
                       <a
                         href={email ? `mailto:${email}` : undefined}
@@ -1334,19 +1447,21 @@ export default function HrManagementPage() {
                           !email ? 'pointer-events-none opacity-40' : ''
                         }`}
                         title={email || 'No email'}
+                        data-tip={email ? `Email ${email}` : 'No email'}
                         aria-label="Email"
                         aria-disabled={!email}
                         onClick={(e) => {
                           if (!email) e.preventDefault();
                         }}
                       >
-                        <EnvelopeIcon className="h-4 w-4" aria-hidden />
+                        <EnvelopeIcon className="h-6 w-6" aria-hidden />
                       </a>
                       <button
                         type="button"
                         className={`${iconBtn} border-[#4829CC]/25 bg-[#4829CC]/8 text-[#4829CC] hover:bg-[#4829CC]/14`}
                         disabled={!canRmq}
                         title={canRmq ? 'RMQ message' : 'No RMQ account linked'}
+                        data-tip={canRmq ? 'RMQ message' : 'No RMQ account linked'}
                         aria-label="RMQ message"
                         onClick={() => {
                           if (!emp?.chatUserId) {
@@ -1357,7 +1472,7 @@ export default function HrManagementPage() {
                           setRmqOpen(true);
                         }}
                       >
-                        <ChatBubbleLeftRightIcon className="h-4 w-4" aria-hidden />
+                        <ChatBubbleLeftRightIcon className="h-6 w-6" aria-hidden />
                       </button>
                       <a
                         href={phone ? `tel:${phone}` : undefined}
@@ -1365,13 +1480,14 @@ export default function HrManagementPage() {
                           !phone ? 'pointer-events-none opacity-40' : ''
                         }`}
                         title={phone ? `Call ${phone}` : 'No phone'}
+                        data-tip={phone ? `Call ${phone}` : 'No phone'}
                         aria-label="Phone"
                         aria-disabled={!phone}
                         onClick={(e) => {
                           if (!phone) e.preventDefault();
                         }}
                       >
-                        <PhoneIcon className="h-4 w-4" aria-hidden />
+                        <PhoneIcon className="h-6 w-6" aria-hidden />
                       </a>
                       <a
                         href={mobile ? `tel:${mobile}` : undefined}
@@ -1379,27 +1495,31 @@ export default function HrManagementPage() {
                           !mobile ? 'pointer-events-none opacity-40' : ''
                         }`}
                         title={mobile ? `Mobile ${mobile}` : 'No mobile'}
+                        data-tip={mobile ? `Mobile ${mobile}` : 'No mobile'}
                         aria-label="Mobile"
                         aria-disabled={!mobile}
                         onClick={(e) => {
                           if (!mobile) e.preventDefault();
                         }}
                       >
-                        <DevicePhoneMobileIcon className="h-4 w-4" aria-hidden />
+                        <DevicePhoneMobileIcon className="h-6 w-6" aria-hidden />
                       </a>
                     </>
                   );
                 })()}
                 <button
                   type="button"
-                  className="btn btn-sm rounded-full"
+                  className="tooltip tooltip-bottom inline-flex h-10 w-10 items-center justify-center text-gray-600 transition-all duration-200 hover:scale-110 hover:text-gray-900"
                   onClick={() => navigate(`/my-profile/${selectedEmployeeId}`)}
+                  title="Open profile"
+                  data-tip="Open profile"
+                  aria-label="Open profile"
                 >
-                  Open profile
+                  <IdentificationIcon className="h-6 w-6" />
                 </button>
               </div>
             </div>
-            <div className="px-4 md:px-6 border-t border-gray-100 flex gap-1 overflow-x-auto">
+            <div className="flex gap-1 overflow-x-auto px-4 md:px-6">
               {FILE_TABS.map((tab) => (
                 <button
                   key={tab.id}
@@ -1423,7 +1543,7 @@ export default function HrManagementPage() {
               // tab wraps them in a panel, so a second white panel here flattens the header,
               // stat cards and toolbar that are meant to sit on the page grey.
               fileTab === 'working-hours'
-                ? 'rounded-2xl p-4 md:p-6'
+                ? 'rounded-2xl p-0'
                 : 'rounded-2xl bg-white border border-gray-200 p-4 md:p-6 shadow-sm'
             }
           >
@@ -1672,6 +1792,17 @@ export default function HrManagementPage() {
             {fileTab === 'documents' && (
               <MyDocumentsTab employeeId={selectedEmployeeId} employeeName={name} />
             )}
+            {fileTab === 'signature' && (
+              <SignatureProfileForm
+                key={selectedEmployeeId}
+                employeeId={selectedEmployeeId}
+                employeeEmail={emp?.email}
+                allowEmployeeFieldEdits
+                onSaved={() => {
+                  void loadHubData();
+                }}
+              />
+            )}
             {fileTab === 'contribution' && (
               <MyContribution employeeId={selectedEmployeeId} employeeName={name} embedded />
             )}
@@ -1691,7 +1822,7 @@ export default function HrManagementPage() {
 
   // ─── Hub ───────────────────────────────────────────────────────────────────
   return (
-    <div className="hr-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-56">
+    <div className="hr-management-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-16">
       {hrSideRail}
       {hrCreateDrawers}
       <div className="px-4 md:px-8 py-6 space-y-5 mx-auto w-full max-w-none">
@@ -1747,6 +1878,7 @@ export default function HrManagementPage() {
                   label: 'Pending approvals',
                   value: pendingCount,
                   icon: ClipboardDocumentCheckIcon,
+                  gradient: 'bg-gradient-to-tr from-purple-600 via-indigo-600 to-blue-500',
                   onClick: () => setHubTab('approvals'),
                 },
                 {
@@ -1754,12 +1886,14 @@ export default function HrManagementPage() {
                   label: 'Clocked in now',
                   value: clockedInToday,
                   icon: ClockIcon,
+                  gradient: 'bg-gradient-to-tr from-teal-600 via-emerald-500 to-green-500',
                 },
                 {
                   id: 'leave' as const,
                   label: 'On leave today',
                   value: onLeaveToday,
                   icon: CalendarDaysIcon,
+                  gradient: 'bg-gradient-to-tr from-sky-600 via-cyan-500 to-blue-500',
                   onClick: () => setHubTab('leave'),
                 },
                 {
@@ -1767,6 +1901,7 @@ export default function HrManagementPage() {
                   label: 'Missing sick docs',
                   value: missingSickDocs,
                   icon: ExclamationTriangleIcon,
+                  gradient: 'bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500',
                   onClick: () => {
                     const from = new Date();
                     from.setDate(from.getDate() - 180);
@@ -1791,7 +1926,7 @@ export default function HrManagementPage() {
                     key={card.label}
                     type="button"
                     onClick={card.onClick}
-                    className="rounded-2xl bg-white border border-gray-200 p-5 md:p-6 text-left shadow-sm hover:border-emerald-300 transition disabled:pointer-events-none min-h-[7.5rem]"
+                    className={`${card.gradient} min-h-[7.5rem] rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl disabled:pointer-events-none md:p-6`}
                     disabled={!card.onClick}
                   >
                     {showPendingAvatars ? (
@@ -1801,7 +1936,7 @@ export default function HrManagementPage() {
                             {pendingAvatarsShown.map((emp) => (
                               <span
                                 key={emp.id}
-                                className="relative inline-flex rounded-full ring-2 ring-white"
+                                className="relative inline-flex rounded-full ring-2 ring-white/80"
                                 title={emp.name}
                               >
                                 <HrEmployeeAvatar
@@ -1813,33 +1948,37 @@ export default function HrManagementPage() {
                               </span>
                             ))}
                             {pendingAvatarsExtra > 0 && (
-                              <span className="relative inline-flex h-9 w-9 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-800 ring-2 ring-white">
+                              <span className="relative inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/20 text-xs font-bold text-white ring-2 ring-white/80">
                                 +{pendingAvatarsExtra}
                               </span>
                             )}
                           </div>
                           <div>
-                            <div className="text-3xl md:text-4xl font-bold text-gray-900 leading-none tracking-tight">
+                            <div className="text-3xl font-bold leading-none tracking-tight text-white md:text-4xl">
                               {card.value}
                             </div>
-                            <div className="text-sm md:text-base font-semibold text-gray-600 mt-2.5 leading-snug">
+                            <div className="mt-2.5 text-sm font-semibold leading-snug text-white/90 md:text-base">
                               {card.label}
                             </div>
                           </div>
                         </div>
-                        <card.icon className="w-10 h-10 md:w-12 md:h-12 text-emerald-600/80 shrink-0" />
+                        <span className="shrink-0 rounded-full bg-white/20 p-4">
+                          <card.icon className="h-9 w-9 text-white" />
+                        </span>
                       </div>
                     ) : (
                       <div className="flex items-center justify-between gap-3 h-full">
                         <div className="min-w-0">
-                          <div className="text-3xl md:text-4xl font-bold text-gray-900 leading-none tracking-tight">
+                          <div className="text-3xl font-bold leading-none tracking-tight text-white md:text-4xl">
                             {loadingHub ? '—' : card.value}
                           </div>
-                          <div className="text-sm md:text-base font-semibold text-gray-600 mt-2.5 leading-snug">
+                          <div className="mt-2.5 text-sm font-semibold leading-snug text-white/90 md:text-base">
                             {card.label}
                           </div>
                         </div>
-                        <card.icon className="w-10 h-10 md:w-12 md:h-12 text-emerald-600/80 shrink-0" />
+                        <span className="shrink-0 rounded-full bg-white/20 p-4">
+                          <card.icon className="h-9 w-9 text-white" />
+                        </span>
                       </div>
                     )}
                   </button>
@@ -1922,22 +2061,19 @@ export default function HrManagementPage() {
                             size="lg"
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 min-w-0">
+                            <div className="flex min-w-0 items-center gap-2">
                               <span className="font-medium text-gray-900 truncate">{name}</span>
-                              <UnavailabilityTypeBadge
-                                type={row.unavailability_type}
-                                size="xs"
-                                borderless
-                                className="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold"
-                              />
                             </div>
                             <div className="text-sm text-gray-500 truncate">
                               {unavailabilityDateRangeLabel(row.start_date, row.end_date)}
                             </div>
                           </div>
-                          <span className="shrink-0 max-w-[10rem] truncate text-sm text-gray-600">
-                            {unavailabilityReasonText(row)}
-                          </span>
+                          <UnavailabilityTypeBadge
+                            type={row.unavailability_type}
+                            size="sm"
+                            borderless
+                            className="shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold"
+                          />
                         </button>
                       </li>
                     ))}
@@ -2103,7 +2239,7 @@ export default function HrManagementPage() {
                 </button>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className="-mx-4 overflow-x-auto md:-mx-6">
               <table className="table w-full text-base">
                 <thead>
                   <tr className="text-sm uppercase tracking-wider text-gray-500">
@@ -2322,7 +2458,7 @@ export default function HrManagementPage() {
                 </button>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className="-mx-4 overflow-x-auto md:-mx-6">
               <table className="table w-full text-base">
                 <thead>
                   <tr className="text-sm uppercase tracking-wider text-gray-500">
@@ -2521,7 +2657,7 @@ export default function HrManagementPage() {
                 </button>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className="-mx-4 overflow-x-auto md:-mx-6">
               <table className="table w-full text-base">
                 <thead>
                   <tr className="text-sm uppercase tracking-wider text-gray-500">

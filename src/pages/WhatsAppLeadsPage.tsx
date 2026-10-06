@@ -368,7 +368,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             .single();
 
           if (userRow) {
-            setCurrentUser(userRow);
+            setCurrentUser({ ...userRow, db_user_id: userRow.id });
             return;
           }
         }
@@ -376,6 +376,8 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Fallback: create a user object with available data
         const fallbackUser = {
           id: user.id,
+          // No users row, so there is no valid value for columns that FK onto users(id).
+          db_user_id: null,
           full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
           email: user.email
         };
@@ -844,7 +846,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 .update({
                   is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id
+                  read_by: currentUser.db_user_id ?? null
                 })
                 .in('id', incomingMessageIds);
 
@@ -1859,7 +1861,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       if (contactIds.size > 0) {
         const { data: contactsData, error: contactsError } = await supabase
           .from('leads_contact')
-          .select('id, name, newlead_id, lead_id')
+          .select('id, name, newlead_id, lead_leadcontact(lead_id)')
           .in('id', Array.from(contactIds));
 
         if (contactsError) {
@@ -1868,6 +1870,9 @@ const WhatsAppLeadsPage: React.FC = () => {
           for (const contact of contactsData || []) {
             let contactLeadNumber: string | null = null;
             let isLegacyContactLead = false;
+            // Legacy lead linkage lives on the junction table, not on leads_contact.
+            const legacyContactLeadId =
+              (contact.lead_leadcontact || []).map((link: any) => link?.lead_id).find(Boolean) ?? null;
 
             if (contact.newlead_id) {
               const { data: leadData } = await supabase
@@ -1876,11 +1881,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                 .eq('id', contact.newlead_id)
                 .maybeSingle();
               if (leadData) contactLeadNumber = leadData.lead_number;
-            } else if (contact.lead_id) {
+            } else if (legacyContactLeadId) {
               const { data: legacyLeadData } = await supabase
                 .from('leads_lead')
                 .select('id, master_id')
-                .eq('id', contact.lead_id)
+                .eq('id', legacyContactLeadId)
                 .maybeSingle();
               if (legacyLeadData) {
                 isLegacyContactLead = true;

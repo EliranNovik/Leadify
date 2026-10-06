@@ -588,27 +588,6 @@ const ProformaLegacyCreatePage: React.FC = () => {
             userData: userWithEmployee
           });
 
-          // Fallback: Try direct lookup in tenants_employee by email (in case email field exists there)
-          const { data: employeeData, error: employeeError } = await supabase
-            .from('tenants_employee')
-            .select('id, email, display_name')
-            .eq('email', user.email)
-            .maybeSingle();
-
-          if (!employeeError && employeeData?.id) {
-            setEmployeeId(employeeData.id);
-            console.log('✅ [ProformaLegacyCreate] Employee ID found via direct tenants_employee lookup:', {
-              id: employeeData.id,
-              email: employeeData.email,
-              display_name: employeeData.display_name
-            });
-          } else {
-            console.error('❌ [ProformaLegacyCreate] Could not find employee ID via any method:', {
-              userEmail: user.email,
-              usersTableError: userError,
-              tenantsEmployeeError: employeeError
-            });
-          }
         }
       }
     };

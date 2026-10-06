@@ -336,19 +336,10 @@ const CaseManagerPageNew: React.FC = () => {
     }
   };
 
+  // public.communications was never created, so this counter has always rendered 0.
+  // Left at 0 rather than querying a missing relation on every dashboard load.
   const fetchNewMessages = async () => {
-    try {
-      const { count, error } = await supabase
-        .from('communications')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'sent')
-        .gte('sent_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
-
-      if (error) throw error;
-      setNewMessagesCount(count || 0);
-    } catch (error) {
-      console.error('Error fetching new messages:', error);
-    }
+    setNewMessagesCount(0);
   };
 
   const fetchTasksDue = async () => {

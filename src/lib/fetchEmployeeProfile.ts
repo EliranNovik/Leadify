@@ -13,6 +13,7 @@ export type EmployeeProfile = {
   bonuses_role: string;
   official_name: string;
   linkedin_url: string | null;
+  min_hours: number;
 };
 
 const EMPLOYEE_SELECT = `
@@ -26,19 +27,24 @@ const EMPLOYEE_SELECT = `
   bonuses_role,
   official_name,
   linkedin_url,
+  min_hours,
   department_id,
   tenant_departement!department_id (
     name
   )
 `;
 
-function mapEmployeeRow(employeeData: Record<string, unknown>, userEmail: string | null): EmployeeProfile {
+function mapEmployeeRow(
+  employeeData: Record<string, unknown>,
+  userEmail: string | null,
+  userName: string | null = null,
+): EmployeeProfile {
   const dept = employeeData.tenant_departement as { name?: string } | { name?: string }[] | null;
   const departmentName = Array.isArray(dept) ? dept[0]?.name : dept?.name;
 
   return {
     id: Number(employeeData.id),
-    display_name: String(employeeData.display_name ?? ''),
+    display_name: String(employeeData.display_name || employeeData.official_name || userName || ''),
     photo_url: (employeeData.photo_url as string) || null,
     chat_background_image_url: (employeeData.chat_background_image_url as string) || null,
     mobile: String(employeeData.mobile ?? ''),
@@ -47,18 +53,24 @@ function mapEmployeeRow(employeeData: Record<string, unknown>, userEmail: string
     email: userEmail,
     department_name: departmentName || 'General',
     bonuses_role: String(employeeData.bonuses_role ?? 'Employee'),
-    official_name: String(employeeData.official_name || employeeData.display_name || ''),
+    official_name: String(employeeData.official_name || employeeData.display_name || userName || ''),
     linkedin_url: (employeeData.linkedin_url as string) || null,
+    min_hours: Number(employeeData.min_hours) || 8,
   };
 }
 
-async function enrichWithEmail(employeeId: number): Promise<string | null> {
+async function fetchLinkedUserIdentity(
+  employeeId: number,
+): Promise<{ email: string | null; fullName: string | null }> {
   const { data: userData } = await supabase
     .from('users')
-    .select('email')
+    .select('email, full_name')
     .eq('employee_id', employeeId)
     .maybeSingle();
-  return userData?.email ?? null;
+  return {
+    email: userData?.email ?? null,
+    fullName: userData?.full_name ?? null,
+  };
 }
 
 export async function fetchEmployeeProfileById(employeeId: number): Promise<EmployeeProfile | null> {
@@ -70,8 +82,8 @@ export async function fetchEmployeeProfileById(employeeId: number): Promise<Empl
 
   if (error || !data) return null;
 
-  const email = await enrichWithEmail(data.id);
-  return mapEmployeeRow(data as Record<string, unknown>, email);
+  const identity = await fetchLinkedUserIdentity(data.id);
+  return mapEmployeeRow(data as Record<string, unknown>, identity.email, identity.fullName);
 }
 
 function mapPublicBusinessCardRow(row: Record<string, unknown>): EmployeeProfile {
@@ -88,6 +100,7 @@ function mapPublicBusinessCardRow(row: Record<string, unknown>): EmployeeProfile
     bonuses_role: String(row.bonuses_role ?? 'Employee'),
     official_name: String(row.official_name || row.display_name || ''),
     linkedin_url: (row.linkedin_url as string) || null,
+    min_hours: Number(row.min_hours) || 8,
   };
 }
 
@@ -120,8 +133,8 @@ export async function fetchEmployeeProfileByDisplayName(
 
   if (error || !data) return null;
 
-  const email = await enrichWithEmail(data.id);
-  return mapEmployeeRow(data as Record<string, unknown>, email);
+  const identity = await fetchLinkedUserIdentity(data.id);
+  return mapEmployeeRow(data as Record<string, unknown>, identity.email, identity.fullName);
 }
 
 /** Resolve employee by display or official name (portal team cards use official_name). */
@@ -140,8 +153,8 @@ export async function fetchEmployeeProfileByName(name: string): Promise<Employee
 
   if (error || !data) return null;
 
-  const email = await enrichWithEmail(data.id);
-  return mapEmployeeRow(data as Record<string, unknown>, email);
+  const identity = await fetchLinkedUserIdentity(data.id);
+  return mapEmployeeRow(data as Record<string, unknown>, identity.email, identity.fullName);
 }
 
 /** Resolve issuer for public proforma — prefers employee id, falls back to display name. */

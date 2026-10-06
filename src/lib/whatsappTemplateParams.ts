@@ -160,22 +160,6 @@ async function getCurrentUserFirmId(): Promise<number | null> {
   }
 }
 
-/** Prefer lead's firm when the column exists (matches tenants_meetinglocation.firm_id). */
-async function getFirmIdForNewLead(clientId: string): Promise<number | null> {
-  try {
-    const { data, error } = await supabase
-      .from('leads')
-      .select('firm_id')
-      .eq('id', clientId)
-      .maybeSingle();
-    if (error || !data || data.firm_id == null || data.firm_id === '') return null;
-    const n = Number(data.firm_id);
-    return Number.isFinite(n) ? n : null;
-  } catch {
-    return null;
-  }
-}
-
 function shouldUsePhysicalAddress(
   isPhysicalFlag: unknown,
   addressNonEmpty: boolean
@@ -647,11 +631,7 @@ export async function getMeetingLocation(
           .maybeSingle();
 
         if (!error && meeting) {
-          const firmFromLead = meeting.client_id
-            ? await getFirmIdForNewLead(String(meeting.client_id))
-            : null;
-          const firmFromSession = await getCurrentUserFirmId();
-          const firmId = firmFromLead ?? firmFromSession;
+          const firmId = await getCurrentUserFirmId();
           return resolveMeetingLocationFromMeetingRow(meeting, firmId, preferEnglish);
         }
       }
@@ -693,9 +673,7 @@ export async function getMeetingLocation(
       return '';
     }
 
-    const firmFromLead = !isLegacyLead ? await getFirmIdForNewLead(String(queryId)) : null;
-    const firmFromSession = await getCurrentUserFirmId();
-    const firmId = firmFromLead ?? firmFromSession;
+    const firmId = await getCurrentUserFirmId();
 
     return resolveMeetingLocationFromMeetingRow(meetings[0], firmId, preferEnglish);
   } catch (error) {
@@ -766,9 +744,7 @@ export async function getMeetingLink(
       rawLoc === null || rawLoc === undefined ? '' : String(rawLoc).trim();
 
     if (rawStr) {
-      const firmFromLead = !isLegacyLead ? await getFirmIdForNewLead(String(queryId)) : null;
-      const firmFromSession = await getCurrentUserFirmId();
-      const firmId = firmFromLead ?? firmFromSession;
+      const firmId = await getCurrentUserFirmId();
       const locRow = await fetchTenantMeetingLocationRow(rawStr, firmId);
       const dl = locRow?.default_link != null ? String(locRow.default_link).trim() : '';
       if (dl) return dl;

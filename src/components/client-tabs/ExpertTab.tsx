@@ -143,6 +143,19 @@ const safeFormatDate = (dateVal: string | number | Date | undefined | null): str
   return d.toLocaleString();
 };
 
+/** leads.management_notes is JSONB: an array of note objects, a single object, or plain text. */
+const flattenManagementNotes = (raw: unknown): string => {
+  if (!raw) return '';
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((note: any) => (typeof note === 'string' ? note : note?.content))
+      .filter(Boolean)
+      .join('; ');
+  }
+  return String((raw as any)?.content || '');
+};
+
 const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmployees = [] }) => {
   // Helper function to clean up text formatting
   const formatNoteText = (text: string): string => {
@@ -1251,7 +1264,7 @@ ${combinedText}`;
         } else {
           const { data, error } = await supabase
             .from('leads')
-            .select('special_notes, general_notes, facts, manager_notes')
+            .select('special_notes, general_notes, facts, management_notes')
             .eq('id', client.id)
             .single();
 
@@ -1260,7 +1273,7 @@ ${combinedText}`;
               specialNotes: formatNoteText(data.special_notes || ''),
               generalNotes: formatNoteText(data.general_notes || ''),
               facts: formatNoteText(data.facts || ''),
-              managerNotes: formatNoteText(data.manager_notes || '')
+              managerNotes: formatNoteText(flattenManagementNotes(data.management_notes))
             });
           }
         }

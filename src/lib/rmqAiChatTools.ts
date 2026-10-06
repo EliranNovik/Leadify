@@ -1241,13 +1241,14 @@ function isUnresolvedRoleName(name: string): boolean {
   return !value || value === '—' || value === '---' || /^\d+$/.test(value);
 }
 
-/** Same lookup as ExpertTab.getExpertName — tenants_employee by id, then employees.full_name. */
+/** Same lookup as ExpertTab.getExpertName — tenants_employee by id, then employees.display_name. */
 async function lookupEmployeeNameById(id: unknown): Promise<string> {
   if (id == null) return '';
   const raw = String(id).trim();
   if (!raw || raw === '---' || raw === '--' || /^not[_ ]assigned$/i.test(raw)) return '';
-  const asNum = Number(raw);
-  const idFilter = Number.isFinite(asNum) && String(asNum) === raw ? asNum : raw;
+  // Both tables key on a bigint id, so a non-numeric role value can never match.
+  if (!/^\d+$/.test(raw)) return '';
+  const idFilter = Number(raw);
   const { data: employee } = await supabase
     .from('tenants_employee')
     .select('display_name')
@@ -1255,8 +1256,8 @@ async function lookupEmployeeNameById(id: unknown): Promise<string> {
     .maybeSingle();
   const fromEmployee = String(employee?.display_name || '').trim();
   if (fromEmployee) return fromEmployee;
-  const { data: fallback } = await supabase.from('employees').select('full_name').eq('id', idFilter).maybeSingle();
-  return String(fallback?.full_name || '').trim();
+  const { data: fallback } = await supabase.from('employees').select('display_name').eq('id', idFilter).maybeSingle();
+  return String(fallback?.display_name || '').trim();
 }
 
 function hasRoleValue(value: unknown): boolean {

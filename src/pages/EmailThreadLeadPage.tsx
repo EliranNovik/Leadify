@@ -1818,13 +1818,16 @@ const EmailThreadLeadPage: React.FC = () => {
       if (contactIds.size > 0) {
         const { data: contactsData, error: contactsError } = await supabase
           .from('leads_contact')
-          .select('id, name, newlead_id, lead_id')
+          .select('id, name, newlead_id, lead_leadcontact(lead_id)')
           .in('id', Array.from(contactIds));
 
         if (!contactsError && contactsData) {
           for (const contact of contactsData) {
             let leadNumber: string | null = null;
             let isLegacy = false;
+            // Legacy lead linkage lives on the junction table, not on leads_contact.
+            const legacyContactLeadId =
+              (contact.lead_leadcontact || []).map((link: any) => link?.lead_id).find(Boolean) ?? null;
 
             // Check if contact is linked to a new lead
             if (contact.newlead_id) {
@@ -1841,11 +1844,11 @@ const EmailThreadLeadPage: React.FC = () => {
             }
 
             // Check if contact is linked to a legacy lead
-            if (!leadNumber && contact.lead_id) {
+            if (!leadNumber && legacyContactLeadId) {
               const { data: legacyLead } = await supabase
                 .from('leads_lead')
                 .select('id, master_id')
-                .eq('id', contact.lead_id)
+                .eq('id', legacyContactLeadId)
                 .maybeSingle();
 
               if (legacyLead) {

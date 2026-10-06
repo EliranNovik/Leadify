@@ -991,8 +991,9 @@ export async function fetchConversationThread(conversation: InboxConversation): 
 export async function markConversationRead(conversation: InboxConversation): Promise<void> {
   const actor = await resolveInboxActor();
   const now = new Date().toISOString();
-  const emailReadBy = actor?.userRowId || actor?.authUserId || null;
-  const waReadBy = actor?.authUserId || null;
+  // Both read_by columns are FKs onto users(id), so the auth user id is never a valid
+  // value there — passing it failed the write with whatsapp_messages_read_by_fkey.
+  const readBy = actor?.userRowId || null;
 
   const emailUpdates: PromiseLike<any>[] = [];
   const waUpdates: PromiseLike<any>[] = [];
@@ -1003,12 +1004,14 @@ export async function markConversationRead(conversation: InboxConversation): Pro
       .update({
         is_read: true,
         read_at: now,
-        ...(emailReadBy ? { read_by: emailReadBy } : {}),
+        ...(readBy ? { read_by: readBy } : {}),
       })
       .eq(column, value)
       .eq('direction', 'incoming')
       .gte('sent_at', lookbackIso(30))
-      .or('is_read.is.null,is_read.eq.false');
+      // `IS NOT TRUE` covers NULL and false. An `or` group here is table-qualified by
+      // PostgREST, which is out of scope in the UPDATE it builds, so the statement failed.
+      .not('is_read', 'is', true);
     emailUpdates.push(q);
   };
 
@@ -1018,12 +1021,12 @@ export async function markConversationRead(conversation: InboxConversation): Pro
       .update({
         is_read: true,
         read_at: now,
-        ...(waReadBy ? { read_by: waReadBy } : {}),
+        ...(readBy ? { read_by: readBy } : {}),
       })
       .eq(column, value)
       .eq('direction', 'in')
       .gte('sent_at', lookbackIso(30))
-      .or('is_read.is.null,is_read.eq.false');
+      .not('is_read', 'is', true);
     waUpdates.push(q);
   };
 
