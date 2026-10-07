@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { DocumentPlusIcon, MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { DocumentPlusIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
 import ExpenseSplitTargetPicker from '../client-tabs/ExpenseSplitTargetPicker';
@@ -15,6 +15,7 @@ import {
   type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
 import { fetchActiveExpenseTypes, type ExpenseTypeRow } from '../../lib/expenseTypes';
+import { createExternalFirm } from '../../lib/externalFirms';
 import { FIRM_MANAGEMENT_DEFAULT_CURRENCY } from '../../lib/firmManagementCosts';
 import {
   createLeadFinanceExpense,
@@ -54,7 +55,6 @@ export type ExpenseDrawerLeadPick = {
 
 type FirmOption = { id: string; name: string };
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
-type OfficeTypeOption = { id: string; label: string };
 type SourceOption = { id: number; name: string };
 type RentOfficeOption = { id: number; name: string };
 
@@ -160,6 +160,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
 
   const [contacts, setContacts] = useState<LeadExpenseContactOption[]>([]);
   const [contactId, setContactId] = useState('');
+  /** Also the office categories: office expenses draw on the same list as the cash box's removals. */
   const [leadTypes, setLeadTypes] = useState<LeadExpenseTypeRow[]>([]);
   const [leadTypeId, setLeadTypeId] = useState('');
   const [paidBy, setPaidBy] = useState<LeadExpensePaidBy>('client');
@@ -168,9 +169,9 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [firms, setFirms] = useState<FirmOption[]>([]);
   const [firmId, setFirmId] = useState('');
   const [firmSearch, setFirmSearch] = useState('');
+  const [creatingFirm, setCreatingFirm] = useState(false);
   const [firmTypes, setFirmTypes] = useState<ExpenseTypeRow[]>([]);
   const [firmTypeId, setFirmTypeId] = useState('');
-  const [officeTypes, setOfficeTypes] = useState<OfficeTypeOption[]>([]);
   const [officeTypeId, setOfficeTypeId] = useState('');
   const [sources, setSources] = useState<SourceOption[]>([]);
   const [sourceId, setSourceId] = useState('');
@@ -261,15 +262,10 @@ const AddExpenseDrawer: React.FC<Props> = ({
     let cancelled = false;
     void (async () => {
       try {
-        const [typeRes, firmTypeRes, officeTypeRes, currencyRes, firmRes, sourceRes, rentRes, employeeRes] =
+        const [typeRes, firmTypeRes, currencyRes, firmRes, sourceRes, rentRes, employeeRes] =
           await Promise.all([
           fetchLeadExpenseTypes(),
           fetchActiveExpenseTypes(),
-          supabase
-            .from('office_expense_types')
-            .select('id, label, sort_order, is_active')
-            .eq('is_active', true)
-            .order('sort_order', { ascending: true }),
           supabase.from('accounting_currencies').select('id, name, iso_code').order('name'),
           supabase.from('firms').select('id, name').order('name'),
           supabase.from('misc_leadsource').select('id, name').order('name'),
@@ -283,14 +279,9 @@ const AddExpenseDrawer: React.FC<Props> = ({
         if (cancelled) return;
         setLeadTypes(typeRes);
         if (typeRes[0]?.id) setLeadTypeId((prev) => prev || typeRes[0].id);
+        if (typeRes[0]?.id) setOfficeTypeId((prev) => prev || typeRes[0].id);
         setFirmTypes(firmTypeRes);
         if (firmTypeRes[0]?.id) setFirmTypeId((prev) => prev || firmTypeRes[0].id);
-        const officeRows = (officeTypeRes.data || []).map((r: any) => ({
-          id: String(r.id),
-          label: String(r.label || ''),
-        }));
-        setOfficeTypes(officeRows);
-        if (officeRows[0]?.id) setOfficeTypeId((prev) => prev || officeRows[0].id);
         const currRows = (currencyRes.data || []).map((r: any) => ({
           id: Number(r.id),
           name: String(r.name || ''),
@@ -518,6 +509,36 @@ const AddExpenseDrawer: React.FC<Props> = ({
     return firms.filter((f) => f.name.toLowerCase().includes(q)).slice(0, 40);
   }, [firmSearch, firms]);
 
+  /*
+   * The typed-in name, offered as a new firm only when it is not one already. Matched against every
+   * firm rather than the filtered list, so a firm hidden by the 40-row cap is still not duplicated.
+   */
+  const newFirmName = firmSearch.trim();
+  const canCreateFirm =
+    newFirmName.length >= 2 &&
+    !firms.some((f) => f.name.trim().toLowerCase() === newFirmName.toLowerCase());
+
+  const handleCreateFirm = async () => {
+    setCreatingFirm(true);
+    try {
+      const { firm, alreadyExisted } = await createExternalFirm(newFirmName);
+      if (!alreadyExisted) {
+        setFirms((prev) => [...prev, firm].sort((a, b) => a.name.localeCompare(b.name)));
+      }
+      setFirmId(firm.id);
+      // Cleared so the picker shows the new firm selected rather than a search it no longer needs.
+      setFirmSearch('');
+      toast.success(
+        alreadyExisted ? `${firm.name} already exists — selected it` : `${firm.name} added`,
+      );
+    } catch (err: any) {
+      console.error('[AddExpenseDrawer] create firm:', err);
+      toast.error(err?.message || 'Could not add the firm');
+    } finally {
+      setCreatingFirm(false);
+    }
+  };
+
   const filteredSources = useMemo(() => {
     const q = sourceSearch.trim().toLowerCase();
     if (!q) return sources.slice(0, 40);
@@ -715,7 +736,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
       } else if (kind === 'office') {
         if (!firmId || !selectedFirm) throw new Error('Choose a firm');
         if (!officeTypeId) throw new Error('Choose an office expense type');
-        const typeLabel = officeTypes.find((t) => t.id === officeTypeId)?.label || 'Office';
+        const typeLabel = leadTypes.find((t) => t.id === officeTypeId)?.label || 'Office';
         if (editRow) {
           await updateFinanceExpense({
             row: editRow,
@@ -1182,9 +1203,16 @@ const AddExpenseDrawer: React.FC<Props> = ({
                 <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   className="input input-bordered w-full pl-9"
-                  placeholder="Search firms"
+                  placeholder="Search firms, or type a new one"
                   value={firmSearch}
                   onChange={(e) => setFirmSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Enter adds the firm instead of submitting, matching the button below.
+                    if (e.key === 'Enter' && canCreateFirm && !creatingFirm) {
+                      e.preventDefault();
+                      void handleCreateFirm();
+                    }
+                  }}
                 />
               </div>
               <select
@@ -1199,6 +1227,22 @@ const AddExpenseDrawer: React.FC<Props> = ({
                   </option>
                 ))}
               </select>
+              {/* Offered only for a name that is not already a firm, so this never makes a duplicate. */}
+              {canCreateFirm ? (
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm mt-2 justify-start gap-2 font-normal"
+                  onClick={() => void handleCreateFirm()}
+                  disabled={creatingFirm || saving}
+                >
+                  {creatingFirm ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <PlusIcon className="h-4 w-4 shrink-0" />
+                  )}
+                  <span className="truncate">Add “{newFirmName}” as a new firm</span>
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1232,7 +1276,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
                   value={officeTypeId}
                   onChange={(e) => setOfficeTypeId(e.target.value)}
                 >
-                  {officeTypes.map((t) => (
+                  {leadTypes.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.label}
                     </option>

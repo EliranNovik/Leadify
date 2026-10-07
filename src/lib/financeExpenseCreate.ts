@@ -1406,7 +1406,7 @@ export async function fetchFinanceExpenseEntries(
         let q = supabase
           .from('office_expenses')
           .select(
-            'id, created_at, created_by, amount, currency, description, paid_at, firm_id, firms:firm_id ( name ), office_expense_types:expense_type_id ( label )',
+            'id, created_at, created_by, amount, currency, description, paid_at, firm_id, firms:firm_id ( name ), lead_expense_types:expense_type_id ( label )',
           )
           .order('created_at', { ascending: false })
           .limit(300);
@@ -1429,7 +1429,7 @@ export async function fetchFinanceExpenseEntries(
             firm_id: row.firm_id != null ? String(row.firm_id) : null,
             new_lead_id: null,
             legacy_lead_id: null,
-            category_label: joinLabel(row.office_expense_types, 'label'),
+            category_label: joinLabel(row.lead_expense_types, 'label'),
             vendor_label: joinLabel(row.firms, 'name'),
             notes: row.description != null ? String(row.description) : null,
             created_by: row.created_by != null ? String(row.created_by) : null,

@@ -253,6 +253,33 @@ export async function fetchActiveStaffSalaryRows(
     .sort((a, b) => a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: 'base' }));
 }
 
+/** Bucket holding the uploaded payroll PDFs (private, so paths have to be signed to be viewed). */
+export const SALARY_DOCUMENTS_BUCKET = 'employee-salary-documents';
+
+/**
+ * Storage path of the payroll document this month's salaries were read from, or null when they were
+ * all entered by hand.
+ *
+ * One upload covers the whole month, so every row it matched carries the same path and any one of
+ * them answers the question. Rows typed in manually keep a null `document_url`, which is why only
+ * the ones with a path are asked for.
+ */
+export async function fetchPayrollDocumentPath(
+  salaryMonth: number,
+  salaryYear: number,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('employee_salary')
+    .select('document_url')
+    .eq('salary_month', salaryMonth)
+    .eq('salary_year', salaryYear)
+    .not('document_url', 'is', null)
+    .limit(1);
+
+  if (error) throw error;
+  return String(data?.[0]?.document_url || '').trim() || null;
+}
+
 /** Upsert manual salary rows; preserves document_url / extracted_data when editing numbers. */
 export async function saveActiveStaffSalaryRows(
   rows: SalaryEntryRow[],

@@ -311,7 +311,9 @@ const OfficeExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
         type: 'select' as const,
         required: false,
         foreignKey: {
-          table: 'office_expense_types',
+          // Shared with the cash box's removals, so a purchase is categorised the same way
+          // whichever screen it is entered from.
+          table: 'lead_expense_types',
           valueField: 'id',
           displayField: 'label',
         },
