@@ -1,6 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { DocumentPlusIcon, MagnifyingGlassIcon, PlusIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  CheckIcon,
+  DocumentPlusIcon,
+  MagnifyingGlassIcon,
+  PlusIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
 import ExpenseSplitTargetPicker from '../client-tabs/ExpenseSplitTargetPicker';
@@ -15,7 +21,7 @@ import {
   type SplitLeadExpenseTarget,
 } from '../../lib/leadExpenses';
 import { fetchActiveExpenseTypes, type ExpenseTypeRow } from '../../lib/expenseTypes';
-import { createExternalFirm } from '../../lib/externalFirms';
+import { createExternalFirm, firmIsExactMatch, firmMatchesSearch } from '../../lib/externalFirms';
 import { FIRM_MANAGEMENT_DEFAULT_CURRENCY } from '../../lib/firmManagementCosts';
 import {
   createLeadFinanceExpense,
@@ -30,6 +36,7 @@ import {
   updateFinanceExpense,
   canAddFinanceExpenseKind,
   canEditFinanceExpenseKind,
+  FINANCE_EXPENSE_KIND_ICON,
   FINANCE_EXPENSE_KIND_LABEL,
   type FinanceExpenseEntryRow,
   type FinanceExpenseKind,
@@ -53,7 +60,49 @@ export type ExpenseDrawerLeadPick = {
   currencyId: number | null;
 };
 
-type FirmOption = { id: string; name: string };
+type FirmOption = { id: string; name: string; legalName: string; profileImageUrl: string };
+
+/**
+ * A firm's logo, falling back to its initials — most firms have no image.
+ *
+ * The failure is tracked by URL rather than as a plain flag so that it clears by itself when the
+ * component is handed a different firm, which is what happens in the single avatar beside the
+ * chosen firm. A stored URL that no longer resolves then shows initials instead of a broken image.
+ */
+const FirmAvatar: React.FC<{ firm: FirmOption; className?: string }> = ({
+  firm,
+  className = 'h-9 w-9',
+}) => {
+  const [failedUrl, setFailedUrl] = useState('');
+  const url = firm.profileImageUrl.trim();
+
+  if (url && failedUrl !== url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        className={`${className} shrink-0 rounded-full border border-slate-200 bg-white object-cover`}
+        onError={() => setFailedUrl(url)}
+      />
+    );
+  }
+
+  const initials =
+    firm.name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase() || '?';
+  return (
+    <span
+      className={`${className} flex shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-600`}
+    >
+      {initials}
+    </span>
+  );
+};
 type CurrencyOption = { id: number; name: string; iso_code: string | null };
 type SourceOption = { id: number; name: string };
 type RentOfficeOption = { id: number; name: string };
@@ -67,6 +116,9 @@ const KINDS: FinanceExpenseKind[] = [
   'rent',
   'partner_draws',
 ];
+/** How the expense-type boxes are laid out. Must match the `grid-cols-2` on that grid, which Tailwind
+ *  has to see written out, so the two cannot be derived from one another. */
+const KIND_COLUMNS = 2;
 const ISO_CURRENCIES = ['ILS', 'USD', 'EUR', 'GBP'];
 const DOC_TYPES: FinanceExpenseDocumentType[] = ['invoice', 'receipt', 'other'];
 
@@ -170,6 +222,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [firmId, setFirmId] = useState('');
   const [firmSearch, setFirmSearch] = useState('');
   const [creatingFirm, setCreatingFirm] = useState(false);
+  const [firmListOpen, setFirmListOpen] = useState(false);
+  const firmBoxRef = useRef<HTMLDivElement>(null);
   const [firmTypes, setFirmTypes] = useState<ExpenseTypeRow[]>([]);
   const [firmTypeId, setFirmTypeId] = useState('');
   const [officeTypeId, setOfficeTypeId] = useState('');
@@ -206,6 +260,33 @@ const AddExpenseDrawer: React.FC<Props> = ({
     [canManageRestrictedKinds],
   );
 
+  const kindButtons = useRef<Array<HTMLButtonElement | null>>([]);
+
+  /**
+   * Arrow keys walk the expense-type boxes, since only the chosen one is a tab stop.
+   *
+   * Up and down move by a whole row rather than one box, which is what the two-column layout looks
+   * like it should do. Neither direction wraps: landing back at the opposite corner reads as a
+   * glitch when the boxes are laid out as a grid rather than a list.
+   */
+  const moveKindFocus = (event: React.KeyboardEvent, index: number) => {
+    const step =
+      event.key === 'ArrowRight'
+        ? 1
+        : event.key === 'ArrowLeft'
+          ? -1
+          : event.key === 'ArrowDown'
+            ? KIND_COLUMNS
+            : event.key === 'ArrowUp'
+              ? -KIND_COLUMNS
+              : 0;
+    const next = index + step;
+    if (!step || next < 0 || next >= visibleKinds.length) return;
+    event.preventDefault();
+    setKind(visibleKinds[next]);
+    kindButtons.current[next]?.focus();
+  };
+
   const resetForm = useCallback(() => {
     setKind('lead');
     setLeadEntryMode('single');
@@ -220,6 +301,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
     setIncludeVat(false);
     setFirmId('');
     setFirmSearch('');
+    setFirmListOpen(false);
     setFirmTypeId('');
     setOfficeTypeId('');
     setSourceId('');
@@ -267,7 +349,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
           fetchLeadExpenseTypes(),
           fetchActiveExpenseTypes(),
           supabase.from('accounting_currencies').select('id, name, iso_code').order('name'),
-          supabase.from('firms').select('id, name').order('name'),
+          supabase.from('firms').select('id, name, legal_name, profile_image_url').order('name'),
           supabase.from('misc_leadsource').select('id, name').order('name'),
           supabase
             .from('rent_offices')
@@ -290,7 +372,14 @@ const AddExpenseDrawer: React.FC<Props> = ({
         setCurrencies(currRows);
         const ils = currRows.find((c) => (c.iso_code || c.name || '').toUpperCase().includes('ILS') || (c.name || '').toUpperCase().includes('NIS'));
         setCurrencyId((prev) => prev || String(ils?.id || currRows[0]?.id || ''));
-        setFirms((firmRes.data || []).map((f: any) => ({ id: String(f.id), name: String(f.name || '') })));
+        setFirms(
+          (firmRes.data || []).map((f: any) => ({
+            id: String(f.id),
+            name: String(f.name || ''),
+            legalName: String(f.legal_name || ''),
+            profileImageUrl: String(f.profile_image_url || ''),
+          })),
+        );
         setSources(
           (sourceRes.data || []).map((s: any) => ({ id: Number(s.id), name: String(s.name || `#${s.id}`) })),
         );
@@ -321,6 +410,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
     setLeadResults([]);
     setFirmId('');
     setFirmSearch('');
+    setFirmListOpen(false);
     setSourceId('');
     setSourceSearch('');
     setRentOfficeId('');
@@ -503,20 +593,27 @@ const AddExpenseDrawer: React.FC<Props> = ({
     };
   }, [leadQuery, open, selectedLead]);
 
-  const filteredFirms = useMemo(() => {
-    const q = firmSearch.trim().toLowerCase();
-    if (!q) return firms.slice(0, 40);
-    return firms.filter((f) => f.name.toLowerCase().includes(q)).slice(0, 40);
-  }, [firmSearch, firms]);
+  const filteredFirms = useMemo(
+    () => firms.filter((f) => firmMatchesSearch(f, firmSearch)).slice(0, 40),
+    [firmSearch, firms],
+  );
 
   /*
-   * The typed-in name, offered as a new firm only when it is not one already. Matched against every
-   * firm rather than the filtered list, so a firm hidden by the 40-row cap is still not duplicated.
+   * The typed-in name, offered as a new firm only when it is not one already. Every firm is checked
+   * rather than the filtered list, so one hidden by the 40-row cap is still not duplicated. A firm
+   * already filed in the other language counts as the same firm, which is the case that otherwise
+   * leaves the list holding each firm twice, once per script.
    */
   const newFirmName = firmSearch.trim();
-  const canCreateFirm =
-    newFirmName.length >= 2 &&
-    !firms.some((f) => f.name.trim().toLowerCase() === newFirmName.toLowerCase());
+  const duplicateFirm =
+    newFirmName.length >= 2 ? firms.find((f) => firmIsExactMatch(f, newFirmName)) || null : null;
+  const canCreateFirm = newFirmName.length >= 2 && !duplicateFirm;
+
+  const pickFirm = (firm: FirmOption) => {
+    setFirmId(firm.id);
+    setFirmSearch('');
+    setFirmListOpen(false);
+  };
 
   const handleCreateFirm = async () => {
     setCreatingFirm(true);
@@ -525,9 +622,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
       if (!alreadyExisted) {
         setFirms((prev) => [...prev, firm].sort((a, b) => a.name.localeCompare(b.name)));
       }
-      setFirmId(firm.id);
-      // Cleared so the picker shows the new firm selected rather than a search it no longer needs.
-      setFirmSearch('');
+      // Clears the search and closes the list, so the picker shows the firm it just settled on.
+      pickFirm(firm);
       toast.success(
         alreadyExisted ? `${firm.name} already exists — selected it` : `${firm.name} added`,
       );
@@ -538,6 +634,16 @@ const AddExpenseDrawer: React.FC<Props> = ({
       setCreatingFirm(false);
     }
   };
+
+  // Clicking away from the firm list closes it, which is what puts the chosen firm back on display.
+  useEffect(() => {
+    if (!firmListOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (!firmBoxRef.current?.contains(e.target as Node)) setFirmListOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [firmListOpen]);
 
   const filteredSources = useMemo(() => {
     const q = sourceSearch.trim().toLowerCase();
@@ -925,7 +1031,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
           isLeadSplit ? 'max-w-xl' : 'max-w-md'
         }`}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
+        <div className="flex items-start justify-between gap-3 px-6 py-5">
           <div>
             <h2 className="text-xl font-bold text-slate-900">
               {editRow ? 'Edit expense' : isLeadSplit ? 'Split expense' : 'New expense'}
@@ -959,18 +1065,61 @@ const AddExpenseDrawer: React.FC<Props> = ({
             <label className="label py-1">
               <span className="label-text font-medium text-slate-700">Expense type</span>
             </label>
-            <select
-              className="select select-bordered w-full"
-              value={kind}
-              disabled={Boolean(editRow) || editLoading}
-              onChange={(e) => setKind(e.target.value as FinanceExpenseKind)}
-            >
-              {visibleKinds.map((k) => (
-                <option key={k} value={k}>
-                  {FINANCE_EXPENSE_KIND_LABEL[k]}
-                </option>
-              ))}
-            </select>
+            {/* Every kind on show at once: there are at most seven, and which one is chosen decides
+                most of the rest of the form, so it is worth the room it takes. */}
+            <div role="radiogroup" aria-label="Expense type" className="grid grid-cols-2 gap-2">
+              {visibleKinds.map((k, index) => {
+                const Icon = FINANCE_EXPENSE_KIND_ICON[k];
+                const active = kind === k;
+                return (
+                  <button
+                    key={k}
+                    ref={(el) => {
+                      kindButtons.current[index] = el;
+                    }}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    // Only the chosen box is a tab stop; from there the arrow keys move between
+                    // them, which is how a group of radios is expected to behave.
+                    tabIndex={active ? 0 : -1}
+                    // The kind of an existing expense decides which table it lives in, so editing
+                    // cannot move it — the same reason the dropdown here used to be disabled.
+                    disabled={Boolean(editRow) || editLoading}
+                    onClick={() => setKind(k)}
+                    onKeyDown={(e) => moveKindFocus(e, index)}
+                    className={`group relative flex items-center gap-2.5 rounded-xl border p-2.5 text-left outline-none transition focus-visible:ring-2 focus-visible:ring-blue-500/40 disabled:cursor-not-allowed disabled:opacity-60 ${
+                      active
+                        ? 'border-blue-500 bg-blue-50/70 shadow-sm'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50 hover:shadow-sm'
+                    }`}
+                  >
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition ${
+                        active
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200'
+                      }`}
+                    >
+                      <Icon className="h-[18px] w-[18px]" />
+                    </span>
+                    <span
+                      className={`grow truncate text-sm ${
+                        active ? 'font-semibold text-blue-900' : 'font-medium text-slate-700'
+                      }`}
+                    >
+                      {FINANCE_EXPENSE_KIND_LABEL[k]}
+                    </span>
+                    {/* Held open whether ticked or not, so choosing a box does not reflow the label. */}
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                      {active ? (
+                        <CheckIcon className="h-4 w-4 text-blue-600" strokeWidth={3} />
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {kind === 'lead' && !editRow ? (
@@ -1041,7 +1190,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
               ) : (
                 <>
                   <div className="relative">
-                    <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
                       className="input input-bordered w-full pl-9"
                       placeholder="Search lead number or name"
@@ -1199,50 +1348,113 @@ const AddExpenseDrawer: React.FC<Props> = ({
                   {kind === 'office' ? 'Firm / vendor' : 'Firm'}
                 </span>
               </label>
-              <div className="relative mb-2">
-                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  className="input input-bordered w-full pl-9"
-                  placeholder="Search firms, or type a new one"
-                  value={firmSearch}
-                  onChange={(e) => setFirmSearch(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Enter adds the firm instead of submitting, matching the button below.
-                    if (e.key === 'Enter' && canCreateFirm && !creatingFirm) {
+              {selectedFirm && !firmListOpen ? (
+                <div className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                  <FirmAvatar firm={selectedFirm} className="h-10 w-10" />
+                  <div className="min-w-0 grow">
+                    <div className="truncate font-semibold text-slate-900">{selectedFirm.name}</div>
+                    {selectedFirm.legalName && selectedFirm.legalName !== selectedFirm.name ? (
+                      <div className="truncate text-xs text-slate-500">{selectedFirm.legalName}</div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => {
+                      setFirmSearch('');
+                      setFirmListOpen(true);
+                    }}
+                  >
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <div ref={firmBoxRef} className="relative">
+                  {/* z-10 clears the input: DaisyUI's `.input` is relatively positioned with an
+                    opaque background and takes z-index 1 when focused, so it paints over anything
+                    layered beneath it. */}
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    className="input input-bordered w-full pl-9"
+                    placeholder="Search"
+                    value={firmSearch}
+                    onChange={(e) => {
+                      setFirmSearch(e.target.value);
+                      setFirmListOpen(true);
+                    }}
+                    onFocus={() => setFirmListOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        setFirmListOpen(false);
+                        return;
+                      }
+                      // Enter takes the top match, or adds the firm — never submits the expense.
+                      if (e.key !== 'Enter' || !newFirmName) return;
                       e.preventDefault();
-                      void handleCreateFirm();
-                    }
-                  }}
-                />
-              </div>
-              <select
-                className="select select-bordered w-full"
-                value={firmId}
-                onChange={(e) => setFirmId(e.target.value)}
-              >
-                <option value="">Select firm</option>
-                {filteredFirms.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              {/* Offered only for a name that is not already a firm, so this never makes a duplicate. */}
-              {canCreateFirm ? (
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm mt-2 justify-start gap-2 font-normal"
-                  onClick={() => void handleCreateFirm()}
-                  disabled={creatingFirm || saving}
-                >
-                  {creatingFirm ? (
-                    <span className="loading loading-spinner loading-xs" />
-                  ) : (
-                    <PlusIcon className="h-4 w-4 shrink-0" />
-                  )}
-                  <span className="truncate">Add “{newFirmName}” as a new firm</span>
-                </button>
-              ) : null}
+                      if (filteredFirms[0]) pickFirm(filteredFirms[0]);
+                      else if (canCreateFirm && !creatingFirm) void handleCreateFirm();
+                    }}
+                  />
+                  {firmListOpen ? (
+                    <div className="absolute inset-x-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                      <ul className="max-h-80 overflow-y-auto">
+                        {filteredFirms.map((f) => (
+                          <li key={f.id}>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-50"
+                              onClick={() => pickFirm(f)}
+                            >
+                              <FirmAvatar firm={f} />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-medium text-slate-800">
+                                  {f.name}
+                                </span>
+                                {/* Usually the other-language name, and often the reason this matched. */}
+                                {f.legalName && f.legalName !== f.name ? (
+                                  <span className="block truncate text-xs text-slate-500">
+                                    {f.legalName}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      {/* Offered only for a name that is not already a firm, so this never duplicates. */}
+                      {canCreateFirm ? (
+                        <button
+                          type="button"
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50 ${
+                            filteredFirms.length ? 'border-t border-slate-200' : ''
+                          }`}
+                          onClick={() => void handleCreateFirm()}
+                          disabled={creatingFirm || saving}
+                        >
+                          {creatingFirm ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : (
+                            <PlusIcon className="h-4 w-4 shrink-0 text-slate-500" />
+                          )}
+                          <span className="truncate">Add “{newFirmName}” as a new firm</span>
+                        </button>
+                      ) : duplicateFirm ? (
+                        /* Says why there is nothing to add, which is otherwise invisible when the
+                           firm is on file under its other-language name. */
+                        <p
+                          className={`px-3 py-2 text-sm text-slate-500 ${
+                            filteredFirms.length ? 'border-t border-slate-200' : ''
+                          }`}
+                        >
+                          Already on file as {duplicateFirm.name}
+                        </p>
+                      ) : filteredFirms.length === 0 ? (
+                        <p className="px-3 py-2 text-sm text-slate-500">No firms match</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -1314,7 +1526,10 @@ const AddExpenseDrawer: React.FC<Props> = ({
                 <span className="label-text font-medium text-slate-700">Lead source</span>
               </label>
               <div className="relative mb-2">
-                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                {/* z-10 clears the input: DaisyUI's `.input` is relatively positioned with an
+                    opaque background and takes z-index 1 when focused, so it paints over anything
+                    layered beneath it. */}
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   className="input input-bordered w-full pl-9"
                   placeholder="Search sources"
@@ -1363,7 +1578,10 @@ const AddExpenseDrawer: React.FC<Props> = ({
                 <span className="label-text font-medium text-slate-700">Employee</span>
               </label>
               <div className="relative mb-2">
-                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                {/* z-10 clears the input: DaisyUI's `.input` is relatively positioned with an
+                    opaque background and takes z-index 1 when focused, so it paints over anything
+                    layered beneath it. */}
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   className="input input-bordered w-full pl-9"
                   placeholder="Search employees"
@@ -1556,7 +1774,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-6 py-4">
+        <div className="flex items-center justify-end gap-2 px-6 py-4">
           <button
             type="button"
             className="rounded-full px-4 py-2.5 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"

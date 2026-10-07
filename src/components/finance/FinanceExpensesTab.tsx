@@ -3,19 +3,12 @@ import ReactDOM from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   BanknotesIcon,
-  BuildingOffice2Icon,
-  BuildingOfficeIcon,
   DocumentTextIcon,
   EllipsisVerticalIcon,
-  HomeModernIcon,
   MagnifyingGlassIcon,
-  MegaphoneIcon,
   PencilSquareIcon,
   PlusIcon,
   TrashIcon,
-  UserGroupIcon,
-  UserIcon,
-  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import AddExpenseDrawer from './AddExpenseDrawer';
@@ -25,6 +18,7 @@ import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerM
 import {
   deleteFinanceExpense,
   fetchFinanceExpenseEntries,
+  FINANCE_EXPENSE_KIND_ICON,
   FINANCE_EXPENSE_KIND_LABEL,
   canEditFinanceExpenseKind,
   canViewFinanceExpenseKind,
@@ -58,19 +52,26 @@ const TABLE_COLGROUP = (
   </colgroup>
 );
 
+// The order the cards appear in; their labels and icons are shared with the drawer that adds them.
 const KIND_TOTALS: Array<{
   id: FinanceExpenseKind;
   label: string;
   icon: React.ElementType;
-}> = [
-  { id: 'lead', label: FINANCE_EXPENSE_KIND_LABEL.lead, icon: UserIcon },
-  { id: 'subcontractor', label: FINANCE_EXPENSE_KIND_LABEL.subcontractor, icon: WrenchScrewdriverIcon },
-  { id: 'other_firm', label: FINANCE_EXPENSE_KIND_LABEL.other_firm, icon: BuildingOffice2Icon },
-  { id: 'office', label: FINANCE_EXPENSE_KIND_LABEL.office, icon: BuildingOfficeIcon },
-  { id: 'marketing', label: FINANCE_EXPENSE_KIND_LABEL.marketing, icon: MegaphoneIcon },
-  { id: 'rent', label: FINANCE_EXPENSE_KIND_LABEL.rent, icon: HomeModernIcon },
-  { id: 'partner_draws', label: FINANCE_EXPENSE_KIND_LABEL.partner_draws, icon: UserGroupIcon },
-];
+}> = (
+  [
+    'lead',
+    'subcontractor',
+    'other_firm',
+    'office',
+    'marketing',
+    'rent',
+    'partner_draws',
+  ] as FinanceExpenseKind[]
+).map((id) => ({
+  id,
+  label: FINANCE_EXPENSE_KIND_LABEL[id],
+  icon: FINANCE_EXPENSE_KIND_ICON[id],
+}));
 
 const EXPENSE_SUMMARY_THEMES: Record<
   'total' | FinanceExpenseKind,

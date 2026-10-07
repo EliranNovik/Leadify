@@ -1,3 +1,13 @@
+import type { ElementType } from 'react';
+import {
+  BuildingOffice2Icon,
+  BuildingOfficeIcon,
+  HomeModernIcon,
+  MegaphoneIcon,
+  UserGroupIcon,
+  UserIcon,
+  WrenchScrewdriverIcon,
+} from '@heroicons/react/24/outline';
 import { supabase } from './supabase';
 import {
   dispatchPaymentPlanChanged,
@@ -38,6 +48,20 @@ export const FINANCE_EXPENSE_KIND_LABEL: Record<FinanceExpenseKind, string> = {
   marketing: 'Marketing',
   rent: 'Rent',
   partner_draws: 'Partner draws',
+};
+
+/**
+ * The icon each kind is recognised by. Kept beside the labels so the drawer that picks a kind and
+ * the summary cards that total it cannot drift onto different icons for the same thing.
+ */
+export const FINANCE_EXPENSE_KIND_ICON: Record<FinanceExpenseKind, ElementType> = {
+  lead: UserIcon,
+  subcontractor: WrenchScrewdriverIcon,
+  other_firm: BuildingOffice2Icon,
+  office: BuildingOfficeIcon,
+  marketing: MegaphoneIcon,
+  rent: HomeModernIcon,
+  partner_draws: UserGroupIcon,
 };
 
 /** Marketing, rent, and partner draws: add only for superuser / collection. */

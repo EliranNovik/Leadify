@@ -93,6 +93,20 @@ const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
 /** Role cards turned off in the UI (read-only; not persisted from this tab) */
 const DISABLED_ROLE_IDS = new Set<string>(['collection_manager', 'marketing_officer']);
 
+/**
+ * On new leads each of these roles is held in two places: the column the card writes, and an id
+ * column that `resolveAssignee` reads *first* when building the card. Saving one without the other
+ * stores the chosen name where nothing will ever display it, so both move together.
+ */
+const ROLE_COMPANION_ID_FIELD: Record<string, string> = {
+  scheduler: 'meeting_scheduler_id',
+  manager: 'meeting_manager_id',
+  helper: 'meeting_lawyer_id',
+  expert: 'expert_id',
+  closer: 'closer_id',
+  handler: 'case_handler_id',
+};
+
 interface Role {
   id: string;
   title: string;
@@ -668,21 +682,23 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
             updateData[role.fieldName] = shouldSaveNull ? null : assigneeValue;
 
-            // Handler: UI reads case_handler_id first; must stay in sync with display name (same pattern as retainer_handler_id).
-            if (role.id === 'handler') {
-              if (shouldSaveNull) {
-                updateData.case_handler_id = null;
-              } else {
-                const hid = getEmployeeIdFromDisplayName(assigneeValue);
-                if (hid == null) {
-                  handlerAssigneeUnresolved = assigneeValue;
-                } else {
-                  updateData.case_handler_id = hid;
-                }
-              }
-            }
-
             console.log(`New lead role (string): ${role.fieldName} = ${updateData[role.fieldName]}`);
+          }
+
+          // Carry the id column the card is read from, or the saved name stays invisible behind a
+          // stale one. See ROLE_COMPANION_ID_FIELD.
+          const companionField = ROLE_COMPANION_ID_FIELD[role.id];
+          if (companionField) {
+            const unassigned = isUnassignedValue(role.assignee);
+            const companionId = unassigned ? null : getEmployeeIdFromDisplayName(role.assignee);
+            updateData[companionField] = companionId;
+            console.log(`New lead role companion: ${companionField} = ${companionId}`);
+
+            // The handler drives case assignment, so a name that matches no employee is a mistake
+            // worth stopping on rather than storing half of.
+            if (role.id === 'handler' && !unassigned && companionId == null) {
+              handlerAssigneeUnresolved = role.assignee;
+            }
           }
         }
       });
@@ -697,6 +713,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
       console.log('Client ID:', client.id);
 
       let error;
+      // Asking for the updated row back is what makes a refused write visible. Without `.select()`
+      // supabase-js answers {data: null, error: null} whether the row changed or row-level security
+      // quietly matched nothing, so the save used to report success while the roles stayed put.
+      let updatedRows: { id: string | number }[] | null = null;
       if (isLegacyLead) {
         // Update legacy lead in leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -707,9 +727,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
         const { data, error: legacyError } = await supabase
           .from('leads_lead')
           .update(updateData)
-          .eq('id', numericLegacyId);
+          .eq('id', numericLegacyId)
+          .select('id');
 
         console.log('Legacy update result:', { data, error: legacyError });
+        updatedRows = data;
         error = legacyError;
       } else {
         // Update new lead in leads table
@@ -717,15 +739,29 @@ const RolesTab: React.FC<ClientTabProps> = ({
         const { data, error: newError } = await supabase
           .from('leads')
           .update(updateData)
-          .eq('id', client.id);
+          .eq('id', client.id)
+          .select('id');
 
         console.log('New lead update result:', { data, error: newError });
+        updatedRows = data;
         error = newError;
       }
 
       if (error) {
         console.error('Update error:', error);
         throw error;
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        console.error('Role update changed no rows.', {
+          table: isLegacyLead ? 'leads_lead' : 'leads',
+          clientId: client.id,
+          updateData,
+        });
+        throw new Error(
+          'the database accepted the request but changed no row, which usually means your account ' +
+            'is not permitted to edit this lead. Nothing was saved.',
+        );
       }
 
       setOriginalRoles([...rolesToUse]);
