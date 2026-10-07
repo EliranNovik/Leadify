@@ -62,6 +62,27 @@ const smartScanController = {
     }
   },
 
+  async update(req, res) {
+    try {
+      const id = String(req.body?.id || req.params?.id || '').trim();
+      if (!id) {
+        return res.status(400).json({ success: false, error: 'id is required' });
+      }
+      const patch = req.body?.patch && typeof req.body.patch === 'object' ? req.body.patch : {};
+      const row = await smartScanInboxService.updateItem(id, patch);
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      // The saved name goes back to the caller because it may have been normalised here — the drawer
+      // has to show the name the document was actually filed under, not the raw typed one.
+      res.status(200).json({ success: true, suggestedFilename: row?.suggested_filename || null });
+    } catch (error) {
+      console.error('❌ Smart Scan update failed:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to save Scan Center document details',
+      });
+    }
+  },
+
   async assign(req, res) {
     try {
       const id = String(req.body?.id || req.params?.id || '').trim();

@@ -8,6 +8,7 @@ import {
   formatScanTime,
   groupSmartScanItems,
   scanArrivalKey,
+  scanDisplayFilename,
   scanDocumentTypeLabel,
   scanGroupConfidence,
   scanGroupDocumentLabel,
@@ -87,8 +88,8 @@ function groupIssueLabel(items: SmartScanItem[]): string {
   return '—';
 }
 
-function groupOriginalFilename(items: SmartScanItem[]): string | undefined {
-  const names = [...new Set(items.map((item) => String(item.originalFilename || '').trim()).filter(Boolean))];
+function groupDisplayFilename(items: SmartScanItem[]): string | undefined {
+  const names = [...new Set(items.map(scanDisplayFilename).filter(Boolean))];
   return names[0];
 }
 
@@ -103,7 +104,7 @@ function ScanDocumentCell({
   showPart?: boolean;
   filename?: string;
 }) {
-  const file = filename || item?.originalFilename;
+  const file = filename || scanDisplayFilename(item);
   return (
     <div className="min-w-[8rem]">
       <p className="flex flex-wrap items-baseline gap-x-2 text-base font-medium text-gray-800">
@@ -362,7 +363,7 @@ export function SmartScanTable({
                           leadNumber: rowItem.lead?.leadNumber || 'No lead',
                         };
                     const docLabel = collapsed ? scanGroupDocumentLabel(group.items) : scanDocumentTypeLabel(rowItem);
-                    const filename = collapsed ? groupOriginalFilename(group.items) : rowItem.originalFilename;
+                    const filename = collapsed ? groupDisplayFilename(group.items) : scanDisplayFilename(rowItem);
                     const pages = collapsed ? scanGroupPageCount(group.items) : rowItem.pageCount;
                     const confidence = collapsed ? scanGroupConfidence(group.items) : rowItem.confidence;
                     const issue = collapsed

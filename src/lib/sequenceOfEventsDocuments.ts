@@ -6,7 +6,6 @@ import {
 } from './caseDocumentsStorage';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from './leadOneDrivePaths';
 import {
-  leadSubEffortSavedUpdatedAt,
   leadSubEffortSavedUpdatedBy,
   resolveLeadSubEffortIdentityFromRefs,
 } from './leadSubEfforts';
@@ -20,7 +19,7 @@ import {
   mergeLegalClaimsClassifications,
   mergeSequenceOfEventsClassifications,
 } from './staffMeetingDocuments';
-import { normalizeStorageKey, normalizeSubEffortDocItems } from './subEffortDocumentAttach';
+import { normalizeStorageKey, normalizeSubEffortDocItems, subEffortDocUploadedAt } from './subEffortDocumentAttach';
 import { supabase } from './supabase';
 import { resolveUploaderDisplayByKey } from './uploaderDisplay';
 import {
@@ -441,14 +440,20 @@ async function collectSubEffortCategoryItems(params: {
     const who = resolvedWho?.name ?? whoRaw;
     const photoUrl =
       resolvedWho?.matched && resolvedWho.photoUrl ? resolvedWho.photoUrl : null;
-    const createdAt =
-      leadSubEffortSavedUpdatedAt(r) || r?.created_at || new Date().toISOString();
+    /*
+     * Deliberately not the row's `updated_at`: that is when the sub-effort was last edited, so every
+     * document under it would be dated to the moment anything on the case changed. The real upload
+     * time comes from the file itself, with the row's creation as a floor for the few entries whose
+     * object name predates that convention.
+     */
+    const rowCreatedAt = r?.created_at ? String(r.created_at) : '';
     const items = normalizeDocItems(r?.document_url);
 
     for (const it of items) {
       const path = typeof (it as any)?.path === 'string' ? String((it as any).path).trim() : '';
       const rawUrl = typeof (it as any)?.url === 'string' ? String((it as any).url).trim() : '';
       if (!path && !rawUrl) continue;
+      const uploadedAt = subEffortDocUploadedAt({ path, url: rawUrl }) || rowCreatedAt;
       const name =
         ((it as any)?.name as string | undefined)?.trim() ||
         (path ? path.split('/').pop() : rawUrl ? rawUrl.split('/').pop() : '') ||
@@ -462,7 +467,7 @@ async function collectSubEffortCategoryItems(params: {
         path: path || null,
         url: rawUrl || null,
         mimeType: ((it as any)?.mimeType as string | null | undefined) ?? null,
-        lastModified: createdAt,
+        lastModified: uploadedAt,
         uploadedByName: who ? String(who) : null,
         uploadedByPhotoUrl: photoUrl,
         bucket: bucket || null,

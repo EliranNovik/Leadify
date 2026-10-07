@@ -94,6 +94,26 @@ export async function processScanCenterItem(id: string): Promise<void> {
   }
 }
 
+/** Persists reviewer edits. Without this the drawer's Save never left the browser. */
+export async function updateScanCenterItem(
+  id: string,
+  patch: Pick<Partial<SmartScanItem>, 'suggestedFilename' | 'documentType' | 'summary'>,
+): Promise<{ suggestedFilename?: string }> {
+  const url = buildBackendApiUrlObject('/api/smart-scan/update');
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, patch }),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success === false) {
+    throw new Error(payload?.error || 'Failed to save scanned document details');
+  }
+  const saved = typeof payload?.suggestedFilename === 'string' ? payload.suggestedFilename : '';
+  return { suggestedFilename: saved || undefined };
+}
+
 export async function assignScanCenterLead(id: string, lead: SmartScanItem['lead']): Promise<void> {
   const url = buildBackendApiUrlObject('/api/smart-scan/assign');
   const response = await fetch(url.toString(), {

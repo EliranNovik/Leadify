@@ -754,7 +754,7 @@ const FinanceExpensesTab: React.FC<{ canManageRestrictedKinds?: boolean }> = ({
                   setCashBoxOpen(true);
                 }}
               >
-                Remove
+                Withdraw
               </button>
             </div>
           </div>

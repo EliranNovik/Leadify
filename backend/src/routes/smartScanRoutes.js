@@ -7,6 +7,7 @@ router.get('/smart-scan/inbox', smartScanController.inbox);
 router.post('/smart-scan/sync', smartScanController.sync);
 router.post('/smart-scan/process', smartScanController.process);
 router.post('/smart-scan/process/:id', smartScanController.process);
+router.post('/smart-scan/update', smartScanController.update);
 router.post('/smart-scan/assign', smartScanController.assign);
 router.post('/smart-scan/split-case-document', smartScanController.splitCaseDocument);
 router.post('/smart-scan/approve', smartScanController.approve);

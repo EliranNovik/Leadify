@@ -22,6 +22,33 @@ export function normalizeStorageKey(value: string | null | undefined): string {
     .replace(/^\/+/, '');
 }
 
+/** Nothing in this system was uploaded before 2015, so a smaller number is not a timestamp. */
+const EARLIEST_UPLOAD_MS = Date.UTC(2015, 0, 1);
+
+/**
+ * When the file behind a sub-effort document entry was uploaded, or null if it cannot be told.
+ *
+ * The entries themselves carry no timestamp — only `name`, `path`, `mimeType` and `folder_id` — so
+ * the one per-file record of the upload is the prefix every upload site puts on the object name
+ * (`${Date.now()}_report.pdf`). It is worth reading back, because the alternative is the sub-effort
+ * row's own timestamps, and those describe the row: `updated_at` moves whenever anything on the case
+ * is edited, which makes every document under it look like it was uploaded at that moment.
+ */
+export function subEffortDocUploadedAt(
+  item: { path?: string | null; url?: string | null } | null | undefined,
+): string | null {
+  const objectName = String(item?.path || item?.url || '')
+    .split('/')
+    .pop();
+  // Seconds were used by a handful of early uploads, milliseconds everywhere since.
+  const match = /^(\d{10}|\d{13})_/.exec(objectName || '');
+  if (!match) return null;
+  const ms = match[1].length === 13 ? Number(match[1]) : Number(match[1]) * 1000;
+  // Rejects an ordinary filename that merely opens with the right run of digits.
+  if (!Number.isFinite(ms) || ms < EARLIEST_UPLOAD_MS || ms > Date.now() + 86_400_000) return null;
+  return new Date(ms).toISOString();
+}
+
 export function normalizeSubEffortDocItems(documentUrl: unknown): SubEffortDocItem[] {
   if (!documentUrl) return [];
   if (typeof documentUrl === 'string') {

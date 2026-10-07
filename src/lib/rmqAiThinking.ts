@@ -1,6 +1,14 @@
 export const THINKING_PREFIX = 'THINKING:';
 export const THINKING_PLACEHOLDER = 'AI is thinking...';
 export const LOOKUP_PLACEHOLDER = 'Looking up CRM data...';
+/**
+ * Splits the label from its optional detail line inside a thinking message.
+ *
+ * The thinking state lives in the message's own `content` string, so a second field has to be
+ * encoded into it. U+001F (unit separator) is used because it cannot occur in a label or in a
+ * domain, which means `isThinkingContent` and the prefix checks keep working untouched.
+ */
+const THINKING_DETAIL_SEPARATOR = '\u001F';
 
 export function isThinkingContent(content: unknown): boolean {
   const text = String(content || '');
@@ -11,15 +19,28 @@ export function isThinkingContent(content: unknown): boolean {
   );
 }
 
-export function thinkingContent(label: string): string {
-  return `${THINKING_PREFIX}${label}`;
+export function thinkingContent(label: string, detail?: string): string {
+  const trimmed = String(detail || '').trim();
+  return trimmed
+    ? `${THINKING_PREFIX}${label}${THINKING_DETAIL_SEPARATOR}${trimmed}`
+    : `${THINKING_PREFIX}${label}`;
 }
 
 export function thinkingLabelFromContent(content: unknown): string {
   const text = String(content || '');
-  if (text.startsWith(THINKING_PREFIX)) return text.slice(THINKING_PREFIX.length).trim() || 'Thinking';
+  if (text.startsWith(THINKING_PREFIX)) {
+    const body = text.slice(THINKING_PREFIX.length).split(THINKING_DETAIL_SEPARATOR)[0];
+    return body.trim() || 'Thinking';
+  }
   if (text === LOOKUP_PLACEHOLDER) return 'Checking CRM';
   return 'Thinking';
+}
+
+/** The sites or query shown under the label while a step runs. Empty for steps that have none. */
+export function thinkingDetailFromContent(content: unknown): string {
+  const text = String(content || '');
+  if (!text.startsWith(THINKING_PREFIX)) return '';
+  return (text.split(THINKING_DETAIL_SEPARATOR)[1] || '').trim();
 }
 
 function parseToolArgs(raw: unknown): Record<string, unknown> {
@@ -208,4 +229,116 @@ export function labelForTool(name: string, argsRaw?: unknown): string {
     default:
       return 'Checking CRM';
   }
+}
+
+/** How many sites to name before collapsing the rest into a "+N more". */
+const DETAIL_DOMAIN_LIMIT = 3;
+/** Joins sites in a detail line. The indicator splits on this to give each site its own icon. */
+export const THINKING_SITE_SEPARATOR = ' · ';
+
+function hostFromUrl(raw: string): string {
+  const cleaned = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0]
+    .split('?')[0]
+    .replace(/:\d+$/, '');
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(cleaned) ? cleaned : '';
+}
+
+/**
+ * Formats sites for a detail line, newest first so a live search shows what it just reached rather
+ * than what it started with.
+ */
+function joinDomains(domains: string[]): string {
+  const unique = [...new Set(domains.filter(Boolean))];
+  if (unique.length === 0) return '';
+  const shown = unique.slice(0, DETAIL_DOMAIN_LIMIT).join(THINKING_SITE_SEPARATOR);
+  const hidden = unique.length - DETAIL_DOMAIN_LIMIT;
+  return hidden > 0 ? `${shown}${THINKING_SITE_SEPARATOR}+${hidden} more` : shown;
+}
+
+/** The sites in a detail line, in display order. Empty for details that are not a site list. */
+export function sitesFromThinkingDetail(detail: string): string[] {
+  return String(detail || '')
+    .split(THINKING_SITE_SEPARATOR)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The step shown while a web search streams pages back.
+ *
+ * `domains` arrives newest-first from the caller, which accumulates it across progress events. The
+ * label counts distinct sites so it always agrees with the list rendered beneath it.
+ */
+export function liveWebSearchThinking(
+  domains: string[],
+  phase: 'searching' | 'reading',
+): { label: string; detail: string } {
+  const unique = [...new Set(domains.filter(Boolean))];
+  if (unique.length === 0) return { label: 'Searching the web', detail: '' };
+  if (phase === 'searching') return { label: 'Searching the web', detail: joinDomains(unique) };
+  return {
+    label: unique.length === 1 ? 'Reading 1 site' : `Reading ${unique.length} sites`,
+    detail: joinDomains(unique),
+  };
+}
+
+/**
+ * The line shown under a step's label the moment it starts, before any live progress arrives.
+ *
+ * Only web search has one: it is the slowest tool by far, and the only one where the user cannot
+ * otherwise tell whether anything is happening. The sites come from the model's own
+ * `requested_domains` when it narrowed the search; otherwise this is empty and the streamed pages
+ * fill it in a moment later. The query is deliberately not used as a stand-in — the point of the
+ * line is to name pages, and a restated question reads like the search is stuck.
+ */
+export function detailForTool(name: string, argsRaw?: unknown): string {
+  if (name !== 'web_search') return '';
+  const args = parseToolArgs(argsRaw);
+  const requested = Array.isArray(args.requested_domains)
+    ? args.requested_domains
+    : Array.isArray(args.allowed_domains)
+      ? args.allowed_domains
+      : [];
+  return joinDomains(requested.map((item) => hostFromUrl(String(item || ''))));
+}
+
+/**
+ * The step to show once a tool has returned but the model is still composing its answer.
+ *
+ * For web search this is where the real pages finally become known, so the indicator switches from
+ * the sites it was aiming at to the ones it actually found. Returns null for tools that have
+ * nothing worth reporting, leaving the existing label in place.
+ */
+export function resultThinkingForTool(
+  name: string,
+  result: unknown,
+): { label: string; detail: string } | null {
+  if (name !== 'web_search') return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(String(result || '{}')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.error) return null;
+  const sources = Array.isArray(parsed.sources) ? parsed.sources : [];
+  const domains = sources
+    .map((row) => {
+      if (!row || typeof row !== 'object') return '';
+      const src = row as Record<string, unknown>;
+      return hostFromUrl(String(src.domain || '')) || hostFromUrl(String(src.url || ''));
+    })
+    .filter(Boolean);
+  if (domains.length === 0) return null;
+  // Counts distinct sites, not returned rows, so the number always matches the list underneath it.
+  const unique = new Set(domains).size;
+  return {
+    label: unique === 1 ? 'Reading 1 site' : `Reading ${unique} sites`,
+    detail: joinDomains(domains),
+  };
 }

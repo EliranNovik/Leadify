@@ -1,4 +1,4 @@
-import { assignScanCenterLead, approveScanCenterItem, fetchScanCenterInbox, processScanCenterItem, removeScanCenterItem, requestScanCenterSync } from './scanCenterInbox';
+import { assignScanCenterLead, approveScanCenterItem, fetchScanCenterInbox, processScanCenterItem, removeScanCenterItem, requestScanCenterSync, updateScanCenterItem } from './scanCenterInbox';
 import {
   buildSuggestedFilename,
   confidenceBand,
@@ -170,11 +170,22 @@ export const smartScanService = {
   },
 
   async update(id: string, patch: Partial<SmartScanItem>): Promise<SmartScanItem> {
-    await delay(80);
     const current = requireItem(id);
     const next: SmartScanItem = { ...current, ...patch };
     if (!next.suggestedFilename) {
       next.suggestedFilename = buildSuggestedFilename(next);
+    }
+    // A typed filename has to reach the database: it becomes the name of the copy filed under the
+    // lead, so an edit that only lives in the local overlay is lost the moment the list refetches.
+    const saved = await updateScanCenterItem(id, {
+      suggestedFilename: next.suggestedFilename,
+      documentType: next.documentType,
+      summary: next.summary,
+    });
+    // Show what was stored, which may differ from what was typed if an extension had to be added.
+    if (saved.suggestedFilename) next.suggestedFilename = saved.suggestedFilename;
+    if (next.suggestedFilename !== current.suggestedFilename) {
+      next.filenameEditedByUser = true;
     }
     pushActivity(next, 'Details updated');
     return writeItem(next);
@@ -195,7 +206,12 @@ export const smartScanService = {
         current.classificationStatus === 'failed' || current.classificationStatus === 'processing'
           ? 'classified'
           : current.classificationStatus,
-      suggestedFilename: buildSuggestedFilename({ ...current, lead }),
+      // Assigning a lead normally rebuilds the filename, because the lead number is part of it.
+      // A name typed by a reviewer wins: the server leaves it alone too, so regenerating here would
+      // only put a name on screen that does not match the document actually filed.
+      suggestedFilename: current.filenameEditedByUser
+        ? current.suggestedFilename
+        : buildSuggestedFilename({ ...current, lead }),
     };
     pushActivity(next, `Lead assigned: ${lead.leadNumber} — ${lead.name}`);
     return writeItem(next);

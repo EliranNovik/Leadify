@@ -13,6 +13,7 @@ import {
   type KnowledgeTopicScope,
 } from '../lib/rmqAiV1';
 import { uniqueWebSources, type WebSearchCardData, type WebSearchCategory } from '../lib/rmqAiWebSearch';
+import { siteIconSources } from '../lib/siteIconSources';
 
 function DefaultSourceIcon() {
   return (
@@ -27,25 +28,19 @@ function DefaultSourceIcon() {
   );
 }
 
-function faviconCandidates(host: string): string[] {
-  const clean = host.replace(/^www\./i, '').split('/')[0];
-  if (!clean) return [];
-  return [
-    `https://${clean}/favicon.ico`,
-    `https://icons.duckduckgo.com/ip3/${clean}.ico`,
-  ];
-}
-
 function SourceFavicon({ host }: { host: string }) {
-  const candidates = useMemo(() => faviconCandidates(host), [host]);
+  const candidates = useMemo(() => siteIconSources(host), [host]);
   const [index, setIndex] = useState(0);
   const src = candidates[index];
   if (!src) return <DefaultSourceIcon />;
   return (
     <img
+      key={src}
       className="ai-sources-favicon"
       src={src}
       alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
       onError={() => setIndex((current) => current + 1)}
     />
   );

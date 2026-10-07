@@ -31,6 +31,86 @@ export type WebSearchCardData = {
   category?: WebSearchCategory;
 };
 
+/** A page the researcher has reached, reported while the search is still running. */
+export type WebSearchProgressPage = { url: string; title: string; domain: string };
+
+export type WebSearchProgress = {
+  phase: 'searching' | 'reading';
+  query?: string;
+  pages: WebSearchProgressPage[];
+};
+
+/*
+ * The live-progress listener.
+ *
+ * `executeWebSearch` is reached through the generic `executeRmqAiTool(toolCall)` dispatcher, which
+ * has no room in its signature for a per-call callback. A module-level listener follows the pattern
+ * `takeRmqAiToolFiles` already uses for the same reason. Only one chat turn runs at a time, so a
+ * single slot is enough, and the chat window clears it when the turn ends.
+ */
+let progressListener: ((progress: WebSearchProgress) => void) | null = null;
+
+export function setWebSearchProgressListener(listener: ((progress: WebSearchProgress) => void) | null) {
+  progressListener = listener;
+}
+
+function emitProgress(raw: unknown) {
+  if (!progressListener || !raw || typeof raw !== 'object') return;
+  const row = raw as Record<string, unknown>;
+  const pages = Array.isArray(row.pages) ? row.pages : [];
+  const mapped: WebSearchProgressPage[] = [];
+  for (const entry of pages) {
+    if (!entry || typeof entry !== 'object') continue;
+    const page = entry as Record<string, unknown>;
+    const url = String(page.url || '').trim();
+    if (!/^https?:\/\//i.test(url)) continue;
+    const domain = String(page.domain || '').trim() || url.replace(/^https?:\/\//i, '').split('/')[0];
+    mapped.push({ url, title: String(page.title || domain).trim() || domain, domain });
+  }
+  const query = typeof row.query === 'string' ? row.query : undefined;
+  if (mapped.length === 0 && !query) return;
+  progressListener({
+    phase: row.phase === 'reading' ? 'reading' : 'searching',
+    query,
+    pages: mapped,
+  });
+}
+
+/** Reads an SSE body, returning the payload from the terminal `result` / `error` event. */
+async function consumeSearchStream(body: ReadableStream<Uint8Array>): Promise<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let outcome: unknown = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split = buffer.indexOf('\n\n');
+    while (split >= 0) {
+      const block = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf('\n\n');
+      let event = 'message';
+      const dataLines: string[] = [];
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+      }
+      if (dataLines.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(dataLines.join(''));
+      } catch {
+        continue;
+      }
+      if (event === 'progress') emitProgress(parsed);
+      else if (event === 'result' || event === 'error') outcome = parsed;
+    }
+  }
+  return outcome;
+}
+
 export function blockedTermsFromOpenLead(): string[] {
   const open = getRmqAiCurrentLead();
   if (!open) return [];
@@ -179,11 +259,14 @@ export async function executeWebSearch(args: {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData.session?.access_token || import.meta.env.VITE_SUPABASE_ANON_KEY;
   const open = getRmqAiCurrentLead();
+  // Only ask for the stream when someone is listening, so the plain JSON path stays the default.
+  const wantsStream = Boolean(progressListener);
   const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/web-search`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
+      ...(wantsStream ? { Accept: 'text/event-stream' } : {}),
     },
     body: JSON.stringify({
       query,
@@ -193,8 +276,34 @@ export async function executeWebSearch(args: {
       requested_domains: args.requested_domains ?? args.allowed_domains,
       blocked_terms: blockedTermsFromOpenLead(),
       lead_id: open?.id != null ? String(open.id) : null,
+      stream: wantsStream,
     }),
   });
+
+  /*
+   * An older deployment of the function ignores `stream` and answers with JSON, so the response is
+   * routed on its actual content type rather than on what was asked for. That keeps a CRM running
+   * against a not-yet-redeployed function working, just without the live page list.
+   */
+  const isEventStream = (response.headers.get('Content-Type') || '').includes('text/event-stream');
+  if (response.ok && isEventStream && response.body) {
+    const streamed = await consumeSearchStream(response.body);
+    if (streamed && typeof streamed === 'object') {
+      const payload = streamed as Record<string, unknown>;
+      if (typeof payload.error === 'string') {
+        return JSON.stringify({
+          error: payload.error,
+          instruction: 'Say you could not verify the public fact. Do not invent sources.',
+        });
+      }
+      return JSON.stringify({ ...payload, category: args.category || 'general' });
+    }
+    return JSON.stringify({
+      error: 'WEB_SEARCH_STREAM_INCOMPLETE',
+      instruction: 'Say you could not verify the public fact. Do not invent sources.',
+    });
+  }
+
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const statusHint =

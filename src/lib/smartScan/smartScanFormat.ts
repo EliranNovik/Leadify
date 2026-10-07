@@ -109,6 +109,23 @@ export function scanGroupDocumentLabel(items: SmartScanItem[]): string {
   return 'Other';
 }
 
+/**
+ * The name a scan is known by.
+ *
+ * The suggestion describes what the document is, which is worth more than the scanner's sequence
+ * number, so it wins over the original name. A name a reviewer typed is held in this same field, so
+ * it comes through here without needing a rule of its own.
+ *
+ * Mirrors `filingFilenameFor` in the backend's Smart Scan service, which names the copy filed under
+ * the lead — the two have to agree or the clients page disagrees with the Scan Center about what a
+ * document is called.
+ */
+export function scanDisplayFilename(item: SmartScanItem | undefined): string | undefined {
+  return (
+    String(item?.suggestedFilename || '').trim() || String(item?.originalFilename || '').trim() || undefined
+  );
+}
+
 export function scanGroupPageCount(items: SmartScanItem[]): number {
   return items.reduce((sum, item) => sum + (Number(item.pageCount) || 0), 0);
 }

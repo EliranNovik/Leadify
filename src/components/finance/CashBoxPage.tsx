@@ -212,7 +212,7 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
                 }}
                 className={`flex items-center justify-center gap-2 rounded-xl px-3 py-3 font-semibold ${direction === 'remove' ? 'bg-white text-rose-700 shadow-sm' : 'text-gray-500'}`}
               >
-                <ArrowDownCircleIcon className="h-6 w-6" /> Remove
+                <ArrowDownCircleIcon className="h-6 w-6" /> Withdraw
               </button>
             </div>
             <label className="form-control">
@@ -360,7 +360,7 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
               Cancel
             </button>
             <button disabled={saving} className={`btn flex-1 rounded-full border-none text-white ${direction === 'add' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}>
-              {saving ? <span className="loading loading-spinner loading-sm" /> : edit ? 'Save changes' : direction === 'add' ? 'Add to cash box' : 'Remove from cash box'}
+              {saving ? <span className="loading loading-spinner loading-sm" /> : edit ? 'Save changes' : direction === 'add' ? 'Add to cash box' : 'Withdraw from cash box'}
             </button>
           </div>
         </form>
@@ -583,7 +583,7 @@ const CashBoxPage: React.FC<{
               <optgroup label="Cash added">
                 {cashInCategories.map((category) => <option key={`in:${category.id}`} value={`in:${category.id}`}>{category.label}</option>)}
               </optgroup>
-              <optgroup label="Cash removed">
+              <optgroup label="Cash withdrawn">
                 {categories.map((category) => <option key={`out:${category.id}`} value={`out:${category.id}`}>{category.label}</option>)}
               </optgroup>
             </select>
@@ -597,7 +597,7 @@ const CashBoxPage: React.FC<{
             >
               <option value="all">All transactions</option>
               <option value="added">Cash added</option>
-              <option value="removed">Cash removed</option>
+              <option value="removed">Cash withdrawn</option>
             </select>
           </label>
           <div className="form-control relative w-full sm:w-48" ref={employeeFilterRef}>
@@ -706,7 +706,7 @@ const CashBoxPage: React.FC<{
           className={`flex items-center justify-between rounded-2xl bg-gradient-to-tr from-pink-500 via-rose-500 to-orange-500 p-5 text-left text-white shadow-xl transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl ${movementFilter === 'removed' ? 'ring-4 ring-rose-200' : ''}`}
         >
           <div>
-            <p className="font-medium text-white/90">Cash removed in period</p>
+            <p className="font-medium text-white/90">Cash withdrawn in period</p>
             <p className="mt-1 text-3xl font-bold tabular-nums text-white">{formatCashBoxNis(periodTotals.removed)}</p>
           </div>
           <span className="rounded-full bg-white/20 p-3"><ArrowDownCircleIcon className="h-8 w-8 text-white" /></span>
@@ -740,7 +740,7 @@ const CashBoxPage: React.FC<{
             ) : visibleRows.map((row, index) => (
               <tr key={row.id}>
                 <td className={index === 0 ? 'rounded-tl-2xl' : ''}>{formatDate(row.transaction_date)}</td>
-                <td><span className={`badge border-0 ${row.amount_nis >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{row.amount_nis >= 0 ? 'Added' : 'Removed'}</span></td>
+                <td><span className={`badge border-0 ${row.amount_nis >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{row.amount_nis >= 0 ? 'Added' : 'Withdrawn'}</span></td>
                 <td>{row.category_label || '—'}</td>
                 <td><PersonCell name={row.employee_name} photoUrl={row.employee_photo_url} /></td>
                 <td className="max-w-xs truncate" title={row.notes || ''}>{row.notes || '—'}</td>

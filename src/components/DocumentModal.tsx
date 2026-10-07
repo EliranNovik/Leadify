@@ -27,7 +27,6 @@ import {
 import { isSequenceOfEventsClassification, isSequenceOfEventsSlug, mergeSequenceOfEventsClassifications } from '../lib/staffMeetingDocuments';
 import { initialsFromUploaderName, resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
 import {
-  leadSubEffortSavedUpdatedAt,
   leadSubEffortSavedUpdatedBy,
   resolveLeadSubEffortIdentityFromRefs,
 } from '../lib/leadSubEfforts';
@@ -39,6 +38,7 @@ import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerMo
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 import { splitScanCaseDocument } from '../lib/smartScan/scanCenterInbox';
 import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
+import { subEffortDocUploadedAt } from '../lib/subEffortDocumentAttach';
 import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
   emailAttachmentUploaderLabel,
@@ -81,6 +81,17 @@ interface Document {
 }
 
 const VALID_AI_SUMMARY_STATUS: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+
+/**
+ * How long a summary may stay pending before the tray stops claiming it is working on it.
+ *
+ * A summarize worker killed by Supabase's resource limit never writes a status, so the row keeps the
+ * `pending` it was given up front. Without a deadline here that shows as "Summarizing…" for the rest
+ * of the session, on every affected document, polling the database every few seconds forever.
+ */
+const SUMMARY_WAIT_TIMEOUT_MS = 120_000;
+
+const SUMMARY_STALLED_MESSAGE = 'The summary did not finish. You can try generating it again.';
 
 function parseAiSummaryStatus(raw: string | null | undefined): CaseDocumentAiSummaryStatus | null {
   const aiStRaw = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -364,33 +375,34 @@ function DocumentRowActionMenu({
   return (
     <div
       ref={rootRef}
-      className="relative flex shrink-0 items-center gap-2 self-center md:self-stretch md:items-center"
+      className="relative flex shrink-0 items-center gap-2 self-center"
       onClick={(e) => e.stopPropagation()}
     >
-      {canSeparate ? (
-        <button
-          type="button"
-          className="btn btn-ghost btn-xs hidden h-8 min-h-0 gap-1 border border-sky-200 bg-sky-50 px-2.5 font-medium text-sky-800 hover:bg-sky-100 md:inline-flex dark:border-sky-800/60 dark:bg-sky-950/40 dark:text-sky-200"
-          title="Separate this scan into individual PDFs"
-          aria-label={`Separate ${doc.name} into documents`}
-          disabled={isSeparating}
-          onClick={() => void onSeparate?.(doc)}
-        >
-          {isSeparating ? (
-            <span className="loading loading-spinner loading-xs" />
-          ) : (
-            <ScissorsIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          )}
-          {isSeparating ? 'Separating…' : 'Separate into documents'}
-        </button>
-      ) : null}
-
-      {/* Desktop: dark action strip — view / share / download / delete */}
+      {/* Desktop: dark action strip — separate / view / share / download / delete */}
       <div
-        className="hidden h-full min-h-[2.75rem] shrink-0 items-center rounded-lg bg-gray-700 px-1 shadow-inner md:flex dark:bg-gray-900"
+        className="hidden h-11 shrink-0 items-center rounded-lg bg-gray-700 px-1 shadow-inner md:flex dark:bg-gray-900"
         role="group"
         aria-label={`Actions for ${doc.name}`}
       >
+        {canSeparate ? (
+          <>
+            <button
+              type="button"
+              className={iconBtnClassDesktop}
+              title="Separate this scan into individual PDFs"
+              aria-label={`Separate ${doc.name} into documents`}
+              disabled={isSeparating}
+              onClick={() => void onSeparate?.(doc)}
+            >
+              {isSeparating ? (
+                <span className="loading loading-spinner loading-sm text-white" />
+              ) : (
+                <ScissorsIcon className="h-5 w-5 text-white" aria-hidden />
+              )}
+            </button>
+            <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
+          </>
+        ) : null}
         <button
           type="button"
           className={iconBtnClassDesktop}
@@ -1033,16 +1045,42 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     [documents, isStaffMeetingDocs],
   );
 
+  /** When each document was first seen waiting, so one that never lands can be given up on. */
+  const summaryWaitStartedRef = useRef(new Map<string, number>());
+
   /** Refresh AI summary fields for pending rows while the documents tray is open (not only when the summary dialog is open). */
   useEffect(() => {
     if (!isOpen) return;
 
     const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+    const waiting = summaryWaitStartedRef.current;
 
     const tick = async () => {
-      const pendingIds = documentsRef.current
+      const now = Date.now();
+      const stillPending = documentsRef.current
         .filter((d) => d.aiSummaryStatus === 'pending')
         .map((d) => d.id);
+      for (const id of stillPending) if (!waiting.has(id)) waiting.set(id, now);
+
+      const stalled = new Set(
+        stillPending.filter((id) => now - (waiting.get(id) ?? now) > SUMMARY_WAIT_TIMEOUT_MS),
+      );
+      if (stalled.size > 0) {
+        for (const id of stalled) waiting.delete(id);
+        /*
+         * Marked only in local state. The row really is still `pending` on the server — a killed
+         * worker leaves it that way — but showing it as failed is what replaces the spinner with the
+         * dialog's regenerate button.
+         */
+        const asStalled = <T extends { id: string }>(doc: T) =>
+          stalled.has(doc.id)
+            ? { ...doc, aiSummaryStatus: 'failed' as CaseDocumentAiSummaryStatus, aiSummaryError: SUMMARY_STALLED_MESSAGE }
+            : doc;
+        patchCurrentDocuments((prev) => prev.map(asStalled));
+        setSummaryModalDoc((prev) => (prev ? asStalled(prev) : prev));
+      }
+
+      const pendingIds = stillPending.filter((id) => !stalled.has(id));
       if (pendingIds.length === 0) return;
 
       const { data, error: qErr } = await supabase
@@ -1071,6 +1109,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           typeof row.ai_summary_status === 'string' ? row.ai_summary_status.trim().toLowerCase() : '';
         const st = (stRaw as CaseDocumentAiSummaryStatus) || null;
         if (!st || !validAi.includes(st) || st === 'pending') continue;
+        // Settled, so it no longer counts against the deadline.
+        waiting.delete(row.id);
         updates.set(row.id, {
           aiSummary: row.ai_summary ?? null,
           aiSummaryStatus: st,
@@ -1096,7 +1136,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
     void tick();
     const interval = window.setInterval(() => void tick(), 2500);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      // Each time the tray opens gets its own deadline, so reopening is a genuine fresh attempt.
+      waiting.clear();
+    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -1568,14 +1612,18 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 resolvedWho?.photoUrl?.trim() ||
                 matchedEmpPhoto ||
                 null;
-              const createdAt =
-                leadSubEffortSavedUpdatedAt(r) ||
-                r?.created_at ||
-                new Date().toISOString();
+              /*
+               * Deliberately not the row's `updated_at`: that is when the sub-effort was last edited,
+               * so every document under it would be dated to the moment anything on the case changed.
+               * The real upload time comes from the file itself, with the row's creation as a floor
+               * for the few entries whose object name predates that convention.
+               */
+              const rowCreatedAt = r?.created_at ? String(r.created_at) : '';
               const items = normalizeDocItems(r?.document_url);
               for (const it of items) {
                 const path = (it as any)?.path as string | undefined;
                 const url = (it as any)?.url as string | undefined;
+                const uploadedAt = subEffortDocUploadedAt({ path, url }) || rowCreatedAt;
                 const name =
                   ((it as any)?.name as string | undefined)?.trim() ||
                   (path ? path.split('/').pop() : url ? url.split('/').pop() : '') ||
@@ -1590,7 +1638,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   subEffortDocuments.push({
                     ...cachedSub,
                     name,
-                    lastModified: createdAt,
+                    lastModified: uploadedAt,
                     storageBucket: itemBucket,
                     caseClassificationId: categoryId,
                     caseClassificationLabel: idToLabel.get(categoryId) ?? cachedSub.caseClassificationLabel ?? null,
@@ -1614,7 +1662,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   id: cacheId || `subeffort:${String(r?.id ?? '')}:${path || signedUrl}`,
                   name,
                   size: 0,
-                  lastModified: createdAt,
+                  lastModified: uploadedAt,
                   downloadUrl: signedUrl,
                   webUrl: signedUrl,
                   fileType: mime,
@@ -1944,6 +1992,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const handleRetryDocumentSummary = async () => {
     if (!summaryModalDoc) return;
     const id = summaryModalDoc.id;
+    // A retry is a new attempt, so it gets the full deadline rather than the previous one's remainder.
+    summaryWaitStartedRef.current.delete(id);
     setSummaryModalDoc((d) =>
       d && d.id === id ? { ...d, aiSummaryStatus: 'pending', aiSummaryError: null } : d,
     );

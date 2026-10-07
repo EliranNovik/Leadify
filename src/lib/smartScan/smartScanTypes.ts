@@ -29,6 +29,12 @@ export type SmartScanLeadRef = {
   id?: string;
   leadNumber: string;
   name: string;
+  /**
+   * Which table the id belongs to. Needed because a legacy id is a bare number that looks like
+   * nothing in particular, and a legacy sublead's number (`78480/3`) is a display string the database
+   * never stores, so there is no way to recover the lead from the number alone.
+   */
+  leadType?: 'legacy' | 'new';
 };
 
 export type SmartScanActivityEntry = {
@@ -52,6 +58,8 @@ export type SmartScanItem = {
   suggestedDocumentType?: string;
   title?: string;
   suggestedFilename?: string;
+  /** Set once a reviewer types a filename, so nothing regenerates one over the top of it. */
+  filenameEditedByUser?: boolean;
   detectedPersonName?: string;
   detectedCountry?: string;
   documentDate?: string;

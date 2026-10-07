@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { useLeadContactSearch } from '../../hooks/useLeadContactSearch';
@@ -19,14 +19,34 @@ type Props = {
   disabled?: boolean;
   autoFocus?: boolean;
   assignCount?: number;
+  /** Sits immediately right of the search box in the header variant, ahead of the suggestion chips. */
+  trailing?: ReactNode;
   onChoose: (lead: SmartScanLeadRef) => void | Promise<void>;
 };
+
+/**
+ * The results panel is far wider than the search box it hangs from.
+ *
+ * The box is deliberately narrow so it fits in the drawer header, but a result line carries a lead
+ * number, a name and a stage badge, so at the box's width everything truncates to uselessness.
+ */
+const RESULTS_MIN_WIDTH = 480;
+const RESULTS_VIEWPORT_MARGIN = 16;
+
+/** Keeps the panel on screen: it widens from the search box but may not run past the window edge. */
+function resultsPanelStyle(rect: DOMRect): { top: number; left: number; width: number } {
+  const available = window.innerWidth - RESULTS_VIEWPORT_MARGIN * 2;
+  const width = Math.min(Math.max(rect.width, RESULTS_MIN_WIDTH), available);
+  const left = Math.min(Math.max(rect.left, RESULTS_VIEWPORT_MARGIN), window.innerWidth - width - RESULTS_VIEWPORT_MARGIN);
+  return { top: rect.bottom + 6, left, width };
+}
 
 function leadFromSearch(lead: CombinedLead): SmartScanLeadRef {
   return {
     id: String(lead.id),
     leadNumber: lead.lead_number || String(lead.id),
     name: lead.name || lead.contactName || 'Unknown',
+    leadType: lead.lead_type === 'legacy' ? 'legacy' : 'new',
   };
 }
 
@@ -53,6 +73,7 @@ export function SmartScanLeadSelector({
   disabled,
   autoFocus,
   assignCount = 1,
+  trailing,
   onChoose,
 }: Props) {
   const [query, setQuery] = useState('');
@@ -330,6 +351,7 @@ export function SmartScanLeadSelector({
               />
             </div>
           </label>
+          {trailing}
           {possibleMatches && possibleMatches.length > 0 && !trimmed ? (
             <div className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto">
               {possibleMatches.slice(0, 6).map((lead) => (
@@ -352,12 +374,7 @@ export function SmartScanLeadSelector({
               <div
                 id="smart-scan-lead-search-portal"
                 className="z-[220] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl"
-                style={{
-                  position: 'fixed',
-                  top: rect.bottom + 6,
-                  left: rect.left,
-                  width: rect.width,
-                }}
+                style={{ position: 'fixed', ...resultsPanelStyle(rect) }}
               >
                 <div className="max-h-72 overflow-y-auto">
                   <LeadContactSearchResults

@@ -10,9 +10,14 @@ import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmq
 import { streamRmqAiChat } from '../lib/rmqAiChatStream';
 import { executeGetClientPortalAccess, parsePortalLinkFromToolResult } from '../lib/rmqAiPortalTools';
 import {
+  detailForTool,
   isThinkingContent,
   labelForTool,
+  liveWebSearchThinking,
+  resultThinkingForTool,
+  sitesFromThinkingDetail,
   thinkingContent,
+  thinkingDetailFromContent,
   thinkingLabelFromContent,
   thinkingPlanForAsk,
 } from '../lib/rmqAiThinking';
@@ -108,7 +113,12 @@ import {
   LEAD_SUMMARY_ROLES,
 } from './ChatMeetingCard';
 import { ChatWebSources } from './ChatWebSources';
-import { parseWebSearchCard, type WebSearchCardData } from '../lib/rmqAiWebSearch';
+import {
+  parseWebSearchCard,
+  setWebSearchProgressListener,
+  type WebSearchCardData,
+} from '../lib/rmqAiWebSearch';
+import { siteIconSources } from '../lib/siteIconSources';
 import { resolveLeadShareClientRoute } from '../lib/calendarClientRoute';
 import { formatChatCurrencyText } from '../lib/leadCurrencyDisplay';
 import {
@@ -462,7 +472,36 @@ const readAiDrawerDark = (): boolean => {
 
 const isThinkingMessage = (content: Message['content']) => isThinkingContent(content);
 
-function ChatThinkingIndicator({ label }: { label: string }) {
+/** A site's icon, walking the shared source list on each failure and ending at a drawn globe. */
+function ThinkingSiteIcon({ site }: { site: string }) {
+  const [attempt, setAttempt] = useState(0);
+  const sources = siteIconSources(site);
+  const src = sources[attempt];
+  if (!src) {
+    return (
+      <svg className="ai-thinking-site-icon" viewBox="0 0 16 16" aria-hidden>
+        <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13" fill="none" stroke="currentColor" strokeWidth="1.1" />
+      </svg>
+    );
+  }
+  return (
+    <img
+      key={src}
+      className="ai-thinking-site-icon"
+      src={src}
+      alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setAttempt((current) => current + 1)}
+    />
+  );
+}
+
+function ChatThinkingIndicator({ label, detail }: { label: string; detail?: string }) {
+  // A detail line is a list of sites, so each entry gets its own icon. The trailing "+N more"
+  // counter is text about the list rather than a site, so it is rendered without one.
+  const sites = detail ? sitesFromThinkingDetail(detail) : [];
   return (
     <div className="ai-thinking" role="status" aria-live="polite">
       <span className="ai-thinking-ring" aria-hidden />
@@ -471,8 +510,26 @@ function ChatThinkingIndicator({ label }: { label: string }) {
         <span />
         <span />
       </span>
-      <span className="ai-thinking-label" key={label}>
-        {label}
+      <span className="ai-thinking-text">
+        <span className="ai-thinking-label" key={label}>
+          {label}
+        </span>
+        {sites.length > 0 ? (
+          <span className="ai-thinking-sites">
+            {sites.map((site) =>
+              site.startsWith('+') ? (
+                <span className="ai-thinking-site ai-thinking-site-more" key={site}>
+                  {site}
+                </span>
+              ) : (
+                <span className="ai-thinking-site" key={site}>
+                  <ThinkingSiteIcon site={site} />
+                  {site}
+                </span>
+              ),
+            )}
+          </span>
+        ) : null}
       </span>
     </div>
   );
@@ -1554,13 +1611,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       pendingStreamText = text;
       if (!streamRaf) streamRaf = window.requestAnimationFrame(flushStream);
     };
-    const applyThinking = (label: string, force = false) => {
+    const applyThinking = (label: string, force = false, detail = '') => {
       setMessages((prev) => {
         const next = [...prev];
         const lastIndex = next.length - 1;
         if (lastIndex < 0 || next[lastIndex].role !== 'assistant') return prev;
         if (!force && !isThinkingContent(next[lastIndex].content)) return prev;
-        next[lastIndex] = { ...next[lastIndex], content: thinkingContent(label), streaming: false };
+        next[lastIndex] = { ...next[lastIndex], content: thinkingContent(label, detail), streaming: false };
         return next;
       });
     };
@@ -1582,6 +1639,20 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       thinkingStep += 1;
       applyThinking(thinkingPlan[thinkingStep]);
     }, 1500);
+
+    /*
+     * Pages the running web search has reached, newest first, so the indicator names what it just
+     * opened rather than where it began. Accumulated across progress events and reset per search,
+     * because the model may search more than once in a single turn.
+     */
+    let searchedSites: string[] = [];
+    setWebSearchProgressListener((progress) => {
+      for (const page of progress.pages) {
+        searchedSites = [page.domain, ...searchedSites.filter((site) => site !== page.domain)];
+      }
+      const step = liveWebSearchThinking(searchedSites, progress.phase);
+      applyThinking(step.label, true, step.detail);
+    });
 
     try {
       let conversation = messagesForApi;
@@ -1620,13 +1691,30 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           ];
           thinkingLocked = true;
           const firstTool = reply.tool_calls[0];
-          applyThinking(labelForTool(firstTool?.function?.name, firstTool?.function?.arguments), true);
+          applyThinking(
+            labelForTool(firstTool?.function?.name, firstTool?.function?.arguments),
+            true,
+            detailForTool(firstTool?.function?.name || '', firstTool?.function?.arguments),
+          );
           for (const toolCall of reply.tool_calls) {
             const fnName = toolCall?.function?.name;
-            if (fnName) applyThinking(labelForTool(fnName, toolCall?.function?.arguments), true);
+            if (fnName) {
+              if (fnName === 'web_search') searchedSites = [];
+              applyThinking(
+                labelForTool(fnName, toolCall?.function?.arguments),
+                true,
+                detailForTool(fnName, toolCall?.function?.arguments),
+              );
+            }
             const toolStarted = Date.now();
             const toolResult = await executeRmqAiTool(toolCall);
             toolExecutionMs += Date.now() - toolStarted;
+            // A web search only reveals which pages it actually hit once it returns, so swap the
+            // target sites for the real ones while the model composes its answer from them.
+            if (fnName) {
+              const resultStep = resultThinkingForTool(fnName, toolResult);
+              if (resultStep) applyThinking(resultStep.label, true, resultStep.detail);
+            }
             if (fnName) toolResults.push({ name: fnName, content: String(toolResult) });
             createdFiles.push(...takeRmqAiToolFiles());
             if (
@@ -1849,6 +1937,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       });
     } finally {
       window.clearInterval(thinkingTimer);
+      setWebSearchProgressListener(null);
       if (streamRaf) window.cancelAnimationFrame(streamRaf);
       setIsLoading(false);
     }
@@ -4417,12 +4506,48 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }
         .ai-thinking-dots span:nth-child(2) { animation-delay: 0.14s; }
         .ai-thinking-dots span:nth-child(3) { animation-delay: 0.28s; }
+        .ai-thinking-text {
+          display: flex;
+          flex-direction: column;
+          gap: 0.1rem;
+          min-width: 0;
+        }
         .ai-thinking-label {
           font-size: 0.875rem;
           font-weight: 500;
           letter-spacing: 0.01em;
           color: var(--ai-text-muted);
           animation: ai-thinking-label-in 0.28s ease;
+        }
+        /* The sites being searched, one chip each. Wraps so a long domain cannot widen the bubble. */
+        .ai-thinking-sites {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 0.2rem 0.45rem;
+          animation: ai-thinking-label-in 0.28s ease;
+        }
+        .ai-thinking-site {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.28rem;
+          max-width: 100%;
+          font-size: 0.75rem;
+          line-height: 1.35;
+          letter-spacing: 0.01em;
+          color: var(--ai-text-muted);
+          opacity: 0.8;
+          overflow-wrap: anywhere;
+        }
+        .ai-thinking-site-more {
+          opacity: 0.55;
+        }
+        .ai-thinking-site-icon {
+          width: 1.05rem;
+          height: 1.05rem;
+          flex-shrink: 0;
+          border-radius: 0.2rem;
+          object-fit: contain;
         }
         @keyframes ai-thinking-label-in {
           from { opacity: 0; transform: translateY(3px); }
@@ -4461,6 +4586,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           .ai-thinking-ring,
           .ai-thinking-dots span,
           .ai-thinking-label,
+          .ai-thinking-sites,
           .ai-send-thinking,
           .ai-stream-caret,
           .ai-cal-meeting-prep-spark {
@@ -5585,7 +5711,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         return null;
                       })
                     ) : thinking ? (
-                      <ChatThinkingIndicator label={thinkingLabelFromContent(msg.content)} />
+                      <ChatThinkingIndicator
+                        label={thinkingLabelFromContent(msg.content)}
+                        detail={thinkingDetailFromContent(msg.content)}
+                      />
                     ) : (msg.role === 'user' ? userVisible : assistantText) && !msg.leadSummary ? (
                       <>
                         {renderAssistantWithRisks(msg.role === 'user' ? userVisible : assistantText, {

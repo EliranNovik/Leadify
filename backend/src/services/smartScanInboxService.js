@@ -304,6 +304,10 @@ async function processItem(id) {
   return smartScanClassifyService.processByItemId(id, { force: true });
 }
 
+async function updateItem(id, patch) {
+  return smartScanClassifyService.updateByItemId(id, patch);
+}
+
 async function assignLead(id, lead) {
   return smartScanClassifyService.assignLeadByItemId(id, lead);
 }
@@ -328,6 +332,7 @@ module.exports = {
   listInbox,
   downloadInboxAttachment,
   processItem,
+  updateItem,
   assignLead,
   approveItem,
   splitCaseDocument,

@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowPathIcon,
   ArrowTopRightOnSquareIcon,
-  CheckIcon,
   DocumentIcon,
   TrashIcon,
   XMarkIcon,
@@ -17,12 +16,13 @@ import {
   type SmartScanItem,
   type SmartScanLeadRef,
 } from '../../lib/smartScan/smartScanTypes';
-import { formatScanDate, formatScanLongDateTime, scanGroupLead, scanGroupPageRanges, scanTabLabel, uniqueScanLeadMatches } from '../../lib/smartScan/smartScanFormat';
+import { formatScanDate, formatScanLongDateTime, scanDisplayFilename, scanGroupLead, scanGroupPageRanges, scanTabLabel, uniqueScanLeadMatches } from '../../lib/smartScan/smartScanFormat';
 import { SmartScanConfidenceBadge } from './SmartScanConfidenceBadge';
 import { SmartScanStatusBadge } from './SmartScanStatusBadge';
 import { SmartScanActivity } from './SmartScanActivity';
 import { SmartScanLeadSelector } from './SmartScanLeadSelector';
 import { SmartScanScanPreview } from './SmartScanScanPreview';
+import { SmartScanShareMenu } from './SmartScanShareMenu';
 import { fullScanPreviewUrl } from '../../lib/smartScan/scanCenterInbox';
 
 type Props = {
@@ -43,6 +43,18 @@ type Props = {
 
 const fieldLabel = 'text-[11px] font-semibold uppercase tracking-wider text-gray-500';
 const inputClass = 'h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-gray-100';
+const headerBtn = 'btn btn-ghost btn-sm btn-circle';
+
+/** How long typing has to pause before an edit is sent. Blur and closing commit immediately. */
+const AUTOSAVE_IDLE_MS = 900;
+
+type ScanFields = { documentType: string; suggestedFilename: string; summary: string };
+
+const EMPTY_FIELDS: ScanFields = { documentType: '', suggestedFilename: '', summary: '' };
+
+function sameFields(a: ScanFields, b: ScanFields): boolean {
+  return a.documentType === b.documentType && a.suggestedFilename === b.suggestedFilename && a.summary === b.summary;
+}
 
 function isPreviewableImage(contentType?: string, filename?: string): boolean {
   const type = String(contentType || '').toLowerCase();
@@ -113,12 +125,19 @@ export function SmartScanReviewDrawer({
   const [filename, setFilename] = useState('');
   const [summary, setSummary] = useState('');
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [activeScanId, setActiveScanId] = useState<string | null>(null);
 
   const activeMerged = mergedItems?.find((row) => row.id === activeScanId) || mergedItems?.[0] || null;
-  const editable = Boolean(
-    (activeMerged || item) && (activeMerged || item)!.status !== 'processing' && (activeMerged || item)!.status !== 'completed',
-  );
+  const activeDoc = activeMerged || item;
+  /*
+   * Filing a scan under a lead does not freeze its details: a reviewer still renames and retypes
+   * documents afterwards, and the rename follows through to the copy filed under the lead. Only an
+   * in-flight scan is off limits, because classification is still writing these same fields.
+   */
+  const editable = Boolean(activeDoc && activeDoc.status !== 'processing');
+  // Reprocessing re-runs classification and re-files, so it stays off once a scan is filed.
+  const canReprocess = Boolean(activeDoc && activeDoc.status !== 'processing' && activeDoc.status !== 'completed');
 
   useEffect(() => {
     if (!mergedItems?.length) {
@@ -128,13 +147,44 @@ export function SmartScanReviewDrawer({
     setActiveScanId((current) => (current && mergedItems.some((row) => row.id === current) ? current : mergedItems[0].id));
   }, [mergedItems]);
 
+  /** What the server last told us these fields are. Only fields that drifted from it get sent. */
+  const baselineRef = useRef<ScanFields>(EMPTY_FIELDS);
+  /** What was last sent, so repeatedly leaving an untouched field costs nothing. */
+  const sentRef = useRef<ScanFields>(EMPTY_FIELDS);
+  const pendingRef = useRef<{ id: string; fields: ScanFields } | null>(null);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The save in flight, so actions that re-read this row on the server can wait for it. */
+  const savePromiseRef = useRef<Promise<void> | null>(null);
+
+  /*
+   * The server copy is read back into the inputs only when the document changes or when the server
+   * itself changed these fields — a new scan, a reprocess, a lead assignment. Reacting to every
+   * prop identity change instead would wipe out what someone is typing each time an autosave
+   * round-trip lands mid-keystroke, since each save hands back a fresh item object.
+   */
+  const hydrationKey = activeDoc
+    ? [activeDoc.id, activeDoc.status, activeDoc.processedAt || '', activeDoc.lead?.leadNumber || ''].join('|')
+    : '';
+
   useEffect(() => {
-    const current = activeMerged || item;
-    if (!current) return;
-    setDocumentType(current.documentType || current.suggestedDocumentType || '');
-    setFilename(current.suggestedFilename || '');
-    setSummary(current.summary || '');
-  }, [activeMerged, item]);
+    if (!activeDoc) return;
+    const next: ScanFields = {
+      documentType: activeDoc.documentType || activeDoc.suggestedDocumentType || '',
+      suggestedFilename: activeDoc.suggestedFilename || '',
+      summary: activeDoc.summary || '',
+    };
+    setDocumentType(next.documentType);
+    setFilename(next.suggestedFilename);
+    setSummary(next.summary);
+    baselineRef.current = next;
+    sentRef.current = next;
+    pendingRef.current = null;
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrationKey names every field read here
+  }, [hydrationKey]);
 
   const regeneratedName = useMemo(() => {
     if (!item) return '';
@@ -163,15 +213,93 @@ export function SmartScanReviewDrawer({
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
     try {
+      /*
+       * Assigning, reprocessing and the rest all re-read this row on the server, so a queued or still
+       * in-flight edit has to land first — otherwise the copy filed under the lead is named after
+       * whatever the row said before the reviewer typed.
+       */
+      flushSave();
+      if (savePromiseRef.current) await savePromiseRef.current;
       await fn();
     } finally {
       setBusy(false);
     }
   };
 
-  const footerBtn =
-    'group inline-flex h-8 items-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-medium text-gray-600 transition-all duration-200 ease-out hover:scale-[1.04] hover:bg-gray-100/90 hover:text-gray-900 hover:shadow-sm active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 disabled:hover:bg-transparent disabled:hover:shadow-none';
-  const footerIcon = 'h-4 w-4 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700';
+  /*
+   * There is no Save button, so edits commit on their own: a select commits on change, text commits
+   * on blur or after a pause in typing, and anything still pending commits when the drawer closes.
+   */
+  const clearIdleTimer = () => {
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  };
+
+  const flushSave = () => {
+    clearIdleTimer();
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    sentRef.current = pending.fields;
+
+    /*
+     * Only drifted fields travel. That keeps a view where one field is read-only from quietly
+     * rewriting it — the merged view can edit the summary alone, and sending its document type too
+     * would promote the AI's guess into a confirmed value nobody chose.
+     */
+    const baseline = baselineRef.current;
+    const patch: Partial<SmartScanItem> = {};
+    if (pending.fields.documentType && pending.fields.documentType !== baseline.documentType) {
+      patch.documentType = pending.fields.documentType;
+    }
+    // An emptied box is left out rather than sent: a blank name is read as "regenerate", so a
+    // half-finished rename would briefly swap in a freshly generated one.
+    const name = pending.fields.suggestedFilename.trim();
+    if (name && name !== baseline.suggestedFilename) patch.suggestedFilename = name;
+    if (pending.fields.summary !== baseline.summary) patch.summary = pending.fields.summary;
+    if (Object.keys(patch).length === 0) return;
+
+    setSaving(true);
+    const inFlight = onSave(pending.id, patch).finally(() => {
+      setSaving(false);
+      if (savePromiseRef.current === inFlight) savePromiseRef.current = null;
+    });
+    savePromiseRef.current = inFlight;
+  };
+
+  /** Queues an edit, or drops it when nothing actually changed so idle blurs cost no requests. */
+  const trackChange = (id: string, fields: ScanFields, commit: boolean) => {
+    if (sameFields(fields, sentRef.current)) {
+      pendingRef.current = null;
+      clearIdleTimer();
+      return;
+    }
+    pendingRef.current = { id, fields };
+    if (commit) {
+      flushSave();
+      return;
+    }
+    clearIdleTimer();
+    idleTimerRef.current = setTimeout(flushSave, AUTOSAVE_IDLE_MS);
+  };
+
+  /** Closing is the last chance to commit a keystroke that never lost focus. */
+  const closeWithFlush = () => {
+    flushSave();
+    onClose();
+  };
+
+  const savingNote = saving ? <span className="text-xs text-gray-400">Saving…</span> : null;
+
+  /** Every field is collected on each edit; `flushSave` is what narrows it down to what drifted. */
+  const fieldsWith = (patch: Partial<ScanFields>): ScanFields => ({
+    documentType,
+    suggestedFilename: filename,
+    summary,
+    ...patch,
+  });
 
   if (mergedItems && activeMerged) {
     const groupLead = scanGroupLead(mergedItems);
@@ -182,58 +310,10 @@ export function SmartScanReviewDrawer({
       mergedItems.every((row) => row.status === 'completed') && groupLead.lead?.leadNumber
         ? groupLead.lead.leadNumber
         : null;
-    const mergedFooter = (
-      <div className="flex flex-wrap items-center justify-end gap-1 px-4 py-1.5">
-        <button
-          type="button"
-          className={`${footerBtn} mr-auto text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
-          disabled={busy}
-          onClick={() => {
-            if (
-              window.confirm(
-                `Remove ${mergedItems.length} documents from this scan? They will not be fetched again.`,
-              )
-            ) {
-              void run(() => onRemove(mergedItems.map((row) => row.id)));
-            }
-          }}
-        >
-          <TrashIcon className="h-4 w-4 shrink-0 text-rose-400 transition-colors group-hover:text-rose-600" />
-          Delete scan
-        </button>
-        {mergedItems.some((row) => row.status === 'processing') ? (
-          <p className="text-sm text-sky-800">AI is identifying documents in this scan…</p>
-        ) : null}
-        {mergedEditable ? (
-          <>
-            <button
-              type="button"
-              className={footerBtn}
-              disabled={busy}
-              onClick={() => run(() => onSave(activeMerged.id, { summary }))}
-            >
-              <CheckIcon className="h-6 w-6 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700" />
-              Save summary
-            </button>
-            <button type="button" className={footerBtn} disabled={busy} onClick={() => run(() => onRetry(activeMerged.id))}>
-              <ArrowPathIcon className="h-6 w-6 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700" />
-              Reprocess
-            </button>
-          </>
-        ) : null}
-        {groupLead.lead ? (
-          <button type="button" className={footerBtn} onClick={() => onOpenLead({ ...activeMerged, lead: groupLead.lead })}>
-            <ArrowTopRightOnSquareIcon className={footerIcon} />
-            Open Lead
-          </button>
-        ) : null}
-      </div>
-    );
-
     return (
       <MobileBottomSheet
         open={open}
-        onClose={onClose}
+        onClose={closeWithFlush}
         desktopFullScreen
         mobileFullPage
         scrollLock="always"
@@ -243,20 +323,60 @@ export function SmartScanReviewDrawer({
         footer={null}
       >
         <div className="shrink-0 bg-white px-4 py-1.5 md:px-6">
-          <div className={`relative ${assignedLeadNumber ? 'pr-56' : 'pr-10'}`}>
-            {assignedLeadNumber ? (
-              <span className="absolute right-9 top-0 z-30 inline-flex max-w-[16rem] items-center truncate rounded-full bg-emerald-50 px-4 py-1.5 text-sm font-semibold text-emerald-800 md:text-base">
-                Assigned to: {assignedLeadNumber}
-              </span>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm btn-circle absolute right-0 top-0 z-30"
-              onClick={onClose}
-              aria-label="Close"
-            >
-              <XMarkIcon className="h-6 w-6" />
-            </button>
+          <div className={`relative ${assignedLeadNumber ? 'pr-[16rem] md:pr-[25rem]' : 'pr-28'}`}>
+            <div className="absolute right-0 top-0 z-30 flex items-center gap-0.5">
+              {assignedLeadNumber ? (
+                <span className="mr-1 inline-flex max-w-[7rem] items-center truncate rounded-full bg-emerald-50 px-4 py-1.5 text-sm font-semibold text-emerald-800 md:max-w-[16rem] md:text-base">
+                  Assigned to: {assignedLeadNumber}
+                </span>
+              ) : null}
+              {/* A completed scan hides the lead search, so share joins the other actions instead. */}
+              {assignedLeadNumber ? <SmartScanShareMenu item={activeMerged} disabled={busy} /> : null}
+              {groupLead.lead ? (
+                <button
+                  type="button"
+                  className={headerBtn}
+                  title="Open lead"
+                  aria-label="Open lead"
+                  onClick={() => onOpenLead({ ...activeMerged, lead: groupLead.lead })}
+                >
+                  <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+                </button>
+              ) : null}
+              {mergedEditable ? (
+                <button
+                  type="button"
+                  className={headerBtn}
+                  disabled={busy}
+                  title="Reprocess"
+                  aria-label="Reprocess"
+                  onClick={() => run(() => onRetry(activeMerged.id))}
+                >
+                  <ArrowPathIcon className="h-5 w-5" />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={`${headerBtn} text-rose-600 hover:bg-rose-50`}
+                disabled={busy}
+                title="Delete scan"
+                aria-label="Delete scan"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Remove ${mergedItems.length} documents from this scan? They will not be fetched again.`,
+                    )
+                  ) {
+                    void run(() => onRemove(mergedItems.map((row) => row.id)));
+                  }
+                }}
+              >
+                <TrashIcon className="h-5 w-5" />
+              </button>
+              <button type="button" className={headerBtn} onClick={closeWithFlush} aria-label="Close">
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
               <div className={`min-w-0 flex-1 ${assignedLeadNumber ? '' : 'md:pr-[min(44rem,48%)]'}`}>
                 <h2 className="truncate text-sm font-semibold tracking-tight text-gray-900 md:text-base">
@@ -271,7 +391,7 @@ export function SmartScanReviewDrawer({
                 </p>
               </div>
               {assignedLeadNumber ? null : (
-                <div className="flex w-full justify-center md:absolute md:left-1/2 md:top-1/2 md:w-[min(44rem,calc(100%-8rem))] md:-translate-x-1/2 md:-translate-y-1/2">
+                <div className="w-full md:absolute md:left-1/2 md:top-1/2 md:w-[min(44rem,calc(100%-20rem))] md:-translate-x-1/2 md:-translate-y-1/2">
                   <SmartScanLeadSelector
                     variant="header"
                     assignCount={mergedItems.length}
@@ -279,6 +399,7 @@ export function SmartScanReviewDrawer({
                     possibleMatches={uniqueScanLeadMatches(mergedItems)}
                     disabled={busy || mergedItems.some((row) => row.status === 'processing')}
                     autoFocus={assigning}
+                    trailing={<SmartScanShareMenu item={activeMerged} disabled={busy} />}
                     onChoose={(lead) =>
                       run(async () => {
                         if (onAssignMany) await onAssignMany(mergedItems.map((row) => row.id), lead);
@@ -294,10 +415,10 @@ export function SmartScanReviewDrawer({
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-6 overflow-hidden p-4 pb-16 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] md:p-6 md:pb-16">
+        <div className="grid min-h-0 flex-1 gap-6 overflow-hidden p-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] md:p-6">
           <SmartScanScanPreview
             src={previewSrc}
-            filename={mergedItems[0].originalFilename}
+            filename={scanDisplayFilename(mergedItems[0])}
             ranges={ranges}
             activeId={activeMerged.id}
             onActiveChange={setActiveScanId}
@@ -333,7 +454,12 @@ export function SmartScanReviewDrawer({
                   {SMART_SCAN_ISSUE_LABELS[activeMerged.issue].replace(/\.$/, '')}
                 </span>
               ) : null}
+              {savingNote}
             </div>
+
+            {mergedItems.some((row) => row.status === 'processing') ? (
+              <p className="text-sm text-sky-800">AI is identifying documents in this scan…</p>
+            ) : null}
 
             <p className="text-sm text-gray-500">
               {activeMerged.pageStart && activeMerged.pageEnd
@@ -347,7 +473,11 @@ export function SmartScanReviewDrawer({
                 <textarea
                   className="min-h-[8rem] w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-100"
                   value={summary}
-                  onChange={(event) => setSummary(event.target.value)}
+                  onChange={(event) => {
+                    setSummary(event.target.value);
+                    trackChange(activeMerged.id, fieldsWith({ summary: event.target.value }), false);
+                  }}
+                  onBlur={() => flushSave()}
                 />
               </label>
             ) : (
@@ -386,11 +516,6 @@ export function SmartScanReviewDrawer({
             </section>
           </div>
         </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-          <div className="pointer-events-auto bg-white/55 shadow-[0_-8px_30px_rgba(15,23,42,0.06)] backdrop-blur-xl">
-            {mergedFooter}
-          </div>
-        </div>
       </MobileBottomSheet>
     );
   }
@@ -405,86 +530,10 @@ export function SmartScanReviewDrawer({
       ? `Detected: ${item.detectedPersonName}`
       : 'Unmatched scan';
 
-  const footer = (
-    <div className="flex flex-wrap items-center justify-end gap-1 px-4 py-1.5">
-      <button
-        type="button"
-        className={`${footerBtn} mr-auto text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
-        disabled={busy}
-        onClick={() => {
-          if (window.confirm('Remove this document from Smart Scan? It will not be fetched again.')) {
-            void run(() => onRemove([item.id]));
-          }
-        }}
-      >
-        <TrashIcon className="h-4 w-4 shrink-0 text-rose-400 transition-colors group-hover:text-rose-600" />
-        Delete
-      </button>
-      {item.status === 'processing' ? (
-        <p className="text-sm text-sky-800">AI is identifying the document type and splitting if needed…</p>
-      ) : null}
-      {item.status === 'failed' ? (
-        <button type="button" className={footerBtn} disabled={busy} onClick={() => run(() => onRetry(item.id))}>
-          <ArrowPathIcon className="h-6 w-6 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700" />
-          Retry Processing
-        </button>
-      ) : null}
-      {editable ? (
-        <>
-          <button
-            type="button"
-            className={footerBtn}
-            disabled={busy}
-            onClick={() =>
-              run(() =>
-                onSave(item.id, {
-                  documentType: documentType || undefined,
-                  suggestedFilename: filename || regeneratedName,
-                  summary,
-                }),
-              )
-            }
-          >
-            <CheckIcon className="h-6 w-6 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700" />
-            Save Changes
-          </button>
-          <button type="button" className={footerBtn} disabled={busy} onClick={() => run(() => onRetry(item.id))}>
-            <ArrowPathIcon className="h-6 w-6 shrink-0 text-gray-400 transition-colors duration-200 group-hover:text-gray-700" />
-            Reprocess
-          </button>
-          {/* <button
-            type="button"
-            className={`${footerBtn} text-rose-600 hover:bg-rose-50 hover:text-rose-700`}
-            disabled={busy}
-            onClick={() => run(() => onReject(item.id))}
-          >
-            <XCircleIcon className="h-6 w-6 text-rose-500 transition-transform duration-200 group-hover:scale-110" />
-            Reject
-          </button>
-          <button
-            type="button"
-            className={`${footerBtn} text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800`}
-            disabled={busy || scanQueueBucket(item) !== 'matched'}
-            onClick={() => run(() => onApprove(item.id))}
-          >
-            <CheckCircleIcon className="h-6 w-6 text-emerald-500 transition-transform duration-200 group-hover:scale-110" />
-            Approve
-          </button> */}
-        </>
-      ) : null}
-      {item.lead ? (
-        <button type="button" className={footerBtn} onClick={() => onOpenLead(item)}>
-          <ArrowTopRightOnSquareIcon className={footerIcon} />
-          Open Lead
-        </button>
-      ) : null}
-    </div>
-  );
-
   return (
     <MobileBottomSheet
       open={open}
-      onClose={onClose}
+      onClose={closeWithFlush}
       desktopFullScreen
       mobileFullPage
       scrollLock="always"
@@ -494,33 +543,70 @@ export function SmartScanReviewDrawer({
       footer={null}
     >
       <div className="shrink-0 bg-white px-4 py-1.5 md:px-6">
-        <div className={`relative ${assignedLeadNumber ? 'pr-56' : 'pr-10'}`}>
-          {assignedLeadNumber ? (
-            <span className="absolute right-9 top-0 z-30 inline-flex max-w-[16rem] items-center truncate rounded-full bg-emerald-50 px-4 py-1.5 text-sm font-semibold text-emerald-800 md:text-base">
-              Assigned to: {assignedLeadNumber}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm btn-circle absolute right-0 top-0 z-30"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <XMarkIcon className="h-6 w-6" />
-          </button>
+        <div className={`relative ${assignedLeadNumber ? 'pr-[16rem] md:pr-[25rem]' : 'pr-28'}`}>
+          <div className="absolute right-0 top-0 z-30 flex items-center gap-0.5">
+            {assignedLeadNumber ? (
+              <span className="mr-1 inline-flex max-w-[7rem] items-center truncate rounded-full bg-emerald-50 px-4 py-1.5 text-sm font-semibold text-emerald-800 md:max-w-[16rem] md:text-base">
+                Assigned to: {assignedLeadNumber}
+              </span>
+            ) : null}
+            {/* A completed scan hides the lead search, so share joins the other actions instead. */}
+            {assignedLeadNumber ? <SmartScanShareMenu item={item} disabled={busy} /> : null}
+            {item.lead ? (
+              <button
+                type="button"
+                className={headerBtn}
+                title="Open lead"
+                aria-label="Open lead"
+                onClick={() => onOpenLead(item)}
+              >
+                <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+              </button>
+            ) : null}
+            {canReprocess ? (
+              <button
+                type="button"
+                className={headerBtn}
+                disabled={busy}
+                title={item.status === 'failed' ? 'Retry processing' : 'Reprocess'}
+                aria-label={item.status === 'failed' ? 'Retry processing' : 'Reprocess'}
+                onClick={() => run(() => onRetry(item.id))}
+              >
+                <ArrowPathIcon className="h-5 w-5" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={`${headerBtn} text-rose-600 hover:bg-rose-50`}
+              disabled={busy}
+              title="Delete"
+              aria-label="Delete"
+              onClick={() => {
+                if (window.confirm('Remove this document from Smart Scan? It will not be fetched again.')) {
+                  void run(() => onRemove([item.id]));
+                }
+              }}
+            >
+              <TrashIcon className="h-5 w-5" />
+            </button>
+            <button type="button" className={headerBtn} onClick={closeWithFlush} aria-label="Close">
+              <XMarkIcon className="h-6 w-6" />
+            </button>
+          </div>
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
             <div className={`min-w-0 flex-1 ${assignedLeadNumber ? '' : 'md:pr-[min(44rem,48%)]'}`}>
               <h2 className="truncate text-sm font-semibold tracking-tight text-gray-900 md:text-base">{title}</h2>
               <p className="truncate text-xs text-gray-500">{subtitle}</p>
             </div>
             {assignedLeadNumber ? null : (
-              <div className="flex w-full justify-center md:absolute md:left-1/2 md:top-1/2 md:w-[min(44rem,calc(100%-8rem))] md:-translate-x-1/2 md:-translate-y-1/2">
+              <div className="w-full md:absolute md:left-1/2 md:top-1/2 md:w-[min(44rem,calc(100%-20rem))] md:-translate-x-1/2 md:-translate-y-1/2">
                 <SmartScanLeadSelector
                   variant="header"
                   assignedLead={item.lead}
                   possibleMatches={item.possibleLeadMatches}
                   disabled={busy || item.status === 'processing'}
                   autoFocus={assigning}
+                  trailing={<SmartScanShareMenu item={item} disabled={busy} />}
                   onChoose={(lead) => run(() => onAssign(item.id, lead))}
                 />
               </div>
@@ -529,7 +615,7 @@ export function SmartScanReviewDrawer({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-6 overflow-hidden p-4 pb-16 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] md:p-6 md:pb-16">
+      <div className="grid min-h-0 flex-1 gap-6 overflow-hidden p-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] md:p-6">
         <SmartScanPreviewPane item={item} />
 
         <div className="min-h-0 space-y-5 overflow-y-auto">
@@ -544,7 +630,12 @@ export function SmartScanReviewDrawer({
                 {SMART_SCAN_ISSUE_LABELS[item.issue].replace(/\.$/, '')}
               </span>
             ) : null}
+            {savingNote}
           </div>
+
+          {item.status === 'processing' ? (
+            <p className="text-sm text-sky-800">AI is identifying the document type and splitting if needed…</p>
+          ) : null}
 
           {scanQueueBucket(item) === 'matched' ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
@@ -564,7 +655,14 @@ export function SmartScanReviewDrawer({
             {editable ? (
               <label className="block">
                 <span className={fieldLabel}>Document type</span>
-                <select className={inputClass} value={documentType} onChange={(event) => setDocumentType(event.target.value)}>
+                <select
+                  className={inputClass}
+                  value={documentType}
+                  onChange={(event) => {
+                    setDocumentType(event.target.value);
+                    trackChange(item.id, fieldsWith({ documentType: event.target.value }), true);
+                  }}
+                >
                   <option value="">Select type</option>
                   {SMART_SCAN_DOCUMENT_TYPES.map((type) => (
                     <option key={type} value={type}>
@@ -583,11 +681,28 @@ export function SmartScanReviewDrawer({
             {editable ? (
               <label className="block">
                 <span className={fieldLabel}>Filename</span>
-                <input className={inputClass} value={filename} onChange={(event) => setFilename(event.target.value)} />
+                <input
+                  className={inputClass}
+                  value={filename}
+                  onChange={(event) => {
+                    setFilename(event.target.value);
+                    trackChange(item.id, fieldsWith({ suggestedFilename: event.target.value }), false);
+                  }}
+                  onBlur={() => flushSave()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      flushSave();
+                    }
+                  }}
+                />
                 <button
                   type="button"
                   className="mt-1 text-xs text-blue-600 hover:underline"
-                  onClick={() => setFilename(regeneratedName)}
+                  onClick={() => {
+                    setFilename(regeneratedName);
+                    trackChange(item.id, fieldsWith({ suggestedFilename: regeneratedName }), true);
+                  }}
                 >
                   Use generated name
                 </button>
@@ -624,7 +739,11 @@ export function SmartScanReviewDrawer({
                 <textarea
                   className="min-h-[5rem] w-full rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-gray-100"
                   value={summary}
-                  onChange={(event) => setSummary(event.target.value)}
+                  onChange={(event) => {
+                    setSummary(event.target.value);
+                    trackChange(item.id, fieldsWith({ summary: event.target.value }), false);
+                  }}
+                  onBlur={() => flushSave()}
                 />
               </label>
             ) : (
@@ -654,11 +773,6 @@ export function SmartScanReviewDrawer({
             <h3 className="mb-2 text-sm font-semibold text-gray-900">Activity</h3>
             <SmartScanActivity entries={item.activity} />
           </section>
-        </div>
-      </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20">
-        <div className="pointer-events-auto bg-white/55 shadow-[0_-8px_30px_rgba(15,23,42,0.06)] backdrop-blur-xl">
-          {footer}
         </div>
       </div>
     </MobileBottomSheet>

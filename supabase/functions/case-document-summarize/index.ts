@@ -105,9 +105,28 @@ const SUMMARY_SYSTEM =
 const SUMMARY_USER_PREFIX =
   'Summarize the attached document for a case file. Title/filename for context: ';
 
+/**
+ * Largest file this worker can summarize before it gets killed.
+ *
+ * Sending a file to OpenAI means base64 inside a JSON body, so the bytes exist several times over at
+ * the peak — the buffer, the base64 string, the request body, and its UTF-8 encoding. The ceiling is
+ * sharp in practice: across the existing documents, every size band below 5 MB summarises fine, and
+ * not one of roughly 145 attempts at 5 MB or more has ever produced a summary (the largest success is
+ * 4.94 MB). Those attempts die with WORKER_RESOURCE_LIMIT, and a worker killed that way never reaches
+ * the catch below — so the row it already marked `pending` keeps that status and the tray spins on it
+ * forever. Refusing up front is the only way those documents get an answer at all.
+ */
+const MAX_SUMMARY_BYTES = 5 * 1024 * 1024;
+
+function tooLargeMessage(bytes: number): string {
+  const mb = (value: number) => `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `This file is too large for an automatic AI summary (${mb(bytes)}; limit ${mb(MAX_SUMMARY_BYTES)}).`;
+}
+
 async function summarizeImage(bytes: Uint8Array, mime: string, fileName: string): Promise<string> {
-  const b64 = base64Encode(bytes);
-  const dataUrl = `data:${mime};base64,${b64}`;
+  // Built in one step so the intermediate base64 can be collected before the request body is
+  // serialised; holding both at once is a second full copy of the file in memory.
+  const dataUrl = `data:${mime};base64,${base64Encode(bytes)}`;
   const res = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
     method: 'POST',
     headers: {
@@ -141,8 +160,8 @@ async function summarizeImage(bytes: Uint8Array, mime: string, fileName: string)
 }
 
 async function summarizeWithResponses(bytes: Uint8Array, mime: string, fileName: string): Promise<string> {
-  const b64 = base64Encode(bytes);
-  const dataUrl = `data:${mime};base64,${b64}`;
+  // See summarizeImage: one step, so only one base64 copy is alive at a time.
+  const dataUrl = `data:${mime};base64,${base64Encode(bytes)}`;
   const fname = safeFileName(fileName);
 
   const res = await fetch(RESPONSES_URL, {
@@ -225,7 +244,7 @@ serve(async (req) => {
   const { data: row, error: rowErr } = await supabaseUser
     .from('lead_case_documents')
     .select(
-      'id, storage_path, file_name, mime_type, ai_summary_status',
+      'id, storage_path, file_name, file_size, mime_type, ai_summary_status',
     )
     .eq('id', documentId)
     .maybeSingle();
@@ -238,6 +257,7 @@ serve(async (req) => {
     id: string;
     storage_path: string | null;
     file_name: string;
+    file_size: number | null;
     mime_type: string | null;
     ai_summary_status: string | null;
   };
@@ -248,6 +268,27 @@ serve(async (req) => {
 
   if (rec.ai_summary_status === 'ready' && !force) {
     return json({ success: true, cached: true });
+  }
+
+  /** Records a final state, so no document is ever left sitting on `pending` with the UI spinning. */
+  const markSkipped = async (reason: string) => {
+    await supabaseUser
+      .from('lead_case_documents')
+      .update({
+        ai_summary: null,
+        ai_summary_status: 'skipped',
+        ai_summary_error: reason,
+        ai_summary_at: new Date().toISOString(),
+      })
+      .eq('id', documentId);
+    return json({ success: true, skipped: true, reason });
+  };
+
+  // Before the row is marked pending and before the file is downloaded: the recorded size already
+  // tells us this attempt would be killed, and a killed worker cannot record anything.
+  const recordedSize = Number(rec.file_size) || 0;
+  if (recordedSize > MAX_SUMMARY_BYTES) {
+    return await markSkipped(tooLargeMessage(recordedSize));
   }
 
   const nowIso = new Date().toISOString();
@@ -273,6 +314,11 @@ serve(async (req) => {
     const buf = await blob.arrayBuffer();
     const bytes = new Uint8Array(buf);
 
+    // Backstop for rows whose recorded size is missing or disagrees with the stored object.
+    if (bytes.byteLength > MAX_SUMMARY_BYTES) {
+      return await markSkipped(tooLargeMessage(bytes.byteLength));
+    }
+
     let mime =
       (typeof rec.mime_type === 'string' && rec.mime_type.trim()) ||
       inferMimeFromFileName(rec.file_name || '');
@@ -289,16 +335,7 @@ serve(async (req) => {
     } else if (supportsResponsesFile(mime)) {
       summary = await summarizeWithResponses(bytes, mime, rec.file_name || 'document');
     } else {
-      await supabaseUser
-        .from('lead_case_documents')
-        .update({
-          ai_summary: null,
-          ai_summary_status: 'skipped',
-          ai_summary_error: 'This file type is not supported for automatic AI summary.',
-          ai_summary_at: new Date().toISOString(),
-        })
-        .eq('id', documentId);
-      return json({ success: true, skipped: true });
+      return await markSkipped('This file type is not supported for automatic AI summary.');
     }
 
     await supabaseUser

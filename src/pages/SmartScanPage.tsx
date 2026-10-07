@@ -472,9 +472,13 @@ export default function SmartScanPage() {
           setDrawerScanItems(null);
           setAssigning(false);
         }}
+        // Autosaved from the drawer on every field change, so only failures are worth a toast.
         onSave={async (id, patch) => {
-          replaceItem(await smartScanService.update(id, patch));
-          toast.success('Changes saved');
+          try {
+            replaceItem(await smartScanService.update(id, patch));
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Failed to save changes');
+          }
         }}
         onApprove={async (id) => {
           replaceItem(await smartScanService.approve(id));

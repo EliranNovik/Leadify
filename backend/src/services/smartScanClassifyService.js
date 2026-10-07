@@ -407,7 +407,10 @@ function sanitizeLeadRef(lead) {
   const leadNumber = String(lead.leadNumber || lead.lead_number || '').trim();
   const name = String(lead.name || '').trim() || 'Unknown';
   if (!id && !leadNumber) return null;
-  return { id: id || undefined, leadNumber, name };
+  // Carried through because this is the ref that reaches `resolveLeadIdentity`, and for a legacy lead
+  // the id alone cannot say which table it belongs to.
+  const isLegacy = lead.leadType === 'legacy' || lead.lead_type === 'legacy';
+  return { id: id || undefined, leadNumber, name, leadType: isLegacy ? 'legacy' : undefined };
 }
 
 function ilikeSafe(value) {
@@ -643,7 +646,13 @@ async function resolveLeadIdentity(lead) {
   const id = String(lead?.id || '').trim();
   let leadNumber = String(lead?.leadNumber || '').trim();
 
-  if (id.startsWith('legacy_')) {
+  /*
+   * A legacy lead is addressed by its `leads_lead.id`, which arrives bare from the lead search and
+   * `legacy_`-prefixed from elsewhere. The displayed number can never stand in for it: a sublead shows
+   * as `78480/3`, which is its master's id plus a position, and `leads_lead.lead_number` is a bigint
+   * that holds no such value — so falling through to the number match threw for every sublead.
+   */
+  if (lead?.leadType === 'legacy' || id.startsWith('legacy_') || /^\d+$/.test(id)) {
     const legacyLeadId = Number.parseInt(id.replace(/^legacy_/, ''), 10);
     if (!leadNumber && Number.isFinite(legacyLeadId)) leadNumber = String(legacyLeadId);
     return {
@@ -709,8 +718,14 @@ async function copyScanFileToCaseDocuments(row, leadNumber) {
   const { data, error } = await supabase.storage.from(SCAN_FILES_BUCKET).download(srcPath);
   if (error || !data) throw new Error(error?.message || 'Failed to download scanned file');
   const buffer = Buffer.from(await data.arrayBuffer());
-  const fileName = safePathSegment(row.suggested_filename || row.original_filename || 'scan.pdf', 160);
-  const destPath = `case-documents/${safePathSegment(leadNumber)}/${CLIENT_HEADER_FOLDER}/${Date.now()}_${fileName}`;
+  /*
+   * The stored object needs a path-safe segment, but `file_name` is the label every screen shows and
+   * downloads under, so it keeps the spacing and punctuation a reviewer typed. That is the same split
+   * the rest of the app makes when it files an uploaded document.
+   */
+  const fileName = filingFilenameFor(row);
+  const pathName = safePathSegment(fileName, 160);
+  const destPath = `case-documents/${safePathSegment(leadNumber)}/${CLIENT_HEADER_FOLDER}/${Date.now()}_${pathName}`;
   const contentType =
     row.content_type ||
     (/\.pdf$/i.test(fileName) ? 'application/pdf' : 'application/octet-stream');
@@ -722,8 +737,9 @@ async function copyScanFileToCaseDocuments(row, leadNumber) {
   return { destPath, fileName, contentType, fileSize: buffer.length };
 }
 
-async function attachToSequenceOfEventsSubEffort(identity, classificationId, destPath, fileName, contentType) {
-  if (!identity?.newLeadId && !identity?.legacyLeadId) return;
+/** The lead's Sequence of Events sub-effort, matched by classification and falling back to its name. */
+async function findSequenceOfEventsSubEffort(identity, classificationId) {
+  if (!identity?.newLeadId && !identity?.legacyLeadId) return null;
   let query = supabase
     .from('lead_sub_efforts')
     .select('id, document_url, sub_efforts ( id, name, case_document_classification_id )')
@@ -732,9 +748,9 @@ async function attachToSequenceOfEventsSubEffort(identity, classificationId, des
   if (identity.legacyLeadId) query = query.eq('legacy_lead_id', identity.legacyLeadId);
   else query = query.eq('new_lead_id', identity.newLeadId);
   const { data, error } = await query;
-  if (error || !data?.length) return;
+  if (error || !data?.length) return null;
 
-  const soe =
+  return (
     data.find((row) => {
       const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
       return String(se?.case_document_classification_id || '') === String(classificationId);
@@ -742,7 +758,13 @@ async function attachToSequenceOfEventsSubEffort(identity, classificationId, des
     data.find((row) => {
       const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
       return String(se?.name || '').trim().toLowerCase() === 'sequence of events';
-    });
+    }) ||
+    null
+  );
+}
+
+async function attachToSequenceOfEventsSubEffort(identity, classificationId, destPath, fileName, contentType) {
+  const soe = await findSequenceOfEventsSubEffort(identity, classificationId);
   if (!soe) return;
 
   const items = normalizeSubEffortDocs(soe.document_url);
@@ -758,25 +780,7 @@ async function attachToSequenceOfEventsSubEffort(identity, classificationId, des
 }
 
 async function removePathFromSequenceOfEvents(identity, classificationId, destPath) {
-  if (!identity?.newLeadId && !identity?.legacyLeadId) return;
-  let query = supabase
-    .from('lead_sub_efforts')
-    .select('id, document_url, sub_efforts ( id, name, case_document_classification_id )')
-    .order('created_at', { ascending: true })
-    .limit(80);
-  if (identity.legacyLeadId) query = query.eq('legacy_lead_id', identity.legacyLeadId);
-  else query = query.eq('new_lead_id', identity.newLeadId);
-  const { data, error } = await query;
-  if (error || !data?.length) return;
-  const soe =
-    data.find((row) => {
-      const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
-      return String(se?.case_document_classification_id || '') === String(classificationId);
-    }) ||
-    data.find((row) => {
-      const se = Array.isArray(row.sub_efforts) ? row.sub_efforts[0] : row.sub_efforts;
-      return String(se?.name || '').trim().toLowerCase() === 'sequence of events';
-    });
+  const soe = await findSequenceOfEventsSubEffort(identity, classificationId);
   if (!soe) return;
   const items = normalizeSubEffortDocs(soe.document_url).filter(
     (item) => String(item?.path || '').trim() !== String(destPath || '').trim(),
@@ -827,6 +831,23 @@ async function markScanFamilyAssigned(sourceRow, lead, aiRaw, activityLabel) {
   }
 }
 
+/**
+ * The name a scan is known by: on the Scan Center table, and on the copy filed under the lead.
+ *
+ * The suggestion describes what the document is, which is worth more in a case file than the
+ * scanner's sequence number, so it wins over the original name. A name a reviewer typed is held in
+ * this same field, so it comes through here without needing a rule of its own.
+ *
+ * Mirrored by `scanDisplayFilename` on the frontend, so both screens name a scan the same way.
+ */
+function filingFilenameFor(source) {
+  return (
+    String(source?.suggested_filename || '').trim() ||
+    String(source?.original_filename || '').trim() ||
+    'scan.pdf'
+  );
+}
+
 async function saveScanToLeadCaseDocuments(row, lead) {
   const source = await resolveScanSourceRow(row);
   const identity = await resolveLeadIdentity(lead);
@@ -840,7 +861,7 @@ async function saveScanToLeadCaseDocuments(row, lead) {
         identity,
         classificationId,
         raw.caseDocumentPath,
-        source.original_filename || source.suggested_filename || 'scan.pdf',
+        filingFilenameFor(source),
         source.content_type || 'application/pdf',
       );
     }
@@ -852,13 +873,7 @@ async function saveScanToLeadCaseDocuments(row, lead) {
     throw new Error('Sequence of Events is not configured in case document categories');
   }
 
-  const copied = await copyScanFileToCaseDocuments(
-    {
-      ...source,
-      suggested_filename: source.original_filename || source.suggested_filename || 'scan.pdf',
-    },
-    identity.leadNumber,
-  );
+  const copied = await copyScanFileToCaseDocuments(source, identity.leadNumber);
   const aiDocs = Array.isArray(raw.documents) ? raw.documents : [];
   const documentTypeId =
     aiDocs.length <= 1
@@ -1099,6 +1114,124 @@ async function splitLeadCaseDocument(caseDocumentId) {
   return { success: true, count: ranges.length, documentIds: insertedIds };
 }
 
+const SUGGESTED_FILENAME_MAX = 180;
+const DOCUMENT_TYPE_MAX = 120;
+const SUMMARY_MAX = 4000;
+
+/**
+ * Cleans a filename typed by a reviewer.
+ *
+ * The extension is carried over from the original scan when the typed name has none, because this
+ * value becomes the name of the copy filed under the lead — a name without an extension produces a
+ * document nobody can open. Path safety is still applied later by `safePathSegment`.
+ */
+function normalizeEditedFilename(value, originalFilename) {
+  const trimmed = String(value || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!trimmed) return null;
+  if (/\.[A-Za-z0-9]{1,8}$/.test(trimmed)) return trimmed.slice(0, SUGGESTED_FILENAME_MAX);
+  const ext = (String(originalFilename || '').match(/\.[A-Za-z0-9]{1,8}$/) || [''])[0];
+  return `${trimmed}${ext}`.slice(0, SUGGESTED_FILENAME_MAX);
+}
+
+/**
+ * Carries a rename through to the copy already filed under the lead.
+ *
+ * Only `file_name` and the Sequence of Events entry are rewritten, never `storage_path`: the path is
+ * what the stored object, existing signed URLs and the sub-effort entry are all keyed on, while
+ * `file_name` is what every screen displays. Moving the object would break live links in order to
+ * change a string nobody reads.
+ */
+async function renameFiledCaseDocument(row, nextName) {
+  const raw = asAiRaw(row);
+  const caseDocumentId = String(raw.caseDocumentId || '').trim();
+  if (!caseDocumentId) return;
+  /*
+   * A separated scan became several documents, so one typed name cannot stand in for all of them.
+   * A combined scan is fine by contrast: it is filed as a single PDF that no other scan row points
+   * at, so renaming it is unambiguous.
+   */
+  if (Array.isArray(raw.caseDocumentIds) && raw.caseDocumentIds.length > 1) return;
+
+  const { data: caseDoc } = await supabase
+    .from('lead_case_documents')
+    .select('id, lead_number, storage_path, classification_id')
+    .eq('id', caseDocumentId)
+    .maybeSingle();
+  if (!caseDoc) return;
+
+  // Matches filing: `file_name` carries the typed name, only `storage_path` is sanitised, and the path
+  // is deliberately left alone here.
+  const fileName = String(nextName).trim() || 'scan.pdf';
+  const { error } = await supabase.from('lead_case_documents').update({ file_name: fileName }).eq('id', caseDoc.id);
+  if (error) {
+    // The scan itself is renamed either way; a stale label on the filed copy is not worth failing on.
+    console.warn('⚠️  Smart Scan filed-copy rename failed:', error.message || error);
+    return;
+  }
+
+  const identity = await resolveLeadIdentity({ leadNumber: caseDoc.lead_number, name: 'Unknown' }).catch(() => null);
+  if (!identity) return;
+  const soe = await findSequenceOfEventsSubEffort(identity, caseDoc.classification_id);
+  if (!soe) return;
+  const items = normalizeSubEffortDocs(soe.document_url);
+  let changed = false;
+  const renamed = items.map((entry) => {
+    if (String(entry?.path || '').trim() !== String(caseDoc.storage_path || '').trim()) return entry;
+    changed = true;
+    return { ...entry, name: fileName };
+  });
+  if (!changed) return;
+  const { error: soeErr } = await supabase
+    .from('lead_sub_efforts')
+    .update({ document_url: renamed, updated_by: 'Smart Scan', updated_at: nowIso() })
+    .eq('id', soe.id);
+  if (soeErr) {
+    console.warn('⚠️  Smart Scan sub-effort rename failed:', soeErr.message || soeErr);
+  }
+}
+
+/**
+ * Saves the reviewer's edits to a scanned document.
+ *
+ * Without this the drawer's Save only touched client state, so the typed filename survived until the
+ * next fetch and the AI's suggestion was what actually got filed under the lead.
+ */
+async function updateByItemId(id, patch) {
+  const row = await findDocument(parseItemRef(id));
+  if (!row) throw new Error('Scan not found');
+
+  const fields = {};
+  const nextName = normalizeEditedFilename(patch?.suggestedFilename, row.original_filename);
+  if (nextName && nextName !== row.suggested_filename) {
+    fields.suggested_filename = nextName;
+    /*
+     * Recorded in ai_raw rather than its own column so this needs no migration. Both the drawer and
+     * lead assignment rebuild a filename from the lead and document type, and neither is allowed to
+     * overwrite a name a person typed.
+     */
+    fields.ai_raw = { ...asAiRaw(row), filenameEditedByUser: true };
+  }
+
+  const nextType = String(patch?.documentType || '').trim();
+  if (nextType && nextType !== row.document_type) {
+    fields.document_type = nextType.slice(0, DOCUMENT_TYPE_MAX);
+  }
+
+  if (typeof patch?.summary === 'string') {
+    const nextSummary = patch.summary.trim().slice(0, SUMMARY_MAX);
+    if (nextSummary !== (row.summary || '')) fields.summary = nextSummary || null;
+  }
+
+  if (Object.keys(fields).length === 0) return row;
+  const saved = await patchDocument(row, fields, 'Details updated');
+  // After the scan is renamed, not before: the filed copy should never end up ahead of the record.
+  if (fields.suggested_filename) await renameFiledCaseDocument(row, fields.suggested_filename);
+  return saved;
+}
+
 async function assignLeadByItemId(id, leadInput) {
   const row = await findDocument(parseItemRef(id));
   if (!row) throw new Error('Scan not found');
@@ -1254,6 +1387,7 @@ function applyDocumentToItem(item, row, splitCount = 0) {
     suggestedDocumentType: classified ? suggested : item.suggestedDocumentType,
     title: row.title || item.title,
     suggestedFilename: row.suggested_filename || item.suggestedFilename,
+    filenameEditedByUser: asAiRaw(row).filenameEditedByUser === true ? true : undefined,
     detectedPersonName: row.detected_person_name || item.detectedPersonName,
     detectedCountry: row.detected_country || item.detectedCountry,
     documentDate: row.document_date || item.documentDate,
@@ -1481,6 +1615,7 @@ module.exports = {
   attachAndEnqueue,
   listQueueItems,
   processByItemId,
+  updateByItemId,
   assignLeadByItemId,
   approveByItemId,
   splitLeadCaseDocument,

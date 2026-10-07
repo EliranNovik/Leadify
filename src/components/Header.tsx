@@ -104,6 +104,13 @@ import {
   markLeadSharesRead,
   type LeadShareNotification,
 } from '../lib/leadShares';
+import {
+  fetchUnreadDocumentShares,
+  markDocumentSharesRead,
+  resolveDocumentShareUrl,
+  type DocumentShareNotification,
+} from '../lib/documentShares';
+import DocumentViewerModal from './DocumentViewerModal';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -328,6 +335,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
   const [clientUploadNotifications, setClientUploadNotifications] = useState<ClientUploadLeadNotification[]>([]);
   const [leadShareNotifications, setLeadShareNotifications] = useState<LeadShareNotification[]>([]);
+  const [documentShareNotifications, setDocumentShareNotifications] = useState<DocumentShareNotification[]>([]);
+  /** The shared document currently open in the viewer, resolved to a URL we can display. */
+  const [openedSharedDocument, setOpenedSharedDocument] = useState<{ name: string; url: string } | null>(null);
   const [seenClientUploadDocIds, setSeenClientUploadDocIds] = useState<Set<string>>(new Set());
 
   // RMQ Messages state
@@ -369,7 +379,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const stageIdsReadyRef = useRef(false);
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
-  const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0) + clientUploadNotifications.length + leadShareNotifications.length;
+  const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0) + clientUploadNotifications.length + leadShareNotifications.length + documentShareNotifications.length;
 
   // Reactive theme detection
   useEffect(() => {
@@ -2996,6 +3006,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchAssignmentNotifications();
       void fetchClientUploadNotifications();
       void fetchLeadShareNotifications();
+      void fetchDocumentShareNotifications();
     }
   };
 
@@ -3045,6 +3056,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (leadShareNotifications.length > 0) {
         void markLeadSharesRead(leadShareNotifications.map((item) => item.id));
         setLeadShareNotifications([]);
+      }
+      if (documentShareNotifications.length > 0) {
+        void markDocumentSharesRead(documentShareNotifications.map((item) => item.id));
+        setDocumentShareNotifications([]);
       }
       return;
     }
@@ -3133,6 +3148,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         await markLeadSharesRead(leadShareNotifications.map((item) => item.id));
         setLeadShareNotifications([]);
       }
+      if (documentShareNotifications.length > 0) {
+        await markDocumentSharesRead(documentShareNotifications.map((item) => item.id));
+        setDocumentShareNotifications([]);
+      }
 
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
@@ -3193,6 +3212,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (key.startsWith('share:')) {
         const notification = leadShareNotifications.find((item) => `share:${item.id}` === key);
         if (notification) void dismissLeadShareNotification(notification);
+        continue;
+      }
+      if (key.startsWith('docshare:')) {
+        const notification = documentShareNotifications.find((item) => `docshare:${item.id}` === key);
+        if (notification) dismissDocumentShareNotification(notification);
         continue;
       }
       if (key === RMQ_AI_PROMO_NOTIFICATION_KEY) {
@@ -3766,6 +3790,69 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return () => clearInterval(interval);
   }, [currentUser, currentUserEmployee, fetchLeadShareNotifications]);
 
+  const fetchDocumentShareNotifications = useCallback(async () => {
+    const numericEmployeeId = await resolveNumericEmployeeId();
+    if (!numericEmployeeId) {
+      setDocumentShareNotifications([]);
+      return;
+    }
+    try {
+      setDocumentShareNotifications(await fetchUnreadDocumentShares(Number(numericEmployeeId)));
+    } catch (error) {
+      console.error('Error fetching document share notifications:', error);
+    }
+  }, [resolveNumericEmployeeId]);
+
+  useEffect(() => {
+    if (!currentUser && !currentUserEmployee) return;
+    void fetchDocumentShareNotifications();
+    const interval = setInterval(() => {
+      void fetchDocumentShareNotifications();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [currentUser, currentUserEmployee, fetchDocumentShareNotifications]);
+
+  const dismissDocumentShareNotification = useCallback((notification: DocumentShareNotification) => {
+    void markDocumentSharesRead([notification.id]);
+    setDocumentShareNotifications((prev) => prev.filter((item) => item.id !== notification.id));
+  }, []);
+
+  /** Opening a shared document resolves its URL first, so the viewer never mounts on a dead link. */
+  const handleDocumentShareOpen = useCallback(
+    async (notification: DocumentShareNotification) => {
+      const url = await resolveDocumentShareUrl(notification);
+      if (!url) {
+        toast.error('This document is no longer available');
+        return;
+      }
+      dismissDocumentShareNotification(notification);
+      setShowNotifications(false);
+      setOpenedSharedDocument({ name: notification.documentName, url });
+    },
+    [dismissDocumentShareNotification],
+  );
+
+  const handleDocumentShareDownload = useCallback(
+    async (event: React.MouseEvent, notification: DocumentShareNotification) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const url = await resolveDocumentShareUrl(notification);
+      if (!url) {
+        toast.error('This document is no longer available');
+        return;
+      }
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = notification.documentName;
+      link.rel = 'noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      dismissDocumentShareNotification(notification);
+    },
+    [dismissDocumentShareNotification],
+  );
+
   const dismissClientUploadNotification = useCallback((notification: ClientUploadLeadNotification) => {
     const userId = currentUser?.id || authContextUser?.id;
     if (userId) {
@@ -3932,7 +4019,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       activeClass: string;
     }> = [
       { id: 'all', label: 'All', count: unreadCount, activeClass: 'bg-gray-900 text-white dark:bg-white dark:text-gray-900' },
-      { id: 'shared', label: 'Shared', count: leadShareNotifications.length, activeClass: 'bg-yellow-500 text-white' },
+      { id: 'shared', label: 'Shared', count: leadShareNotifications.length + documentShareNotifications.length, activeClass: 'bg-yellow-500 text-white' },
       { id: 'uploads', label: 'Uploads', count: clientUploadNotifications.length, activeClass: 'bg-gray-600 text-white' },
     ];
     if (isSuperUser) {
@@ -3945,6 +4032,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [
     unreadCount,
     leadShareNotifications.length,
+    documentShareNotifications.length,
     clientUploadNotifications.length,
     isSuperUser,
     whatsappLeadsMessages.length,
@@ -3982,7 +4070,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     : rmqAiPromoGreeting;
   const showShareNotifications =
     notificationThemeFilter === 'shared' ||
-    (notificationThemeFilter === 'all' && leadShareNotifications.length > 0);
+    (notificationThemeFilter === 'all' &&
+      leadShareNotifications.length + documentShareNotifications.length > 0);
   const showUploadNotifications =
     notificationThemeFilter === 'uploads' ||
     (notificationThemeFilter === 'all' && clientUploadNotifications.length > 0);
@@ -5756,7 +5845,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       <div className="px-3 py-2.5">
                         <span className="text-sm font-semibold text-yellow-800">Shared</span>
                       </div>
-                      {leadShareNotifications.length > 0 ? (
+                      {leadShareNotifications.length + documentShareNotifications.length > 0 ? (
                       <div className="divide-y divide-dotted divide-gray-200">
                       {leadShareNotifications.map((notification) => {
                         const notificationKey = `share:${notification.id}`;
@@ -5829,10 +5918,98 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           </div>
                         );
                       })}
+                      {documentShareNotifications.map((notification) => {
+                        const notificationKey = `docshare:${notification.id}`;
+                        const isSelected = selectedNotificationKeys.has(notificationKey);
+                        const photoUrl = notification.sharedByPhotoUrl?.trim() || '';
+                        const employeeId = notification.sharedByEmployeeId;
+                        const hasEmployee = Number.isFinite(employeeId) && employeeId > 0;
+                        const isClockedIn = hasEmployee && clockedInEmployeeIds.has(employeeId);
+                        const nameParts = notification.sharedByName.trim().split(/\s+/).filter(Boolean);
+                        const initials =
+                          nameParts.length >= 2
+                            ? `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase()
+                            : notification.sharedByName.slice(0, 2).toUpperCase();
+                        const leadLine = [notification.leadNumber, notification.leadName].filter(Boolean).join(' — ');
+                        const openDocument = () => void handleDocumentShareOpen(notification);
+                        return (
+                          <div key={notification.id} className="cursor-pointer">
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={notificationSelectMode ? isSelected : undefined}
+                              onClick={() => runOrSelectNotification(notificationKey, openDocument)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  runOrSelectNotification(notificationKey, openDocument);
+                                }
+                              }}
+                              className={`w-full p-4 text-left transition-colors duration-200 hover:bg-yellow-50 ${isSelected ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                            >
+                              <div className="flex gap-3">
+                                {renderNotificationSelectControl(notificationKey)}
+                                {/* self-start keeps this box the height of the avatar. Stretched to the
+                                    row's full height — this card is tall, it carries a document box —
+                                    the clock-in dot would sit far below the picture it belongs to. */}
+                                <div className="relative flex-shrink-0 self-start">
+                                  {photoUrl ? (
+                                    <img src={photoUrl} alt="" className="h-11 w-11 rounded-full object-cover bg-gray-100" />
+                                  ) : (
+                                    <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold text-gray-700">
+                                      {initials || 'U'}
+                                    </div>
+                                  )}
+                                  {hasEmployee && (
+                                    <span
+                                      className={`absolute -top-px -right-px h-3.5 w-3.5 rounded-full border-2 border-white dark:border-base-100 ${isClockedIn ? 'bg-emerald-500' : 'bg-red-500'}`}
+                                      title={isClockedIn ? 'Clocked in' : 'Clocked out'}
+                                    />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="text-sm leading-relaxed min-w-0">
+                                      <span className="font-semibold text-gray-900">{notification.sharedByName}</span>
+                                      <span className="text-gray-500"> shared a document with you.</span>
+                                    </p>
+                                    {notification.createdAt ? (
+                                      <p className="text-xs font-semibold text-yellow-600 shrink-0">
+                                        {formatMessageTime(notification.createdAt)}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <div className="mt-2 flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-2.5 dark:border-base-300 dark:bg-base-100">
+                                    <DocumentTextIcon className="h-5 w-5 shrink-0 text-gray-400" />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="truncate text-sm font-medium text-gray-900">{notification.documentName}</p>
+                                      <p className="truncate text-xs text-gray-500">
+                                        {[notification.documentType, leadLine].filter(Boolean).join(' · ') || 'Document'}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost btn-xs btn-circle shrink-0 h-6 w-6 min-h-0 text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-base-content/60 dark:hover:bg-base-100"
+                                      aria-label={`Download ${notification.documentName}`}
+                                      title="Download"
+                                      onClick={(e) => void handleDocumentShareDownload(e, notification)}
+                                    >
+                                      <ArrowDownTrayIcon className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  {notification.note ? (
+                                    <p className="mt-1.5 text-xs text-gray-500">{notification.note}</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                       </div>
                       ) : (
                         <div className="p-6 text-center text-gray-500">
-                          <p className="text-sm">No shared leads</p>
+                          <p className="text-sm">Nothing shared with you</p>
                         </div>
                       )}
                     </div>
@@ -6390,6 +6567,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           isOpen={isClockInApprovalModalOpen}
           onClose={() => setIsClockInApprovalModalOpen(false)}
           onUpdated={() => void fetchPendingClockInApprovals()}
+        />
+      )}
+
+      {/* A document someone shared, opened straight from the bell. */}
+      {openedSharedDocument && (
+        <DocumentViewerModal
+          isOpen
+          onClose={() => setOpenedSharedDocument(null)}
+          documentUrl={openedSharedDocument.url}
+          documentName={openedSharedDocument.name}
         />
       )}
 

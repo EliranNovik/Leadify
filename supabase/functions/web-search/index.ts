@@ -7,8 +7,10 @@ import {
   PII_REJECT,
   resolveEffectiveDomains,
   runIsolatedWebSearch,
+  runIsolatedWebSearchStream,
   type WebSearchCategory,
   type WebSearchFreshness,
+  type WebSearchProgress,
 } from '../_shared/webSearch.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
@@ -23,12 +25,49 @@ type SearchBody = {
   allowed_domains?: unknown;
   blocked_terms?: unknown;
   lead_id?: unknown;
+  /** Opt-in: stream page-by-page progress as SSE instead of returning one JSON body. */
+  stream?: unknown;
 };
 
 function json(status: number, payload: unknown) {
   return new Response(JSON.stringify(payload), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Wraps a producer in an SSE response. The status is always 200: the stream has already started by
+ * the time a search can fail, so failures are reported as an `error` event instead of a status code.
+ */
+function sse(produce: (send: (event: string, data: unknown) => void) => void | Promise<void>) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        await produce(send);
+      } catch (error) {
+        console.error('web-search sse producer failed', error);
+        send('error', { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        closed = true;
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    },
   });
 }
 
@@ -96,6 +135,22 @@ serve(async (req) => {
   const userId = await userIdFromRequest(req);
   const leadId = typeof body.lead_id === 'string' && body.lead_id.trim() ? body.lead_id.trim().slice(0, 80) : null;
 
+  const wantsStream =
+    body.stream === true || (req.headers.get('Accept') || '').includes('text/event-stream');
+
+  const auditRow = (extra: Record<string, unknown>) => ({
+    user_id: userId,
+    lead_id: leadId,
+    sanitized_query: query.slice(0, 400),
+    reason: reason || null,
+    category,
+    requested_domains: Array.isArray(requested) ? requested.map(String).slice(0, 20) : [],
+    effective_domains: effectiveDomains,
+    pii_result: 'allow',
+    pii_reason: null,
+    ...extra,
+  });
+
   const pii = detectPossibleClientData(query, blockedTerms);
   if (!pii.ok) {
     await logSearch({
@@ -114,7 +169,64 @@ serve(async (req) => {
       confidence: null,
       error: PII_REJECT.error,
     });
-    return json(200, PII_REJECT);
+    // Streaming callers still expect their payload on the `result` event, not as a plain body.
+    return wantsStream ? sse((send) => send('result', PII_REJECT)) : json(200, PII_REJECT);
+  }
+
+  if (wantsStream) {
+    return sse(async (send) => {
+      const runSearch = async () => {
+        try {
+          return await runIsolatedWebSearchStream({
+            apiKey: OPENAI_API_KEY,
+            query,
+            category,
+            freshness,
+            effectiveDomains,
+            model: OPENAI_WEB_SEARCH_MODEL,
+            onProgress: (progress: WebSearchProgress) => send('progress', progress),
+          });
+        } catch (streamError) {
+          // Streaming is a presentation upgrade, never a reason to lose the answer. Anything the
+          // stream cannot deliver — an API that rejects `stream`, a dropped connection, a frame we
+          // cannot parse — falls back to the request shape that was already in production.
+          console.error('web-search stream failed, falling back', streamError);
+          return await runIsolatedWebSearch({
+            apiKey: OPENAI_API_KEY,
+            query,
+            category,
+            freshness,
+            effectiveDomains,
+            model: OPENAI_WEB_SEARCH_MODEL,
+          });
+        }
+      };
+      try {
+        const { result, searchCount } = await runSearch();
+        await logSearch(
+          auditRow({
+            source_urls: result.sources.map((src) => src.url).slice(0, 20),
+            source_count: result.sources.length,
+            search_count: searchCount,
+            confidence: result.confidence,
+            error: null,
+          }),
+        );
+        send('result', result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await logSearch(
+          auditRow({
+            source_urls: [],
+            source_count: 0,
+            search_count: 0,
+            confidence: null,
+            error: message.slice(0, 400),
+          }),
+        );
+        send('error', { error: message });
+      }
+    });
   }
 
   try {
