@@ -9,7 +9,7 @@ import TeamStatusModal from './TeamStatusModal';
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, DocumentCheckIcon, BanknotesIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, DocumentCheckIcon, BanknotesIcon, ReceiptPercentIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon, SparklesIcon, ArrowsRightLeftIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
@@ -42,10 +42,14 @@ import {
   fetchDashboardDepartmentCostTargets,
   fetchDashboardOtherColumnCostTarget,
   otherScoreboardExpected,
-  SCOREBOARD_TARGET_MARKUP_30,
-  SCOREBOARD_TARGET_MARKUP_40,
-  type DashboardDeptCostBreakdown,
 } from '../lib/dashboardDepartmentCostTargets';
+import {
+  allocateDepartmentPayrollBudget,
+  departmentRevenueTarget,
+  PRIMARY_REVENUE_TARGET_RATIO,
+  REVENUE_TARGET_RATIOS,
+  type RevenueTargetPeriod,
+} from '../lib/dashboardRevenueTargets';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
@@ -88,6 +92,10 @@ import {
   normalizeInvoicedCurrency,
   parsePaymentDuePercent,
 } from '../lib/invoicedInstallments';
+import {
+  fetchInvoiceSentEvents,
+  fetchTaxReceiptSentEvents,
+} from '../lib/paymentDocumentEvents';
 import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 import { useReportDashboardWelcomeReady } from '../contexts/DashboardWelcomeReadyContext';
 import DashboardScoreboardDealsModal, {
@@ -111,19 +119,22 @@ function getDashboardScoreboardCacheTtlMs(): number {
 /**
  * Deal lists behind the scoreboard count badges are far too large for sessionStorage, so they are
  * kept in memory for the tab's lifetime, keyed by the selected period. Without them the dashboard
- * had to re-run the whole Agreement signed / Invoiced query on every return just to refill the
+ * had to re-run the whole Agreement signed / payments query on every return just to refill the
  * badges, even when the cached totals were still fresh.
  */
+type ScoreboardDealsByTable = Record<ScoreboardTableType, Map<string, DashboardScoreboardDeal[]>>;
+
 type ScoreboardDealsSnapshot = {
-  agreement: Map<string, DashboardScoreboardDeal[]> | null;
-  invoiced: Map<string, DashboardScoreboardDeal[]> | null;
+  [K in ScoreboardTableType]: Map<string, DashboardScoreboardDeal[]> | null;
 };
 
 const scoreboardDealsCache = new Map<string, ScoreboardDealsSnapshot>();
 const SCOREBOARD_DEALS_CACHE_MAX_PERIODS = 3;
 
 function rememberScoreboardDeals(periodKey: string, patch: Partial<ScoreboardDealsSnapshot>): void {
-  const current = scoreboardDealsCache.get(periodKey) || { agreement: null, invoiced: null };
+  const current =
+    scoreboardDealsCache.get(periodKey) ||
+    ({ agreement: null, 'sent-to-finance': null, invoiced: null, 'tax-receipt': null } as ScoreboardDealsSnapshot);
   scoreboardDealsCache.delete(periodKey);
   scoreboardDealsCache.set(periodKey, { ...current, ...patch });
   while (scoreboardDealsCache.size > SCOREBOARD_DEALS_CACHE_MAX_PERIODS) {
@@ -133,10 +144,23 @@ function rememberScoreboardDeals(periodKey: string, patch: Partial<ScoreboardDea
   }
 }
 
-function getCachedScoreboardDeals(periodKey: string): Required<ScoreboardDealsSnapshot> | null {
+function getCachedScoreboardDeals(periodKey: string): ScoreboardDealsByTable | null {
   const entry = scoreboardDealsCache.get(periodKey);
-  if (!entry?.agreement || !entry.invoiced) return null;
-  return { agreement: entry.agreement, invoiced: entry.invoiced };
+  // Every table must be present: a partial snapshot would leave one table's badges empty.
+  if (
+    !entry?.agreement ||
+    !entry['sent-to-finance'] ||
+    !entry.invoiced ||
+    !entry['tax-receipt']
+  ) {
+    return null;
+  }
+  return {
+    agreement: entry.agreement,
+    'sent-to-finance': entry['sent-to-finance'],
+    invoiced: entry.invoiced,
+    'tax-receipt': entry['tax-receipt'],
+  };
 }
 
 function getDashboardTeamAvailabilityCacheTtlMs(): number {
@@ -200,7 +224,7 @@ function employeePhotoUrl(emp: { photo_url?: string | null; photo?: string | nul
   return url || null;
 }
 
-/** Extract closer (agreement) or handler (invoiced) display fields from a lead row. */
+/** Extract closer (agreement) or handler (payment tables) display fields from a lead row. */
 function leadRoleFields(
   lead: any,
   kind: 'closer' | 'handler',
@@ -326,24 +350,38 @@ const SCOREBOARD_LAST_3M = 'Last 3m';
 /** Months in the Last 3m averaging window. */
 const SCOREBOARD_LAST_3M_MONTHS = 3;
 
-/** Target rows for Last 3m: department cost + (top-up % × Last 3m signed/invoiced amount).
- * +40% row tops up 60% of period total; +30% row tops up 70%. */
-const SCOREBOARD_TARGET_ROWS = [
-  {
-    key: 'target-3m-40',
-    label: 'Target Last 3m · +40%',
-    periodKey: SCOREBOARD_LAST_3M,
-    markup: SCOREBOARD_TARGET_MARKUP_40,
-    averagePeriod: true,
-  },
-  {
-    key: 'target-3m-30',
-    label: 'Target Last 3m · +30%',
-    periodKey: SCOREBOARD_LAST_3M,
-    markup: SCOREBOARD_TARGET_MARKUP_30,
-    averagePeriod: true,
-  },
-] as const;
+/**
+ * The periods a table's goal bars can measure against.
+ *
+ * Both are month-scale, which is what makes them interchangeable against a monthly target: Last 3m
+ * is shown as a monthly average and Last 30d is a month in all but name. Last 3m leads because it
+ * is the steadier read — a single thirty-day window swings on when one large deal happens to land —
+ * but the shorter window answers "how are we doing right now", so the two are worth flipping
+ * between.
+ */
+type ScoreboardGoalPeriod = typeof SCOREBOARD_LAST_3M | 'Last 30d';
+
+const SCOREBOARD_GOAL_PERIODS: ScoreboardGoalPeriod[] = [SCOREBOARD_LAST_3M, 'Last 30d'];
+
+/** Short enough to sit under a goal bar in the narrow Total column. */
+const SCOREBOARD_GOAL_PERIOD_LABELS: Record<ScoreboardGoalPeriod, string> = {
+  [SCOREBOARD_LAST_3M]: '3m',
+  'Last 30d': '30d',
+};
+
+/**
+ * The three monthly revenue target rows below every scoreboard table.
+ *
+ * Each is a department's payroll budget divided by a payroll-to-revenue ratio, so the figure itself
+ * is the same whichever period the table is showing — a monthly target is a monthly target. Only
+ * the green/red colouring varies, and it follows the table's goal period so that the bars and these
+ * rows always agree about whether a department is ahead.
+ */
+const SCOREBOARD_TARGET_ROWS = REVENUE_TARGET_RATIOS.map((row) => ({
+  key: `target-${row.key}`,
+  label: row.label,
+  ratio: row.ratio,
+}));
 
 const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0 });
 
@@ -380,7 +418,6 @@ let departmentsCategoriesCache: {
     otherExpected: number;
     otherCostBase: number;
     costByDeptName: Record<string, number>;
-    costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown>;
     selectedMonthName: string;
   };
   periodKey: string;
@@ -462,6 +499,41 @@ function getScoreboardTotalIndexes(departmentCount: number) {
   };
 }
 
+/**
+ * The scoreboard tables, keyed the way state, caches and the deals modal refer to them.
+ *
+ * `sent-to-finance` is the long-standing table that counts rows reaching finance by due date; it was
+ * shown as "Invoiced" before an actual invoice-send measure existed. `invoiced` is that measure.
+ */
+type ScoreboardTableType = 'agreement' | 'sent-to-finance' | 'invoiced' | 'tax-receipt';
+
+/** Heading each table shows, reused by the deals and target-cost modals. */
+const SCOREBOARD_TABLE_LABELS: Record<ScoreboardTableType, string> = {
+  agreement: 'Agreement signed',
+  'sent-to-finance': 'Sent to finance',
+  invoiced: 'Invoiced',
+  'tax-receipt': 'Tax receipt',
+};
+
+/** The scoreboard tables built from payment rows, all three sharing one fetch. */
+type PaymentScoreboardMeasure = Exclude<ScoreboardTableType, 'agreement'>;
+
+/** The two tables that share a single box, switched between rather than stacked. */
+type PaymentScoreboardTab = 'invoiced' | 'sent-to-finance';
+
+/**
+ * Tab order for that box.
+ *
+ * Both tabs summarise the same payment rows and differ only in which date files a row:
+ * `sent-to-finance` uses the day it fell due, `invoiced` the day its invoice actually went out. They
+ * answer the same question two ways, so one box with a switch reads better than two tables stacked
+ * on top of each other. Invoiced leads because it is the measure the finance reports now key off.
+ *
+ * Switching costs nothing: both tables come from the same fetch, so the data for each is already in
+ * state before either is shown.
+ */
+const PAYMENT_SCOREBOARD_TABS: PaymentScoreboardTab[] = ['invoiced', 'sent-to-finance'];
+
 type DashboardScoreboardRow = { count: number; amount: number; expected: number };
 type DashboardScoreboardData = {
   Today: DashboardScoreboardRow[];
@@ -471,10 +543,11 @@ type DashboardScoreboardData = {
 
 type DashboardScoreboardCache = {
   agreementData: DashboardScoreboardData;
+  sentToFinanceData: DashboardScoreboardData;
   invoicedData: DashboardScoreboardData;
+  taxReceiptData: DashboardScoreboardData;
   departmentNames: string[];
   scoreboardCostByDeptName?: Record<string, number>;
-  scoreboardCostBreakdownByDeptName?: Record<string, DashboardDeptCostBreakdown>;
   departmentChartData: { [category: string]: { date: string; contracts: number; amount: number }[] };
   fetchedAt: number;
 };
@@ -2789,7 +2862,23 @@ const Dashboard: React.FC = () => {
 
   // Department Performance data
   const [departmentPerformanceLoading, setDepartmentPerformanceLoading] = useState<boolean>(true);
-  const [invoicedDataLoading, setInvoicedDataLoading] = useState<boolean>(true);
+  const [sentToFinanceLoading, setSentToFinanceLoading] = useState<boolean>(true);
+  const [invoicedLoading, setInvoicedLoading] = useState<boolean>(true);
+  const [taxReceiptLoading, setTaxReceiptLoading] = useState<boolean>(true);
+  /** Which of the two payment tables their shared box is showing. */
+  const [paymentScoreboardTab, setPaymentScoreboardTab] = useState<PaymentScoreboardTab>('invoiced');
+  /**
+   * The period each table's goal bars measure, held per table so one can be read against the
+   * quarter while another is read against the month.
+   */
+  const [goalPeriodByTable, setGoalPeriodByTable] = useState<
+    Record<ScoreboardTableType, ScoreboardGoalPeriod>
+  >({
+    agreement: SCOREBOARD_LAST_3M,
+    'sent-to-finance': SCOREBOARD_LAST_3M,
+    invoiced: SCOREBOARD_LAST_3M,
+    'tax-receipt': SCOREBOARD_LAST_3M,
+  });
 
   // State for real chart data (daily department performance)
   const [departmentChartData, setDepartmentChartData] = useState<{
@@ -3201,7 +3290,7 @@ const Dashboard: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- token drives background refetch only
   }, [scoreboardRefreshToken]);
 
-  // Shared fetch: departments + categories (join-based). Used by both Agreement signed and Invoiced to avoid duplicate requests.
+  // Shared fetch: departments + categories (join-based). Used by every scoreboard table to avoid duplicate requests.
   const fetchDepartmentsAndCategories = async (): Promise<{
     departmentTargets: any[];
     departmentIds: number[];
@@ -3211,7 +3300,6 @@ const Dashboard: React.FC = () => {
     otherExpected: number;
     otherCostBase: number;
     costByDeptName: Record<string, number>;
-    costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown>;
     selectedMonthName: string;
   }> => {
     const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v3-cat-canon`;
@@ -3268,15 +3356,16 @@ const Dashboard: React.FC = () => {
 
     let otherExpected = 0;
     let otherCostBase = 0;
-    let costBreakdownByDeptId = new Map<number, DashboardDeptCostBreakdown>();
     try {
       const scoreboardRefs = departmentTargets.map((d: any) => ({ id: d.id, name: String(d.name || '') }));
       const [costResult, otherCost] = await Promise.all([
         fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
         fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
       ]);
-      departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
-      costBreakdownByDeptId = costResult.breakdownByDeptId;
+      departmentTargets = applyDashboardCostTargetsToDepartments(
+        departmentTargets,
+        allocateDepartmentPayrollBudget(costResult.totals),
+      );
       otherCostBase = Math.max(0, Number(otherCost) || 0);
       otherExpected = otherScoreboardExpected(otherCostBase);
     } catch (costErr) {
@@ -3291,23 +3380,17 @@ const Dashboard: React.FC = () => {
 
     const targetMap: { [key: number]: number } = {};
     const costByDeptName: Record<string, number> = {};
-    const costBreakdownByDeptName: Record<string, DashboardDeptCostBreakdown> = {};
     departmentTargets.forEach((dept: any) => {
       targetMap[dept.id] = departmentScoreboardExpected(dept);
       const name = String(dept.name || '');
       costByDeptName[name] = departmentScoreboardCostBase(dept);
-      costBreakdownByDeptName[name] = costBreakdownByDeptId.get(dept.id) ?? {
-        total: costByDeptName[name],
-        handlersSales: 0,
-        partnersMarketingFinance: 0,
-      };
     });
-    costByDeptName[SCOREBOARD_OTHER_COLUMN] = otherCostBase;
-    costBreakdownByDeptName[SCOREBOARD_OTHER_COLUMN] = {
-      total: otherCostBase,
-      handlersSales: 0,
-      partnersMarketingFinance: 0,
-    };
+    /*
+     * Other is a bucket for departments the firm sets no revenue goal for, so it carries no payroll
+     * budget and gets no target. Its live payroll is deliberately not used here: a target built from
+     * it would be the only one on the board not traceable to the firm's budget.
+     */
+    costByDeptName[SCOREBOARD_OTHER_COLUMN] = 0;
 
     const result = {
       departmentTargets,
@@ -3318,7 +3401,6 @@ const Dashboard: React.FC = () => {
       otherExpected,
       otherCostBase,
       costByDeptName,
-      costBreakdownByDeptName,
       selectedMonthName,
     };
     departmentsCategoriesCache = { data: result, periodKey, fetchedAt: Date.now() };
@@ -3404,7 +3486,10 @@ const Dashboard: React.FC = () => {
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
+          departmentTargets = applyDashboardCostTargetsToDepartments(
+            departmentTargets,
+            allocateDepartmentPayrollBudget(costResult.totals),
+          );
           otherExpected = otherScoreboardExpected(otherCost);
         } catch (costErr) {
           console.error('[Dashboard Agreement Signed] department cost targets failed:', costErr);
@@ -3435,26 +3520,6 @@ const Dashboard: React.FC = () => {
           return m;
         })();
       setScoreboardCostByDeptName(costMap);
-      const breakdownMap: Record<string, DashboardDeptCostBreakdown> =
-        shared?.costBreakdownByDeptName ??
-        (() => {
-          const m: Record<string, DashboardDeptCostBreakdown> = {};
-          departmentTargets.forEach((dept: any) => {
-            const total = departmentScoreboardCostBase(dept);
-            m[String(dept.name || '')] = {
-              total,
-              handlersSales: 0,
-              partnersMarketingFinance: 0,
-            };
-          });
-          m[SCOREBOARD_OTHER_COLUMN] = {
-            total: shared?.otherCostBase ?? 0,
-            handlersSales: 0,
-            partnersMarketingFinance: 0,
-          };
-          return m;
-        })();
-      setScoreboardCostBreakdownByDeptName(breakdownMap);
 
       const targetMap = shared?.targetMap ?? (() => {
         const t: { [key: number]: number } = {};
@@ -3975,7 +4040,6 @@ const Dashboard: React.FC = () => {
         agreementData: newAgreementData,
         departmentNames: names,
         scoreboardCostByDeptName: costMap,
-        scoreboardCostBreakdownByDeptName: breakdownMap,
         departmentChartData: {},
       };
     } catch (error) {
@@ -4111,15 +4175,53 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Fetch invoiced data using the same logic as CollectionDueReport
-  // For new leads: payment_plans where ready_to_pay = true and paid = false
-  // For legacy leads: finances_paymentplanrow where ready_to_pay = true and actual_date IS NULL
-  // Group by department instead of employee
-  const fetchInvoicedData = async (
+  /** Where each payment-based scoreboard keeps its rows, deals and loading flag. */
+  const paymentScoreboardSetters = (measure: PaymentScoreboardMeasure) => {
+    if (measure === 'invoiced') {
+      return {
+        setLoading: setInvoicedLoading,
+        setData: setInvoicedData,
+        setDeals: setInvoicedScoreboardDeals,
+        setReady: setInvoicedScoreboardDealsReady,
+      };
+    }
+    if (measure === 'tax-receipt') {
+      return {
+        setLoading: setTaxReceiptLoading,
+        setData: setTaxReceiptData,
+        setDeals: setTaxReceiptScoreboardDeals,
+        setReady: setTaxReceiptScoreboardDealsReady,
+      };
+    }
+    return {
+      setLoading: setSentToFinanceLoading,
+      setData: setSentToFinanceData,
+      setDeals: setSentToFinanceScoreboardDeals,
+      setReady: setSentToFinanceScoreboardDealsReady,
+    };
+  };
+
+  /*
+   * One of the three payment scoreboards: which rows count, their NIS value net of the lead's
+   * subcontractor fee, and the department column they land in.
+   *
+   * The three differ only in which payment rows they count and which day each row is filed under, so
+   * they share this whole body. Separate copies would leave the department, currency and fee
+   * handling free to drift apart.
+   *
+   * - `sent-to-finance`: rows that reached finance (`ready_to_pay`), filed by due date. Shown as
+   *   "Invoiced" until an actual invoice-send measure existed, which is not what it measures.
+   * - `invoiced`: rows whose proforma invoice went out, filed by the day it was sent.
+   * - `tax-receipt`: rows whose tax receipt went out, automatically or by hand, filed by the day it
+   *   was issued.
+   */
+  const fetchPaymentScoreboardData = async (
+    measure: PaymentScoreboardMeasure,
     shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>,
     opts?: { background?: boolean; boiConverter?: SharedBoiConverter },
   ) => {
-    if (!opts?.background) setInvoicedDataLoading(true);
+    const setters = paymentScoreboardSetters(measure);
+    if (!opts?.background) setters.setLoading(true);
     try {
       const now = new Date();
       const today = new Date();
@@ -4161,7 +4263,7 @@ const Dashboard: React.FC = () => {
         try {
           allCategoriesData = await fetchCategoriesWithDepartments(supabase);
         } catch (categoriesError) {
-          console.error('Error fetching categories for invoiced department mapping:', categoriesError);
+          console.error('Error fetching categories for sent-to-finance department mapping:', categoriesError);
           allCategoriesData = null;
         }
 
@@ -4172,10 +4274,13 @@ const Dashboard: React.FC = () => {
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(departmentTargets, costResult.totals);
+          departmentTargets = applyDashboardCostTargetsToDepartments(
+            departmentTargets,
+            allocateDepartmentPayrollBudget(costResult.totals),
+          );
           otherExpected = otherScoreboardExpected(otherCost);
         } catch (costErr) {
-          console.error('[Dashboard Invoiced] department cost targets failed:', costErr);
+          console.error('[Dashboard Sent to finance] department cost targets failed:', costErr);
           departmentTargets = departmentTargets.map((dept: any) => ({
             ...dept,
             cost_target: parseFloat(dept.min_income || '0') || 0,
@@ -4185,7 +4290,7 @@ const Dashboard: React.FC = () => {
 
       const categoryNameToDataMap = shared?.categoryNameToDataMap ?? buildCategoryNameToDataMap(allCategoriesData);
 
-      // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date).
+      // BOI as-of conversion for the totals (paid → payment time; unpaid → due date).
       // Start loading rates in parallel with the payment queries below.
       const boiPromise = opts?.boiConverter
         ? Promise.resolve(opts.boiConverter)
@@ -4210,7 +4315,7 @@ const Dashboard: React.FC = () => {
       const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
       const last3mStartDate = getLast3MonthsStartDate(todayStr);
 
-      // Calculate date ranges for invoiced data
+      // Calculate date ranges
       const yesterday = new Date(today);
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split('T')[0];
@@ -4218,12 +4323,12 @@ const Dashboard: React.FC = () => {
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
 
-      // Only pull installments that can land in Today / Week / 30d / 3m / selected month.
-      const invoicedDueFrom = minIsoDate(last3mStartDate, startOfMonthStr);
-      const invoicedDueTo = maxIsoDate(todayStr, endOfMonthStr);
+      // Only pull rows that can land in Today / Week / 30d / 3m / selected month.
+      const windowFrom = minIsoDate(last3mStartDate, startOfMonthStr);
+      const windowTo = maxIsoDate(todayStr, endOfMonthStr);
 
-      // Initialize invoiced data structure
-      const newInvoicedData = {
+      // Initialize the data structure
+      const newData = {
         Today: buildScoreboardPeriodRows(departmentTargets, otherExpected),
         Yesterday: buildScoreboardPeriodRows(departmentTargets, otherExpected),
         Week: buildScoreboardPeriodRows(departmentTargets, otherExpected),
@@ -4231,8 +4336,8 @@ const Dashboard: React.FC = () => {
         [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets, otherExpected),
         [selectedMonthName]: buildScoreboardMonthRows(departmentTargets, otherExpected),
       };
-      const invoicedDealsStore = new Map<string, DashboardScoreboardDeal[]>();
-      const pushInvoicedPeriodDeal = (
+      const dealsStore = new Map<string, DashboardScoreboardDeal[]>();
+      const pushPeriodDeal = (
         period: string,
         deptIndex: number,
         deal: Omit<DashboardScoreboardDeal, 'departmentName' | 'source'>,
@@ -4242,12 +4347,12 @@ const Dashboard: React.FC = () => {
         const row: DashboardScoreboardDeal = {
           ...deal,
           departmentName: columnName,
-          source: 'invoiced',
+          source: measure,
         };
-        appendScoreboardDeal(invoicedDealsStore, period, columnName, row);
-        appendScoreboardDeal(invoicedDealsStore, period, 'Total', { ...row, id: `${row.id}::total` });
+        appendScoreboardDeal(dealsStore, period, columnName, row);
+        appendScoreboardDeal(dealsStore, period, 'Total', { ...row, id: `${row.id}::total` });
       };
-      const pushInvoicedMonthDeal = (
+      const pushMonthDeal = (
         deptIndex: number,
         deal: Omit<DashboardScoreboardDeal, 'departmentName' | 'source'>,
       ) => {
@@ -4256,28 +4361,42 @@ const Dashboard: React.FC = () => {
         const row: DashboardScoreboardDeal = {
           ...deal,
           departmentName: columnName,
-          source: 'invoiced',
+          source: measure,
         };
-        appendScoreboardDeal(invoicedDealsStore, selectedMonthName, columnName, row);
-        appendScoreboardDeal(invoicedDealsStore, selectedMonthName, 'Total', { ...row, id: `${row.id}::total` });
+        appendScoreboardDeal(dealsStore, selectedMonthName, columnName, row);
+        appendScoreboardDeal(dealsStore, selectedMonthName, 'Total', { ...row, id: `${row.id}::total` });
       };
 
-      // Which installments count, their NIS value, their scoreboard department and their share of
-      // the lead's subcontractor fee all come from the shared module, so this scoreboard and the
-      // contribution report's "Total income" cannot drift apart again.
-      const { installments: preparedInvoicedPayments } = await fetchInvoicedInstallments({
-        dueFrom: invoicedDueFrom,
-        dueTo: invoicedDueTo,
+      /*
+       * Which rows count, their NIS value, their scoreboard department and their share of the lead's
+       * subcontractor fee all come from the shared module, so these scoreboards and the contribution
+       * report's "Total income" cannot drift apart again.
+       *
+       * The two event measures pick their own rows and hand over the day each belongs to, because
+       * neither question can be asked of `due_date`.
+       */
+      const eventScope =
+        measure === 'invoiced'
+          ? await fetchInvoiceSentEvents({ from: windowFrom, to: windowTo })
+          : measure === 'tax-receipt'
+            ? await fetchTaxReceiptSentEvents({ from: windowFrom, to: windowTo })
+            : undefined;
+
+      const { installments } = await fetchInvoicedInstallments({
+        dueFrom: windowFrom,
+        dueTo: windowTo,
         boiConverter: boiPromise,
         departmentTargets,
         allCategoriesData,
         categoryNameToDataMap,
         includeContactNames: true,
+        eventScope,
       });
 
       // --- Scoreboard + deals (amounts net of proportional subcontractor fee) ---
-      for (const row of preparedInvoicedPayments) {
-        const { dueDate, subcontractorFeeNis } = row;
+      for (const row of installments) {
+        // `eventDate` is the due date for the due-based measure and the send day for the others.
+        const { eventDate, subcontractorFeeNis } = row;
         const amountAfterFee = row.amountNis;
 
         const deptIndex = getScoreboardPeriodDeptIndex(
@@ -4287,13 +4406,13 @@ const Dashboard: React.FC = () => {
           row.mainCategoryName,
         );
 
-        const invoicedDealBase = {
+        const dealBase = {
           id: `${row.source === 'new' ? 'newpay' : 'legpay'}-${row.paymentId}`,
           leadId: row.leadKey,
           leadNumber: row.leadNumber,
           name: leadDisplayName(row.lead),
           contactName: row.contactName,
-          date: dueDate,
+          date: eventDate,
           amountNis: amountAfterFee,
           subcontractorFeeNis,
           categoryLabel: leadCategoryLabel(row.lead, allCategoriesData),
@@ -4301,58 +4420,58 @@ const Dashboard: React.FC = () => {
           isNewLead: row.source === 'new',
         };
 
-        if (dueDate === todayStr) {
-          newInvoicedData["Today"][deptIndex].count += 1;
-          newInvoicedData["Today"][deptIndex].amount += amountAfterFee;
-          newInvoicedData["Today"][0].count += 1;
-          newInvoicedData["Today"][0].amount += amountAfterFee;
-          pushInvoicedPeriodDeal('Today', deptIndex, { ...invoicedDealBase, id: `${invoicedDealBase.id}::Today` });
+        if (eventDate === todayStr) {
+          newData["Today"][deptIndex].count += 1;
+          newData["Today"][deptIndex].amount += amountAfterFee;
+          newData["Today"][0].count += 1;
+          newData["Today"][0].amount += amountAfterFee;
+          pushPeriodDeal('Today', deptIndex, { ...dealBase, id: `${dealBase.id}::Today` });
         }
 
-        if (dueDate === yesterdayStr) {
-          newInvoicedData["Yesterday"][deptIndex].count += 1;
-          newInvoicedData["Yesterday"][deptIndex].amount += amountAfterFee;
-          newInvoicedData["Yesterday"][0].count += 1;
-          newInvoicedData["Yesterday"][0].amount += amountAfterFee;
-          pushInvoicedPeriodDeal('Yesterday', deptIndex, { ...invoicedDealBase, id: `${invoicedDealBase.id}::Yesterday` });
+        if (eventDate === yesterdayStr) {
+          newData["Yesterday"][deptIndex].count += 1;
+          newData["Yesterday"][deptIndex].amount += amountAfterFee;
+          newData["Yesterday"][0].count += 1;
+          newData["Yesterday"][0].amount += amountAfterFee;
+          pushPeriodDeal('Yesterday', deptIndex, { ...dealBase, id: `${dealBase.id}::Yesterday` });
         }
 
-        if (dueDate >= oneWeekAgoStr && dueDate <= todayStr) {
-          newInvoicedData["Week"][deptIndex].count += 1;
-          newInvoicedData["Week"][deptIndex].amount += amountAfterFee;
-          newInvoicedData["Week"][0].count += 1;
-          newInvoicedData["Week"][0].amount += amountAfterFee;
-          pushInvoicedPeriodDeal('Week', deptIndex, { ...invoicedDealBase, id: `${invoicedDealBase.id}::Week` });
+        if (eventDate >= oneWeekAgoStr && eventDate <= todayStr) {
+          newData["Week"][deptIndex].count += 1;
+          newData["Week"][deptIndex].amount += amountAfterFee;
+          newData["Week"][0].count += 1;
+          newData["Week"][0].amount += amountAfterFee;
+          pushPeriodDeal('Week', deptIndex, { ...dealBase, id: `${dealBase.id}::Week` });
         }
 
-        if (dueDate >= effectiveThirtyDaysAgo && dueDate <= todayStr) {
-          newInvoicedData["Last 30d"][deptIndex].count += 1;
-          newInvoicedData["Last 30d"][deptIndex].amount += amountAfterFee;
-          newInvoicedData["Last 30d"][0].count += 1;
-          newInvoicedData["Last 30d"][0].amount += amountAfterFee;
-          pushInvoicedPeriodDeal('Last 30d', deptIndex, { ...invoicedDealBase, id: `${invoicedDealBase.id}::Last30d` });
+        if (eventDate >= effectiveThirtyDaysAgo && eventDate <= todayStr) {
+          newData["Last 30d"][deptIndex].count += 1;
+          newData["Last 30d"][deptIndex].amount += amountAfterFee;
+          newData["Last 30d"][0].count += 1;
+          newData["Last 30d"][0].amount += amountAfterFee;
+          pushPeriodDeal('Last 30d', deptIndex, { ...dealBase, id: `${dealBase.id}::Last30d` });
         }
 
-        if (dueDate >= last3mStartDate && dueDate <= todayStr) {
-          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].count += 1;
-          newInvoicedData[SCOREBOARD_LAST_3M][deptIndex].amount += amountAfterFee;
-          newInvoicedData[SCOREBOARD_LAST_3M][0].count += 1;
-          newInvoicedData[SCOREBOARD_LAST_3M][0].amount += amountAfterFee;
-          pushInvoicedPeriodDeal(SCOREBOARD_LAST_3M, deptIndex, { ...invoicedDealBase, id: `${invoicedDealBase.id}::Last3m` });
+        if (eventDate >= last3mStartDate && eventDate <= todayStr) {
+          newData[SCOREBOARD_LAST_3M][deptIndex].count += 1;
+          newData[SCOREBOARD_LAST_3M][deptIndex].amount += amountAfterFee;
+          newData[SCOREBOARD_LAST_3M][0].count += 1;
+          newData[SCOREBOARD_LAST_3M][0].amount += amountAfterFee;
+          pushPeriodDeal(SCOREBOARD_LAST_3M, deptIndex, { ...dealBase, id: `${dealBase.id}::Last3m` });
         }
 
-        if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
+        if (eventDate >= startOfMonthStr && eventDate <= endOfMonthStr) {
           const monthDeptIndex = getScoreboardMonthDeptIndex(
             row.departmentId,
             departmentIds,
             row.mainCategoryId,
             row.mainCategoryName,
           );
-          newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
-          newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountAfterFee;
-          pushInvoicedMonthDeal(monthDeptIndex, {
-            ...invoicedDealBase,
-            id: `${invoicedDealBase.id}::${selectedMonthName}`,
+          newData[selectedMonthName][monthDeptIndex].count += 1;
+          newData[selectedMonthName][monthDeptIndex].amount += amountAfterFee;
+          pushMonthDeal(monthDeptIndex, {
+            ...dealBase,
+            id: `${dealBase.id}::${selectedMonthName}`,
           });
         }
       }
@@ -4362,49 +4481,50 @@ const Dashboard: React.FC = () => {
       const { totalIndexToday, totalIndexMonth } = getScoreboardTotalIndexes(numDepartments);
 
       // Today totals (sum of departments + Other, excluding General and Total)
-      const todayTotalCount = newInvoicedData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+      const todayTotalCount = newData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const todayTotalAmount = Math.ceil(newData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
 
       // Yesterday totals
-      const yesterdayTotalCount = newInvoicedData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const yesterdayTotalAmount = Math.ceil(newInvoicedData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
+      const yesterdayTotalCount = newData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const yesterdayTotalAmount = Math.ceil(newData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
 
       // Week totals
-      const weekTotalCount = newInvoicedData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const weekTotalAmount = Math.ceil(newInvoicedData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
+      const weekTotalCount = newData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const weekTotalAmount = Math.ceil(newData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
 
       // Last 30d totals
-      const last30TotalCount = newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
+      const last30TotalCount = newData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const last30TotalAmount = Math.ceil(newData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
 
-      const last3mTotalCount = newInvoicedData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const last3mTotalAmount = Math.ceil(newInvoicedData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData[SCOREBOARD_LAST_3M][totalIndexToday] = { count: last3mTotalCount, amount: last3mTotalAmount, expected: 0 };
+      const last3mTotalCount = newData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const last3mTotalAmount = Math.ceil(newData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
+      newData[SCOREBOARD_LAST_3M][totalIndexToday] = { count: last3mTotalCount, amount: last3mTotalAmount, expected: 0 };
 
       // Current month totals
-      const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
-      const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.amount, 0));
-      newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
+      const monthTotalCount = newData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
+      const monthTotalAmount = Math.ceil(newData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.amount, 0));
+      newData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
 
-      setInvoicedData(newInvoicedData);
+      setters.setData(newData);
       // Paint totals first; employee photos fill in afterward without holding the spinner.
-      setInvoicedScoreboardDeals(invoicedDealsStore);
-      setInvoicedScoreboardDealsReady(true);
-      rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { invoiced: invoicedDealsStore });
-      void enrichScoreboardDealRolePhotos(invoicedDealsStore).then(() => {
-        setInvoicedScoreboardDeals(new Map(invoicedDealsStore));
-        rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { invoiced: invoicedDealsStore });
+      setters.setDeals(dealsStore);
+      setters.setReady(true);
+      rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { [measure]: dealsStore });
+      void enrichScoreboardDealRolePhotos(dealsStore).then(() => {
+        setters.setDeals(new Map(dealsStore));
+        rememberScoreboardDeals(`${selectedYear}-${selectedMonth}`, { [measure]: dealsStore });
       });
-      return newInvoicedData;
+      return newData;
 
     } catch (error: any) {
+      console.error(`[Dashboard ${measure}] scoreboard load failed:`, error);
       return null;
     } finally {
-      setInvoicedDataLoading(false);
+      setters.setLoading(false);
     }
   };
 
@@ -4433,19 +4553,18 @@ const Dashboard: React.FC = () => {
   // Department names state
   const [departmentNames, setDepartmentNames] = useState<string[]>([]);
   const [scoreboardCostByDeptName, setScoreboardCostByDeptName] = useState<Record<string, number>>({});
-  const [scoreboardCostBreakdownByDeptName, setScoreboardCostBreakdownByDeptName] = useState<
-    Record<string, DashboardDeptCostBreakdown>
-  >({});
   const [scoreboardTargetCostModal, setScoreboardTargetCostModal] = useState<{
-    tableType: 'agreement' | 'invoiced';
+    tableType: ScoreboardTableType;
     departmentName: string;
     targetLabel: string;
     targetAmount: number;
     periodAmount: number;
-    markup: number;
-    costTotal: number;
-    handlersSales: number;
-    partnersMarketingFinance: number;
+    /** Payroll as a share of revenue: 0.3, 0.35 or 0.4. */
+    ratio: number;
+    /** The monthly payroll budget the target was divided out of. */
+    payrollNis: number;
+    /** Which period `periodAmount` covers, so the modal cannot mislabel it. */
+    periodLabel: string;
   } | null>(null);
 
   // Dynamic scoreboard categories based on actual departments
@@ -4456,11 +4575,15 @@ const Dashboard: React.FC = () => {
   ];
   // Agreement signed data (first table) - will be populated with real data
   const [agreementScoreboardDeals, setAgreementScoreboardDeals] = useState<Map<string, DashboardScoreboardDeal[]>>(new Map());
+  const [sentToFinanceScoreboardDeals, setSentToFinanceScoreboardDeals] = useState<Map<string, DashboardScoreboardDeal[]>>(new Map());
   const [invoicedScoreboardDeals, setInvoicedScoreboardDeals] = useState<Map<string, DashboardScoreboardDeal[]>>(new Map());
+  const [taxReceiptScoreboardDeals, setTaxReceiptScoreboardDeals] = useState<Map<string, DashboardScoreboardDeal[]>>(new Map());
   const [agreementScoreboardDealsReady, setAgreementScoreboardDealsReady] = useState(false);
+  const [sentToFinanceScoreboardDealsReady, setSentToFinanceScoreboardDealsReady] = useState(false);
   const [invoicedScoreboardDealsReady, setInvoicedScoreboardDealsReady] = useState(false);
+  const [taxReceiptScoreboardDealsReady, setTaxReceiptScoreboardDealsReady] = useState(false);
   const [scoreboardDealsModal, setScoreboardDealsModal] = useState<{
-    tableType: 'agreement' | 'invoiced';
+    tableType: ScoreboardTableType;
     period: string;
     departmentName: string;
   } | null>(null);
@@ -4531,34 +4654,41 @@ const Dashboard: React.FC = () => {
      */
     async (opts?: { background?: boolean; force?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v23:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v24:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
       const cachedDeals = getCachedScoreboardDeals(periodKey);
 
       if (cachedDeals) {
         setAgreementScoreboardDeals(cachedDeals.agreement);
+        setSentToFinanceScoreboardDeals(cachedDeals['sent-to-finance']);
         setInvoicedScoreboardDeals(cachedDeals.invoiced);
+        setTaxReceiptScoreboardDeals(cachedDeals['tax-receipt']);
         setAgreementScoreboardDealsReady(true);
+        setSentToFinanceScoreboardDealsReady(true);
         setInvoicedScoreboardDealsReady(true);
+        setTaxReceiptScoreboardDealsReady(true);
       } else if (!opts?.background) {
         // No deal lists for this period yet: mark not-ready until the fetch fills them.
         setAgreementScoreboardDealsReady(false);
+        setSentToFinanceScoreboardDealsReady(false);
         setInvoicedScoreboardDealsReady(false);
+        setTaxReceiptScoreboardDealsReady(false);
       }
 
       if (cached) {
         setAgreementData(cached.agreementData);
+        setSentToFinanceData(cached.sentToFinanceData);
         setInvoicedData(cached.invoicedData);
+        setTaxReceiptData(cached.taxReceiptData);
         setDepartmentNames(cached.departmentNames);
         if (cached.scoreboardCostByDeptName) {
           setScoreboardCostByDeptName(cached.scoreboardCostByDeptName);
         }
-        if (cached.scoreboardCostBreakdownByDeptName) {
-          setScoreboardCostBreakdownByDeptName(cached.scoreboardCostBreakdownByDeptName);
-        }
         setDepartmentChartData(cached.departmentChartData);
         setDepartmentPerformanceLoading(false);
-        setInvoicedDataLoading(false);
+        setSentToFinanceLoading(false);
+        setInvoicedLoading(false);
+        setTaxReceiptLoading(false);
         const age = Date.now() - (cached.fetchedAt ?? 0);
         if (age < getDashboardScoreboardCacheTtlMs() && !opts?.force) {
           // Totals and badge deal lists are both warm: returning to the dashboard costs no queries.
@@ -4570,11 +4700,13 @@ const Dashboard: React.FC = () => {
 
       if (!opts?.background) {
         setDepartmentPerformanceLoading(true);
-        setInvoicedDataLoading(true);
+        setSentToFinanceLoading(true);
+        setInvoicedLoading(true);
+        setTaxReceiptLoading(true);
       }
 
       try {
-        // Departments + BOI rates are shared by both boxes — load once, then fan out.
+        // Departments + BOI rates are shared by every box — load once, then fan out.
         // Preload the scoreboard date window so FX conversion is in-memory, not one RPC per deal.
         const selectedMonthIndex = months.indexOf(selectedMonth);
         const startOfMonthStr = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1)).toISOString().split('T')[0];
@@ -4588,17 +4720,19 @@ const Dashboard: React.FC = () => {
           createBoiDateRateConverter({ dateWindow: { from: windowFrom, to: windowTo } }),
         ]);
         const fetchOpts = { ...opts, boiConverter };
-        const [agreementResult, invoicedResult] = await Promise.all([
-          fetchDepartmentPerformance(shared, fetchOpts),
-          fetchInvoicedData(shared, fetchOpts),
-        ]);
-        if (agreementResult && invoicedResult) {
+        const [agreementResult, sentToFinanceResult, invoicedResult, taxReceiptResult] =
+          await Promise.all([
+            fetchDepartmentPerformance(shared, fetchOpts),
+            fetchPaymentScoreboardData('sent-to-finance', shared, fetchOpts),
+            fetchPaymentScoreboardData('invoiced', shared, fetchOpts),
+            fetchPaymentScoreboardData('tax-receipt', shared, fetchOpts),
+          ]);
+        // All four are cached together, so one failure leaves the whole entry unwritten rather than
+        // storing a partial snapshot that would look fresh on the next visit.
+        if (agreementResult && sentToFinanceResult && invoicedResult && taxReceiptResult) {
           setDepartmentNames(agreementResult.departmentNames);
           if (agreementResult.scoreboardCostByDeptName) {
             setScoreboardCostByDeptName(agreementResult.scoreboardCostByDeptName);
-          }
-          if (agreementResult.scoreboardCostBreakdownByDeptName) {
-            setScoreboardCostBreakdownByDeptName(agreementResult.scoreboardCostBreakdownByDeptName);
           }
           // Chart is filled asynchronously after the agreement table paints; keep prior chart if empty.
           if (
@@ -4609,10 +4743,11 @@ const Dashboard: React.FC = () => {
           }
           setCachedData(dashboardPathname, cacheKey, {
             agreementData: agreementResult.agreementData,
+            sentToFinanceData: sentToFinanceResult,
             invoicedData: invoicedResult,
+            taxReceiptData: taxReceiptResult,
             departmentNames: agreementResult.departmentNames,
             scoreboardCostByDeptName: agreementResult.scoreboardCostByDeptName,
-            scoreboardCostBreakdownByDeptName: agreementResult.scoreboardCostBreakdownByDeptName,
             departmentChartData: agreementResult.departmentChartData,
             fetchedAt: Date.now(),
           });
@@ -4620,7 +4755,9 @@ const Dashboard: React.FC = () => {
       } catch {
         await Promise.all([
           fetchDepartmentPerformance(undefined, opts),
-          fetchInvoicedData(undefined, opts),
+          fetchPaymentScoreboardData('sent-to-finance', undefined, opts),
+          fetchPaymentScoreboardData('invoiced', undefined, opts),
+          fetchPaymentScoreboardData('tax-receipt', undefined, opts),
         ]);
       }
     },
@@ -4649,7 +4786,7 @@ const Dashboard: React.FC = () => {
     [applyTeamAvailabilityCache, dashboardPathname],
   );
 
-  // Scoreboard (Agreement signed + Invoiced): cache-first load; refetch on month/year change.
+  // Scoreboard (all four tables): cache-first load; refetch on month/year change.
   useEffect(() => {
     void loadScoreboardData();
   }, [loadScoreboardData]);
@@ -4769,8 +4906,8 @@ const Dashboard: React.FC = () => {
     }
   }, [isUnavailableEmployeesModalOpen, teamAvailabilityDate, loadTeamAvailability]);
 
-  // Invoiced data (second table) - will be populated with real data
-  const [invoicedData, setInvoicedData] = useState<{
+  // Sent to finance (second table) — payment rows that reached finance, by due date.
+  const [sentToFinanceData, setSentToFinanceData] = useState<{
     Today: { count: number; amount: number; expected: number }[];
     "Last 30d": { count: number; amount: number; expected: number }[];
     [key: string]: { count: number; amount: number; expected: number }[];
@@ -4801,6 +4938,21 @@ const Dashboard: React.FC = () => {
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
     ],
+  });
+
+  /**
+   * Rows for the two event-based tables.
+   *
+   * Empty until the first load replaces them whole, which is why no department skeleton is built
+   * here: the column count is not known until the departments come back.
+   */
+  const [invoicedData, setInvoicedData] = useState<DashboardScoreboardData>({
+    Today: [],
+    'Last 30d': [],
+  });
+  const [taxReceiptData, setTaxReceiptData] = useState<DashboardScoreboardData>({
+    Today: [],
+    'Last 30d': [],
   });
 
   const scoreboardHighlights = {
@@ -4892,9 +5044,13 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const getMobilePeriodData = (period: MobilePeriodType, category: string, dataType: 'agreement' | 'invoiced' = 'agreement') => {
+  const getMobilePeriodData = (
+    period: MobilePeriodType,
+    category: string,
+    dataType: ScoreboardTableType = 'agreement',
+  ) => {
     const defaultValue = { count: 0, amount: 0, expected: 0 };
-    const dataSource = dataType === 'agreement' ? agreementData : invoicedData;
+    const dataSource = scoreboardDataFor(dataType);
     const categoryIndex = scoreboardCategories.indexOf(category);
     const todayData = dataSource['Today']?.[categoryIndex] || defaultValue;
     const last30Data = dataSource['Last 30d']?.[categoryIndex] || defaultValue;
@@ -5002,9 +5158,9 @@ const Dashboard: React.FC = () => {
     });
   };
 
-  // Compute chart data from actual agreementData and invoicedData
+  // Compute chart data from actual agreementData and sentToFinanceData
   // "signed" = signed agreements (from agreementData)
-  // "due" = invoiced (from invoicedData)
+  // "due" = sent to finance (from sentToFinanceData)
   const scoreboardBarDataToday = useMemo(() => {
     // Filter out "General" from departmentNames if it exists to avoid duplicates
     const filteredDeptNames = departmentNames.filter(name => name !== 'General');
@@ -5025,18 +5181,18 @@ const Dashboard: React.FC = () => {
       if (index === 0) {
         // General -> data index 0
         signedAmount = agreementData['Today']?.[0]?.amount || 0;
-        dueAmount = invoicedData['Today']?.[0]?.amount || 0;
+        dueAmount = sentToFinanceData['Today']?.[0]?.amount || 0;
       } else if (index === categories.length - 1) {
         // Total -> data index = departmentNames.length + 1
         signedAmount = agreementData['Today']?.[departmentNames.length + 1]?.amount || 0;
-        dueAmount = invoicedData['Today']?.[departmentNames.length + 1]?.amount || 0;
+        dueAmount = sentToFinanceData['Today']?.[departmentNames.length + 1]?.amount || 0;
       } else {
         // Department -> find its index in departmentNames to get correct data index
         const deptIndexInNames = deptNameToIndex.get(category);
         if (deptIndexInNames !== undefined) {
           // Data index = deptIndexInNames + 1 (because General is at index 0)
           signedAmount = agreementData['Today']?.[deptIndexInNames + 1]?.amount || 0;
-          dueAmount = invoicedData['Today']?.[deptIndexInNames + 1]?.amount || 0;
+          dueAmount = sentToFinanceData['Today']?.[deptIndexInNames + 1]?.amount || 0;
         }
       }
 
@@ -5046,7 +5202,7 @@ const Dashboard: React.FC = () => {
         due: Math.ceil(dueAmount),
       };
     });
-  }, [departmentNames, agreementData, invoicedData]);
+  }, [departmentNames, agreementData, sentToFinanceData]);
 
   const scoreboardBarData30d = useMemo(() => {
     // Filter out "General" from departmentNames if it exists to avoid duplicates
@@ -5068,18 +5224,18 @@ const Dashboard: React.FC = () => {
       if (index === 0) {
         // General -> data index 0
         signedAmount = agreementData['Last 30d']?.[0]?.amount || 0;
-        dueAmount = invoicedData['Last 30d']?.[0]?.amount || 0;
+        dueAmount = sentToFinanceData['Last 30d']?.[0]?.amount || 0;
       } else if (index === categories.length - 1) {
         // Total -> data index = departmentNames.length + 1
         signedAmount = agreementData['Last 30d']?.[departmentNames.length + 1]?.amount || 0;
-        dueAmount = invoicedData['Last 30d']?.[departmentNames.length + 1]?.amount || 0;
+        dueAmount = sentToFinanceData['Last 30d']?.[departmentNames.length + 1]?.amount || 0;
       } else {
         // Department -> find its index in departmentNames to get correct data index
         const deptIndexInNames = deptNameToIndex.get(category);
         if (deptIndexInNames !== undefined) {
           // Data index = deptIndexInNames + 1 (because General is at index 0)
           signedAmount = agreementData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
-          dueAmount = invoicedData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
+          dueAmount = sentToFinanceData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
         }
       }
 
@@ -5089,7 +5245,7 @@ const Dashboard: React.FC = () => {
         due: Math.ceil(dueAmount),
       };
     });
-  }, [departmentNames, agreementData, invoicedData]);
+  }, [departmentNames, agreementData, sentToFinanceData]);
 
   const scoreboardBarDataMonth = useMemo(() => {
     // Filter out "General" from departmentNames if it exists to avoid duplicates
@@ -5112,14 +5268,14 @@ const Dashboard: React.FC = () => {
       if (index === categories.length - 1) {
         // Total -> data index = departmentNames.length (no General column in month data)
         signedAmount = agreementData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
-        dueAmount = invoicedData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
+        dueAmount = sentToFinanceData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
       } else {
         // Department -> find its index in departmentNames to get correct data index
         const deptIndexInNames = deptNameToIndex.get(category);
         if (deptIndexInNames !== undefined) {
           // For month data: no General column, so data index = deptIndexInNames
           signedAmount = agreementData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
-          dueAmount = invoicedData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
+          dueAmount = sentToFinanceData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
         }
       }
 
@@ -5129,7 +5285,7 @@ const Dashboard: React.FC = () => {
         due: Math.ceil(dueAmount),
       };
     });
-  }, [departmentNames, agreementData, invoicedData, selectedMonth, selectedYear, months]);
+  }, [departmentNames, agreementData, sentToFinanceData, selectedMonth, selectedYear, months]);
 
   // Custom Tooltip for My Performance chart
   const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) => {
@@ -5171,7 +5327,223 @@ const Dashboard: React.FC = () => {
   };
 
   // Helper function to render table in columns view (departments as columns)
-  const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
+  /** The rows behind one table, so the renderer and the mobile view cannot disagree. */
+  const scoreboardDataFor = (tableType: ScoreboardTableType): DashboardScoreboardData => {
+    if (tableType === 'agreement') return agreementData;
+    if (tableType === 'invoiced') return invoicedData;
+    if (tableType === 'tax-receipt') return taxReceiptData;
+    return sentToFinanceData;
+  };
+
+  /** The loading flag behind one table, so a tabbed box cannot sit on the other tab's spinner. */
+  const scoreboardLoadingFor = (tableType: ScoreboardTableType): boolean => {
+    if (tableType === 'agreement') return departmentPerformanceLoading;
+    if (tableType === 'invoiced') return invoicedLoading;
+    if (tableType === 'tax-receipt') return taxReceiptLoading;
+    return sentToFinanceLoading;
+  };
+
+  /**
+   * Point one table's goal bars, and its target-row colours, at a different period.
+   *
+   * Revealing the column is part of the job: the bar lives on the row for its period, so choosing a
+   * period the filters have hidden would leave the table with no bar to read at all.
+   */
+  const selectGoalPeriod = (tableType: ScoreboardTableType, period: ScoreboardGoalPeriod) => {
+    setGoalPeriodByTable((prev) => ({ ...prev, [tableType]: period }));
+    if (period === SCOREBOARD_LAST_3M) setShowLast3MonthsCols(true);
+    else setShowLast30Cols(true);
+  };
+
+  /**
+   * One scoreboard box: its heading, the shared period filters, and the table itself.
+   *
+   * Every box shares one set of filter controls, so changing the period moves all of them at once.
+   * That is deliberate: the four tables are meant to be read against each other for the same period.
+   * The goal period is the exception — it belongs to this table alone.
+   */
+  const renderScoreboardTable = (
+    tableType: ScoreboardTableType,
+    Icon: React.ComponentType<React.ComponentProps<typeof DocumentCheckIcon>>,
+    loading: boolean,
+    opts?: {
+      first?: boolean;
+      /**
+       * Turns the heading into a switcher between these tables rather than a static label.
+       *
+       * `tableType` stays the single source of which one is showing, so everything downstream —
+       * the table body, the badge deal lists, the target-cost modal — follows the active tab with
+       * no further plumbing.
+       */
+      tabs?: PaymentScoreboardTab[];
+      onTabChange?: (tableType: PaymentScoreboardTab) => void;
+    },
+  ) => (
+    <div className={opts?.first ? undefined : 'mt-4 md:mt-6'}>
+        <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
+            <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500">
+              <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
+                <Icon className="h-5 w-5" aria-hidden="true" />
+              </span>
+              {opts?.tabs?.length ? (
+                <div className="inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5" role="tablist">
+                  {opts.tabs.map(tab => {
+                    const active = tab === tableType;
+                    return (
+                      <button
+                        key={tab}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        className={`rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${active ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        onClick={() => opts.onTabChange?.(tab)}
+                      >
+                        {SCOREBOARD_TABLE_LABELS[tab]}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                SCOREBOARD_TABLE_LABELS[tableType]
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
+              <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showTodayCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setShowTodayCols(v => !v)}
+              >
+                {todayFilterMode === 'week' ? 'Week' : 'Today'}
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${todayFilterMode === 'week' ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
+                title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
+              >
+                Week
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast30Cols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setShowLast30Cols(v => !v)}
+              >
+                Last 30d
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast3MonthsCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setShowLast3MonthsCols(v => !v)}
+              >
+                Last 3m
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLastMonthCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
+                onClick={() => setShowLastMonthCols(v => !v)}
+              >
+                This Month
+              </button>
+              <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
+              {(() => {
+                /*
+                 * Flips this table between its two goal periods. One button rather than a pair
+                 * because there are only ever two: it shows the period in force and switches to
+                 * the other, so the label is both the state and the whole choice.
+                 */
+                const goalPeriod = goalPeriodByTable[tableType];
+                const nextPeriod =
+                  SCOREBOARD_GOAL_PERIODS.find((period) => period !== goalPeriod) ?? goalPeriod;
+                return (
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 border-0 outline-none shadow-none bg-transparent hover:bg-slate-100"
+                    title={`Goals and target colours measure ${goalPeriod}. Switch to ${nextPeriod}.`}
+                    onClick={() => selectGoalPeriod(tableType, nextPeriod)}
+                  >
+                    <ArrowsRightLeftIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    Goal: {SCOREBOARD_GOAL_PERIOD_LABELS[goalPeriod]}
+                  </button>
+                );
+              })()}
+              <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
+              <details className="dropdown dropdown-end">
+                <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                  {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </summary>
+                <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                  {months.map(month => (
+                    <li key={month} style={{ width: '100%' }}>
+                      <a
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setSelectedMonth(month);
+                          const details = e.currentTarget.closest('details');
+                          if (details) details.removeAttribute('open');
+                        }}
+                        className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
+                      >
+                        {month}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+              <details className="dropdown dropdown-end">
+                <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
+                  {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </summary>
+                <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                  {years.map(year => (
+                    <li key={year} style={{ width: '100%' }}>
+                      <a
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setSelectedYear(year);
+                          const details = e.currentTarget.closest('details');
+                          if (details) details.removeAttribute('open');
+                        }}
+                        className="block w-full p-2 text-sm hover:bg-gray-100"
+                      >
+                        {year}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </div>
+          </div>
+      {loading && !postLoginWelcomeActive ? (
+        <div className="flex justify-center items-center py-12">
+          <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
+        </div>
+      ) : !loading ? (
+        renderColumnsView(tableType)
+      ) : null}
+      </div>
+    </div>
+  );
+
+  /** The badge deal lists behind one table. */
+  const scoreboardDealsFor = (
+    tableType: ScoreboardTableType,
+  ): Map<string, DashboardScoreboardDeal[]> => {
+    if (tableType === 'agreement') return agreementScoreboardDeals;
+    if (tableType === 'invoiced') return invoicedScoreboardDeals;
+    if (tableType === 'tax-receipt') return taxReceiptScoreboardDeals;
+    return sentToFinanceScoreboardDeals;
+  };
+
+  const scoreboardDealsReadyFor = (tableType: ScoreboardTableType): boolean => {
+    if (tableType === 'agreement') return agreementScoreboardDealsReady;
+    if (tableType === 'invoiced') return invoicedScoreboardDealsReady;
+    if (tableType === 'tax-receipt') return taxReceiptScoreboardDealsReady;
+    return sentToFinanceScoreboardDealsReady;
+  };
+
+  const renderColumnsView = (tableType: ScoreboardTableType) => {
     const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
     const visibleColumns: string[] = [];
     if (showTodayCols) {
@@ -5182,7 +5554,8 @@ const Dashboard: React.FC = () => {
     if (showLast3MonthsCols) visibleColumns.push(SCOREBOARD_LAST_3M);
     if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
-    const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
+    const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } =
+      scoreboardDataFor(tableType);
     const totalIndexToday = departmentNames.length + 1;
     const totalIndexMonth = departmentNames.length;
     const accentBar = isAltTheme ? 'bg-emerald-500' : 'bg-blue-500';
@@ -5223,44 +5596,46 @@ const Dashboard: React.FC = () => {
       return averagePeriod ? scoreboardThreeMonthAverage(raw) : raw;
     };
 
+    /** Today, in the UTC date-key form the scoreboard buckets its rows by. */
+    const todayDateKey = new Date().toISOString().slice(0, 10);
+
     /**
-     * Target = department cost + (markup × Last 3m agreement/invoiced amount).
-     * +40% row → +60% of period total; +30% row → +70% of period total.
+     * The scale a column's target is measured on.
+     *
+     * Today and Week are the only sub-month columns the scoreboard renders, and they take their
+     * working-day share of the month. Everything else — the selected month, Last 30d, and Last 3m
+     * shown as a monthly average — compares a full month and so takes the monthly target whole.
      */
-    const getDeptPeriodMarkupTarget = (
-      deptName: string,
-      markup: number,
-      periodKey: string,
-      averagePeriod: boolean,
-    ) => {
-      const cost = getDeptCostBase(deptName);
-      const periodAmount = getPeriodAmountForTarget(deptName, periodKey, averagePeriod);
-      if (!(cost > 0) && !(periodAmount > 0)) return 0;
-      return Math.round((cost + markup * periodAmount) * 100) / 100;
+    const targetPeriodFor = (periodKey: string): RevenueTargetPeriod => {
+      if (periodKey === 'Today') return 'day';
+      if (periodKey === 'Week') return 'rolling-week';
+      return 'month';
     };
 
-    const getPeriodMarkupTargetTotal = (
-      markup: number,
-      periodKey: string,
-      averagePeriod: boolean,
-    ) =>
-      categories.reduce(
-        (sum, cat) => sum + getDeptPeriodMarkupTarget(cat, markup, periodKey, averagePeriod),
-        0,
-      );
+    /** A department's revenue target for one column, at one payroll-to-revenue ratio. */
+    const getDeptRatioTarget = (deptName: string, ratio: number, periodKey: string) =>
+      departmentRevenueTarget({
+        monthlyPayrollNis: getDeptCostBase(deptName),
+        ratio,
+        period: targetPeriodFor(periodKey),
+        refDateKey: todayDateKey,
+      });
 
-    const getPeriodGoalTarget = (deptName: string, periodKey: string) => {
-      const averagePeriod = periodKey === SCOREBOARD_LAST_3M;
-      if (deptName === 'Total') {
-        return getPeriodMarkupTargetTotal(SCOREBOARD_TARGET_MARKUP_40, periodKey, averagePeriod);
-      }
-      return getDeptPeriodMarkupTarget(
-        deptName,
-        SCOREBOARD_TARGET_MARKUP_40,
-        periodKey,
-        averagePeriod,
-      );
-    };
+    /**
+     * The Total column's target: its departments' targets added up, rather than the firm's whole
+     * payroll over the ratio.
+     *
+     * The two differ, and the sum is the honest one. General and Other carry no payroll budget, so
+     * they contribute revenue to the Total but no target; holding the Total to the firm's full
+     * payroll would ask it for a number none of its columns has been asked for.
+     */
+    const getRatioTargetTotal = (ratio: number, periodKey: string) =>
+      categories.reduce((sum, cat) => sum + getDeptRatioTarget(cat, ratio, periodKey), 0);
+
+    const getPeriodGoalTarget = (deptName: string, periodKey: string) =>
+      deptName === 'Total'
+        ? getRatioTargetTotal(PRIMARY_REVENUE_TARGET_RATIO, periodKey)
+        : getDeptRatioTarget(deptName, PRIMARY_REVENUE_TARGET_RATIO, periodKey);
 
     /** Goal-bar amount: Last 3m compares the displayed monthly average. */
     const getPeriodGoalAmount = (deptName: string, periodKey: string) =>
@@ -5271,49 +5646,24 @@ const Dashboard: React.FC = () => {
       targetLabel: string,
       targetAmount: number,
       periodAmount: number,
-      markup: number,
+      ratio: number,
     ) => {
-      if (deptName === 'Total') {
-        const handlersSales = categories.reduce(
-          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.handlersSales ?? 0),
-          0,
-        );
-        const partnersMarketingFinance = categories.reduce(
-          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.partnersMarketingFinance ?? 0),
-          0,
-        );
-        const costTotal = categories.reduce(
-          (sum, cat) => sum + (scoreboardCostBreakdownByDeptName[cat]?.total ?? getDeptCostBase(cat)),
-          0,
-        );
-        setScoreboardTargetCostModal({
-          tableType,
-          departmentName: 'Total',
-          targetLabel,
-          targetAmount,
-          periodAmount,
-          markup,
-          costTotal,
-          handlersSales,
-          partnersMarketingFinance,
-        });
-        return;
-      }
-      const breakdown = scoreboardCostBreakdownByDeptName[deptName] ?? {
-        total: getDeptCostBase(deptName),
-        handlersSales: 0,
-        partnersMarketingFinance: 0,
-      };
+      const payrollNis =
+        deptName === 'Total'
+          ? categories.reduce((sum, cat) => sum + getDeptCostBase(cat), 0)
+          : getDeptCostBase(deptName);
       setScoreboardTargetCostModal({
         tableType,
         departmentName: deptName,
         targetLabel,
         targetAmount,
         periodAmount,
-        markup,
-        costTotal: breakdown.total,
-        handlersSales: breakdown.handlersSales,
-        partnersMarketingFinance: breakdown.partnersMarketingFinance,
+        ratio,
+        payrollNis,
+        periodLabel:
+          goalPeriod === SCOREBOARD_LAST_3M
+            ? `monthly average over ${SCOREBOARD_LAST_3M}`
+            : goalPeriod,
       });
     };
 
@@ -5329,11 +5679,11 @@ const Dashboard: React.FC = () => {
         isTotalCol?: boolean;
         deptName: string;
         targetLabel: string;
-        markup: number;
+        ratio: number;
       },
     ) => {
       const metOrOver = periodAmount >= targetAmount;
-      const { isTotalCol = false, deptName, targetLabel, markup } = opts;
+      const { isTotalCol = false, deptName, targetLabel, ratio } = opts;
       const amountStyle = {
         fontSize: '15px',
         fontWeight: 600,
@@ -5353,9 +5703,9 @@ const Dashboard: React.FC = () => {
               type="button"
               className="border-0 bg-transparent p-0 outline-none ring-0 shadow-none cursor-pointer hover:underline"
               style={amountStyle}
-              title="View cost breakdown"
+              title="How this target is calculated"
               onClick={() =>
-                openTargetCostModal(deptName, targetLabel, targetAmount, periodAmount, markup)
+                openTargetCostModal(deptName, targetLabel, targetAmount, periodAmount, ratio)
               }
             >
               {display}
@@ -5366,6 +5716,16 @@ const Dashboard: React.FC = () => {
         </td>
       );
     };
+
+    const goalPeriod = goalPeriodByTable[tableType];
+
+    /**
+     * The actual a goal bar and the target rows are both measured against.
+     *
+     * Last 3m is compared as a monthly average so it sits on the same scale as the monthly target;
+     * Last 30d is already a month's worth and is compared as it stands.
+     */
+    const getGoalPeriodAmount = (deptName: string) => getPeriodGoalAmount(deptName, goalPeriod);
 
     const renderGoalBalken = (amount: number, target: number) => {
       if (!(target > 0)) return null;
@@ -5493,12 +5853,12 @@ const Dashboard: React.FC = () => {
                   </td>
                   {mobilePeriods.map((p) => {
                     if ('targetRow' in p && p.targetRow) {
-                      const { markup, periodKey, averagePeriod, label } = p.targetRow;
+                      const { ratio, label } = p.targetRow;
                       const targetAmount =
                         deptName === 'Total'
-                          ? getPeriodMarkupTargetTotal(markup, periodKey, averagePeriod)
-                          : getDeptPeriodMarkupTarget(deptName, markup, periodKey, averagePeriod);
-                      const periodAmount = getPeriodAmountForTarget(deptName, periodKey, averagePeriod);
+                          ? getRatioTargetTotal(ratio, goalPeriod)
+                          : getDeptRatioTarget(deptName, ratio, goalPeriod);
+                      const periodAmount = getGoalPeriodAmount(deptName);
                       const metOrOver = periodAmount >= targetAmount;
                       const amountStyle = {
                         fontSize: '15px',
@@ -5517,14 +5877,14 @@ const Dashboard: React.FC = () => {
                               type="button"
                               className="border-0 bg-transparent p-0 outline-none ring-0 shadow-none cursor-pointer hover:underline"
                               style={amountStyle}
-                              title="View cost breakdown"
+                              title="How this target is calculated"
                               onClick={() =>
                                 openTargetCostModal(
                                   deptName,
                                   label,
                                   targetAmount,
                                   periodAmount,
-                                  markup,
+                                  ratio,
                                 )
                               }
                             >
@@ -5544,7 +5904,12 @@ const Dashboard: React.FC = () => {
                       ? scoreboardThreeMonthAverage(row.amount || 0)
                       : (row.amount || 0);
                     const isMonthCol = p.dataKey === selectedMonth;
-                    const showGoal = p.dataKey === SCOREBOARD_LAST_3M;
+                    /*
+                     * One column carries the goal bar: whichever period this table is currently
+                     * measuring against. The targets are monthly, so only the month-scale columns
+                     * are offered — see `SCOREBOARD_GOAL_PERIODS`.
+                     */
+                    const showGoal = p.dataKey === goalPeriod;
                     const goalTarget = showGoal ? getPeriodGoalTarget(deptName, p.dataKey) : 0;
                     const goalAmount = showGoal ? getPeriodGoalAmount(deptName, p.dataKey) : displayAmount;
                     return (
@@ -5595,6 +5960,8 @@ const Dashboard: React.FC = () => {
                 const isWeek = columnType === 'Week';
                 const isLast30 = columnType === 'Last 30d';
                 const isLast3m = columnType === SCOREBOARD_LAST_3M;
+                /** The one row carrying a goal bar, and with it the switch that chooses this row. */
+                const isGoalRow = columnType === goalPeriod;
                 const isMonthRow = columnType === selectedMonth;
 
                 return (
@@ -5618,7 +5985,6 @@ const Dashboard: React.FC = () => {
                                 dataSource[selectedMonth]?.[dataIndex];
                       const amount = data?.amount ?? 0;
                       const displayAmount = isLast3m ? scoreboardThreeMonthAverage(amount) : amount;
-                      const showGoal = isLast3m;
                       return (
                         <td key={`${category}-combined`} className="px-3 py-3.5 text-center align-top">
                           {renderMetricCell({
@@ -5626,11 +5992,9 @@ const Dashboard: React.FC = () => {
                             amount: displayAmount,
                             periodKey: columnType,
                             deptName: category,
-                            showGoal,
-                            target: showGoal ? getPeriodGoalTarget(category, columnType) : 0,
-                            goalAmount: showGoal
-                              ? (isLast3m ? displayAmount : amount)
-                              : displayAmount,
+                            showGoal: isGoalRow,
+                            target: isGoalRow ? getPeriodGoalTarget(category, columnType) : 0,
+                            goalAmount: displayAmount,
                           })}
                         </td>
                       );
@@ -5650,15 +6014,14 @@ const Dashboard: React.FC = () => {
                         const totalAmount = isLast3m
                           ? scoreboardThreeMonthAverage(rawTotalAmount)
                           : rawTotalAmount;
-                        const showGoal = isLast3m;
                         return renderMetricCell({
                           count: totalCount,
                           amount: totalAmount,
                           periodKey: columnType,
                           deptName: 'Total',
-                          showGoal,
-                          target: showGoal ? getPeriodGoalTarget('Total', columnType) : 0,
-                          goalAmount: showGoal ? totalAmount : totalAmount,
+                          showGoal: isGoalRow,
+                          target: isGoalRow ? getPeriodGoalTarget('Total', columnType) : 0,
+                          goalAmount: totalAmount,
                           isTotalCol: true,
                         });
                       })()}
@@ -5667,16 +6030,8 @@ const Dashboard: React.FC = () => {
                 );
               })}
               {SCOREBOARD_TARGET_ROWS.map((targetRow) => {
-                const periodAmountTotal = getPeriodAmountForTarget(
-                  'Total',
-                  targetRow.periodKey,
-                  targetRow.averagePeriod,
-                );
-                const totalTarget = getPeriodMarkupTargetTotal(
-                  targetRow.markup,
-                  targetRow.periodKey,
-                  targetRow.averagePeriod,
-                );
+                const periodAmountTotal = getGoalPeriodAmount('Total');
+                const totalTarget = getRatioTargetTotal(targetRow.ratio, goalPeriod);
                 return (
                   <tr key={targetRow.key} className="border-t border-slate-200">
                     <td className="px-4 py-3.5 text-sm font-normal text-slate-600 whitespace-nowrap">
@@ -5695,17 +6050,12 @@ const Dashboard: React.FC = () => {
                       </span>
                     </td>
                     {categories.map((category) => {
-                      const targetAmount = getDeptPeriodMarkupTarget(
+                      const targetAmount = getDeptRatioTarget(
                         category,
-                        targetRow.markup,
-                        targetRow.periodKey,
-                        targetRow.averagePeriod,
+                        targetRow.ratio,
+                        goalPeriod,
                       );
-                      const periodAmount = getPeriodAmountForTarget(
-                        category,
-                        targetRow.periodKey,
-                        targetRow.averagePeriod,
-                      );
+                      const periodAmount = getGoalPeriodAmount(category);
                       return renderTargetAmountCell(
                         targetAmount,
                         periodAmount,
@@ -5713,7 +6063,7 @@ const Dashboard: React.FC = () => {
                         {
                           deptName: category,
                           targetLabel: targetRow.label,
-                          markup: targetRow.markup,
+                          ratio: targetRow.ratio,
                         },
                       );
                     })}
@@ -5725,7 +6075,7 @@ const Dashboard: React.FC = () => {
                         isTotalCol: true,
                         deptName: 'Total',
                         targetLabel: targetRow.label,
-                        markup: targetRow.markup,
+                        ratio: targetRow.ratio,
                       },
                     )}
                   </tr>
@@ -7756,215 +8106,14 @@ const Dashboard: React.FC = () => {
             {/* Department Performance Boxes */}
             {scoreTab === 'Tables' && (
               <div className="space-y-6">
-                {/* Agreement signed */}
-                <div>
-                  <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
-                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500">
-                        <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
-                          <DocumentCheckIcon className="h-5 w-5" aria-hidden="true" />
-                        </span>
-                        Agreement signed
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
-                        <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showTodayCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowTodayCols(v => !v)}
-                        >
-                          {todayFilterMode === 'week' ? 'Week' : 'Today'}
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${todayFilterMode === 'week' ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
-                          title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
-                        >
-                          Week
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast30Cols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLast30Cols(v => !v)}
-                        >
-                          Last 30d
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast3MonthsCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLast3MonthsCols(v => !v)}
-                        >
-                          Last 3m
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLastMonthCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLastMonthCols(v => !v)}
-                        >
-                          This Month
-                        </button>
-                        <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
-                        <details className="dropdown dropdown-end">
-                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
-                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                          </summary>
-                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                            {months.map(month => (
-                              <li key={month} style={{ width: '100%' }}>
-                                <a
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setSelectedMonth(month);
-                                    const details = e.currentTarget.closest('details');
-                                    if (details) details.removeAttribute('open');
-                                  }}
-                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
-                                >
-                                  {month}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                        <details className="dropdown dropdown-end">
-                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
-                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                          </summary>
-                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                            {years.map(year => (
-                              <li key={year} style={{ width: '100%' }}>
-                                <a
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setSelectedYear(year);
-                                    const details = e.currentTarget.closest('details');
-                                    if (details) details.removeAttribute('open');
-                                  }}
-                                  className="block w-full p-2 text-sm hover:bg-gray-100"
-                                >
-                                  {year}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      </div>
-                    </div>
-                    {departmentPerformanceLoading && !postLoginWelcomeActive ? (
-                      <div className="flex justify-center items-center py-12">
-                        <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
-                      </div>
-                    ) : !departmentPerformanceLoading ? (
-                      renderColumnsView('agreement')
-                    ) : null}
-                  </div>
-                </div>
-
-                {/* Invoiced */}
-                <div className="mt-4 md:mt-6">
-                  <div className="bg-white rounded-2xl border-0 shadow-sm overflow-hidden min-w-0 w-full">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-3 md:px-5 py-3 md:py-3.5 bg-white gap-2">
-                      <div className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500">
-                        <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
-                          <BanknotesIcon className="h-5 w-5" aria-hidden="true" />
-                        </span>
-                        Invoiced
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1 md:gap-1.5">
-                        <span className="text-[11px] font-medium text-slate-400 mr-1">Filter by:</span>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showTodayCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowTodayCols(v => !v)}
-                        >
-                          {todayFilterMode === 'week' ? 'Week' : 'Today'}
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${todayFilterMode === 'week' ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
-                          title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
-                        >
-                          Week
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast30Cols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLast30Cols(v => !v)}
-                        >
-                          Last 30d
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLast3MonthsCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLast3MonthsCols(v => !v)}
-                        >
-                          Last 3m
-                        </button>
-                        <button
-                          type="button"
-                          className={`inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-medium border-0 outline-none shadow-none ${showLastMonthCols ? 'bg-indigo-50 text-indigo-700' : 'bg-transparent text-slate-600 hover:bg-slate-100'}`}
-                          onClick={() => setShowLastMonthCols(v => !v)}
-                        >
-                          This Month
-                        </button>
-                        <div className="w-px h-4 md:h-5 mx-1 md:mx-1.5 bg-slate-200"></div>
-                        <details className="dropdown dropdown-end">
-                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
-                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                          </summary>
-                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                            {months.map(month => (
-                              <li key={month} style={{ width: '100%' }}>
-                                <a
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setSelectedMonth(month);
-                                    const details = e.currentTarget.closest('details');
-                                    if (details) details.removeAttribute('open');
-                                  }}
-                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
-                                >
-                                  {month}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                        <details className="dropdown dropdown-end">
-                          <summary className="inline-flex list-none items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-600 cursor-pointer border-0 outline-none shadow-none bg-transparent hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
-                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                          </summary>
-                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                            {years.map(year => (
-                              <li key={year} style={{ width: '100%' }}>
-                                <a
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setSelectedYear(year);
-                                    const details = e.currentTarget.closest('details');
-                                    if (details) details.removeAttribute('open');
-                                  }}
-                                  className="block w-full p-2 text-sm hover:bg-gray-100"
-                                >
-                                  {year}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </details>
-                      </div>
-                    </div>
-                    {invoicedDataLoading && !postLoginWelcomeActive ? (
-                      <div className="flex justify-center items-center py-12">
-                        <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
-                      </div>
-                    ) : !invoicedDataLoading ? (
-                      renderColumnsView('invoiced')
-                    ) : null}
-                  </div>
-                </div>
+                {renderScoreboardTable('agreement', DocumentCheckIcon, departmentPerformanceLoading, { first: true })}
+                {renderScoreboardTable(
+                  paymentScoreboardTab,
+                  paymentScoreboardTab === 'invoiced' ? DocumentTextIcon : BanknotesIcon,
+                  scoreboardLoadingFor(paymentScoreboardTab),
+                  { tabs: PAYMENT_SCOREBOARD_TABS, onTabChange: setPaymentScoreboardTab },
+                )}
+                {renderScoreboardTable('tax-receipt', ReceiptPercentIcon, taxReceiptLoading)}
               </div>
             )}
 
@@ -8817,37 +8966,26 @@ const Dashboard: React.FC = () => {
       </div>
 
 
-      {/* Scoreboard deals modal (Agreement signed / Invoiced count badges) */}
+      {/* Scoreboard deals modal (count badges on every table) */}
       <DashboardScoreboardDealsModal
         isOpen={scoreboardDealsModal != null}
         onClose={() => setScoreboardDealsModal(null)}
         title={
           scoreboardDealsModal
-            ? `${scoreboardDealsModal.tableType === 'agreement' ? 'Agreement signed' : 'Invoiced'} · ${scoreboardDealsModal.departmentName}`
+            ? `${SCOREBOARD_TABLE_LABELS[scoreboardDealsModal.tableType]} · ${scoreboardDealsModal.departmentName}`
             : 'Deals'
         }
         subtitle={scoreboardDealsModal ? `Period: ${scoreboardDealsModal.period}` : undefined}
-        roleColumn={scoreboardDealsModal?.tableType === 'invoiced' ? 'handler' : 'closer'}
-        loading={
-          scoreboardDealsModal
-            ? scoreboardDealsModal.tableType === 'agreement'
-              ? !agreementScoreboardDealsReady
-              : !invoicedScoreboardDealsReady
-            : false
-        }
+        roleColumn={scoreboardDealsModal?.tableType === 'agreement' ? 'closer' : 'handler'}
+        loading={scoreboardDealsModal ? !scoreboardDealsReadyFor(scoreboardDealsModal.tableType) : false}
         deals={
           scoreboardDealsModal
-            ? (
-                (scoreboardDealsModal.tableType === 'agreement'
-                  ? agreementScoreboardDeals
-                  : invoicedScoreboardDeals
-                ).get(
-                  scoreboardDealsCellKey(
-                    scoreboardDealsModal.period,
-                    scoreboardDealsModal.departmentName,
-                  ),
-                ) ?? []
-              )
+            ? scoreboardDealsFor(scoreboardDealsModal.tableType).get(
+                scoreboardDealsCellKey(
+                  scoreboardDealsModal.period,
+                  scoreboardDealsModal.departmentName,
+                ),
+              ) ?? []
             : []
         }
       />
@@ -8862,7 +9000,7 @@ const Dashboard: React.FC = () => {
                   {scoreboardTargetCostModal.targetLabel}
                 </h3>
                 <p className="text-sm text-slate-500 mt-0.5">
-                  {scoreboardTargetCostModal.tableType === 'agreement' ? 'Agreement signed' : 'Invoiced'}
+                  {SCOREBOARD_TABLE_LABELS[scoreboardTargetCostModal.tableType]}
                   {' · '}
                   {scoreboardTargetCostModal.departmentName}
                 </p>
@@ -8878,58 +9016,60 @@ const Dashboard: React.FC = () => {
             </div>
 
             <div className="space-y-3 text-sm">
-              <div className="rounded-xl border border-slate-200 px-3.5 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Handlers &amp; Sales cost
-                </div>
-                <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
-                  ₪{Math.ceil(scoreboardTargetCostModal.handlersSales).toLocaleString()}
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-200 px-3.5 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Partners, Marketing &amp; Finance cost
-                </div>
-                <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
-                  ₪{Math.ceil(scoreboardTargetCostModal.partnersMarketingFinance).toLocaleString()}
-                </div>
-              </div>
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Total employee cost
+                  Monthly payroll budget
                 </div>
                 <div className="mt-1 text-base font-semibold tabular-nums text-slate-800">
-                  ₪{Math.ceil(scoreboardTargetCostModal.costTotal).toLocaleString()}
+                  ₪{Math.ceil(scoreboardTargetCostModal.payrollNis).toLocaleString()}
                 </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Own case-handling payroll plus this department's share of Marketing, Development
+                  &amp; Administration, Accounting &amp; Collections and Sales.
+                </p>
               </div>
               <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-3.5 py-3 space-y-1.5">
                 <div className="flex justify-between gap-3">
-                  <span className="text-slate-600">Last 3m amount</span>
-                  <span className="font-semibold tabular-nums text-slate-800">
-                    ₪{Math.ceil(scoreboardTargetCostModal.periodAmount).toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between gap-3">
                   <span className="text-slate-600">
-                    Top-up ({Math.round(scoreboardTargetCostModal.markup * 100)}% of period)
+                    Payroll-to-revenue ratio
                   </span>
                   <span className="font-semibold tabular-nums text-slate-800">
-                    ₪
-                    {Math.ceil(
-                      scoreboardTargetCostModal.markup * scoreboardTargetCostModal.periodAmount,
-                    ).toLocaleString()}
+                    {Math.round(scoreboardTargetCostModal.ratio * 100)}%
                   </span>
                 </div>
                 <div className="flex justify-between gap-3 border-t border-indigo-100 pt-1.5">
-                  <span className="font-medium text-slate-700">Target</span>
+                  <span className="font-medium text-slate-700">Monthly revenue target</span>
                   <span className="font-bold tabular-nums text-slate-900">
                     ₪{Math.ceil(scoreboardTargetCostModal.targetAmount).toLocaleString()}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 pt-1">
-                  Target = employee cost + ({Math.round(scoreboardTargetCostModal.markup * 100)}% × Last 3m
-                  amount)
+                  Target = monthly payroll ÷ {Math.round(scoreboardTargetCostModal.ratio * 100)}%, so
+                  payroll lands at {Math.round(scoreboardTargetCostModal.ratio * 100)}% of revenue.
+                  Pre-VAT.
                 </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 px-3.5 py-3 space-y-1.5">
+                <div className="flex justify-between gap-3">
+                  <span className="text-slate-600">
+                    Actual, {scoreboardTargetCostModal.periodLabel}
+                  </span>
+                  <span className="font-semibold tabular-nums text-slate-800">
+                    ₪{Math.ceil(scoreboardTargetCostModal.periodAmount).toLocaleString()}
+                  </span>
+                </div>
+                {scoreboardTargetCostModal.periodAmount > 0 && (
+                  <div className="flex justify-between gap-3 border-t border-slate-200 pt-1.5">
+                    <span className="text-slate-600">Payroll at that revenue</span>
+                    <span className="font-semibold tabular-nums text-slate-800">
+                      {Math.round(
+                        (scoreboardTargetCostModal.payrollNis
+                          / scoreboardTargetCostModal.periodAmount) * 100,
+                      )}
+                      %
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 

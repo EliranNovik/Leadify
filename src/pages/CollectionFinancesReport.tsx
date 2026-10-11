@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, CheckBadgeIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
-import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ReceiptPercentIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
 import { PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import * as XLSX from 'xlsx';
@@ -53,8 +53,11 @@ import {
 } from '../lib/proformaExchangeRate';
 import {
   loadPaymentPlanTaxReceipts,
+  taxReceiptRowKey,
   type PaymentPlanTaxReceiptInfo,
 } from '../lib/paymentLinkQueries';
+import type { PaymentPlanTaxInvoiceState } from '../lib/markPaymentPlanTaxInvoiceSent';
+import TaxInvoiceSentDrawer from '../components/finance/TaxInvoiceSentDrawer';
 import type { CollectionFinancesRailBridge } from '../components/finance/collectionFinancesRailBridge';
 
 type MainCategory = {
@@ -94,6 +97,10 @@ export type PaymentRow = {
   invoiceSent?: boolean;
   invoiceSentAt?: string | null;
   invoiceSentByName?: string | null;
+  /** Manual "the tax invoice went out" mark, recorded in the client's Finances tab. */
+  taxInvoiceSent?: boolean;
+  taxInvoiceSentAt?: string | null;
+  taxInvoiceSentByName?: string | null;
   collectedDate: string | null;
   dueDate: string | null;
   /** Legacy only: the `date` column (used for date filter when Due = Ignore). New leads: null. */
@@ -108,6 +115,8 @@ export type PaymentRow = {
   handlerId?: number | null;
   caseNumber: string;
   categoryName: string;
+  /** Physical case file number, as shown on the client's Info tab. */
+  fileId?: string | null;
   notes: string;
   mainCategoryId?: string;
   /** Payment row currency (accounting_currencies.id); used for currency filter. */
@@ -129,35 +138,55 @@ type RowNisAmounts = {
 
 const TAX_RECEIPT_PLAN_ID_BATCH_SIZE = 200;
 
-function mergeTaxReceiptMaps(
-  target: Map<number, PaymentPlanTaxReceiptInfo>,
-  source: Map<number, PaymentPlanTaxReceiptInfo>,
-) {
-  for (const [planId, info] of source) {
-    target.set(planId, info);
-  }
+/**
+ * The receipt key for a collection row.
+ *
+ * Row ids already carry the table the payment came from, which is what keeps a legacy payment's
+ * receipt from being shown against a new payment that happens to share its id.
+ */
+function taxReceiptKeyForRow(row: PaymentRow): string | null {
+  const match = /^(new|legacy)-(\d+)$/.exec(row.id);
+  return match ? taxReceiptRowKey(match[1] === 'legacy', match[2]) : null;
 }
 
 function getTaxReceiptForRow(
   row: PaymentRow,
-  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+  taxReceiptByPlanId: Map<string, PaymentPlanTaxReceiptInfo>,
 ): PaymentPlanTaxReceiptInfo | null {
-  const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
-  if (planId == null) return null;
-  return taxReceiptByPlanId.get(planId) ?? null;
+  const key = taxReceiptKeyForRow(row);
+  return key == null ? null : taxReceiptByPlanId.get(key) ?? null;
 }
 
 function isRowPaidViaPaymentLink(
   row: PaymentRow,
-  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+  taxReceiptByPlanId: Map<string, PaymentPlanTaxReceiptInfo>,
 ): boolean {
-  const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
-  return planId != null && taxReceiptByPlanId.has(planId);
+  const key = taxReceiptKeyForRow(row);
+  return key != null && taxReceiptByPlanId.has(key);
+}
+
+const TAX_RECEIPT_COLLECTED_VALUES = ['yes_with_tax_receipt', 'yes_without_tax_receipt'];
+
+function collectedIncludesTaxReceipt(collected?: string[]): boolean {
+  return Array.isArray(collected) && collected.some((value) => TAX_RECEIPT_COLLECTED_VALUES.includes(value));
+}
+
+/**
+ * Whether a tax receipt actually went out, by either route. Pending and failed Payper attempts do
+ * not count, since nothing reached the client yet.
+ */
+function rowHasTaxReceipt(
+  row: PaymentRow,
+  taxReceiptByPlanId: Map<string, PaymentPlanTaxReceiptInfo>,
+): boolean {
+  if (row.taxInvoiceSent) return true;
+  const info = getTaxReceiptForRow(row, taxReceiptByPlanId);
+  return Boolean(info?.payper_invoice_link?.trim()) || info?.payper_invoice_status === 'success';
 }
 
 function taxReceiptExportLabel(
   row: PaymentRow,
-  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+  taxReceiptByPlanId: Map<string, PaymentPlanTaxReceiptInfo>,
 ): string {
   const info = getTaxReceiptForRow(row, taxReceiptByPlanId);
   const paidViaLink = isRowPaidViaPaymentLink(row, taxReceiptByPlanId);
@@ -168,12 +197,16 @@ function taxReceiptExportLabel(
       : info.payper_invoice_link;
   }
 
-  if (!paidViaLink && !info?.payper_invoice_status) return '—';
-
   const status = info?.payper_invoice_status;
   if (status === 'success') return 'Sent';
   if (status === 'pending') return 'Pending';
   if (status === 'failed') return 'Failed';
+
+  // Nothing came out of Payper, so a hand-recorded send is the whole story.
+  if (row.taxInvoiceSent) {
+    const date = row.taxInvoiceSentAt ? formatRowDate(row.taxInvoiceSentAt) : null;
+    return date && date !== '—' ? `Sent manually ${date}` : 'Sent manually';
+  }
   if (paidViaLink) return 'Not sent';
   return '—';
 }
@@ -181,12 +214,14 @@ function taxReceiptExportLabel(
 function CollectionTaxReceiptCell({
   row,
   taxReceiptByPlanId,
+  onMarkSent,
 }: {
   row: PaymentRow;
-  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>;
+  taxReceiptByPlanId: Map<string, PaymentPlanTaxReceiptInfo>;
+  /** Opens the date picker. Omitted where the row has no payment plan to write against. */
+  onMarkSent?: (row: PaymentRow) => void;
 }) {
   const info = getTaxReceiptForRow(row, taxReceiptByPlanId);
-  const paidViaLink = isRowPaidViaPaymentLink(row, taxReceiptByPlanId);
 
   if (info?.payper_invoice_link?.trim()) {
     return (
@@ -206,15 +241,11 @@ function CollectionTaxReceiptCell({
     );
   }
 
-  if (!paidViaLink && !info?.payper_invoice_status) {
-    return <span className="text-gray-400">—</span>;
-  }
-
   const status = info?.payper_invoice_status;
   if (status === 'success') {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-        <CheckIcon className="h-4 w-4" aria-hidden />
+        <PaperAirplaneIcon className="h-4 w-4" aria-hidden />
         Sent
       </span>
     );
@@ -236,21 +267,55 @@ function CollectionTaxReceiptCell({
     );
   }
 
-  if (paidViaLink) {
+  // Nothing came out of Payper, so a hand-recorded send is the whole story. Dashed to set it
+  // apart from the automated pill above, which carries a verifiable receipt behind it.
+  if (row.taxInvoiceSent) {
+    const pillClass =
+      'inline-flex items-center gap-1 rounded-full border border-dashed border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700';
+    if (!onMarkSent) {
+      return (
+        <span className={pillClass} title={taxInvoiceSentTooltip(row)}>
+          <PaperAirplaneIcon className="h-4 w-4" aria-hidden />
+          Sent
+        </span>
+      );
+    }
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
-        Not sent
-      </span>
+      <button
+        type="button"
+        className={`${pillClass} hover:border-emerald-500 hover:bg-emerald-100`}
+        title={`${taxInvoiceSentTooltip(row)} — click to change`}
+        onClick={() => onMarkSent(row)}
+      >
+        <PaperAirplaneIcon className="h-4 w-4" aria-hidden />
+        Sent
+      </button>
     );
   }
 
-  return <span className="text-gray-400">—</span>;
+  const markButton = onMarkSent ? (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-500 hover:border-indigo-300 hover:text-indigo-600"
+      title="Record that the tax invoice was sent"
+      onClick={() => onMarkSent(row)}
+    >
+      <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+      Create
+    </button>
+  ) : null;
+
+  // No "not sent" badge: the Create button already says as much, and an empty cell where a row
+  // cannot be marked says it just as well.
+  return markButton ?? <span className="text-gray-400">—</span>;
 }
 
 const collectedOptions = [
   { value: 'all', label: 'All' },
   { value: 'yes_with_proforma', label: 'Yes - With Proforma' },
   { value: 'yes_without_proforma', label: 'Yes - Without Proforma' },
+  { value: 'yes_with_tax_receipt', label: 'Yes - With Tax Receipt' },
+  { value: 'yes_without_tax_receipt', label: 'Yes - Without Tax Receipt' },
   { value: 'no_with_proforma', label: 'No - Pending (Proforma)' },
   { value: 'no_with_proforma_sent', label: 'No - Pending (Proforma sent)' },
   { value: 'no_without_proforma', label: 'No - Without Proforma' },
@@ -335,7 +400,16 @@ function collectedAlreadyEncodesInvoiceSent(collected?: string[]): boolean {
   return collected.every((value) => value === 'no_with_proforma' || value === 'no_with_proforma_sent');
 }
 
-function rowMatchesCollectedFilter(row: PaymentRow, collected: string[]): boolean {
+function rowMatchesCollectedFilter(
+  row: PaymentRow,
+  collected: string[],
+  /**
+   * Omitted during the fetch, where the Payper lookup has not run yet. Without it the tax receipt
+   * options only narrow to collected rows, which keeps every candidate alive for the second pass in
+   * `visibleRows` that does have the map.
+   */
+  taxReceiptByPlanId?: Map<string, PaymentPlanTaxReceiptInfo>,
+): boolean {
   if (!Array.isArray(collected) || collected.length === 0) return true;
   let matchesFilter = false;
   if (collected.includes('yes_with_proforma') && row.collected && row.hasProforma) matchesFilter = true;
@@ -347,6 +421,12 @@ function rowMatchesCollectedFilter(row: PaymentRow, collected: string[]): boolea
     matchesFilter = true;
   }
   if (collected.includes('no_without_proforma') && !row.collected && !row.hasProforma) matchesFilter = true;
+  if (collected.includes('yes_with_tax_receipt') && row.collected) {
+    if (!taxReceiptByPlanId || rowHasTaxReceipt(row, taxReceiptByPlanId)) matchesFilter = true;
+  }
+  if (collected.includes('yes_without_tax_receipt') && row.collected) {
+    if (!taxReceiptByPlanId || !rowHasTaxReceipt(row, taxReceiptByPlanId)) matchesFilter = true;
+  }
   return matchesFilter;
 }
 
@@ -366,6 +446,45 @@ function sentToFinanceEmployeeId(plan: { ready_to_pay_by?: unknown; due_by_id?: 
   const raw = isLegacy ? (plan.due_by_id ?? plan.ready_to_pay_by) : plan.ready_to_pay_by;
   const id = Number(raw);
   return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/**
+ * A lead's file number, or null when there is none. Legacy rows use '0000' as a placeholder for
+ * "not assigned yet", which the client's Info tab also treats as blank.
+ */
+function normalizeFileId(value: unknown): string | null {
+  const raw = value == null ? '' : String(value).trim();
+  return raw === '' || raw === '0000' ? null : raw;
+}
+
+function taxInvoiceSentByEmployeeId(plan: { tax_invoice_sent_by?: unknown }): number | null {
+  const id = Number(plan.tax_invoice_sent_by);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/**
+ * The manual tax invoice mark, read off a raw payment row. A date on its own counts as sent, the
+ * same leniency `paymentPlanTaxInvoiceState` applies in the Finances tab.
+ */
+function taxInvoiceRowFields(
+  plan: { tax_invoice_sent?: unknown; tax_invoice_sent_at?: unknown; tax_invoice_sent_by?: unknown },
+  sentByNames?: Map<number, string>,
+): Pick<PaymentRow, 'taxInvoiceSent' | 'taxInvoiceSentAt' | 'taxInvoiceSentByName'> {
+  const sentById = taxInvoiceSentByEmployeeId(plan);
+  return {
+    taxInvoiceSent: Boolean(plan.tax_invoice_sent) || Boolean(plan.tax_invoice_sent_at),
+    taxInvoiceSentAt: (plan.tax_invoice_sent_at as string | null) || null,
+    taxInvoiceSentByName: sentById != null ? sentByNames?.get(sentById) || null : null,
+  };
+}
+
+function taxInvoiceSentTooltip(row: PaymentRow): string {
+  const date = row.taxInvoiceSentAt ? formatRowDate(row.taxInvoiceSentAt) : null;
+  const by = row.taxInvoiceSentByName?.trim();
+  if (date && by && date !== '—') return `Tax invoice sent ${date} by ${by}`;
+  if (date && date !== '—') return `Tax invoice sent ${date}`;
+  if (by) return `Tax invoice sent by ${by}`;
+  return 'Tax invoice marked as sent';
 }
 
 function invoiceSentTooltip(row: PaymentRow): string {
@@ -430,6 +549,8 @@ type SavedCollectionView = {
   showProformaDateColumn: boolean;
   showClientColumn: boolean;
   showHandlerColumn: boolean;
+  showCategoryColumn: boolean;
+  showFileIdColumn: boolean;
   showNotesColumn: boolean;
   showTaxReceiptColumn: boolean;
   displayFilter: DisplayFilter;
@@ -1047,6 +1168,7 @@ const COLLECTION_QUICK_FOCUSES: {
   { id: 'due-no-proforma', label: 'Last 30 due without proforma', icon: DocumentTextIcon },
   { id: 'due-unsent-proforma', label: 'Last 30 due proforma not sent', icon: PaperAirplaneIcon },
   { id: 'due-sent-proforma', label: 'Last 30 due pending, proforma sent', icon: CheckCircleIcon },
+  { id: 'paid-no-tax-receipt', label: 'Last 30 paid without tax receipt', icon: ReceiptPercentIcon },
 ];
 
 const CollectionFinancesReport: React.FC<{
@@ -1070,7 +1192,7 @@ const CollectionFinancesReport: React.FC<{
   });
   const [nisByRowId, setNisByRowId] = useState<Record<string, RowNisAmounts>>({});
   const [taxReceiptByPlanId, setTaxReceiptByPlanId] = useState<
-    Map<number, PaymentPlanTaxReceiptInfo>
+    Map<string, PaymentPlanTaxReceiptInfo>
   >(() => new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1081,6 +1203,8 @@ const CollectionFinancesReport: React.FC<{
   const [notesEdit, setNotesEdit] = useState<{ rowId: string; value: string } | null>(null);
   const [savingHandler, setSavingHandler] = useState(false);
   const [savingNotes, setSavingNotes] = useState(false);
+  /** The row whose manual tax invoice record is open in the drawer. */
+  const [taxInvoiceRowId, setTaxInvoiceRowId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = usePersistedState<string>('collectionFinancesReport_searchQuery', '', {
     storage: 'sessionStorage',
   });
@@ -1120,6 +1244,17 @@ const CollectionFinancesReport: React.FC<{
     true,
     { storage: 'sessionStorage' },
   );
+  const [showCategoryColumn, setShowCategoryColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showCategoryColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  // Off by default: a niche identifier most of the time, so it stays out of the way until asked for.
+  const [showFileIdColumn, setShowFileIdColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showFileIdColumn',
+    false,
+    { storage: 'sessionStorage' },
+  );
   const [showNotesColumn, setShowNotesColumn] = usePersistedState<boolean>(
     'collectionFinancesReport_showNotesColumn',
     true,
@@ -1127,7 +1262,7 @@ const CollectionFinancesReport: React.FC<{
   );
   const [showTaxReceiptColumn, setShowTaxReceiptColumn] = usePersistedState<boolean>(
     'collectionFinancesReport_showTaxReceiptColumn',
-    false,
+    true,
     { storage: 'sessionStorage' },
   );
   const [displayFilter, setDisplayFilter] = usePersistedState<DisplayFilter>(
@@ -1342,10 +1477,26 @@ const CollectionFinancesReport: React.FC<{
     [isRowSearchActive, searchRows, rows],
   );
 
+  const filterNeedsTaxReceipts = collectedIncludesTaxReceipt(filters.collected);
+
   const visibleRows = useMemo(() => {
     const baseRows = isRowSearchActive ? searchRows : rows;
-    return applyDisplayFilterToRows(baseRows, displayFilter);
-  }, [rows, searchRows, displayFilter, isRowSearchActive]);
+    const displayFiltered = applyDisplayFilterToRows(baseRows, displayFilter);
+    // The tax receipt options could not be settled during the fetch, so finish them here now that
+    // the Payper lookup has resolved.
+    if (!filterNeedsTaxReceipts) return displayFiltered;
+    return displayFiltered.filter((row) =>
+      rowMatchesCollectedFilter(row, filters.collected, taxReceiptByPlanId),
+    );
+  }, [
+    rows,
+    searchRows,
+    displayFilter,
+    isRowSearchActive,
+    filterNeedsTaxReceipts,
+    filters.collected,
+    taxReceiptByPlanId,
+  ]);
 
   const sortedVisibleRows = useMemo(
     () => sortCollectionRows(visibleRows, sortColumn, sortDirection),
@@ -1386,13 +1537,15 @@ const CollectionFinancesReport: React.FC<{
   }, [rowSearchQuery]);
 
   const tableColumnCount = useMemo(() => {
-    let count = 8;
+    let count = 7;
     if (showClientColumn) count += 1;
     if (showNisColumn) count += 1;
     if (showProformaDateColumn) count += 1;
     if (showTaxReceiptColumn) count += 1;
     if (showPaidDateColumn) count += 1;
     if (showHandlerColumn) count += 1;
+    if (showCategoryColumn) count += 1;
+    if (showFileIdColumn) count += 1;
     if (showNotesColumn) count += 1;
     return count;
   }, [
@@ -1402,6 +1555,8 @@ const CollectionFinancesReport: React.FC<{
     showTaxReceiptColumn,
     showPaidDateColumn,
     showHandlerColumn,
+    showCategoryColumn,
+    showFileIdColumn,
     showNotesColumn,
   ]);
 
@@ -1778,34 +1933,42 @@ const loadPayments = async ({
     let cancelled = false;
 
     const loadTaxReceipts = async () => {
-      if (!showTaxReceiptColumn || !nisSourceRows.length) {
+      if ((!showTaxReceiptColumn && !filterNeedsTaxReceipts) || !nisSourceRows.length) {
         setTaxReceiptByPlanId(new Map());
         return;
       }
 
-      const planIds = [
-        ...new Set(
-          nisSourceRows
-            .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
-            .filter((id): id is number => id != null),
-        ),
-      ];
+      // Legacy and new ids are gathered separately, because the same number can name a payment in
+      // either table and only the pair identifies a row — see `taxReceiptRowKey`.
+      const planIdsByKind = { legacy: new Set<number>(), new: new Set<number>() };
+      for (const row of nisSourceRows) {
+        const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+        if (planId == null) continue;
+        planIdsByKind[row.leadType === 'legacy' ? 'legacy' : 'new'].add(planId);
+      }
 
-      if (!planIds.length) {
+      if (!planIdsByKind.legacy.size && !planIdsByKind.new.size) {
         setTaxReceiptByPlanId(new Map());
         return;
       }
 
       try {
-        const merged = new Map<number, PaymentPlanTaxReceiptInfo>();
-        for (let i = 0; i < planIds.length; i += TAX_RECEIPT_PLAN_ID_BATCH_SIZE) {
-          const batch = planIds.slice(i, i + TAX_RECEIPT_PLAN_ID_BATCH_SIZE);
-          const batchMap = await loadPaymentPlanTaxReceipts({
-            leadId: '',
-            paymentPlanIds: batch,
-            planIdsOnly: true,
-          });
-          mergeTaxReceiptMaps(merged, batchMap);
+        const merged = new Map<string, PaymentPlanTaxReceiptInfo>();
+        for (const kind of ['legacy', 'new'] as const) {
+          const planIds = [...planIdsByKind[kind]];
+          const isLegacy = kind === 'legacy';
+          for (let i = 0; i < planIds.length; i += TAX_RECEIPT_PLAN_ID_BATCH_SIZE) {
+            const batch = planIds.slice(i, i + TAX_RECEIPT_PLAN_ID_BATCH_SIZE);
+            const batchMap = await loadPaymentPlanTaxReceipts({
+              leadId: '',
+              paymentPlanIds: batch,
+              planIdsOnly: true,
+              isLegacy,
+            });
+            for (const [planId, info] of batchMap) {
+              merged.set(taxReceiptRowKey(isLegacy, planId), info);
+            }
+          }
         }
         if (!cancelled) setTaxReceiptByPlanId(merged);
       } catch (e) {
@@ -1818,7 +1981,7 @@ const loadPayments = async ({
     return () => {
       cancelled = true;
     };
-  }, [nisSourceRows, showTaxReceiptColumn]);
+  }, [nisSourceRows, showTaxReceiptColumn, filterNeedsTaxReceipts]);
 
   const totals = useMemo(() => {
     let estimatedWithVat = 0;
@@ -1877,17 +2040,22 @@ const loadPayments = async ({
         if (showProformaDateColumn) {
           rowData['Proforma Date'] = formatRowDate(row.proformaDate);
         }
-        if (showTaxReceiptColumn) {
-          rowData['Tax receipt'] = taxReceiptExportLabel(row, taxReceiptByPlanId);
-        }
         if (showPaidDateColumn) {
           rowData['Paid Date'] = formatRowDate(row.collectedDate);
+        }
+        if (showTaxReceiptColumn) {
+          rowData['Tax receipt'] = taxReceiptExportLabel(row, taxReceiptByPlanId);
         }
         if (showHandlerColumn) {
           rowData.Handler = row.handlerName || '—';
         }
         rowData.Case = row.caseNumber || '—';
-        rowData.Category = row.categoryName || '—';
+        if (showCategoryColumn) {
+          rowData.Category = row.categoryName || '—';
+        }
+        if (showFileIdColumn) {
+          rowData['File ID'] = row.fileId || '—';
+        }
         if (showNotesColumn) {
           rowData.Notes = row.notes || '';
         }
@@ -1914,6 +2082,8 @@ const loadPayments = async ({
     showTaxReceiptColumn,
     showClientColumn,
     showHandlerColumn,
+    showCategoryColumn,
+    showFileIdColumn,
     showNotesColumn,
   ]);
 
@@ -2271,6 +2441,8 @@ const loadPayments = async ({
       showProformaDateColumn,
       showClientColumn,
       showHandlerColumn,
+      showCategoryColumn,
+      showFileIdColumn,
       showNotesColumn,
       showTaxReceiptColumn,
       displayFilter,
@@ -2289,6 +2461,8 @@ const loadPayments = async ({
     showProformaDateColumn,
     showClientColumn,
     showHandlerColumn,
+    showCategoryColumn,
+    showFileIdColumn,
     showNotesColumn,
     showTaxReceiptColumn,
     displayFilter,
@@ -2303,8 +2477,13 @@ const loadPayments = async ({
       setShowProformaDateColumn(view.showProformaDateColumn);
       setShowClientColumn(view.showClientColumn ?? true);
       setShowHandlerColumn(view.showHandlerColumn ?? true);
+      // Views saved before this column existed should still show it, like a fresh session does.
+      setShowCategoryColumn(view.showCategoryColumn ?? true);
+      // Default off, matching a fresh session, for views saved before this column existed.
+      setShowFileIdColumn(view.showFileIdColumn ?? false);
       setShowNotesColumn(view.showNotesColumn);
-      setShowTaxReceiptColumn(view.showTaxReceiptColumn ?? false);
+      // Views saved before this column existed should still show it, like a fresh session does.
+      setShowTaxReceiptColumn(view.showTaxReceiptColumn ?? true);
       setDisplayFilter(view.displayFilter);
       closeSettingsMenu();
       void loadPaymentsRef.current();
@@ -2386,6 +2565,12 @@ const loadPayments = async ({
       ),
       toggleItem('col-handler', 'Handler column', ViewColumnsIcon, showHandlerColumn, () =>
         setShowHandlerColumn((v) => !v),
+      ),
+      toggleItem('col-category', 'Category column', ViewColumnsIcon, showCategoryColumn, () =>
+        setShowCategoryColumn((v) => !v),
+      ),
+      toggleItem('col-file-id', 'File ID column', ViewColumnsIcon, showFileIdColumn, () =>
+        setShowFileIdColumn((v) => !v),
       ),
       toggleItem('col-paid', 'Paid date column', ViewColumnsIcon, showPaidDateColumn, () =>
         setShowPaidDateColumn((v) => !v),
@@ -2473,14 +2658,18 @@ const loadPayments = async ({
     resetFilters,
     savedViews,
     setDisplayFilter,
+    setShowCategoryColumn,
     setShowClientColumn,
+    setShowFileIdColumn,
     setShowHandlerColumn,
     setShowNisColumn,
     setShowNotesColumn,
     setShowPaidDateColumn,
     setShowProformaDateColumn,
     setShowTaxReceiptColumn,
+    showCategoryColumn,
     showClientColumn,
+    showFileIdColumn,
     showHandlerColumn,
     showNisColumn,
     showNotesColumn,
@@ -2625,6 +2814,36 @@ const loadPayments = async ({
       setSavingHandler(false);
     }
   };
+
+  /**
+   * Records the manual tax invoice send, the same write the client's Finances tab performs. Both
+   * row lists are patched because the table reads from `searchRows` while a row search is active.
+   */
+  const patchTaxInvoiceRow = (rowId: string, fields: Partial<PaymentRow>) => {
+    const patch = (prev: PaymentRow[]) =>
+      prev.map((r) => (r.id === rowId ? { ...r, ...fields } : r));
+    setRows(patch);
+    setSearchRows(patch);
+  };
+
+  const handleOpenTaxInvoiceDrawer = (row: PaymentRow) => {
+    if (parsePaymentPlanIdFromCollectionRowId(row.id) == null) {
+      toast.error('This row has no payment plan to record against');
+      return;
+    }
+    setTaxInvoiceRowId(row.id);
+  };
+
+  const taxInvoiceRow = taxInvoiceRowId
+    ? (isRowSearchActive ? searchRows : rows).find((r) => r.id === taxInvoiceRowId) ?? null
+    : null;
+
+  const taxInvoiceDrawerTarget = (() => {
+    if (!taxInvoiceRow) return null;
+    const planId = parsePaymentPlanIdFromCollectionRowId(taxInvoiceRow.id);
+    if (planId == null) return null;
+    return { paymentPlanId: planId, isLegacy: taxInvoiceRow.leadType === 'legacy' };
+  })();
 
   const handleSaveNotes = async (rowId: string) => {
     if (!notesEdit || notesEdit.rowId !== rowId) {
@@ -2862,6 +3081,21 @@ const loadPayments = async ({
         description="Send the proforma invoice to each selected contact by email and WhatsApp."
         confirmLabel="Send invoice"
         contactLabel={sendInvoiceContactLabel}
+      />
+      <TaxInvoiceSentDrawer
+        open={Boolean(taxInvoiceDrawerTarget)}
+        target={taxInvoiceDrawerTarget}
+        subtitle={[taxInvoiceRow?.leadName, taxInvoiceRow?.clientName].filter(Boolean).join(' \u00b7 ')}
+        onClose={() => setTaxInvoiceRowId(null)}
+        onSaved={(state: PaymentPlanTaxInvoiceState) => {
+          if (!taxInvoiceRowId) return;
+          patchTaxInvoiceRow(taxInvoiceRowId, {
+            taxInvoiceSent: state.sent,
+            taxInvoiceSentAt: state.sentAt,
+            // The name is left for the next load to resolve; the drawer returns only the id.
+            taxInvoiceSentByName: null,
+          });
+        }}
       />
       {notesEdit ? (
         <div className="modal modal-open z-[110]">
@@ -3504,7 +3738,6 @@ const loadPayments = async ({
                     onClick={() => toggleSort('proformaDate')}
                   />
                 ) : null}
-                {showTaxReceiptColumn ? <th>Tax receipt</th> : null}
                 {showPaidDateColumn ? (
                   <SortableTableHeader
                     label="Paid Date"
@@ -3513,9 +3746,11 @@ const loadPayments = async ({
                     onClick={() => toggleSort('paidDate')}
                   />
                 ) : null}
+                {showTaxReceiptColumn ? <th>Tax receipt</th> : null}
                 {showHandlerColumn ? <th>Handler</th> : null}
                 <th>Case</th>
-                <th>Category</th>
+                {showCategoryColumn ? <th>Category</th> : null}
+                {showFileIdColumn ? <th>File ID</th> : null}
                 {showNotesColumn ? <th className="w-20 max-w-[5.5rem]">Notes</th> : null}
               </tr>
             </thead>
@@ -3617,15 +3852,19 @@ const loadPayments = async ({
                       {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
                     </td>
                   ) : null}
-                  {showTaxReceiptColumn ? (
-                  <td>
-                    <CollectionTaxReceiptCell row={row} taxReceiptByPlanId={taxReceiptByPlanId} />
-                  </td>
-                  ) : null}
                   {showPaidDateColumn ? (
                     <td>
                       {row.collectedDate ? new Date(row.collectedDate).toLocaleDateString() : '—'}
                     </td>
+                  ) : null}
+                  {showTaxReceiptColumn ? (
+                  <td>
+                    <CollectionTaxReceiptCell
+                      row={row}
+                      taxReceiptByPlanId={taxReceiptByPlanId}
+                      onMarkSent={handleOpenTaxInvoiceDrawer}
+                    />
+                  </td>
                   ) : null}
                   {showHandlerColumn ? (
                   <td>
@@ -3676,7 +3915,10 @@ const loadPayments = async ({
                   </td>
                   ) : null}
                   <td>{row.caseNumber || '—'}</td>
-                  <td>{row.categoryName || '—'}</td>
+                  {showCategoryColumn ? <td>{row.categoryName || '—'}</td> : null}
+                  {showFileIdColumn ? (
+                    <td className="whitespace-nowrap tabular-nums">{row.fileId || '—'}</td>
+                  ) : null}
                   {showNotesColumn ? (
                   <td className="w-20 max-w-[5.5rem] p-1">
                     <button
@@ -3706,7 +3948,7 @@ export default CollectionFinancesReport;
 async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at');
+    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by');
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
@@ -3763,7 +4005,10 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
     fetchLeadMetadata(leadIds, false),
     fetchHandlerNames(
       dateFilteredPlans
-        .map((plan: any) => sentToFinanceEmployeeId(plan, false))
+        .flatMap((plan: any) => [
+          sentToFinanceEmployeeId(plan, false),
+          taxInvoiceSentByEmployeeId(plan),
+        ])
         .filter((id): id is number => id != null),
     ),
   ]);
@@ -3817,6 +4062,7 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
         const sentById = sentToFinanceEmployeeId(plan, false);
         return sentById != null ? sentByNames.get(sentById) || null : null;
       })(),
+      ...taxInvoiceRowFields(plan, sentByNames),
       collectedDate: paidAt,
       dueDate,
       planDate: null, // New leads have no separate "date" column; date filter uses due_date
@@ -3829,6 +4075,7 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
       categoryName: meta?.categoryName || '—',
+      fileId: meta?.fileId ?? null,
       notes: plan.notes || '',
       mainCategoryId: meta?.mainCategoryId,
       currencyId: (plan.currency_id != null ? Number(plan.currency_id) : null) ?? (plan.currency ? currencySymbolToId(plan.currency) : null),
@@ -3925,7 +4172,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, ready_to_pay_by, due_by_id, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, ready_to_pay_by, due_by_id, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
   // Always filter out cancelled plans
@@ -4015,7 +4262,10 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
     fetchLegacyContactMap(allClientIds),
     fetchHandlerNames(
       activePlans
-        .map((plan: any) => sentToFinanceEmployeeId(plan, true))
+        .flatMap((plan: any) => [
+          sentToFinanceEmployeeId(plan, true),
+          taxInvoiceSentByEmployeeId(plan),
+        ])
         .filter((id): id is number => id != null),
     ),
   ]);
@@ -4085,6 +4335,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         const sentById = sentToFinanceEmployeeId(plan, true);
         return sentById != null ? sentByNames.get(sentById) || null : null;
       })(),
+      ...taxInvoiceRowFields(plan, sentByNames),
       collectedDate: actualDate,
       dueDate,
       planDate,
@@ -4093,6 +4344,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || `#${leadIdKey}`, // Always use lead_id for case number
       categoryName: meta?.categoryName || '—',
+      fileId: meta?.fileId ?? null,
       notes: plan.notes || '',
       mainCategoryId: meta?.mainCategoryId,
       currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,
@@ -4205,6 +4457,7 @@ type LeadMeta = {
   handlerName: string;
   handlerId?: number | null;
   categoryName: string;
+  fileId?: string | null;
   mainCategoryId?: string;
   contactName?: string;
   leadEmail?: string | null;
@@ -4224,7 +4477,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     
     const { data, error } = await supabase
       .from('leads_lead')
-      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id, email')
+      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id, email, file_id')
       .in('id', numericIds);
     if (error) throw error;
     const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
@@ -4299,6 +4552,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
         handlerName: handlerId !== null ? handlerMap.get(handlerId) || '—' : '—',
         handlerId,
         categoryName: cat?.mainCategoryName || cat?.name || lead.category || '—',
+        fileId: normalizeFileId(lead.file_id),
         mainCategoryId: cat?.mainCategoryId,
         contactName: contactName || lead.anchor_full_name || lead.name,
         leadEmail: lead.email || null,
@@ -4310,7 +4564,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
 
   const { data, error } = await supabase
     .from('leads')
-    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id, email')
+    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id, email, file_id')
     .in('id', normalizedIds);
   if (error) throw error;
   const handlerIds = (data || [])
@@ -4383,6 +4637,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
       handlerName: handlerId !== null ? handlerMap.get(handlerId) || '—' : '—',
       handlerId,
       categoryName: categoryMeta?.mainCategoryName || categoryMeta?.name || lead.category || '—',
+      fileId: normalizeFileId(lead.file_id),
       mainCategoryId: categoryMeta?.mainCategoryId,
       contactName: contactName || lead.anchor_full_name || lead.name,
       leadEmail: lead.email || null,
@@ -4580,7 +4835,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const { data: plans, error } = await supabase
       .from('payment_plans')
       .select(
-        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at'
+        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by'
       )
       .eq('lead_id', params.leadUuid)
       .is('cancel_date', null);
@@ -4624,6 +4879,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
         hasProforma,
         invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
       invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
+        ...taxInvoiceRowFields(plan),
         collectedDate: paidAt,
         dueDate,
         planDate: null,
@@ -4633,6 +4889,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
         handlerId: meta?.handlerId ?? null,
         caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
         categoryName: meta?.categoryName || '—',
+        fileId: meta?.fileId ?? null,
         notes: plan.notes || '',
         mainCategoryId: meta?.mainCategoryId,
         currencyId:
@@ -4648,7 +4905,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
   const { data: plans, error } = await supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
     )
     .eq('lead_id', legacyId)
     .is('cancel_date', null);
@@ -4745,6 +5002,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       hasProforma,
       invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
       invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
+      ...taxInvoiceRowFields(plan),
       collectedDate: actualDate,
       dueDate,
       planDate,
@@ -4753,6 +5011,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || `#${lidKey}`,
       categoryName: meta?.categoryName || '—',
+      fileId: meta?.fileId ?? null,
       notes: plan.notes || '',
       mainCategoryId: meta?.mainCategoryId,
       currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,

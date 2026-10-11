@@ -43,10 +43,11 @@ export async function fetchInvoicedTotalDueNisForDateRange(
 }
 
 /**
- * Income base in NIS for the contribution report, for payments due in [fromDateStr, toDateStr].
+ * Income base in NIS for the contribution report, for [fromDateStr, toDateStr].
  *
- * Same installments and same window as `fetchInvoicedTotalDueNisForDateRange`, but from October 2026
- * only those whose invoice was actually sent count — see `sumContributionIncomeNisInRange`.
+ * From October 2026 a payment counts because its invoice was actually sent, and it lands in the window
+ * the invoice went out in rather than the one it falls due in — see `sumContributionIncomeNisInRange`.
+ * Before that date the due date is still what places it.
  *
  * Kept separate from the due-based total on purpose: that one feeds the Dashboard Invoiced scoreboard
  * and the Sales contribution report, which must keep reporting everything that fell due.
@@ -95,6 +96,8 @@ export async function fetchContributionIncomeBreakdownNisForDateRange(
       dueTo: rangeEnd,
       // An invoiced row that was never flagged ready to pay is still income from October on.
       includeInvoiceSentNotReadyToPay: true,
+      // Income is dated by the day the invoice went out, so rows falling due later must be fetched too.
+      includeInvoiceSentInWindow: true,
     });
     const germanAustrianRows = installments.filter((row) =>
       isGermanOrAustrianCitizenship(row.mainCategoryName),

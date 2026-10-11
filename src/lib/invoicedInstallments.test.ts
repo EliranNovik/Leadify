@@ -81,6 +81,50 @@ test('contribution income: an inverted or empty range is zero, not a full sum', 
   assert.equal(sumContributionIncomeNisInRange(rows, '', '2026-10-31'), 0);
 });
 
+/**
+ * Income is dated by the day the invoice went out, which is what makes the contribution report's
+ * Total income comparable with the Dashboard Invoiced scoreboard. Only rows invoiced from the cutover
+ * on move; anything invoiced before it keeps its due date.
+ */
+function invoicedOn(
+  dueDate: string,
+  invoiceSentDate: string,
+  amountNis: number,
+): InvoicedInstallment {
+  return { ...installment(dueDate, amountNis, true), invoiceSentDate } as InvoicedInstallment;
+}
+
+test('contribution income: a row invoiced in the window counts there, not in its due month', () => {
+  const row = invoicedOn('2027-03-15', '2026-10-07', 1000);
+  assert.equal(sumContributionIncomeNisInRange([row], '2026-10-01', '2026-10-31'), 1000);
+  assert.equal(sumContributionIncomeNisInRange([row], '2027-03-01', '2027-03-31'), 0);
+});
+
+test('contribution income: a row invoiced before the cutover stays in its due month', () => {
+  const row = invoicedOn('2026-12-15', '2026-09-20', 1000);
+  assert.equal(sumContributionIncomeNisInRange([row], '2026-12-01', '2026-12-31'), 1000);
+  assert.equal(sumContributionIncomeNisInRange([row], '2026-09-01', '2026-09-30'), 0);
+});
+
+test('contribution income: no row is counted in two windows', () => {
+  const rows = [
+    invoicedOn('2027-03-15', '2026-10-07', 1000), // dated October
+    invoicedOn('2026-12-15', '2026-09-20', 500), // dated December, its due month
+  ];
+  const whole = sumContributionIncomeNisInRange(rows, '2026-09-01', '2027-03-31');
+  const months = [
+    ['2026-09-01', '2026-09-30'],
+    ['2026-10-01', '2026-10-31'],
+    ['2026-11-01', '2026-11-30'],
+    ['2026-12-01', '2026-12-31'],
+    ['2027-01-01', '2027-01-31'],
+    ['2027-02-01', '2027-02-28'],
+    ['2027-03-01', '2027-03-31'],
+  ].reduce((sum, [from, to]) => sum + sumContributionIncomeNisInRange(rows, from, to), 0);
+  assert.equal(whole, 1500);
+  assert.equal(months, whole);
+});
+
 test('the due-based total that feeds the Dashboard still ignores invoice_sent', () => {
   const rows = [
     installment('2026-10-05', 1000, false),

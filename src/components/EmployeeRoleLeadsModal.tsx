@@ -17,7 +17,9 @@ import {
 import {
   DUE_INVOICED_EXTRA_COLUMNS,
   DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
+  applyDueInvoicedWindow,
   dueInvoicedAllRowsFilter,
+  dueInvoicedIncomeDate,
   dueInvoicedReadyToPayFilter,
   scopeDueInvoicedQuery,
   scopeLegacyInvoicedWithoutDueDate,
@@ -275,12 +277,16 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
         fromDate,
         toDate
       );
+      const paymentWindow = { from: fromDateTimeForPayments, to: toDateTimeForPayments };
+      const countsReadyToPay = dueInvoicedReadyToPayFilter(paymentWindow);
+      const countsAllRows = dueInvoicedAllRowsFilter(paymentWindow);
       const netInstallmentByPayment = new Map<string, { amountNis: number }>();
       try {
         const { installments } = await fetchInvoicedInstallments({
           dueFrom: fromDate,
           dueTo: toDate,
           includeInvoiceSentNotReadyToPay: true,
+          includeInvoiceSentInWindow: true,
         });
         installments.forEach((row) => {
           netInstallmentByPayment.set(`${row.source}:${row.paymentId}`, row);
@@ -335,12 +341,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             .in('lead_id', handlerNewLeadIds),
         );
 
-        if (fromDateTimeForPayments) {
-          newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTimeForPayments);
-        }
-        if (toDateTimeForPayments) {
-          newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTimeForPayments);
-        }
+        newPaymentsQuery = applyDueInvoicedWindow(newPaymentsQuery, paymentWindow);
 
         const { data: newPayments, error: newPaymentsError } = await newPaymentsQuery;
 
@@ -443,7 +444,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             newPayments.forEach(payment => {
               // The widened query above also returns rows that are merely invoiced or merely due; this is
               // where the period's rule decides which of them is income.
-              if (!dueInvoicedReadyToPayFilter(payment)) return;
+              if (!countsReadyToPay(payment)) return;
 
               const lead = newLeads.find(l => l.id === payment.lead_id);
               if (!lead) return;
@@ -509,7 +510,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 notes: payment.notes || '—',
                 leadType: 'new',
                 leadId: payment.lead_id,
-                dueAt: payment.due_date || payment.invoice_sent_at || payment.invoice_send_automation_sent_at || fromDate,
+                dueAt: dueInvoicedIncomeDate(payment) || fromDate,
               });
             });
           }
@@ -549,12 +550,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
           .is('cancel_date', null)
           .in('lead_id', handlerLegacyLeadIds);
 
-        if (fromDateTimeForPayments) {
-          legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTimeForPayments);
-        }
-        if (toDateTimeForPayments) {
-          legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTimeForPayments);
-        }
+        legacyPaymentsQuery = applyDueInvoicedWindow(legacyPaymentsQuery, paymentWindow);
 
         const { data: legacyDuePayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
 
@@ -660,7 +656,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             legacyPayments.forEach((payment: any) => {
               // `dueInvoicedAllRowsFilter`, not the ready-to-pay one: this query never gated on
               // `ready_to_pay`, and pre-October periods have to keep counting exactly what they did.
-              if (!dueInvoicedAllRowsFilter(payment)) return;
+              if (!countsAllRows(payment)) return;
 
               const lead = legacyLeads.find(l => {
                 if (l.id === payment.lead_id) return true;
@@ -739,7 +735,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 notes: payment.notes || '—',
                 leadType: 'legacy',
                 leadId: `legacy_${lead.id}`,
-                dueAt: payment.due_date || payment.invoice_sent_at || payment.invoice_send_automation_sent_at || payment.date || fromDate,
+                dueAt: dueInvoicedIncomeDate(payment) || fromDate,
               });
             });
           }

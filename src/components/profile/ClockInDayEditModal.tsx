@@ -11,6 +11,8 @@ import { unavailabilityDateLabel } from '../../lib/employeeUnavailabilities';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import {
+  DEFAULT_OVERTIME_APPROVAL_BASE_HOURS,
+  fetchOvertimeApprovalBaseHours,
   overtimeApprovalRequiredError,
   uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
@@ -63,12 +65,20 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
   const [overtimeFiles, setOvertimeFiles] = useState<Record<number, File | null>>({});
+  /**
+   * The employee's contracted base hours, past which a session needs Michael's approval.
+   *
+   * Seeded with the company default so the first render has a threshold rather than treating the
+   * employee as having none, then replaced once the contract loads.
+   */
+  const [baseHours, setBaseHours] = useState(DEFAULT_OVERTIME_APPROVAL_BASE_HOURS);
 
   useEffect(() => {
     if (!isOpen) return;
     setFormRows(sessions.map((s) => clockInSessionToFormValues(s)));
     setOvertimeFiles({});
     void fetchActiveClockInLocations().then(setWorkplaces);
+    void fetchOvertimeApprovalBaseHours(employeeId).then(setBaseHours);
   }, [isOpen, sessions, employeeId]);
 
   const updateRow = (id: number, patch: Partial<SessionFormRow>) => {
@@ -88,7 +98,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   );
 
   const rowMissingOvertimeDoc = (row: SessionFormRow): boolean => {
-    if (!clockInOutTimesExceedOvertimeBase(row.clockInTime, row.clockOutTime)) {
+    if (!clockInOutTimesExceedOvertimeBase(row.clockInTime, row.clockOutTime, baseHours)) {
       return false;
     }
     return !overtimeFiles[row.id] && !existingOvertimeById[row.id]?.path;
@@ -102,13 +112,17 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
       const rowsToSave: ClockInSessionUpdate[] = [];
       for (const row of formRows) {
         const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
-        const exceeds = clockInOutTimesExceedOvertimeBase(row.clockInTime, row.clockOutTime);
+        const exceeds = clockInOutTimesExceedOvertimeBase(
+          row.clockInTime,
+          row.clockOutTime,
+          baseHours,
+        );
         const file = overtimeFiles[row.id] ?? null;
         let overtimeApproval = row.overtimeApproval ?? null;
         if (exceeds && file) {
           overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, file);
         } else if (exceeds && !existingOvertimeById[row.id]?.path) {
-          throw overtimeApprovalRequiredError();
+          throw overtimeApprovalRequiredError(baseHours);
         }
         rowsToSave.push({
           ...row,
@@ -133,6 +147,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
           approveAutomatically: !clockInOutTimesExceedOvertimeBase(
             row.clockInTime,
             row.clockOutTime,
+            baseHours,
           ),
         });
       } else {
@@ -174,7 +189,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
     const missing = formRows.find(rowMissingOvertimeDoc);
     if (missing) {
-      toast.error(overtimeApprovalRequiredError().message);
+      toast.error(overtimeApprovalRequiredError(baseHours).message);
       return;
     }
 
@@ -266,6 +281,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
               const exceeds = clockInOutTimesExceedOvertimeBase(
                 row.clockInTime,
                 row.clockOutTime,
+                baseHours,
               );
               const ramatGanRow = (() => {
                 const wp = rowWorkplace(row);
@@ -332,6 +348,7 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
                       clockOutTime={row.clockOutTime}
                       dateKeys={[dateKey]}
                       notes={row.notes}
+                      baseHours={baseHours}
                       file={overtimeFiles[row.id] ?? null}
                       onFileChange={(file) =>
                         setOvertimeFiles((prev) => ({ ...prev, [row.id]: file }))

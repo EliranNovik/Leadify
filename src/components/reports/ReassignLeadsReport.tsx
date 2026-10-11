@@ -6,7 +6,17 @@ import { supabase, isAuthError, tryRefreshThenExpire } from '../../lib/supabase'
 import { usePersistedFilters, usePersistedState } from '../../hooks/usePersistedState';
 import { getStageName, getStageColour, fetchStageNames } from '../../lib/stageUtils';
 import { convertToNIS } from '../../lib/currencyConversion';
+import { Bars3Icon, Squares2X2Icon } from '@heroicons/react/24/outline';
+import { PIPELINE_TABLE_SHELL } from '../pipeline/pipelineUi';
 import FloatingFilterBar from './FloatingFilterBar';
+import ReassignNotifyEmailModal from './ReassignNotifyEmailModal';
+import {
+    MailboxNotConnectedError,
+    sendReassignNotifications,
+    type ReassignNotifyLanguage,
+    type ReassignNotifyLead,
+    type ReassignNotifyRole,
+} from '../../lib/reassignNotificationEmail';
 
 const isUnassignedHandlerValue = (value: string | null | undefined): boolean => {
     if (!value) return true;
@@ -15,6 +25,37 @@ const isUnassignedHandlerValue = (value: string | null | undefined): boolean => 
 };
 
 /** Persisted filter value: this role must have no assignee (null / placeholders / legacy text). */
+const REASSIGN_ROLE_LABELS: { [key: string]: string } = {
+    scheduler: 'Scheduler',
+    closer: 'Closer',
+    meetingManager: 'Meeting Manager',
+    handler: 'Handler',
+    helper: 'Helper',
+    expert: 'Expert',
+    retainer_handler: 'Retention Handler',
+};
+
+/**
+ * Roles whose reassignment the client is told about by email, and which therefore get the
+ * confirmation modal rather than a plain confirm dialog. The rest are internal and have no
+ * client-facing template.
+ */
+const REASSIGN_NOTIFY_ROLE_BY_KEY: { [key: string]: ReassignNotifyRole } = {
+    handler: 'handler',
+    retainer_handler: 'retainer_handler',
+};
+
+/** A report row reduced to what the notification needs: who to write to and in which language. */
+const toReassignNotifyLead = (lead: any): ReassignNotifyLead => ({
+    id: lead.id?.toString() || '',
+    leadType: lead.lead_type === 'legacy' ? 'legacy' : 'new',
+    leadNumber: String(lead.display_lead_number || lead.lead_number || lead.id || ''),
+    name: String(lead.name || ''),
+    categoryId: lead.category_id ?? null,
+    // Already resolved to a language name ('EN', 'HE', …) when the results were built.
+    language: lead.language ?? null,
+});
+
 const REASSIGN_ROLE_FILTER_NONE = '__REASSIGN_ROLE_NONE__';
 const REASSIGN_ROLE_NONE_LABEL = 'NONE (unassigned)';
 
@@ -58,6 +99,252 @@ type ReassignRoleFilterTab =
     | 'expert'
     | 'retainer_handler';
 
+/**
+ * A lead's `active_handler_type`: which of its two handlers currently owns the case. This is the
+ * split MyCasesPage is built around — its Active table is type 2, its Non-Active table is type 1.
+ */
+const ACTIVE_HANDLER_TYPE = { handler: 2, retention: 1 } as const;
+type ActiveHandlerFilterValue = '' | keyof typeof ACTIVE_HANDLER_TYPE;
+
+/**
+ * The Handler and Retention tabs both filter on that one column, so they are two views of a single
+ * setting rather than two filters: "active" on the Handler tab is the same condition as
+ * "non-active" on the Retention tab. Keeping one value is what stops a user asking for leads where
+ * both handlers are the active one, which no lead can be.
+ */
+const activeHandlerFilterOptions = (
+    tab: 'handler' | 'retainer_handler',
+): Array<{ value: ActiveHandlerFilterValue; label: string }> =>
+    tab === 'handler'
+        ? [
+            { value: '', label: 'Any' },
+            { value: 'handler', label: 'Active handler' },
+            { value: 'retention', label: 'Non-active handler' },
+        ]
+        : [
+            { value: '', label: 'Any' },
+            { value: 'retention', label: 'Active retention' },
+            { value: 'handler', label: 'Non-active retention' },
+        ];
+
+/** Shared look for the small pill filters sitting under a role's employee picker. */
+const reassignPillClass = (selected: boolean): string =>
+    `btn btn-sm rounded-full normal-case text-sm ${selected ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`;
+
+const ReassignActiveHandlerFilter: React.FC<{
+    tab: 'handler' | 'retainer_handler';
+    value: ActiveHandlerFilterValue;
+    onChange: (next: ActiveHandlerFilterValue) => void;
+}> = ({ tab, value, onChange }) => (
+    <div className="mt-3">
+        <div role="group" aria-label="Active handler" className="flex flex-wrap gap-1">
+            {activeHandlerFilterOptions(tab).map(({ value: optionValue, label }) => (
+                <button
+                    key={optionValue || 'any'}
+                    type="button"
+                    aria-pressed={value === optionValue}
+                    className={reassignPillClass(value === optionValue)}
+                    onClick={() => onChange(optionValue)}
+                >
+                    {label}
+                </button>
+            ))}
+        </div>
+        <label className="block text-sm font-medium mt-2">Active state:</label>
+    </div>
+);
+
+/** Black or white, whichever stays legible on the given background. */
+const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#111827';
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+        sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+        return '#111827';
+    }
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.6 ? '#111827' : '#ffffff';
+};
+
+/** Stage pill in the stage's own colour. Shared by the card and list views. */
+const ReassignStageBadge: React.FC<{ stage: string | number | null | undefined }> = ({ stage }) => {
+    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
+
+    const stageStr = String(stage);
+    const stageName = getStageName(stageStr);
+    const stageColour = getStageColour(stageStr);
+    const backgroundColor = stageColour || '#3f28cd';
+
+    return (
+        <span
+            className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+            style={{
+                backgroundColor,
+                borderColor: backgroundColor,
+                color: stageColour ? getContrastingTextColor(stageColour) : '#ffffff',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                display: 'inline-block',
+            }}
+            title={stageName}
+        >
+            {stageName}
+        </span>
+    );
+};
+
+/** An employee's photo, falling back to their initials. Shared by the card and list views. */
+const ReassignRoleAvatar: React.FC<{
+    name: string;
+    photoUrl?: string | null;
+    tone: 'primary' | 'secondary';
+    className?: string;
+}> = ({ name, photoUrl, tone, className = 'h-9 w-9 sm:h-10 sm:w-10' }) =>
+    photoUrl ? (
+        <img
+            src={photoUrl}
+            alt=""
+            className={`${className} shrink-0 rounded-full object-cover`}
+        />
+    ) : (
+        <div
+            className={`${className} flex shrink-0 items-center justify-center rounded-full text-[11px] font-bold sm:text-xs ${tone === 'primary' ? 'bg-primary/18 text-primary' : 'bg-secondary/18 text-secondary'}`}
+        >
+            {name
+                .split(' ')
+                .map(word => word[0])
+                .join('')
+                .toUpperCase()
+                .slice(0, 2)}
+        </div>
+    );
+
+/** The seven role filters, each held in its own piece of state. */
+type ReassignRoleFilterKey =
+    | 'meetingScheduler'
+    | 'closer'
+    | 'meetingManager'
+    | 'handler'
+    | 'helper'
+    | 'expert'
+    | 'retainer_handler';
+
+/** Each tab and the filter key holding its employee. Only the scheduler's two names differ. */
+const ROLE_TAB_FILTER_KEY: Record<ReassignRoleFilterTab, ReassignRoleFilterKey> = {
+    scheduler: 'meetingScheduler',
+    closer: 'closer',
+    meetingManager: 'meetingManager',
+    handler: 'handler',
+    helper: 'helper',
+    expert: 'expert',
+    retainer_handler: 'retainer_handler',
+};
+
+/**
+ * The employee a role is filtered by, drawn inside that role's search box so the field itself says
+ * who is selected. Absolutely positioned over the input, which therefore needs matching padding.
+ */
+const ReassignRoleFieldEmployee: React.FC<{
+    employee: { display_name: string; photo_url?: string | null };
+    onClear: () => void;
+}> = ({ employee, onClear }) => (
+    <>
+        <span className="pointer-events-none absolute left-2.5 top-[1.5rem] -translate-y-1/2">
+            <ReassignRoleAvatar
+                name={employee.display_name}
+                photoUrl={employee.photo_url}
+                tone="primary"
+                className="h-8 w-8"
+            />
+        </span>
+        <button
+            type="button"
+            className="btn btn-ghost btn-xs absolute right-1.5 top-[1.5rem] -translate-y-1/2 text-error hover:bg-error/10"
+            title="Remove filter"
+            onClick={onClear}
+        >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+        </button>
+    </>
+);
+
+/**
+ * The H | R switch for which of a lead's two handlers currently owns the case, i.e. its
+ * `active_handler_type`. The sliding pill is a positioned element rather than a background change
+ * so the movement reads as one control with two sides.
+ */
+const ReassignActiveToggle: React.FC<{
+    activeType: 1 | 2;
+    disabled: boolean;
+    onPick: (type: 1 | 2, e: React.MouseEvent) => void;
+    className?: string;
+}> = ({ activeType, disabled, onPick, className = 'h-[1.875rem] w-[5rem]' }) => (
+    <div
+        className={`relative grid ${className} shrink-0 grid-cols-2 rounded-full border border-base-content/[0.06] bg-base-300/25 p-[3px] shadow-inner`}
+        role="group"
+        aria-label="Who is active on the case"
+    >
+        <div
+            aria-hidden
+            className={`pointer-events-none absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(50%-4.5px)] rounded-full shadow-sm transition-[transform,background-color] duration-300 ease-[cubic-bezier(0.25,0.85,0.35,1)] will-change-transform ${activeType === 1 ? 'translate-x-[calc(100%+3px)] bg-blue-500' : 'translate-x-0 bg-emerald-500'}`}
+        />
+        {([2, 1] as const).map(type => (
+            <button
+                key={type}
+                type="button"
+                disabled={disabled}
+                aria-pressed={activeType === type}
+                title={type === 2 ? 'Handler is active' : 'Retention is active'}
+                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${activeType === type ? 'text-white' : 'text-base-content/40 hover:text-base-content/65'}`}
+                onClick={e => onPick(type, e)}
+            >
+                {type === 2 ? 'H' : 'R'}
+            </button>
+        ))}
+    </div>
+);
+
+/** Narrows a role's leads to the ones where the *other* handler role has nobody assigned. */
+const ReassignMissingRoleFilter: React.FC<{
+    /** Names the role being required to be empty, e.g. 'Missing retention'. */
+    missingLabel: string;
+    fieldLabel: string;
+    missing: boolean;
+    onChange: (missing: boolean) => void;
+}> = ({ missingLabel, fieldLabel, missing, onChange }) => (
+    <div className="mt-3">
+        <div role="group" aria-label={fieldLabel} className="flex flex-wrap gap-1">
+            <button
+                type="button"
+                aria-pressed={!missing}
+                className={reassignPillClass(!missing)}
+                onClick={() => onChange(false)}
+            >
+                Any
+            </button>
+            <button
+                type="button"
+                aria-pressed={missing}
+                className={reassignPillClass(missing)}
+                onClick={() => onChange(true)}
+            >
+                {missingLabel}
+            </button>
+        </div>
+        <label className="block text-sm font-medium mt-2">{fieldLabel}</label>
+    </div>
+);
+
 type ReassignEmployeeOption = { id: number; display_name: string; photo_url?: string | null };
 
 const ReassignRoleEmployeeRow: React.FC<{
@@ -81,11 +368,11 @@ const ReassignRoleEmployeeRow: React.FC<{
                 <img
                     src={emp.photo_url!}
                     alt={emp.display_name}
-                    className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-base-300/80"
+                    className="h-8 w-8 shrink-0 rounded-full object-cover"
                     onError={() => setPhotoFailed(true)}
                 />
             ) : (
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary ring-1 ring-base-300/80">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
                     {getInitials(emp.display_name)}
                 </div>
             )}
@@ -288,12 +575,17 @@ const ReassignLeadsReport: React.FC = () => {
         helper: '',
         expert: '',
         retainer_handler: '',
+        /** '' | 'handler' | 'retention' — which of the two is the lead's active handler. */
+        activeHandlerType: '',
         eligibilityDeterminedOnly: false,
         selectedLeadIds: [] as string[]
     }, {
         storage: 'sessionStorage',
     });
     const [reassignResults, setReassignResults] = usePersistedState<any[]>('reassignLeadsReport_results', [], {
+        storage: 'sessionStorage',
+    });
+    const [viewMode, setViewMode] = usePersistedState<'list' | 'cards'>('reassignLeadsReport_viewMode', 'list', {
         storage: 'sessionStorage',
     });
     const [reassignLoading, setReassignLoading] = useState(false);
@@ -304,6 +596,20 @@ const ReassignLeadsReport: React.FC = () => {
         storage: 'sessionStorage',
     });
     const [reassigning, setReassigning] = useState(false);
+    /**
+     * The pending case-handler / retention-handler reassignment awaiting confirmation.
+     *
+     * Holds its own copy of the chosen leads because the assignment clears the table selection, and
+     * the emails are addressed after that has happened.
+     */
+    const [notifyFlow, setNotifyFlow] = useState<{
+        role: ReassignNotifyRole;
+        employeeId: number;
+        employeeName: string;
+        leads: ReassignNotifyLead[];
+    } | null>(null);
+    const [notifySending, setNotifySending] = useState(false);
+    const [notifyProgress, setNotifyProgress] = useState<{ done: number; total: number } | null>(null);
     const [showActiveHandlerModal, setShowActiveHandlerModal] = useState(false);
     const [activeHandlerTypeChoice, setActiveHandlerTypeChoice] = useState<1 | 2>(2);
     const [savingActiveHandlerType, setSavingActiveHandlerType] = useState(false);
@@ -540,25 +846,6 @@ const ReassignLeadsReport: React.FC = () => {
         } else {
             return lead.number_of_applicants_meeting ?? null;
         }
-    };
-
-    // Helper function to calculate contrasting text color based on background
-    const getContrastingTextColor = (hexColor?: string | null) => {
-        if (!hexColor) return '#111827';
-        let sanitized = hexColor.trim();
-        if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
-        if (sanitized.length === 3) {
-            sanitized = sanitized.split('').map(char => char + char).join('');
-        }
-        if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
-            return '#111827';
-        }
-        const r = parseInt(sanitized.slice(0, 2), 16) / 255;
-        const g = parseInt(sanitized.slice(2, 4), 16) / 255;
-        const b = parseInt(sanitized.slice(4, 6), 16) / 255;
-
-        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        return luminance > 0.6 ? '#111827' : '#ffffff';
     };
 
     // Scroll to top when scrolled to bottom (to access assign input and reassign button)
@@ -1383,6 +1670,14 @@ const ReassignLeadsReport: React.FC = () => {
                     }
                 }
             }
+            if (reassignFilters.activeHandlerType) {
+                // Plain equality: the column holds 1 or 2 on every row of both lead tables, so
+                // there is no unset third state to fold in here.
+                leadsQuery = leadsQuery.eq(
+                    'active_handler_type',
+                    ACTIVE_HANDLER_TYPE[reassignFilters.activeHandlerType as keyof typeof ACTIVE_HANDLER_TYPE],
+                );
+            }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
                 console.log('🔍 Adding selected lead IDs filter for new leads:', reassignFilters.selectedLeadIds);
                 // Filter by IDs (only new leads, not legacy)
@@ -1661,6 +1956,12 @@ const ReassignLeadsReport: React.FC = () => {
                         legacyLeadsQuery = legacyLeadsQuery.eq('retainer_handler_id', employee.id);
                     }
                 }
+            }
+            if (reassignFilters.activeHandlerType) {
+                legacyLeadsQuery = legacyLeadsQuery.eq(
+                    'active_handler_type',
+                    ACTIVE_HANDLER_TYPE[reassignFilters.activeHandlerType as keyof typeof ACTIVE_HANDLER_TYPE],
+                );
             }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
                 console.log('🔍 Adding selected lead IDs filter for legacy leads:', reassignFilters.selectedLeadIds);
@@ -1949,35 +2250,17 @@ const ReassignLeadsReport: React.FC = () => {
         }
     };
 
-    // Re-assign leads function
-    const handleReassignLeads = async () => {
-        if (selectedLeads.size === 0) {
-            toast.error('Please select at least one lead.');
-            return;
-        }
-
-        if (!selectedEmployeeForReassign || !selectedRoleForReassign) {
-            toast.error('Choose a role to assign and an employee.');
-            return;
-        }
-
-        const roleLabels: { [key: string]: string } = {
-            scheduler: 'Scheduler',
-            closer: 'Closer',
-            meetingManager: 'Meeting Manager',
-            handler: 'Handler',
-            helper: 'Helper',
-            expert: 'Expert',
-            retainer_handler: 'Retention Handler',
-        };
-
-        const roleName = roleLabels[selectedRoleForReassign] || selectedRoleForReassign;
-        const confirmReassign = confirm(
-            `Assign ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} selected lead(s)?\n\n` +
-                `Only the ${roleName} field will be updated; other roles on each lead stay unchanged.`
-        );
-        if (!confirmReassign) return;
-
+    /**
+     * Apply the role change to the selected leads.
+     *
+     * Split out of `handleReassignLeads` so the confirmation modal can run it from either of its
+     * buttons: the assignment is the same work whether or not the clients are emailed afterwards.
+     *
+     * @returns true when the change was written, so a caller can hold off on notifying clients
+     *   about something that did not happen.
+     */
+    const performReassign = async (): Promise<boolean> => {
+        const roleName = REASSIGN_ROLE_LABELS[selectedRoleForReassign] || selectedRoleForReassign;
         setReassigning(true);
         try {
             const account = instance?.getAllAccounts()[0];
@@ -2104,7 +2387,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
 
             toast.success(
-                `Assigned ${selectedEmployeeForReassign} as ${roleLabels[selectedRoleForReassign]} on ${selectedLeads.size} lead(s). Other roles were not changed.`
+                `Assigned ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} lead(s). Other roles were not changed.`
             );
 
             // Keep leads in the list (search filter may still apply); clear selection and assign bar
@@ -2112,11 +2395,129 @@ const ReassignLeadsReport: React.FC = () => {
             setSelectedEmployeeForReassign('');
             setAssignEmployeeSearchTerm('');
 
+            return true;
         } catch (error) {
             console.error('Error assigning role on leads:', error);
             toast.error('Failed to assign role. Please try again.');
+            return false;
         } finally {
             setReassigning(false);
+        }
+    };
+
+    /**
+     * The bulk "Assign role" button.
+     *
+     * Case handler and retention handler open the confirmation modal, because those two are the ones
+     * the client gets told about and the list of who is about to be emailed is worth seeing first.
+     * Every other role is internal, so it keeps the original confirm dialog.
+     */
+    const handleReassignLeads = async () => {
+        if (selectedLeads.size === 0) {
+            toast.error('Please select at least one lead.');
+            return;
+        }
+
+        if (!selectedEmployeeForReassign || !selectedRoleForReassign) {
+            toast.error('Choose a role to assign and an employee.');
+            return;
+        }
+
+        const roleName = REASSIGN_ROLE_LABELS[selectedRoleForReassign] || selectedRoleForReassign;
+        const notifyRole = REASSIGN_NOTIFY_ROLE_BY_KEY[selectedRoleForReassign];
+
+        if (notifyRole) {
+            const employee = employees.find(emp => emp.display_name === selectedEmployeeForReassign);
+            if (!employee) {
+                toast.error('That employee could not be found. Pick someone from the list.');
+                return;
+            }
+            setNotifyFlow({
+                role: notifyRole,
+                employeeId: employee.id,
+                employeeName: employee.display_name,
+                // Captured now: the assignment clears the selection before the emails go out.
+                leads: reassignResults
+                    .filter(lead => selectedLeads.has(lead.id?.toString() || ''))
+                    .map(toReassignNotifyLead),
+            });
+            return;
+        }
+
+        const confirmReassign = confirm(
+            `Assign ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} selected lead(s)?\n\n` +
+                `Only the ${roleName} field will be updated; other roles on each lead stay unchanged.`
+        );
+        if (!confirmReassign) return;
+
+        await performReassign();
+    };
+
+    const closeNotifyFlow = () => {
+        setNotifyFlow(null);
+        setNotifyProgress(null);
+    };
+
+    const handleAssignWithoutEmail = async () => {
+        setNotifySending(true);
+        try {
+            await performReassign();
+            closeNotifyFlow();
+        } finally {
+            setNotifySending(false);
+        }
+    };
+
+    const handleAssignAndEmail = async (options: {
+        language: ReassignNotifyLanguage;
+        emailLeadIds: string[];
+    }) => {
+        const flow = notifyFlow;
+        if (!flow) return;
+
+        setNotifySending(true);
+        try {
+            // Nothing is emailed about an assignment that failed to save.
+            if (!(await performReassign())) return;
+
+            const leads = flow.leads.filter(lead => options.emailLeadIds.includes(lead.id));
+            if (leads.length === 0) {
+                closeNotifyFlow();
+                return;
+            }
+
+            setNotifyProgress({ done: 0, total: leads.length });
+            const outcome = await sendReassignNotifications({
+                role: flow.role,
+                language: options.language,
+                newEmployeeId: flow.employeeId,
+                leads,
+                onProgress: (done, total) => setNotifyProgress({ done, total }),
+            });
+
+            if (outcome.sent.length > 0) {
+                toast.success(`Notified ${outcome.sent.length} client${outcome.sent.length === 1 ? '' : 's'}.`);
+            }
+            if (outcome.skipped.length > 0) {
+                toast(`${outcome.skipped.length} lead(s) had no client email: ${outcome.skipped.map(s => s.leadNumber).join(', ')}`);
+            }
+            if (outcome.failed.length > 0) {
+                console.error('Reassignment notification failures:', outcome.failed);
+                toast.error(`${outcome.failed.length} email(s) failed to send: ${outcome.failed.map(f => f.leadNumber).join(', ')}`);
+            }
+            closeNotifyFlow();
+        } catch (error) {
+            if (error instanceof MailboxNotConnectedError) {
+                // The reassignment is already saved, so this is only about the emails.
+                toast.error('Connect your Outlook mailbox to send these emails. The leads were still reassigned.');
+                closeNotifyFlow();
+                return;
+            }
+            console.error('Reassignment notification send failed:', error);
+            toast.error('The leads were reassigned, but the emails could not be sent.');
+            closeNotifyFlow();
+        } finally {
+            setNotifySending(false);
         }
     };
 
@@ -2434,6 +2835,113 @@ const ReassignLeadsReport: React.FC = () => {
     const activeRoleFilter = getActiveRoleFilter();
     const isRoleSecondary = (roleKey: string) => Boolean(activeRoleFilter && activeRoleFilter !== roleKey);
 
+    // Filters persisted before this one existed have no value for it, which reads as "Any".
+    const activeHandlerFilter = (reassignFilters.activeHandlerType || '') as ActiveHandlerFilterValue;
+
+    /*
+     * The cross-role "missing" pills reuse the other role's own NONE filter instead of introducing a
+     * second way to ask the same thing. One source of truth means the two can never disagree, the
+     * queries for both lead tables already handle it (including the placeholder names a new lead's
+     * `handler` column uses for nobody), and the choice still lists itself under "Filtered by:".
+     */
+    const otherRoleMissing = (roleKey: 'handler' | 'retainer_handler'): boolean =>
+        isReassignRoleNoneFilter(reassignFilters[roleKey] as string);
+
+    /** The employee a role's filter names, if it names one rather than being blank or NONE. */
+    const roleFilterEmployee = (selectedName: string) =>
+        selectedName ? employees.find(emp => emp.display_name === selectedName) ?? null : null;
+
+    /** The two setters that, with `reassignFilters`, hold each role's chosen employee. */
+    const roleFilterSetters: Record<ReassignRoleFilterKey, [(v: string) => void, (v: string) => void]> = {
+        meetingScheduler: [setSelectedMeetingScheduler, setMeetingSchedulerSearchTerm],
+        closer: [setSelectedCloser, setCloserSearchTerm],
+        meetingManager: [setSelectedMeetingManager, setMeetingManagerSearchTerm],
+        handler: [setSelectedHandler, setHandlerSearchTerm],
+        helper: [setSelectedHelper, setHelperSearchTerm],
+        expert: [setSelectedExpert, setExpertSearchTerm],
+        retainer_handler: [setSelectedRetainerHandler, setRetainerHandlerSearchTerm],
+    };
+
+    const setRoleFilterEmployee = (role: ReassignRoleFilterKey, name: string) => {
+        const [setSelected, setSearchTerm] = roleFilterSetters[role];
+        setSelected(name);
+        setSearchTerm(name);
+    };
+
+    /** Drops a role's filter, clearing all three pieces of state that together hold it. */
+    const clearRoleFilter = (role: ReassignRoleFilterKey) => {
+        setReassignFilters(prev => ({ ...prev, [role]: '' }));
+        setRoleFilterEmployee(role, '');
+    };
+
+    /**
+     * Changing tab asks the same question about a different role, so the chosen employee moves with
+     * it. Leaving them behind would hide the filter on a panel that is no longer on screen, and only
+     * one role can be filtered by a person at a time anyway.
+     */
+    const changeRoleFilterTab = (tab: ReassignRoleFilterTab) => {
+        setRoleFilterTab(tab);
+        if (!activeRoleFilter || activeRoleFilter === tab) return;
+
+        const fromKey = ROLE_TAB_FILTER_KEY[activeRoleFilter as ReassignRoleFilterTab];
+        const toKey = ROLE_TAB_FILTER_KEY[tab];
+        const employeeName = (reassignFilters[fromKey] as string) || '';
+
+        setReassignFilters(prev => ({ ...prev, [fromKey]: '', [toKey]: employeeName }));
+        setRoleFilterEmployee(fromKey, '');
+        setRoleFilterEmployee(toKey, employeeName);
+    };
+
+    /** Everything a result row shows, derived once so the card and list views cannot drift apart. */
+    const describeResultLead = (lead: any) => {
+        const leadId = lead.id?.toString() || '';
+        const handlerEmployee = lead.handlerEmployee;
+        const handlerName =
+            handlerEmployee?.display_name ||
+            (!isUnassignedHandlerValue(lead.handler) ? String(lead.handler).trim() : null);
+
+        return {
+            leadId,
+            isSelected: selectedLeads.has(leadId),
+            // The name is only shown when the lead really has a handler; `handler` can hold a
+            // placeholder that reads like a name.
+            handlerName: leadHasCaseHandler(lead) ? handlerName : null,
+            handlerPhoto: handlerEmployee?.photo_url ?? null,
+            retention: getRetentionEmployeeForLead(lead, employees),
+            activeType: (Number(lead.active_handler_type) === 1 ? 1 : 2) as 1 | 2,
+            busy: savingSingleLeadId === leadId,
+            balance: getLeadBalance(lead),
+            applicants: getLeadApplicants(lead),
+            displayNumber: lead.display_lead_number || lead.lead_number || lead.id || 'Unknown Lead',
+            category: lead.category || 'N/A',
+            source: lead.source || 'N/A',
+            language: lead.language || 'N/A',
+            created: lead.created_at ? new Date(lead.created_at).toLocaleDateString() : 'Unknown',
+        };
+    };
+
+    const formatResultBalance = (balance: { value: number | null; currency: string }) =>
+        balance.value && balance.value > 0
+            ? `${balance.currency}${balance.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+            : 'N/A';
+
+    const setOtherRoleMissing = (roleKey: 'handler' | 'retainer_handler', missing: boolean) => {
+        const setSelected = roleKey === 'handler' ? setSelectedHandler : setSelectedRetainerHandler;
+        const setSearchTerm = roleKey === 'handler' ? setHandlerSearchTerm : setRetainerHandlerSearchTerm;
+
+        if (missing) {
+            setReassignFilters(prev => ({ ...prev, [roleKey]: REASSIGN_ROLE_FILTER_NONE }));
+            setSelected('');
+            setSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+            return;
+        }
+        // Switching back to Any drops the unassigned filter and leaves an employee pick for that
+        // role alone, since that is a different filter that happens to live in the same field.
+        if (!otherRoleMissing(roleKey)) return;
+        setReassignFilters(prev => ({ ...prev, [roleKey]: '' }));
+        setSearchTerm('');
+    };
+
     // Show loading state while checking access
     if (checkingAccess) {
         return (
@@ -2504,10 +3012,7 @@ const ReassignLeadsReport: React.FC = () => {
                         <button
                             type="button"
                             className="btn btn-ghost btn-xs h-8 shrink-0 rounded-full border border-base-300/60 px-2.5 text-xs sm:btn-sm sm:h-9"
-                            onClick={() => {
-                                setShowFilters(true);
-                                setShowFloatingBar(false);
-                            }}
+                            onClick={() => setShowFilters(true)}
                         >
                             Filters
                         </button>
@@ -2518,9 +3023,9 @@ const ReassignLeadsReport: React.FC = () => {
 
             {/* Filters Section - Two Column Layout */}
             {showFilters && (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
                     {/* Left Side - General Filters */}
-                    <div className="lg:col-span-2">
+                    <div className="lg:col-span-3 self-start rounded-2xl bg-base-100 p-4 shadow-sm sm:p-6">
                         <h3 className="text-lg font-semibold mb-4 text-base-content/80 flex items-center gap-2">
                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
@@ -2829,107 +3334,14 @@ const ReassignLeadsReport: React.FC = () => {
                     </div>
 
                     {/* Right Side - Role Filters */}
-                    <div className="lg:col-span-1">
-                        <div className="sticky top-6">
+                    <div className="lg:col-span-2">
+                        <div className="sticky top-6 rounded-2xl bg-base-100 p-4 shadow-sm sm:p-6">
                             <h3 className="text-lg font-semibold mb-4 text-base-content/80 flex items-center gap-2">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                                 </svg>
                                 Role Filters
                             </h3>
-                            {/* Employee Filter Indicators - At Top */}
-                            {filteredEmployees.length > 0 && (
-                                <div className="mb-6 pb-6 border-b border-base-300">
-                                    <h4 className="text-sm font-semibold mb-3 text-base-content/70">Filtered by:</h4>
-                                    <div className="space-y-3">
-                                        {filteredEmployees.map(({ employee, role, roleLabel, noneFilter }, index) => (
-                                            <div
-                                                key={noneFilter ? `none-${role}-${index}` : `${employee!.id}-${role}-${index}`}
-                                                className="flex items-center gap-3 p-3 bg-gradient-to-r from-primary/10 to-primary/5 rounded-lg border border-primary/20 hover:shadow-md transition-all"
-                                            >
-                                                {noneFilter ? (
-                                                    <div
-                                                        className="w-12 h-12 rounded-full flex items-center justify-center bg-base-300/80 text-base-content/70 text-xs font-semibold ring-2 ring-primary/20 shrink-0"
-                                                        title="Unassigned"
-                                                    >
-                                                        ∅
-                                                    </div>
-                                                ) : employee!.photo_url ? (
-                                                    <img
-                                                        src={employee!.photo_url}
-                                                        alt={employee!.display_name}
-                                                        className="w-12 h-12 rounded-full object-cover ring-2 ring-primary/30"
-                                                        onError={(e) => {
-                                                            const target = e.target as HTMLImageElement;
-                                                            target.style.display = 'none';
-                                                            const parent = target.parentElement;
-                                                            if (parent) {
-                                                                const fallback = document.createElement('div');
-                                                                fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30';
-                                                                fallback.textContent = getInitials(employee!.display_name);
-                                                                parent.appendChild(fallback);
-                                                            }
-                                                        }}
-                                                    />
-                                                ) : (
-                                                    <div className="w-12 h-12 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30">
-                                                        {getInitials(employee!.display_name)}
-                                                    </div>
-                                                )}
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="font-medium text-sm text-base-content truncate">
-                                                        {noneFilter ? REASSIGN_ROLE_NONE_LABEL : employee!.display_name}
-                                                    </div>
-                                                    <div className="text-xs text-base-content/60">
-                                                        {roleLabel}
-                                                    </div>
-                                                </div>
-                                                <button
-                                                    onClick={() => {
-                                                        // Clear the filter for this role
-                                                        if (role === 'meetingScheduler') {
-                                                            setReassignFilters(prev => ({ ...prev, meetingScheduler: '' }));
-                                                            setSelectedMeetingScheduler('');
-                                                            setMeetingSchedulerSearchTerm('');
-                                                        } else if (role === 'closer') {
-                                                            setReassignFilters(prev => ({ ...prev, closer: '' }));
-                                                            setSelectedCloser('');
-                                                            setCloserSearchTerm('');
-                                                        } else if (role === 'meetingManager') {
-                                                            setReassignFilters(prev => ({ ...prev, meetingManager: '' }));
-                                                            setSelectedMeetingManager('');
-                                                            setMeetingManagerSearchTerm('');
-                                                        } else if (role === 'handler') {
-                                                            setReassignFilters(prev => ({ ...prev, handler: '' }));
-                                                            setSelectedHandler('');
-                                                            setHandlerSearchTerm('');
-                                                        } else if (role === 'helper') {
-                                                            setReassignFilters(prev => ({ ...prev, helper: '' }));
-                                                            setSelectedHelper('');
-                                                            setHelperSearchTerm('');
-                                                        } else if (role === 'expert') {
-                                                            setReassignFilters(prev => ({ ...prev, expert: '' }));
-                                                            setSelectedExpert('');
-                                                            setExpertSearchTerm('');
-                                                        } else if (role === 'retainer_handler') {
-                                                            setReassignFilters(prev => ({ ...prev, retainer_handler: '' }));
-                                                            setSelectedRetainerHandler('');
-                                                            setRetainerHandlerSearchTerm('');
-                                                        }
-                                                    }}
-                                                    className="btn btn-ghost btn-xs text-error hover:bg-error/10"
-                                                    title="Remove filter"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                                                    </svg>
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
                             <div
                                 className="mb-3 flex flex-wrap gap-1 border-b border-base-200 pb-2"
                                 role="tablist"
@@ -2951,8 +3363,8 @@ const ReassignLeadsReport: React.FC = () => {
                                         type="button"
                                         role="tab"
                                         aria-selected={roleFilterTab === id}
-                                        className={`btn btn-xs rounded-full normal-case sm:btn-sm ${roleFilterTab === id ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`}
-                                        onClick={() => setRoleFilterTab(id)}
+                                        className={`btn btn-sm rounded-full normal-case text-sm sm:btn-md sm:text-base ${roleFilterTab === id ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`}
+                                        onClick={() => changeRoleFilterTab(id)}
                                     >
                                         {label}
                                     </button>
@@ -2966,7 +3378,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedMeetingScheduler) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('scheduler')}
                                             value={meetingSchedulerSearchTerm}
                                             onChange={(e) => {
@@ -2976,6 +3388,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowMeetingSchedulerDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedMeetingScheduler) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedMeetingScheduler)!}
+                                                onClear={() => clearRoleFilter('meetingScheduler')}
+                                            />
+                                        )}
                                         {showMeetingSchedulerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3044,7 +3462,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedCloser) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('closer')}
                                             value={closerSearchTerm}
                                             onChange={(e) => {
@@ -3054,6 +3472,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowCloserDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedCloser) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedCloser)!}
+                                                onClear={() => clearRoleFilter('closer')}
+                                            />
+                                        )}
                                         {showCloserDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3122,7 +3546,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedMeetingManager) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('meetingManager')}
                                             value={meetingManagerSearchTerm}
                                             onChange={(e) => {
@@ -3132,6 +3556,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowMeetingManagerDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedMeetingManager) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedMeetingManager)!}
+                                                onClear={() => clearRoleFilter('meetingManager')}
+                                            />
+                                        )}
                                         {showMeetingManagerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3200,7 +3630,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedHandler) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('handler')}
                                             value={handlerSearchTerm}
                                             onChange={(e) => {
@@ -3210,6 +3640,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowHandlerDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedHandler) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedHandler)!}
+                                                onClear={() => clearRoleFilter('handler')}
+                                            />
+                                        )}
                                         {showHandlerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3270,6 +3706,17 @@ const ReassignLeadsReport: React.FC = () => {
                                         )}
                                     </div>
                                     <label className="block text-sm font-medium mt-2">Handler:</label>
+                                    <ReassignActiveHandlerFilter
+                                        tab="handler"
+                                        value={activeHandlerFilter}
+                                        onChange={(next) => setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))}
+                                    />
+                                    <ReassignMissingRoleFilter
+                                        missingLabel="Missing retention"
+                                        fieldLabel="Retention role:"
+                                        missing={otherRoleMissing('retainer_handler')}
+                                        onChange={(missing) => setOtherRoleMissing('retainer_handler', missing)}
+                                    />
                                 </div>
                                 )}
                                 {roleFilterTab === 'helper' && (
@@ -3278,7 +3725,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedHelper) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('helper')}
                                             value={helperSearchTerm}
                                             onChange={(e) => {
@@ -3288,6 +3735,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowHelperDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedHelper) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedHelper)!}
+                                                onClear={() => clearRoleFilter('helper')}
+                                            />
+                                        )}
                                         {showHelperDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3356,7 +3809,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedExpert) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('expert')}
                                             value={expertSearchTerm}
                                             onChange={(e) => {
@@ -3366,6 +3819,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowExpertDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedExpert) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedExpert)!}
+                                                onClear={() => clearRoleFilter('expert')}
+                                            />
+                                        )}
                                         {showExpertDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3434,7 +3893,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
-                                            className="input input-bordered w-full"
+                                            className={`input input-bordered w-full ${roleFilterEmployee(selectedRetainerHandler) ? 'pl-12 pr-10' : ''}`}
                                             readOnly={isRoleSecondary('retainer_handler')}
                                             value={retainerHandlerSearchTerm}
                                             onChange={(e) => {
@@ -3444,6 +3903,12 @@ const ReassignLeadsReport: React.FC = () => {
                                             }}
                                             onFocus={() => setShowRetainerHandlerDropdown(true)}
                                         />
+                                        {roleFilterEmployee(selectedRetainerHandler) && (
+                                            <ReassignRoleFieldEmployee
+                                                employee={roleFilterEmployee(selectedRetainerHandler)!}
+                                                onClear={() => clearRoleFilter('retainer_handler')}
+                                            />
+                                        )}
                                         {showRetainerHandlerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
@@ -3504,6 +3969,17 @@ const ReassignLeadsReport: React.FC = () => {
                                         )}
                                     </div>
                                     <label className="block text-sm font-medium mt-2">Retention handler:</label>
+                                    <ReassignActiveHandlerFilter
+                                        tab="retainer_handler"
+                                        value={activeHandlerFilter}
+                                        onChange={(next) => setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))}
+                                    />
+                                    <ReassignMissingRoleFilter
+                                        missingLabel="Missing handler"
+                                        fieldLabel="Handler role:"
+                                        missing={otherRoleMissing('handler')}
+                                        onChange={(missing) => setOtherRoleMissing('handler', missing)}
+                                    />
                                 </div>
                                 )}
                             </div>
@@ -3553,10 +4029,8 @@ const ReassignLeadsReport: React.FC = () => {
                     }}
                     onSearch={handleReassignSearch}
                     isLoading={reassignLoading}
-                    onShowFilters={() => {
-                        setShowFilters(true);
-                        setShowFloatingBar(false);
-                    }}
+                    // Opening the filters keeps the bar up; it is how you get back to assigning.
+                    onShowFilters={() => setShowFilters(true)}
                     getInitials={getInitials}
                     employees={employees}
                     assignEmployeeSearchTerm={assignEmployeeSearchTerm}
@@ -3574,6 +4048,19 @@ const ReassignLeadsReport: React.FC = () => {
                     setShowRoleDropdown={setShowRoleDropdown}
                     onOpenActiveHandlerModal={openActiveHandlerModal}
                     interactionsDisabled={bottomBarNoResults}
+                />
+            )}
+
+            {notifyFlow && (
+                <ReassignNotifyEmailModal
+                    role={notifyFlow.role}
+                    newEmployeeName={notifyFlow.employeeName}
+                    leads={notifyFlow.leads}
+                    busy={notifySending || reassigning}
+                    progress={notifyProgress}
+                    onCancel={closeNotifyFlow}
+                    onAssignOnly={handleAssignWithoutEmail}
+                    onAssignAndEmail={handleAssignAndEmail}
                 />
             )}
 
@@ -4057,7 +4544,25 @@ const ReassignLeadsReport: React.FC = () => {
                                     )}
                                 </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <div role="tablist" aria-label="Result layout" className="flex rounded-full bg-base-200/80 p-1">
+                                    {([
+                                        ['list', 'List', Bars3Icon],
+                                        ['cards', 'Boxes', Squares2X2Icon],
+                                    ] as const).map(([mode, label, Icon]) => (
+                                        <button
+                                            key={mode}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={viewMode === mode}
+                                            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition ${viewMode === mode ? 'bg-base-100 font-semibold text-base-content shadow-sm' : 'font-medium text-base-content/60 hover:text-base-content/80'}`}
+                                            onClick={() => setViewMode(mode)}
+                                        >
+                                            <Icon className="h-4 w-4" />
+                                            {label}
+                                        </button>
+                                    ))}
+                                </div>
                                 <button
                                     type="button"
                                     className="btn btn-sm btn-outline"
@@ -4076,58 +4581,120 @@ const ReassignLeadsReport: React.FC = () => {
                                 </button>
                             </div>
                         </div>
+                        {viewMode === 'list' ? (
+                            <div className={`${PIPELINE_TABLE_SHELL} mt-2`}>
+                                <table className="pipeline-flat-table table-auto border-separate border-spacing-0 w-full text-sm">
+                                    <thead className="sticky top-0 z-10 bg-[#f3f4f6] text-xs uppercase tracking-wide text-gray-500">
+                                        <tr>
+                                            <th className="w-10 px-2 py-3" />
+                                            <th className="px-2 py-3 text-left">Lead</th>
+                                            <th className="px-2 py-3 text-center">Stage</th>
+                                            <th className="px-2 py-3 text-left">Handler</th>
+                                            <th className="px-2 py-3 text-center">Active</th>
+                                            <th className="px-2 py-3 text-left">Retention</th>
+                                            <th className="px-2 py-3 text-center">Created</th>
+                                            <th className="px-2 py-3 text-center">Category</th>
+                                            <th className="px-2 py-3 text-center">Source</th>
+                                            <th className="px-2 py-3 text-center">Language</th>
+                                            <th className="px-2 py-3 text-right">Value</th>
+                                            <th className="px-2 py-3 text-center">App.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {reassignResults.map((lead) => {
+                                            const info = describeResultLead(lead);
+                                            return (
+                                                <tr
+                                                    key={lead.id}
+                                                    className={`pipeline-flat-row group cursor-pointer [&>td]:border-b [&>td]:border-gray-100 ${info.isSelected ? 'pipeline-flat-row-selected' : ''}`}
+                                                    onClick={() => toggleLeadSelection(info.leadId)}
+                                                >
+                                                    <td className="px-2 py-3 text-center">
+                                                        <input
+                                                            type="checkbox"
+                                                            className="checkbox checkbox-primary checkbox-sm"
+                                                            checked={info.isSelected}
+                                                            onChange={() => toggleLeadSelection(info.leadId)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        />
+                                                    </td>
+                                                    <td className="px-2 py-3 text-left max-w-[16rem]">
+                                                        <button
+                                                            type="button"
+                                                            title="Open client (⌘ or Ctrl+click for new tab)"
+                                                            className="block max-w-full font-mono text-xs font-bold text-gray-500 hover:text-primary hover:underline"
+                                                            onClick={e => navigateToClientFromReassignLead(lead, e)}
+                                                        >
+                                                            {info.displayNumber}
+                                                        </button>
+                                                        <span className="block truncate font-semibold text-base-content group-hover:text-primary">
+                                                            {lead.name || 'No Name'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-2 py-3 text-center">
+                                                        <ReassignStageBadge stage={lead.stage} />
+                                                    </td>
+                                                    <td className="px-2 py-3 text-left">
+                                                        {info.handlerName ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <ReassignRoleAvatar
+                                                                    name={info.handlerName}
+                                                                    photoUrl={info.handlerPhoto}
+                                                                    tone="primary"
+                                                                    className="h-8 w-8"
+                                                                />
+                                                                <span className="truncate text-xs font-medium">{info.handlerName}</span>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-base-content/30">-</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                                                        <div className="flex justify-center">
+                                                            <ReassignActiveToggle
+                                                                activeType={info.activeType}
+                                                                disabled={info.busy || singleActiveModalSaving}
+                                                                onPick={(type, e) => handleSingleLeadActivePick(lead, type, e)}
+                                                                className="h-7 w-[4.25rem]"
+                                                            />
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-2 py-3 text-left">
+                                                        {info.retention ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <ReassignRoleAvatar
+                                                                    name={info.retention.display_name}
+                                                                    photoUrl={info.retention.photo_url}
+                                                                    tone="secondary"
+                                                                    className="h-8 w-8"
+                                                                />
+                                                                <span className="truncate text-xs font-medium">{info.retention.display_name}</span>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-base-content/30">-</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-2 py-3 text-center whitespace-nowrap text-xs">{info.created}</td>
+                                                    <td className="px-2 py-3 text-center text-xs">{info.category}</td>
+                                                    <td className="px-2 py-3 text-center text-xs">{info.source}</td>
+                                                    <td className="px-2 py-3 text-center text-xs">{info.language}</td>
+                                                    <td className="px-2 py-3 text-right whitespace-nowrap font-medium">
+                                                        {formatResultBalance(info.balance)}
+                                                    </td>
+                                                    <td className="px-2 py-3 text-center font-medium">
+                                                        {info.applicants && info.applicants > 0 ? info.applicants : 'N/A'}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        ) : (
                         <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
                             {reassignResults.map((lead) => {
-                                const leadId = lead.id?.toString() || '';
-                                const isSelected = selectedLeads.has(leadId);
-                                // Get stage badge with color
-                                const getStageBadge = (stage: string | number | null | undefined) => {
-                                    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
-
-                                    const stageStr = String(stage);
-                                    const stageName = getStageName(stageStr);
-                                    const stageColour = getStageColour(stageStr);
-                                    const badgeTextColour = getContrastingTextColor(stageColour);
-                                    const backgroundColor = stageColour || '#3f28cd';
-                                    const textColor = stageColour ? badgeTextColour : '#ffffff';
-
-                                    return (
-                                        <span
-                                            className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-                                            style={{
-                                                backgroundColor: backgroundColor,
-                                                borderColor: backgroundColor,
-                                                color: textColor,
-                                                whiteSpace: 'nowrap',
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                display: 'inline-block'
-                                            }}
-                                            title={stageName}
-                                        >
-                                            {stageName}
-                                        </span>
-                                    );
-                                };
-
-                                const anyLead = lead as any;
-                                const displayCategory = anyLead.category || 'N/A';
-                                const displaySource = anyLead.source || 'N/A';
-                                const displayLanguage = anyLead.language || 'N/A';
-
-                                // Get balance and applicants (always show, not just when filtered by handler)
-                                const balance = getLeadBalance(lead);
-                                const applicants = getLeadApplicants(lead);
-
-                                // Get handler employee info
-                                const handlerEmployee = anyLead.handlerEmployee;
-                                const hasHandlerAssigned = leadHasCaseHandler(lead);
-                                const retentionEmployee = getRetentionEmployeeForLead(anyLead, employees);
-                                const activeTypeCard = Number(anyLead.active_handler_type) === 1 ? 1 : 2;
-                                const busyThisLead = savingSingleLeadId === leadId;
-                                const handlerDisplayName =
-                                    handlerEmployee?.display_name ||
-                                    (!isUnassignedHandlerValue(anyLead.handler) ? String(anyLead.handler).trim() : null);
+                                const info = describeResultLead(lead);
+                                const { leadId, isSelected, activeType: activeTypeCard, busy: busyThisLead } = info;
 
                                 return (
                                     <div
@@ -4152,7 +4719,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                         </h2>
                                                     </div>
                                                     <div className="flex shrink-0 items-center gap-2">
-                                                        {getStageBadge(lead.stage)}
+                                                        <ReassignStageBadge stage={lead.stage} />
                                                     </div>
                                                 </div>
                                             </div>
@@ -4180,21 +4747,15 @@ const ReassignLeadsReport: React.FC = () => {
                                                             Handler
                                                         </span>
                                                         <div className="mt-1.5 flex min-h-[2.5rem] flex-col items-center justify-center gap-1 sm:min-h-[2.75rem]">
-                                                            {hasHandlerAssigned && handlerDisplayName ? (
+                                                            {info.handlerName ? (
                                                                 <>
-                                                                    {handlerEmployee?.photo_url ? (
-                                                                        <img
-                                                                            src={handlerEmployee.photo_url}
-                                                                            alt=""
-                                                                            className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10"
-                                                                        />
-                                                                    ) : (
-                                                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/18 text-[11px] font-bold text-primary ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10 sm:text-xs">
-                                                                            {getInitials(handlerDisplayName)}
-                                                                        </div>
-                                                                    )}
+                                                                    <ReassignRoleAvatar
+                                                                        name={info.handlerName}
+                                                                        photoUrl={info.handlerPhoto}
+                                                                        tone="primary"
+                                                                    />
                                                                     <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
-                                                                        {handlerDisplayName}
+                                                                        {info.handlerName}
                                                                     </span>
                                                                 </>
                                                             ) : (
@@ -4204,44 +4765,11 @@ const ReassignLeadsReport: React.FC = () => {
                                                     </div>
 
                                                     <div className="flex shrink-0 flex-col items-center justify-center px-0.5">
-                                                        <div
-                                                            className="relative grid h-[1.875rem] w-[5rem] shrink-0 grid-cols-2 rounded-full border border-base-content/[0.06] bg-base-300/25 p-[3px] shadow-inner"
-                                                            role="group"
-                                                            aria-label="Who is active on the case"
-                                                        >
-                                                            <div
-                                                                aria-hidden
-                                                                className={`pointer-events-none absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(50%-4.5px)] rounded-full bg-base-100 shadow-sm ring-1 ring-base-content/[0.05] transition-transform duration-300 ease-[cubic-bezier(0.25,0.85,0.35,1)] will-change-transform ${
-                                                                    activeTypeCard === 1
-                                                                        ? 'translate-x-[calc(100%+3px)]'
-                                                                        : 'translate-x-0'
-                                                                }`}
-                                                            />
-                                                            <button
-                                                                type="button"
-                                                                disabled={busyThisLead || singleActiveModalSaving}
-                                                                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${
-                                                                    activeTypeCard === 2
-                                                                        ? 'text-primary'
-                                                                        : 'text-base-content/40 hover:text-base-content/65'
-                                                                }`}
-                                                                onClick={e => handleSingleLeadActivePick(lead, 2, e)}
-                                                            >
-                                                                H
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                disabled={busyThisLead || singleActiveModalSaving}
-                                                                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${
-                                                                    activeTypeCard === 1
-                                                                        ? 'text-primary'
-                                                                        : 'text-base-content/40 hover:text-base-content/65'
-                                                                }`}
-                                                                onClick={e => handleSingleLeadActivePick(lead, 1, e)}
-                                                            >
-                                                                R
-                                                            </button>
-                                                        </div>
+                                                        <ReassignActiveToggle
+                                                            activeType={activeTypeCard}
+                                                            disabled={busyThisLead || singleActiveModalSaving}
+                                                            onPick={(type, e) => handleSingleLeadActivePick(lead, type, e)}
+                                                        />
                                                     </div>
 
                                                     <div
@@ -4253,21 +4781,15 @@ const ReassignLeadsReport: React.FC = () => {
                                                             Retention
                                                         </span>
                                                         <div className="mt-1.5 flex min-h-[2.5rem] flex-col items-center justify-center gap-1 sm:min-h-[2.75rem]">
-                                                            {retentionEmployee ? (
+                                                            {info.retention ? (
                                                                 <>
-                                                                    {retentionEmployee.photo_url ? (
-                                                                        <img
-                                                                            src={retentionEmployee.photo_url}
-                                                                            alt=""
-                                                                            className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10"
-                                                                        />
-                                                                    ) : (
-                                                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-secondary/18 text-[11px] font-bold text-secondary ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10 sm:text-xs">
-                                                                            {getInitials(retentionEmployee.display_name)}
-                                                                        </div>
-                                                                    )}
+                                                                    <ReassignRoleAvatar
+                                                                        name={info.retention.display_name}
+                                                                        photoUrl={info.retention.photo_url}
+                                                                        tone="secondary"
+                                                                    />
                                                                     <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
-                                                                        {retentionEmployee.display_name}
+                                                                        {info.retention.display_name}
                                                                     </span>
                                                                 </>
                                                             ) : (
@@ -4285,27 +4807,25 @@ const ReassignLeadsReport: React.FC = () => {
                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                                                     </svg>
-                                                    <span className="font-medium">
-                                                        {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : 'Unknown'}
-                                                    </span>
+                                                    <span className="font-medium">{info.created}</span>
                                                 </div>
                                                 <div className="flex items-center gap-2" title="Category">
                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                                                     </svg>
-                                                    <span>{displayCategory}</span>
+                                                    <span>{info.category}</span>
                                                 </div>
                                                 <div className="flex items-center gap-2" title="Source">
                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
                                                     </svg>
-                                                    <span>{displaySource}</span>
+                                                    <span>{info.source}</span>
                                                 </div>
                                                 <div className="flex items-center gap-2" title="Language">
                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
                                                     </svg>
-                                                    <span>{displayLanguage}</span>
+                                                    <span>{info.language}</span>
                                                 </div>
 
                                                 {/* Total Value */}
@@ -4313,11 +4833,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                                     </svg>
-                                                    <span className="font-medium">
-                                                        {balance && balance.value && balance.value > 0
-                                                            ? `${balance.currency}${balance.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
-                                                            : 'N/A'}
-                                                    </span>
+                                                    <span className="font-medium">{formatResultBalance(info.balance)}</span>
                                                 </div>
 
                                                 {/* Total Applicants */}
@@ -4326,7 +4842,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                                                     </svg>
                                                     <span className="font-medium">
-                                                        {applicants && applicants > 0 ? applicants : 'N/A'}
+                                                        {info.applicants && info.applicants > 0 ? info.applicants : 'N/A'}
                                                     </span>
                                                 </div>
                                             </div>
@@ -4335,6 +4851,7 @@ const ReassignLeadsReport: React.FC = () => {
                                 );
                             })}
                         </div>
+                        )}
                     </div>
                 );
             })()}
@@ -4345,10 +4862,7 @@ const ReassignLeadsReport: React.FC = () => {
                     <button
                         type="button"
                         className="btn btn-outline btn-sm"
-                        onClick={() => {
-                            setShowFilters(true);
-                            setShowFloatingBar(false);
-                        }}
+                        onClick={() => setShowFilters(true)}
                     >
                         Filters
                     </button>

@@ -113,7 +113,9 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
     onOpenActiveHandlerModal,
     interactionsDisabled = false
 }) => {
-    const barLockClass = interactionsDisabled ? 'pointer-events-none opacity-40 select-none' : '';
+    // Dimmed enough to read as disabled, but still clearly present: on the grey page background the
+    // old 40% left the bar looking like it had disappeared.
+    const barLockClass = interactionsDisabled ? 'pointer-events-none opacity-70 select-none' : '';
     const showActiveHandlerBulk =
         Boolean(onOpenActiveHandlerModal) &&
         (selectedRoleForReassign === 'handler' || selectedRoleForReassign === 'retainer_handler');
@@ -161,7 +163,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         <>
             {/* Mobile View - Bottom Fixed Bar */}
             <div className={`md:hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] w-[95vw] max-w-[95vw] ${barLockClass}`} aria-disabled={interactionsDisabled}>
-                <div className="bg-white/60 backdrop-blur-2xl rounded-full px-4 py-3 shadow-2xl border border-white/40 flex items-center gap-2 flex-wrap justify-center hover:shadow-3xl transition-all duration-300">
+                <div className="bg-white rounded-full px-4 py-3 shadow-2xl border border-base-300/70 flex items-center gap-2 flex-wrap justify-center hover:shadow-3xl transition-all duration-300">
                     {/* Show Filters Button */}
                     <button
                         onClick={onShowFilters}
@@ -189,7 +191,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             </svg>
                         </button>
                         {showRoleDropdown && (
-                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-base-300/70 rounded-lg shadow-lg w-56">
                                 <div className="p-2">
                                     {roleOptions.map((role) => (
                                         <button
@@ -225,7 +227,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             }}
                         />
                         {showAssignEmployeeDropdown && (
-                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-full max-h-60 overflow-y-auto">
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-base-300/70 rounded-lg shadow-lg w-full max-h-60 overflow-y-auto">
                                 <div className="p-2">
                                     {employees
                                         .filter(emp =>
@@ -289,12 +291,12 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
             </div>
 
             {/* Desktop View - Bottom Fixed Bar */}
-            <div className={`hidden md:flex fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] ${barLockClass}`} aria-disabled={interactionsDisabled}>
-                <div className="bg-white/60 backdrop-blur-2xl rounded-full px-8 py-4 shadow-2xl border border-white/40 flex items-center gap-4 flex-nowrap justify-center max-w-[97vw] hover:shadow-3xl transition-all duration-300">
+            <div className={`hidden md:flex fixed bottom-6 left-32 right-0 z-[9999] justify-center px-4 ${barLockClass}`} aria-disabled={interactionsDisabled}>
+                <div className="w-full max-w-[52rem] bg-white rounded-full px-4 py-3 shadow-2xl border border-base-300/70 flex items-center justify-center gap-3 flex-nowrap hover:shadow-3xl transition-all duration-300">
                     {/* Show Filters Button */}
                     <button
                         onClick={onShowFilters}
-                        className="btn btn-sm btn-ghost rounded-full px-4 text-sm"
+                        className="btn btn-sm btn-ghost shrink-0 rounded-full px-3 text-sm"
                         title="Show all filters"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -304,10 +306,10 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                     </button>
 
                     {/* Role to assign (independent of sidebar role filter) */}
-                    <div className="relative role-dropdown-container" ref={roleDropdownRef}>
+                    <div className="relative role-dropdown-container shrink-0" ref={roleDropdownRef}>
                         <button
                             type="button"
-                            className="btn btn-sm btn-outline rounded-full px-4 text-sm"
+                            className="btn btn-sm btn-outline whitespace-nowrap rounded-full px-3 text-sm"
                             onClick={() => setShowRoleDropdown(!showRoleDropdown)}
                         >
                             Role: {roleLabels[selectedRoleForReassign] || 'Select role'}                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -315,7 +317,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             </svg>
                         </button>
                         {showRoleDropdown && (
-                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-base-300/70 rounded-lg shadow-lg w-56">
                                 <div className="p-2">
                                     {roleOptions.map((role) => (
                                         <button
@@ -337,11 +339,11 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                     </div>
 
                     {/* Assign to Employee Dropdown */}
-                    <div className="relative assign-employee-dropdown-container" ref={assignEmployeeDropdownRef}>
+                    <div className="relative assign-employee-dropdown-container min-w-0 flex-1 max-w-[16rem]" ref={assignEmployeeDropdownRef}>
                         <input
                             type="text"
                             placeholder="Assign to employee..."
-                            className="input input-bordered input-sm rounded-full w-72 text-sm"
+                            className="input input-bordered input-sm w-full min-w-0 rounded-full text-sm"
                             value={assignEmployeeSearchTerm}
                             onChange={(e) => {
                                 setAssignEmployeeSearchTerm(e.target.value);
@@ -351,7 +353,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             }}
                         />
                         {showAssignEmployeeDropdown && (
-                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-base-300/70 rounded-lg shadow-lg w-72 max-h-80 overflow-y-auto">
                                 <div className="p-2">
                                     {employees
                                         .filter(emp =>
@@ -384,7 +386,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                     {showActiveHandlerBulk && (
                         <button
                             type="button"
-                            className="btn btn-outline btn-sm rounded-full px-4 text-sm border-primary/30"
+                            className="btn btn-outline btn-sm shrink-0 whitespace-nowrap rounded-full px-3 text-sm border-primary/30"
                             title="Set whether the case handler or retention handler is active on the case"
                             onClick={() => onOpenActiveHandlerModal?.()}
                             disabled={selectedLeadsCount === 0}
@@ -395,7 +397,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
 
                     {/* Assign role */}
                     <button
-                        className="btn btn-primary btn-sm rounded-full px-4 text-sm"
+                        className="btn btn-primary btn-sm shrink-0 whitespace-nowrap rounded-full px-4 text-sm"
                         onClick={handleReassignLeads}
                         disabled={reassigning || !selectedEmployeeForReassign || selectedLeadsCount === 0}
                     >

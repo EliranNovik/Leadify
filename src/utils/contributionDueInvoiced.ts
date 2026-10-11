@@ -3,14 +3,22 @@
  *
  * One rule, two consumers: the per-employee Due / Invoiced column and the report's Total income are
  * the same money measured the same way, so both go through here. Before October 2026 a row counts
- * because it fell due; from October 2026 it counts because its invoice was actually sent.
+ * because it fell due; from October 2026 it counts because its invoice was actually sent, and it is
+ * dated by the day that invoice went out rather than the day it falls due — see
+ * `dueInvoicedIncomeDate`.
  *
  * Deliberately scoped to this report. The Dashboard Invoiced scoreboard and `SalesContributionPage`
  * keep the pure due-based measure, so nothing here may be wired into their queries.
  */
 import { toDateOnlyKey } from '../lib/boiCurrencyConversion';
-import { isPaymentPlanInvoiceSent } from '../lib/markPaymentPlanInvoiceSent';
-import { INVOICE_SENT_INCOME_START_DATE } from '../lib/invoicedInstallments';
+import {
+  isPaymentPlanInvoiceSent,
+  resolveInvoiceSentAt,
+} from '../lib/markPaymentPlanInvoiceSent';
+import {
+  INVOICE_SENT_INCOME_START_DATE,
+  incomeWindowOrFilter,
+} from '../lib/invoicedInstallments';
 
 /**
  * Columns the rule needs, on top of whatever amount/currency columns a query already selects.
@@ -64,24 +72,54 @@ export function scopeDueInvoicedQuery<T extends { or: (filter: string) => T }>(q
  * Fetch these *in addition to* the normal due-date query, never instead of it, and keep passing the
  * same predicate: `countsTowardDueInvoiced` drops them for pre-cutover periods, where a row that never
  * fell due was never counted.
+ *
+ * Windowed on either the planned `date` or the day the invoice went out, for the same reason
+ * `applyDueInvoicedWindow` is: from the cutover it is the invoice date that places the row.
  */
 export function scopeLegacyInvoicedWithoutDueDate<
   T extends {
     is: (column: string, value: null) => T;
     not: (column: string, operator: string, value: unknown) => T;
-    gte: (column: string, value: string) => T;
-    lte: (column: string, value: string) => T;
     or: (filter: string) => T;
   },
 >(query: T, from?: string | null, to?: string | null): T {
-  let scoped = query.is('due_date', null).not('date', 'is', null).or(INVOICE_SENT_OR_FILTER);
-  if (from) scoped = scoped.gte('date', from);
-  if (to) scoped = scoped.lte('date', to);
-  return scoped;
+  const scoped = query.is('due_date', null).not('date', 'is', null).or(INVOICE_SENT_OR_FILTER);
+  // `date` stands in for the due date on these rows, which have none yet.
+  const filter = incomeWindowOrFilter('date', from, to);
+  return filter ? scoped.or(filter) : scoped;
+}
+
+/** Date-only form of whatever a caller passes as a window bound: ISO timestamp or YYYY-MM-DD. */
+function boundDay(value?: string | null): string {
+  return String(value || '').slice(0, 10);
 }
 
 /**
- * Whether one payment row counts toward Due / Invoiced.
+ * The day one payment row's income falls on.
+ *
+ * From the cutover a row is dated by the day its invoice actually went out, which is the same day the
+ * Dashboard Invoiced scoreboard files it under. That is the point of the measure: income is recognised
+ * when the client is billed, not when the installment happens to come due.
+ *
+ * A row whose invoice went out *before* the cutover keeps its due date. Re-dating it would move it into
+ * a period that was closed on the due-date rule, where nothing would count it — and there are a few
+ * hundred such rows, invoiced in bulk before the cutover and falling due over the following years.
+ *
+ * Returns null when the row carries no date that can place it.
+ */
+export function dueInvoicedIncomeDate(
+  payment: any,
+  invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
+): string | null {
+  const cutover = boundDay(invoiceSentFrom);
+  const sentDate = toDateOnlyKey(resolveInvoiceSentAt(payment));
+  if (sentDate && cutover && sentDate >= cutover) return sentDate;
+  // Legacy rows hold only their planned `date` until someone sends them to finance.
+  return toDateOnlyKey(payment?.due_date) || toDateOnlyKey(payment?.date) || null;
+}
+
+/**
+ * Whether one payment row counts toward Due / Invoiced, ignoring the reporting window.
  *
  * `requireReadyToPay` reflects what the caller's query asked for before the cutover: the handler-pool
  * queries gate on `ready_to_pay`, the legacy all-leads ones never did, and that difference has to
@@ -95,11 +133,16 @@ export function countsTowardDueInvoiced(
   payment: any,
   options: { requireReadyToPay: boolean; invoiceSentFrom?: string },
 ): boolean {
+  const cutover = boundDay(options.invoiceSentFrom ?? INVOICE_SENT_INCOME_START_DATE);
+
+  // Dated by the day its invoice went out, so having been sent is the entire condition.
+  const sentDate = toDateOnlyKey(resolveInvoiceSentAt(payment));
+  if (sentDate && cutover && sentDate >= cutover) return true;
+
   const scheduledDate = toDateOnlyKey(payment?.due_date);
   const effectiveDate = scheduledDate || toDateOnlyKey(payment?.date);
   if (!effectiveDate) return false;
 
-  const cutover = String(options.invoiceSentFrom ?? INVOICE_SENT_INCOME_START_DATE).split('T')[0];
   if (cutover && effectiveDate >= cutover) {
     return isPaymentPlanInvoiceSent(payment);
   }
@@ -107,10 +150,66 @@ export function countsTowardDueInvoiced(
   return options.requireReadyToPay ? Boolean(payment?.ready_to_pay) : true;
 }
 
+/** The reporting window a Due / Invoiced figure covers. Bounds may be ISO timestamps or YYYY-MM-DD. */
+export type DueInvoicedWindow = { from?: string | null; to?: string | null };
+
+/** Whether a row's income date — not its due date — lands inside the window. */
+export function isDueInvoicedInWindow(
+  payment: any,
+  window: DueInvoicedWindow,
+  invoiceSentFrom?: string,
+): boolean {
+  const date = dueInvoicedIncomeDate(payment, invoiceSentFrom);
+  if (!date) return false;
+  const from = boundDay(window.from);
+  const to = boundDay(window.to);
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
+}
+
+/**
+ * The predicate the payment processors apply: counts, and falls in the window.
+ *
+ * A factory rather than a bare function because the window is now part of the decision. The widened
+ * SQL below deliberately returns rows from outside it — a row invoiced in October but due next March
+ * comes back from the same query as one invoiced last March and due in October — and only the income
+ * date separates them.
+ */
+export function dueInvoicedFilter(options: {
+  requireReadyToPay: boolean;
+  window: DueInvoicedWindow;
+  invoiceSentFrom?: string;
+}): (payment: any) => boolean {
+  return (payment: any) =>
+    isDueInvoicedInWindow(payment, options.window, options.invoiceSentFrom) &&
+    countsTowardDueInvoiced(payment, options);
+}
+
 /** Ready-made predicate for the processors, for a query that gated on `ready_to_pay`. */
-export const dueInvoicedReadyToPayFilter = (payment: any): boolean =>
-  countsTowardDueInvoiced(payment, { requireReadyToPay: true });
+export const dueInvoicedReadyToPayFilter = (window: DueInvoicedWindow) =>
+  dueInvoicedFilter({ requireReadyToPay: true, window });
 
 /** Ready-made predicate for a query that never gated on `ready_to_pay`. */
-export const dueInvoicedAllRowsFilter = (payment: any): boolean =>
-  countsTowardDueInvoiced(payment, { requireReadyToPay: false });
+export const dueInvoicedAllRowsFilter = (window: DueInvoicedWindow) =>
+  dueInvoicedFilter({ requireReadyToPay: false, window });
+
+/**
+ * Restrict a Due / Invoiced query to the reporting window.
+ *
+ * Replaces a plain `due_date` between-filter, which cannot express this measure: from the cutover a
+ * row belongs to the window because its *invoice* went out inside it, and its due date may be years
+ * away. So the fetch has to accept either anchor and let `dueInvoicedFilter` settle which rows
+ * actually count — this is a superset on purpose.
+ *
+ * The invoice-date arms never reach back before the cutover, because a row invoiced earlier than that
+ * is still dated by its due date and the due-date arm already covers it.
+ */
+export function applyDueInvoicedWindow<T extends { or: (filter: string) => T }>(
+  query: T,
+  window: DueInvoicedWindow,
+  invoiceSentFrom?: string,
+): T {
+  const filter = incomeWindowOrFilter('due_date', window.from, window.to, invoiceSentFrom);
+  return filter ? query.or(filter) : query;
+}

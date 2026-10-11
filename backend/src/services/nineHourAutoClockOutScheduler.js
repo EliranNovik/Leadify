@@ -18,7 +18,9 @@ const runAutoClockOut = async (trigger = 'scheduled') => {
     const result = await nineHourAutoClockOutService.runNineHourAutoClockOut();
     if (result.checked > 0 || result.clockedOut > 0 || result.errors.length > 0) {
       console.log(
-        `⏱️  Nine-hour auto clock-out (${trigger}): checked=${result.checked} clockedOut=${result.clockedOut} whatsappSent=${result.whatsappSent ?? 0} skipped=${result.skipped} errors=${result.errors.length}`,
+        `⏱️  Auto clock-out (${trigger}): checked=${result.checked} clockedOut=${result.clockedOut}`
+          + ` (baseHours=${result.baseHoursClockOuts ?? 0} endOfDay=${result.endOfDayClockOuts ?? 0})`
+          + ` whatsappSent=${result.whatsappSent ?? 0} skipped=${result.skipped} errors=${result.errors.length}`,
       );
     }
     return result;

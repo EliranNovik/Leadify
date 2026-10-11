@@ -1,6 +1,10 @@
 import { supabase } from './supabase';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
 import {
+  PRIMARY_REVENUE_TARGET_RATIO,
+  revenueTargetFromPayroll,
+} from './dashboardRevenueTargets';
+import {
   SCOREBOARD_OTHER_DEPARTMENT_IDS,
   SCOREBOARD_OTHER_MAIN_CATEGORY_IDS,
 } from './resolveCategoryDepartment';
@@ -383,13 +387,23 @@ export async function fetchDashboardDepartmentCostTargets(
   return { totals, breakdownByDeptId };
 }
 
-/** Apply computed cost targets onto department rows used by scoreboard builders. */
+/**
+ * Apply the payroll figure that each department's revenue target is derived from.
+ *
+ * Pass `allocateDepartmentPayrollBudget(...)` of the live totals rather than the live totals
+ * themselves: the targets are set against the firm's budgeted payroll, and the live figures only
+ * decide how a budget shared by two scoreboard columns is divided between them.
+ *
+ * A department absent from the map gets 0, which `departmentScoreboardExpected` reads as "no
+ * target". Note that this deliberately shadows `min_income`, a stale column that still holds
+ * target-shaped numbers from an older model.
+ */
 export function applyDashboardCostTargetsToDepartments<
   T extends { id: number; min_income?: unknown; cost_target?: number; name?: string },
->(departmentTargets: T[], costByDept: Map<number, number>): T[] {
+>(departmentTargets: T[], payrollByDept: Map<number, number>): T[] {
   return departmentTargets.map((dept) => ({
     ...dept,
-    cost_target: costByDept.get(dept.id) ?? 0,
+    cost_target: payrollByDept.get(dept.id) ?? 0,
   }));
 }
 
@@ -494,14 +508,11 @@ export async function fetchDashboardOtherColumnCostTarget(
 }
 
 /**
- * Scoreboard target top-ups applied to the actual Last 3m agreement/invoiced total
- * (added on top of department cost): "+40%" row → +60%; "+30%" row → +70%.
- */
-export const SCOREBOARD_TARGET_MARKUP_40 = 0.6;
-export const SCOREBOARD_TARGET_MARKUP_30 = 0.7;
-
-/**
- * Monthly employee cost base for a scoreboard column (Handlers/Sales + M/F/P field %).
+ * Monthly payroll a scoreboard column's revenue target is set against.
+ *
+ * This is the budgeted figure once `applyDashboardCostTargetsToDepartments` has been called, not the
+ * live payroll computed above. `min_income` remains only as a fallback for a department that was
+ * never passed through that call.
  */
 export function departmentScoreboardCostBase(dept: {
   cost_target?: number | null;
@@ -514,34 +525,29 @@ export function departmentScoreboardCostBase(dept: {
 }
 
 /**
- * Target = cost × (1 + markup).
- * e.g. +60% top-up → cost × 1.6; +70% → cost × 1.7.
+ * Revenue target for the "Other" column.
+ *
+ * Always 0: Other is a bucket for departments the firm sets no revenue goal for, so there is no
+ * payroll budget to divide and nothing to hold it to. Kept as a function because the scoreboard
+ * still carries an Other column and the shape of the call documents the decision.
  */
-export function scoreboardCostMarkupTarget(
-  costBaseMonthly: number,
-  markupFraction: number,
-  periodMonths = 1,
-): number {
-  if (!(costBaseMonthly > 0) || !(periodMonths > 0)) return 0;
-  return Math.round(costBaseMonthly * periodMonths * (1 + markupFraction) * 100) / 100;
-}
-
-/** Revenue target for Other column from its cost base (same markup as department columns). */
-export function otherScoreboardExpected(costTarget: number): number {
-  return scoreboardCostMarkupTarget(Math.max(0, Number(costTarget) || 0), SCOREBOARD_TARGET_MARKUP_40, 1);
+export function otherScoreboardExpected(_costTarget: number): number {
+  return 0;
 }
 
 /**
- * Employee cost → scoreboard expected (Agreement signed / Invoiced).
- * +40% top-up on monthly cost (replaces former cost / 0.35 ≈ 65% margin model).
+ * A department's monthly revenue target: its payroll budget at the firm's primary ratio.
+ *
+ * Only the primary ratio belongs here, because this feeds the single figure the goal bars measure
+ * against. The full set of 30 / 35 / 40% targets is built by the scoreboard from
+ * `REVENUE_TARGET_RATIOS`.
  */
 export function departmentScoreboardExpected(dept: {
   cost_target?: number | null;
   min_income?: unknown;
 }): number {
-  return scoreboardCostMarkupTarget(
+  return revenueTargetFromPayroll(
     departmentScoreboardCostBase(dept),
-    SCOREBOARD_TARGET_MARKUP_40,
-    1,
+    PRIMARY_REVENUE_TARGET_RATIO,
   );
 }

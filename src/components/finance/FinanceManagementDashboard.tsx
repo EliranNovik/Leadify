@@ -16,7 +16,6 @@ import {
 } from '@heroicons/react/24/outline';
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -82,6 +81,8 @@ const EMPTY: FinanceOverviewSnapshot = {
   dueUnsentProformaNis: 0,
   dueSentProformaCount: 0,
   dueSentProformaNis: 0,
+  paidNoTaxReceiptCount: 0,
+  paidNoTaxReceiptNis: 0,
   dueNoProformaCount: 0,
   dueNoProformaNis: 0,
   dueNoProformaThisYearCount: 0,
@@ -107,7 +108,19 @@ const EMPTY: FinanceOverviewSnapshot = {
 const PAID_COLOR = '#059669';
 const PENDING_WITH_PROFORMA_COLOR = '#0284c7';
 const PENDING_WITHOUT_PROFORMA_COLOR = '#d97706';
-const INVOICE_CREATED_COLOR = '#7c3aed';
+const INVOICE_SENT_COLOR = '#7c3aed';
+
+/** The trend chart's four series, in the order they are drawn and listed in the legend. */
+const TREND_SERIES = [
+  { key: 'paid', name: 'Paid', color: PAID_COLOR },
+  { key: 'pendingWithProforma', name: 'Pending with proforma', color: PENDING_WITH_PROFORMA_COLOR },
+  {
+    key: 'pendingWithoutProforma',
+    name: 'Pending without proforma',
+    color: PENDING_WITHOUT_PROFORMA_COLOR,
+  },
+  { key: 'invoiceSent', name: 'Invoice sent', color: INVOICE_SENT_COLOR },
+] as const;
 
 type AttentionItem = {
   id: FinanceCollectionFocusId;
@@ -801,6 +814,36 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
     [],
     { storage: 'sessionStorage', retainOnPageRefresh: true },
   );
+  /**
+   * Series hidden by clicking the legend. Stored as keys rather than a visible set so a series
+   * added later shows up by default instead of being silently filtered out.
+   */
+  const [hiddenTrendKeys, setHiddenTrendKeys] = usePersistedState<string[]>(
+    'financeDashboard_trendHiddenSeries',
+    [],
+    { storage: 'sessionStorage', retainOnPageRefresh: true },
+  );
+  const hiddenTrendSeries = useMemo(() => new Set(hiddenTrendKeys), [hiddenTrendKeys]);
+  /**
+   * Today's bucket out of the trend data, matched on its key rather than taken as the last point,
+   * so a session cached before midnight cannot pass yesterday's numbers off as today's.
+   */
+  const todayTrendPoint = useMemo(() => {
+    const now = new Date();
+    const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate(),
+    ).padStart(2, '0')}`;
+    return trend.find((point) => point.monthKey === key) ?? null;
+  }, [trend]);
+  const toggleTrendSeries = useCallback(
+    (key: string) => {
+      if (!key) return;
+      setHiddenTrendKeys((prev) =>
+        prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+      );
+    },
+    [setHiddenTrendKeys],
+  );
   const todayIso = getJerusalemTodayIsoDate();
   const [paidRange, setPaidRange] = usePersistedState<FinanceDateRange>(
     'financeDashboard_paidRange',
@@ -1220,6 +1263,18 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
         amount: formatKpiNis(snapshot.dueSentProformaThisYearNis, loading),
       },
     },
+    {
+      id: 'paid-no-tax-receipt',
+      label: 'Paid last 30 days, tax receipt not sent',
+      value: loading ? '—' : String(snapshot.paidNoTaxReceiptCount),
+      amount: formatKpiNis(snapshot.paidNoTaxReceiptNis, loading),
+      icon: ReceiptPercentIcon,
+      onClick: () => onOpenTab('collection', 'paid-no-tax-receipt'),
+      hint: 'Collected, with no Payper receipt and no manual mark',
+      gradient: 'bg-gradient-to-tr from-sky-600 via-cyan-500 to-teal-400',
+      // No year view: the tax receipt lookup is per payment, so a year of it would be slow.
+      year: null,
+    },
   ];
 
   const shortcuts: Array<{
@@ -1425,7 +1480,41 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
             <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Payment trend</p>
             <h3 className="text-base font-semibold text-gray-800 mt-1">Last 30 days</h3>
           </div>
-          <p className="text-xs text-gray-500">Payment & invoice counts by day</p>
+          {/* Today's slice of the same four series, doubling as the show/hide controls. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+              Today
+            </span>
+            {TREND_SERIES.map((series) => {
+              const hidden = hiddenTrendSeries.has(series.key);
+              return (
+                <button
+                  key={series.key}
+                  type="button"
+                  onClick={() => toggleTrendSeries(series.key)}
+                  title={`${series.name} today — click to ${hidden ? 'show' : 'hide'} this line`}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition ${
+                    hidden
+                      ? 'border-gray-200 bg-gray-50 text-gray-400'
+                      : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: hidden ? '#d1d5db' : series.color }}
+                  />
+                  <span className={hidden ? 'line-through' : undefined}>{series.name}</span>
+                  <span className="font-bold tabular-nums">
+                    {trendLoading && !todayTrendPoint
+                      ? '—'
+                      : todayTrendPoint
+                        ? todayTrendPoint[series.key]
+                        : 0}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
         <div className="mt-3 h-[280px] w-full">
           {trendLoading ? (
@@ -1463,43 +1552,20 @@ const FinanceManagementDashboard: React.FC<FinanceManagementDashboardProps> = ({
                     fontSize: 13,
                   }}
                 />
-                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
-                <Line
-                  type="monotone"
-                  dataKey="paid"
-                  name="Paid"
-                  stroke={PAID_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: PAID_COLOR, strokeWidth: 0 }}
-                  activeDot={{ r: 6 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="pendingWithProforma"
-                  name="Pending with proforma"
-                  stroke={PENDING_WITH_PROFORMA_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: PENDING_WITH_PROFORMA_COLOR, strokeWidth: 0 }}
-                  activeDot={{ r: 6 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="pendingWithoutProforma"
-                  name="Pending without proforma"
-                  stroke={PENDING_WITHOUT_PROFORMA_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: PENDING_WITHOUT_PROFORMA_COLOR, strokeWidth: 0 }}
-                  activeDot={{ r: 6 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="invoiceCreated"
-                  name="Invoice created"
-                  stroke={INVOICE_CREATED_COLOR}
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: INVOICE_CREATED_COLOR, strokeWidth: 0 }}
-                  activeDot={{ r: 6 }}
-                />
+                {/* No <Legend>: the "Today" chips above the chart name the series and toggle them. */}
+                {TREND_SERIES.map((series) => (
+                  <Line
+                    key={series.key}
+                    type="monotone"
+                    dataKey={series.key}
+                    name={series.name}
+                    stroke={series.color}
+                    strokeWidth={2.5}
+                    dot={{ r: 4, fill: series.color, strokeWidth: 0 }}
+                    activeDot={{ r: 6 }}
+                    hide={hiddenTrendSeries.has(series.key)}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           )}

@@ -152,6 +152,12 @@ import {
   sendProformaInvoiceBundle,
 } from '../../lib/proformaSendInvoice';
 import { paymentPlanInvoiceSentState } from '../../lib/markPaymentPlanInvoiceSent';
+import {
+  paymentPlanTaxInvoiceFields,
+  paymentPlanTaxInvoiceState,
+  type PaymentPlanTaxInvoiceState,
+} from '../../lib/markPaymentPlanTaxInvoiceSent';
+import TaxInvoiceSentDrawer from '../finance/TaxInvoiceSentDrawer';
 import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
 import DisplayOnKioskModal from '../kiosk/DisplayOnKioskModal';
 
@@ -198,6 +204,10 @@ interface PaymentPlan {
   invoice_send_automation_sent_at?: string | null;
   invoice_sent?: boolean;
   invoice_sent_at?: string | null;
+  /** Manual "the tax invoice went out" record, separate from the automated Payper receipt. */
+  tax_invoice_sent?: boolean | null;
+  tax_invoice_sent_at?: string | null;
+  tax_invoice_sent_by?: number | null;
 }
 
 interface FinancePlan {
@@ -912,6 +922,52 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [retryingTaxReceiptPlanIds, setRetryingTaxReceiptPlanIds] = useState<Set<number>>(
     () => new Set(),
   );
+
+  /** The row whose manual "tax invoice sent" date is being picked, and that picker's state. */
+  const [taxInvoicePayment, setTaxInvoicePayment] = useState<PaymentPlan | null>(null);
+  /** Names for `tax_invoice_sent_by`, resolved on demand so the four load paths stay untouched. */
+  const [taxInvoiceSentByNames, setTaxInvoiceSentByNames] = useState<Map<number, string>>(
+    () => new Map(),
+  );
+
+  /*
+   * Names for `tax_invoice_sent_by`. Resolved here rather than embedded in the payment selects: the
+   * column has no foreign key for PostgREST to follow, and the rows load from four separate paths.
+   * Every id asked for is recorded even when it resolves to nothing, or a since-deleted employee
+   * would be re-requested on every render.
+   */
+  useEffect(() => {
+    const missing = Array.from(
+      new Set(
+        (financePlan?.payments ?? [])
+          .map((row) => row.tax_invoice_sent_by)
+          .filter((id): id is number => typeof id === 'number' && !taxInvoiceSentByNames.has(id)),
+      ),
+    );
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .in('id', missing);
+      if (cancelled) return;
+
+      setTaxInvoiceSentByNames((prev) => {
+        const next = new Map(prev);
+        missing.forEach((id) => next.set(id, ''));
+        (data ?? []).forEach((emp: any) => {
+          if (emp?.id != null) next.set(Number(emp.id), String(emp.display_name ?? ''));
+        });
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [financePlan?.payments, taxInvoiceSentByNames]);
 
   const isPaidViaPaymentLink = (p: PaymentPlan) =>
     Boolean(p.paid) && linkPaidPlanIds.has(p.id);
@@ -2689,6 +2745,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_at: plan.invoice_send_automation_at || null,
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
                 ...paymentPlanInvoiceSentState(plan),
+                ...paymentPlanTaxInvoiceFields(plan),
               };
             });
           } else {
@@ -2789,6 +2846,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_at: plan.invoice_send_automation_at || null,
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
                 ...paymentPlanInvoiceSentState(plan),
+                ...paymentPlanTaxInvoiceFields(plan),
               };
             });
           }
@@ -3300,6 +3358,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               ...paymentPlanInvoiceSentState(plan),
+              ...paymentPlanTaxInvoiceFields(plan),
             };
           });
         } else {
@@ -3395,6 +3454,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_at: plan.invoice_send_automation_at || null,
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               ...paymentPlanInvoiceSentState(plan),
+              ...paymentPlanTaxInvoiceFields(plan),
             };
           });
         }
@@ -6865,8 +6925,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const paymentRowIconBtn =
     'inline-flex h-9 w-9 items-center justify-center rounded-full border-0 p-0 shadow-none';
 
-  const createProformaBtnClass =
-    'rounded-lg border-0 bg-gray-50 px-3.5 py-2 text-sm font-semibold text-slate-500 hover:bg-gray-100 hover:text-slate-600';
+  /** Shared by the Proforma and Tax receipt "Create" buttons, which sit side by side in a row. */
+  const createActionBtnClass =
+    'inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-500 hover:border-indigo-300 hover:text-indigo-600';
 
   const existingProformaBtnClass =
     'rounded-lg border-0 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-700 hover:text-white';
@@ -7358,9 +7419,77 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     );
   };
 
+  const patchTaxInvoiceRow = (
+    paymentId: string | number,
+    fields: Partial<Pick<PaymentPlan, 'tax_invoice_sent' | 'tax_invoice_sent_at' | 'tax_invoice_sent_by'>>,
+  ) => {
+    setFinancePlan((prev) =>
+      prev
+        ? {
+            ...prev,
+            payments: prev.payments.map((row) =>
+              String(row.id) === String(paymentId) ? { ...row, ...fields } : row,
+            ),
+          }
+        : prev,
+    );
+  };
+
+  const handleOpenTaxInvoiceDrawer = (payment: PaymentPlan) => {
+    setTaxInvoicePayment(payment);
+  };
+
+  /** Which table and row the drawer should read and write. */
+  const taxInvoiceDrawerTarget = taxInvoicePayment
+    ? {
+        paymentPlanId: Number(taxInvoicePayment.id),
+        isLegacy: Boolean(taxInvoicePayment.isLegacy),
+      }
+    : null;
+
+  /** The green pill a hand-marked tax invoice shows, which reopens the picker when pressed. */
+  const renderManualTaxInvoicePill = (payment: PaymentPlan, sentAt: string | null, by: number | null) => {
+    const date = sentAt ? formatDateDDMMYYYY(sentAt) : '';
+    const name = by != null ? taxInvoiceSentByNames.get(by)?.trim() : '';
+    const tip = [date && `Sent ${date}`, name && `by ${name}`].filter(Boolean).join(' ') ||
+      'Marked as sent';
+
+    return (
+      <button
+        type="button"
+        className="tooltip tooltip-left z-50 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+        data-tip={`${tip} — click to change`}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleOpenTaxInvoiceDrawer(payment);
+        }}
+      >
+        <PaperAirplaneIcon className="h-4 w-4" aria-hidden />
+        Sent
+      </button>
+    );
+  };
+
+  /** Offered wherever no tax receipt was produced automatically. */
+  const renderMarkTaxInvoiceButton = (payment: PaymentPlan) => (
+    <button
+      type="button"
+      className={createActionBtnClass}
+      title="Record that the tax invoice was sent"
+      onClick={(e) => {
+        e.stopPropagation();
+        handleOpenTaxInvoiceDrawer(payment);
+      }}
+    >
+      <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+      Create
+    </button>
+  );
+
   const renderTaxReceiptCell = (payment: PaymentPlan) => {
     const info = getTaxReceiptForPlan(payment);
     const paidViaLink = isPaidViaPaymentLink(payment);
+    const manual = paymentPlanTaxInvoiceState(payment);
 
     if (info?.payper_invoice_link?.trim()) {
       return (
@@ -7381,15 +7510,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     }
 
-    if (!paidViaLink && !info?.payper_invoice_status) {
-      return <span className="text-slate-400">—</span>;
-    }
-
     const status = info?.payper_invoice_status;
     if (status === 'success') {
       return (
         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-          <CheckIcon className="h-4 w-4" aria-hidden />
+          <PaperAirplaneIcon className="h-4 w-4" aria-hidden />
           Sent
         </span>
       );
@@ -7414,18 +7539,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       );
     }
 
+    // Nothing was produced automatically, so whatever a user recorded by hand is the whole story.
+    if (manual.sent) {
+      return renderManualTaxInvoicePill(payment, manual.sentAt, manual.sentByEmployeeId);
+    }
+
+    // No "not sent" badge: the Create button alongside already says as much.
     if (paidViaLink) {
       return (
         <span className="inline-flex items-center gap-0.5">
-          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
-            Not sent
-          </span>
           {renderTaxReceiptRetryButton(payment, info)}
+          {renderMarkTaxInvoiceButton(payment)}
         </span>
       );
     }
 
-    return <span className="text-slate-400">—</span>;
+    return renderMarkTaxInvoiceButton(payment);
   };
 
   const renderPaymentPickCell = (payment: PaymentPlan) => {
@@ -8176,7 +8305,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               } else {
                                                 return (
                                                   <button
-                                                    className={createProformaBtnClass}
+                                                    className={createActionBtnClass}
                                                     title="Create Proforma"
                                                     onClick={e => {
                                                       e.preventDefault();
@@ -8184,7 +8313,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                       navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
                                                     }}
                                                   >
-                                                    + Create
+                                                    <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+                                                    Create
                                                   </button>
                                                 );
                                               }
@@ -8203,11 +8333,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           ) : (
                                             <button
                                               type="button"
-                                              className={createProformaBtnClass}
+                                              className={createActionBtnClass}
                                               title="Create Proforma"
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
                                             >
-                                              + Create
+                                              <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+                                              Create
                                             </button>
                                           )}
                                         </td>
@@ -8809,7 +8940,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     return (
                                                       <button
                                                         type="button"
-                                                        className={createProformaBtnClass}
+                                                        className={createActionBtnClass}
                                                         title="Create Proforma"
                                                         onClick={e => {
                                                           e.preventDefault();
@@ -8817,7 +8948,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                           navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
                                                         }}
                                                       >
-                                                        + Create
+                                                        <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+                                                        Create
                                                       </button>
                                                     );
                                                   }
@@ -8836,11 +8968,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               ) : (
                                                 <button
                                                   type="button"
-                                                  className={createProformaBtnClass}
+                                                  className={createActionBtnClass}
                                                   title="Create Proforma"
                                                   onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
                                                 >
-                                                  + Create
+                                                  <PlusIcon className="h-3.5 w-3.5" aria-hidden />
+                                                  Create
                                                 </button>
                                               )}
                                             </div>
@@ -10044,6 +10177,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           </div>
         </div>
       )}
+
+      <TaxInvoiceSentDrawer
+        open={Boolean(taxInvoiceDrawerTarget)}
+        target={taxInvoiceDrawerTarget}
+        subtitle={[client?.name, taxInvoicePayment?.order].filter(Boolean).join(' · ')}
+        onClose={() => setTaxInvoicePayment(null)}
+        onSaved={(state: PaymentPlanTaxInvoiceState) => {
+          if (!taxInvoicePayment) return;
+          patchTaxInvoiceRow(taxInvoicePayment.id, {
+            tax_invoice_sent: state.sent,
+            tax_invoice_sent_at: state.sentAt,
+            tax_invoice_sent_by: state.sentByEmployeeId,
+          });
+        }}
+      />
 
       {/* Edit Payment Modal */}
       <EditPaymentModal

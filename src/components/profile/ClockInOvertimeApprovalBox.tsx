@@ -4,7 +4,6 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import {
   CLOCK_IN_OVERTIME_DOC_MAX_BYTES,
-  OVERTIME_APPROVAL_BASE_HOURS,
   buildOvertimeApprovalWhatsAppMessage,
   clockSessionExceedsOvertimeBase,
   fetchMichaelDeckerWhatsAppUrl,
@@ -17,6 +16,8 @@ interface ClockInOvertimeApprovalBoxProps {
   clockOutTime: string;
   dateKeys?: string[];
   notes?: string | null;
+  /** The employee's contracted base hours, which is what this session has gone past. */
+  baseHours: number;
   file: File | null;
   onFileChange: (file: File | null) => void;
   existingFileName?: string | null;
@@ -28,6 +29,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   clockOutTime,
   dateKeys = [],
   notes = '',
+  baseHours,
   file,
   onFileChange,
   existingFileName = null,
@@ -41,6 +43,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
     clockOutTime,
     dateKeys,
     notes,
+    baseHours,
   });
 
   useEffect(() => {
@@ -66,8 +69,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   return (
     <div className="rounded-xl bg-red-50 px-3 py-3 space-y-3 text-sm text-red-950">
       <p className="font-medium">
-        This session is {durationLabel}, which is more than the {OVERTIME_APPROVAL_BASE_HOURS}h
-        standard day.
+        This session is {durationLabel}, which is more than your {baseHours}h standard day.
       </p>
       <p>
         Get approval from <strong>Michael Decker</strong> on WhatsApp first. After he approves,
@@ -170,8 +172,9 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
 export function clockInOutTimesExceedOvertimeBase(
   clockInTime: string,
   clockOutTime: string,
+  baseHours: number,
 ): boolean {
-  return clockSessionExceedsOvertimeBase(clockInTime, clockOutTime);
+  return clockSessionExceedsOvertimeBase(clockInTime, clockOutTime, baseHours);
 }
 
 export default ClockInOvertimeApprovalBox;

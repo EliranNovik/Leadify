@@ -9,6 +9,7 @@ import { insertClockInRevision } from './employeeClockInRevisions';
 import {
   assertManualDurationAllowed,
   clockSessionExceedsOvertimeBase,
+  fetchOvertimeApprovalBaseHours,
   type ClockInOvertimeApprovalFileMeta,
 } from './employeeClockInOvertimeApproval';
 
@@ -72,6 +73,7 @@ export async function insertManualClockInRecord(
   // Cap is read from tenants_employee.min_hours at save time only.
   // Stored clock_in_time / clock_out_time stay exactly as entered.
   await assertManualDurationAllowed({
+    employeeId: payload.employeeId,
     clockInTime: payload.clockInTime,
     clockOutTime: payload.clockOutTime,
     overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
@@ -227,7 +229,10 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     throw new Error('Clock out must be after clock in');
   }
 
+  const baseHours = await fetchOvertimeApprovalBaseHours(existing.employee_id);
+
   await assertManualDurationAllowed({
+    employeeId: existing.employee_id,
     clockInTime: update.clockInTime,
     clockOutTime: update.clockOutTime,
     overtimeApprovalStoragePath:
@@ -260,6 +265,7 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
   const requiresOvertimeApproval = clockSessionExceedsOvertimeBase(
     update.clockInTime,
     update.clockOutTime,
+    baseHours,
   );
   const approveAutomatically = !requiresOvertimeApproval;
 

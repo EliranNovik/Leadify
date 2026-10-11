@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { fetchActiveClockInRecord } from '../lib/employeeClockOut';
 import {
-  fetchTodayClockedMs,
+  DEFAULT_MIN_HOURS,
+  fetchEmployeeMinHours,
+  fetchTodayHours,
   hasDismissedNineHourReminderToday,
   isPastJerusalemWorkdayEnd,
   markNineHourReminderDismissedToday,
-  NINE_HOURS_MS,
+  overtimeReminderThresholdMs,
   OVERTIME_POLL_MS,
 } from '../lib/employeeClockInOvertime';
 
@@ -27,10 +29,28 @@ export function useNineHourOvertimeAutomation({
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
   const dismissedRef = useRef(false);
+  /**
+   * The employee's base hours, loaded once per employee rather than on every poll.
+   *
+   * Seeded with the company default so the very first check has a sensible threshold instead of
+   * treating the employee as having none.
+   */
+  const minHoursRef = useRef(DEFAULT_MIN_HOURS);
 
   useEffect(() => {
     dismissedRef.current = hasDismissedNineHourReminderToday();
     if (dismissedRef.current) setPhase('idle');
+  }, [employeeId]);
+
+  useEffect(() => {
+    if (!employeeId) return;
+    let cancelled = false;
+    void fetchEmployeeMinHours(employeeId).then((hours) => {
+      if (!cancelled) minHoursRef.current = hours;
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [employeeId]);
 
   const evaluateThreshold = useCallback(async () => {
@@ -49,9 +69,14 @@ export function useNineHourOvertimeAutomation({
         return;
       }
 
-      const totalMs = await fetchTodayClockedMs(employeeId);
-      setTodayTotalMs(totalMs);
-      if (totalMs < NINE_HOURS_MS) {
+      const { elapsedMs, preAddedMs } = await fetchTodayHours(employeeId);
+      setTodayTotalMs(elapsedMs);
+      /*
+       * An hour before the day's allowance runs out, which is when the backend sends the matching
+       * WhatsApp reminder. Hours the employee pre-added extend the allowance, so the popup no longer
+       * fires the moment they clock in on top of an approved extra block.
+       */
+      if (elapsedMs < overtimeReminderThresholdMs(minHoursRef.current, preAddedMs)) {
         if (phaseRef.current === 'prompt') setPhase('idle');
         return;
       }

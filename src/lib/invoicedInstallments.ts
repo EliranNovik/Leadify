@@ -31,7 +31,7 @@ import {
   resolveLeadSubcontractorFeeAmount,
   type LeadSubcontractorFeeTotalsMaps,
 } from './leadSubcontractorFees';
-import { isPaymentPlanInvoiceSent } from './markPaymentPlanInvoiceSent';
+import { isPaymentPlanInvoiceSent, resolveInvoiceSentAt } from './markPaymentPlanInvoiceSent';
 
 /** The three columns that each record an invoice having been sent, as a PostgREST `or` list. */
 const INVOICE_SENT_OR_FILTER =
@@ -322,6 +322,32 @@ const LEGACY_LEAD_SELECT = `
   handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
 `;
 
+/**
+ * Restricts a fetch to named payment rows and supplies the day each one belongs to.
+ *
+ * The due-date measures can find their own rows and date them from `due_date`, but measures built on
+ * an event — an invoice going out, a tax receipt being issued — cannot: the date lives on another
+ * column or another table entirely. Those callers work out which rows qualify and when, and hand the
+ * result here so that the money, department and subcontractor-fee logic below stays in one place
+ * rather than being reimplemented per measure.
+ */
+export type InstallmentEventScope = {
+  /** `payment_plans` ids to include. */
+  newIds: Array<string | number>;
+  /** `finances_paymentplanrow` ids to include. */
+  legacyIds: Array<string | number>;
+  /** Event day as YYYY-MM-DD, keyed by `installmentEventKey`. Rows missing an entry are dropped. */
+  eventDateByRow: Map<string, string>;
+};
+
+/** Key into `InstallmentEventScope.eventDateByRow`, which spans both payment tables. */
+export function installmentEventKey(
+  source: 'new' | 'legacy',
+  paymentId: string | number,
+): string {
+  return `${source}:${paymentId}`;
+}
+
 export type InvoicedInstallment = {
   source: 'new' | 'legacy';
   paymentId: string | number;
@@ -331,6 +357,11 @@ export type InvoicedInstallment = {
   leadNumber: string;
   /** YYYY-MM-DD. */
   dueDate: string;
+  /**
+   * The day this row belongs to. Equals `dueDate` for the due-based measures, and the supplied event
+   * day under `eventScope`, where the due date may be absent or irrelevant.
+   */
+  eventDate: string;
   /** Ex-VAT value converted to NIS, before the subcontractor fee share. */
   amountNisGross: number;
   subcontractorFeeNis: number;
@@ -346,6 +377,13 @@ export type InvoicedInstallment = {
   rateAsOf: string | null;
   /** Whether an invoice was actually sent for this row, by any of the three columns that record it. */
   invoiceSent: boolean;
+  /**
+   * The day the invoice went out as YYYY-MM-DD, or null when nothing recorded one.
+   *
+   * Null is not the same as `invoiceSent === false`: a row can be flagged sent by the boolean alone,
+   * with no timestamp to date it. Those keep their due date — see `contributionIncomeDate`.
+   */
+  invoiceSentDate: string | null;
   /**
    * Whether the row reached finance and so belongs in the due-based total.
    *
@@ -373,6 +411,21 @@ export type FetchInvoicedInstallmentsOptions = {
    * `SalesContributionPage` must keep the pure due-based set, so this stays off by default.
    */
   includeInvoiceSentNotReadyToPay?: boolean;
+  /**
+   * Also fetch rows whose invoice went out inside [dueFrom, dueTo] but that fall due outside it.
+   *
+   * Required by the income measure, which dates a row by the day its invoice was sent — an installment
+   * invoiced in October and due next March is October income, and a due-date-selected fetch cannot see
+   * it. Off for the due-based measures, which must keep selecting exactly the rows they always did.
+   */
+  includeInvoiceSentInWindow?: boolean;
+  /**
+   * Fetch exactly these rows and date them as given, instead of selecting by due date.
+   *
+   * `dueFrom` / `dueTo` are then no longer applied as filters — the caller has already decided
+   * membership — though they are still required, so an empty window short-circuits as usual.
+   */
+  eventScope?: InstallmentEventScope;
 };
 
 export type FetchInvoicedInstallmentsResult = {
@@ -406,6 +459,14 @@ export async function fetchInvoicedInstallments(
     };
   }
 
+  /*
+   * Set only for the income measure, which dates a row by the day its invoice went out and so has to
+   * accept rows falling due outside the window. Null leaves the queries on their plain due-date range.
+   */
+  const incomeWindow = options.includeInvoiceSentInWindow
+    ? incomeWindowOrFilter('due_date', dueFrom, dueTo)
+    : null;
+
   const boiPromise = options.boiConverter
     ? Promise.resolve(options.boiConverter)
     : createBoiDateRateConverter();
@@ -433,33 +494,51 @@ export async function fetchInvoicedInstallments(
   ] = await Promise.all([
       departmentsPromise,
       categoriesPromise,
-      fetchAllPagedRows((from, to) => {
-        const query = supabase
-          .from('payment_plans')
-          .select(NEW_PAYMENT_SELECT)
-          .not('due_date', 'is', null)
-          .is('cancel_date', null)
-          .gte('due_date', dueFrom)
-          .lte('due_date', dueTo)
-          .order('id', { ascending: true })
-          .range(from, to);
-        // For the invoiced measure a row counts once its invoice went out, which does not reliably set
-        // `ready_to_pay`; `countsAsDue` below still keeps those rows out of the due-based total.
-        return options.includeInvoiceSentNotReadyToPay
-          ? query.or(`ready_to_pay.eq.true,${INVOICE_SENT_OR_FILTER}`)
-          : query.eq('ready_to_pay', true);
-      }),
-      fetchAllPagedRows((from, to) =>
-        supabase
-          .from('finances_paymentplanrow')
-          .select(LEGACY_PAYMENT_SELECT)
-          .not('due_date', 'is', null)
-          .is('cancel_date', null)
-          .gte('due_date', dueFrom)
-          .lte('due_date', dueTo)
-          .order('id', { ascending: true })
-          .range(from, to),
-      ),
+      options.eventScope
+        ? fetchByIdChunks<any>(options.eventScope.newIds, LEAD_ID_CHUNK_SIZE, (chunk) =>
+            supabase
+              .from('payment_plans')
+              .select(NEW_PAYMENT_SELECT)
+              .is('cancel_date', null)
+              .in('id', chunk as string[]),
+          )
+        : fetchAllPagedRows((from, to) => {
+            const base = supabase
+              .from('payment_plans')
+              .select(NEW_PAYMENT_SELECT)
+              .not('due_date', 'is', null)
+              .is('cancel_date', null);
+            const query = (
+              incomeWindow ? base.or(incomeWindow) : base.gte('due_date', dueFrom).lte('due_date', dueTo)
+            )
+              .order('id', { ascending: true })
+              .range(from, to);
+            // For the invoiced measure a row counts once its invoice went out, which does not reliably set
+            // `ready_to_pay`; `countsAsDue` below still keeps those rows out of the due-based total.
+            return options.includeInvoiceSentNotReadyToPay
+              ? query.or(`ready_to_pay.eq.true,${INVOICE_SENT_OR_FILTER}`)
+              : query.eq('ready_to_pay', true);
+          }),
+      options.eventScope
+        ? fetchByIdChunks<any>(options.eventScope.legacyIds, LEAD_ID_CHUNK_SIZE, (chunk) =>
+            supabase
+              .from('finances_paymentplanrow')
+              .select(LEGACY_PAYMENT_SELECT)
+              .is('cancel_date', null)
+              .in('id', chunk as number[]),
+          )
+        : fetchAllPagedRows((from, to) => {
+            const base = supabase
+              .from('finances_paymentplanrow')
+              .select(LEGACY_PAYMENT_SELECT)
+              .not('due_date', 'is', null)
+              .is('cancel_date', null);
+            return (
+              incomeWindow ? base.or(incomeWindow) : base.gte('due_date', dueFrom).lte('due_date', dueTo)
+            )
+              .order('id', { ascending: true })
+              .range(from, to);
+          }),
       /*
        * Legacy rows invoiced in the window that never got a due date.
        *
@@ -471,20 +550,27 @@ export async function fetchInvoicedInstallments(
        * Only fetched for the widened (invoiced) measure — the due-based total must keep counting
        * exactly the rows it always did.
        */
-      options.includeInvoiceSentNotReadyToPay
-        ? fetchAllPagedRows((from, to) =>
-            supabase
+      options.includeInvoiceSentNotReadyToPay && !options.eventScope
+        ? fetchAllPagedRows((from, to) => {
+            const base = supabase
               .from('finances_paymentplanrow')
               .select(LEGACY_PAYMENT_SELECT)
               .is('due_date', null)
               .is('cancel_date', null)
               .not('date', 'is', null)
-              .gte('date', dueFrom)
-              .lte('date', dueTo)
-              .or(INVOICE_SENT_OR_FILTER)
+              .or(INVOICE_SENT_OR_FILTER);
+            // `date` stands in for the due date on these rows, which have none yet.
+            const plannedDateWindow = options.includeInvoiceSentInWindow
+              ? incomeWindowOrFilter('date', dueFrom, dueTo)
+              : null;
+            return (
+              plannedDateWindow
+                ? base.or(plannedDateWindow)
+                : base.gte('date', dueFrom).lte('date', dueTo)
+            )
               .order('id', { ascending: true })
-              .range(from, to),
-          )
+              .range(from, to);
+          })
         : Promise.resolve([] as any[]),
     ]);
 
@@ -652,13 +738,23 @@ export async function fetchInvoicedInstallments(
     const dueDate =
       toDateOnlyKey(payment.due_date) ||
       (source === 'legacy' ? toDateOnlyKey(payment.date) : null);
-    if (!dueDate) return;
+
+    /*
+     * Which period this row lands in.
+     *
+     * Under `eventScope` that is the day the caller recorded, and the due date is allowed to be
+     * missing entirely — a row can have an invoice sent against it before it ever falls due.
+     */
+    const eventDate = options.eventScope
+      ? options.eventScope.eventDateByRow.get(installmentEventKey(source, payment.id)) || null
+      : dueDate;
+    if (!eventDate) return;
 
     const rateAsOf = rateAsOfInput;
     const amountNisGross = await boiConverter.toNis(value, currency, rateAsOf);
     const leadNumber = leadDisplayNumber(lead, source === 'new');
 
-    const key = `${leadNumber}|${dueDate}|${Math.round(amountNisGross || 0)}`;
+    const key = `${leadNumber}|${eventDate}|${Math.round(amountNisGross || 0)}`;
     if (seen.has(key)) return;
     seen.add(key);
 
@@ -689,7 +785,8 @@ export async function fetchInvoicedInstallments(
       lead,
       leadKey,
       leadNumber,
-      dueDate,
+      dueDate: dueDate || '',
+      eventDate,
       amountNisGross,
       subcontractorFeeNis: 0,
       amountNis: amountNisGross,
@@ -702,6 +799,7 @@ export async function fetchInvoicedInstallments(
       currency,
       rateAsOf,
       invoiceSent: isPaymentPlanInvoiceSent(payment),
+      invoiceSentDate: toDateOnlyKey(resolveInvoiceSentAt(payment)) || null,
       // A legacy row with no `due_date` never fell due, so it must not reach the due-based total even
       // though the widened fetch pulled it in for the invoiced one.
       countsAsDue:
@@ -800,17 +898,104 @@ export function sumInvoicedNisInRange(
  */
 export const INVOICE_SENT_INCOME_START_DATE = '2026-10-01';
 
+/** Date-only form of a window bound, which callers pass as either an ISO timestamp or YYYY-MM-DD. */
+function boundDay(value?: string | null): string {
+  return String(value || '').slice(0, 10);
+}
+
 /**
- * Whether one installment counts as contribution income.
+ * A PostgREST `or` filter selecting rows whose income date falls in [from, to].
+ *
+ * The income measure cannot be expressed as a range on one column: from the cutover a row belongs to
+ * the window because its *invoice* went out inside it, and its due date may be years away. So this
+ * accepts either anchor, which makes it a deliberate superset — `contributionIncomeCountsRow` and
+ * `dueInvoicedFilter` settle which of the returned rows actually count.
+ *
+ * `dueColumn` is `due_date` for both payment tables, or `date` for legacy rows that never reached
+ * finance and so have no due date yet.
+ *
+ * Returns null for an unbounded window, where there is nothing to filter.
+ */
+export function incomeWindowOrFilter(
+  dueColumn: string,
+  from?: string | null,
+  to?: string | null,
+  invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
+): string | null {
+  /*
+   * An unbounded window has nothing to filter on, and must not fall through to the invoice-date arms
+   * below: on their own they would exclude every row never invoiced since the cutover.
+   */
+  if (!from && !to) return null;
+
+  const between = (column: string, start: string, end: string): string | null => {
+    const parts: string[] = [];
+    if (start) parts.push(`${column}.gte.${start}`);
+    if (end) parts.push(`${column}.lte.${end}`);
+    if (!parts.length) return null;
+    return parts.length > 1 ? `and(${parts.join(',')})` : parts[0];
+  };
+
+  const cutover = boundDay(invoiceSentFrom);
+  /*
+   * The invoice-date arms start no earlier than the cutover: a row invoiced before it is still dated
+   * by its due date, which the due arm already covers. A window closing before the cutover therefore
+   * gets no invoice arms at all.
+   */
+  const sentFrom =
+    cutover && (!from || boundDay(from) < cutover) ? cutover : String(from || '');
+  const invoiceArms =
+    cutover && to && boundDay(to) < cutover
+      ? []
+      : [
+          between('invoice_sent_at', sentFrom, String(to || '')),
+          between('invoice_send_automation_sent_at', sentFrom, String(to || '')),
+        ];
+
+  const arms = [
+    between(dueColumn, String(from || ''), String(to || '')),
+    ...invoiceArms,
+  ].filter((arm): arm is string => Boolean(arm));
+
+  return arms.length ? arms.join(',') : null;
+}
+
+/**
+ * The day an installment's income falls on.
+ *
+ * From the cutover that is the day its invoice went out, the same day the Dashboard Invoiced
+ * scoreboard files it under, because income is recognised when the client is billed rather than when
+ * the installment comes due. A row invoiced before the cutover keeps its due date: re-dating it would
+ * move it into a period that was closed on the due-date rule, where nothing would count it.
+ *
+ * The raw-row twin of this is `dueInvoicedIncomeDate` in `utils/contributionDueInvoiced`, which the
+ * report's per-employee column uses. The two must agree; they are kept apart only because that module
+ * already imports the cutover from here.
+ */
+export function contributionIncomeDate(
+  row: Pick<InvoicedInstallment, 'dueDate' | 'invoiceSentDate'>,
+  invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
+): string {
+  const cutover = String(invoiceSentFrom || '').split('T')[0];
+  const sent = row.invoiceSentDate || '';
+  if (sent && cutover && sent >= cutover) return sent;
+  return row.dueDate;
+}
+
+/**
+ * Whether one installment counts as contribution income, ignoring the window.
  *
  * Split out from the sum so the per-employee Due / Invoiced column and the report total cannot drift:
  * both ask this same question of each row.
  */
 export function contributionIncomeCountsRow(
-  row: Pick<InvoicedInstallment, 'dueDate' | 'invoiceSent' | 'countsAsDue'>,
+  row: Pick<InvoicedInstallment, 'dueDate' | 'invoiceSent' | 'countsAsDue' | 'invoiceSentDate'>,
   invoiceSentFrom: string = INVOICE_SENT_INCOME_START_DATE,
 ): boolean {
   const cutover = String(invoiceSentFrom || '').split('T')[0];
+  // Dated by the day its invoice went out, so having been sent is the entire condition.
+  const sent = row.invoiceSentDate || '';
+  if (sent && cutover && sent >= cutover) return true;
   if (cutover && row.dueDate >= cutover) return row.invoiceSent;
   return row.countsAsDue;
 }
@@ -818,8 +1003,14 @@ export function contributionIncomeCountsRow(
 /**
  * Contribution income in a window: due-based before the cutover, invoice-based from it.
  *
- * A window spanning the cutover sums each half on its own basis rather than picking one rule for the
- * whole range, so a report covering September and October stays correct for both.
+ * Windowed on `contributionIncomeDate`, not on the due date. From the cutover a row belongs to the
+ * month its invoice went out, so an installment invoiced in October and falling due next March is
+ * October income — which is exactly what makes this figure comparable with the Dashboard Invoiced
+ * scoreboard. A window spanning the cutover sums each half on its own basis rather than picking one
+ * rule for the whole range, so a report covering September and October stays correct for both.
+ *
+ * Only sees rows the caller fetched. A due-date-selected fetch cannot contain everything invoiced in
+ * the window, which is why `fetchContributionIncomeBreakdownNisForDateRange` widens its own queries.
  *
  * Sums `amountNisGross`, not `amountNis`, and that difference is the point. The contribution report's
  * Total income has to be the plain sum of the rows its per-employee Due / Invoiced column counts, and
@@ -839,7 +1030,8 @@ export function sumContributionIncomeNisInRange(
   const cutover = String(invoiceSentFrom || '').split('T')[0];
   let sum = 0;
   for (const row of installments) {
-    if (row.dueDate < start || row.dueDate > end) continue;
+    const incomeDate = contributionIncomeDate(row, cutover);
+    if (!incomeDate || incomeDate < start || incomeDate > end) continue;
     if (!contributionIncomeCountsRow(row, cutover)) continue;
     sum += row.amountNisGross;
   }

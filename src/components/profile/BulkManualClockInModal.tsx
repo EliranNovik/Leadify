@@ -17,6 +17,8 @@ import ClockInOvertimeApprovalBox, {
   clockInOutTimesExceedOvertimeBase,
 } from './ClockInOvertimeApprovalBox';
 import {
+  DEFAULT_OVERTIME_APPROVAL_BASE_HOURS,
+  fetchOvertimeApprovalBaseHours,
   overtimeApprovalRequiredError,
   uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
@@ -51,6 +53,13 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
   const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
+  /**
+   * The employee's contracted base hours, past which a session needs Michael's approval.
+   *
+   * Seeded with the company default so the first render has a threshold rather than treating the
+   * employee as having none, then replaced once the contract loads.
+   */
+  const [baseHours, setBaseHours] = useState(DEFAULT_OVERTIME_APPROVAL_BASE_HOURS);
   const [notes, setNotes] = useState('');
 
   const datesToSave = useMemo(() => sortDates(selectedDateKeys), [selectedDateKeys]);
@@ -62,12 +71,15 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
     setWorkplaceLocationId('');
     setOvertimeFile(null);
     setNotes('');
-    void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
-      ([locations, wfh]) => {
-        setWorkplaces(locations);
-        setWorksFromHome(wfh);
-      },
-    );
+    void Promise.all([
+      fetchActiveClockInLocations(),
+      fetchEmployeeWorksFromHome(employeeId),
+      fetchOvertimeApprovalBaseHours(employeeId),
+    ]).then(([locations, wfh, hours]) => {
+      setWorkplaces(locations);
+      setWorksFromHome(wfh);
+      setBaseHours(hours);
+    });
   }, [isOpen, employeeId]);
 
   const selectedWorkplace = useMemo(
@@ -78,7 +90,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
     selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace) && !worksFromHome;
   const ramatGanSelected =
     selectedWorkplace != null && isRamatGanClockInLocation(selectedWorkplace);
-  const exceedsOvertimeBase = clockInOutTimesExceedOvertimeBase(clockInTime, clockOutTime);
+  const exceedsOvertimeBase = clockInOutTimesExceedOvertimeBase(clockInTime, clockOutTime, baseHours);
 
   const performSave = async () => {
     setSaving(true);
@@ -91,7 +103,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
       const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
       let overtimeApproval = null;
       if (exceedsOvertimeBase) {
-        if (!overtimeFile) throw overtimeApprovalRequiredError();
+        if (!overtimeFile) throw overtimeApprovalRequiredError(baseHours);
         overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
       }
       const count = await insertManualClockInRecords({
@@ -142,7 +154,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
       return;
     }
     if (exceedsOvertimeBase && !overtimeFile) {
-      toast.error(overtimeApprovalRequiredError().message);
+      toast.error(overtimeApprovalRequiredError(baseHours).message);
       return;
     }
 
@@ -282,6 +294,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
               clockOutTime={clockOutTime}
               dateKeys={datesToSave}
               notes={notes}
+              baseHours={baseHours}
               file={overtimeFile}
               onFileChange={setOvertimeFile}
               disabled={saving}

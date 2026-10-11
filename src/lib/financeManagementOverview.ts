@@ -79,6 +79,8 @@ export type FinanceOverviewSnapshot = {
   dueUnsentProformaNis: number;
   dueSentProformaCount: number;
   dueSentProformaNis: number;
+  paidNoTaxReceiptCount: number;
+  paidNoTaxReceiptNis: number;
   dueNoProformaCount: number;
   dueNoProformaNis: number;
   dueNoProformaThisYearCount: number;
@@ -108,8 +110,8 @@ export type FinancePaymentTrendPoint = {
   paid: number;
   pendingWithProforma: number;
   pendingWithoutProforma: number;
-  /** Proformas / invoices created (or sent) that day */
-  invoiceCreated: number;
+  /** Payment rows whose proforma invoice was sent to the client that day */
+  invoiceSent: number;
 };
 
 export type FinanceLastPaymentRow = {
@@ -362,6 +364,7 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     signedMissingPaymentPlanCount,
     dueLast30,
     dueThisYear,
+    paidNoTaxReceipt,
     overdueNewVals,
     overdueLegacyVals,
     dueTodayNewVals,
@@ -395,6 +398,7 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     countSignedLeadsMissingPaymentPlan(),
     countDueLast30DayFocus(),
     countDueFocusInRange(ytd),
+    countPaidWithoutTaxReceipt(last30).catch(() => ({ count: 0, rows: [] })),
     fetchNewPlanValueRows({ unpaidOnly: true, dueFrom: last30.from, dueBefore: today }),
     fetchLegacyPlanValueRows({ unpaidOnly: true, dueFrom: last30.from, dueBefore: today }),
     fetchNewPlanValueRows({ unpaidOnly: true, dueOn: today }),
@@ -431,6 +435,7 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     dueNoProformaNis,
     dueUnsentProformaNis,
     dueSentProformaNis,
+    paidNoTaxReceiptNis,
     dueNoProformaThisYearNis,
     dueUnsentProformaThisYearNis,
     dueSentProformaThisYearNis,
@@ -445,6 +450,7 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     sumAmountRowsNis(dueLast30.noProformaRows, last30, converter),
     sumAmountRowsNis(dueLast30.unsentRows, last30, converter),
     sumAmountRowsNis(dueLast30.sentRows, last30, converter),
+    sumAmountRowsNis(paidNoTaxReceipt.rows, last30, converter),
     sumAmountRowsNis(dueThisYear.noProformaRows, ytd, converter),
     sumAmountRowsNis(dueThisYear.unsentRows, ytd, converter),
     sumAmountRowsNis(dueThisYear.sentRows, ytd, converter),
@@ -463,6 +469,8 @@ export async function fetchFinanceManagementOverview(): Promise<FinanceOverviewS
     dueUnsentProformaNis,
     dueSentProformaCount: dueLast30.sent,
     dueSentProformaNis,
+    paidNoTaxReceiptCount: paidNoTaxReceipt.count,
+    paidNoTaxReceiptNis,
     dueNoProformaCount: dueLast30.noProforma,
     dueNoProformaNis,
     dueNoProformaThisYearCount: dueThisYear.noProforma,
@@ -505,22 +513,12 @@ async function fetchAllPaged<T>(
   return rows;
 }
 
-function proformaCreatedDayKey(proforma: unknown): string | null {
-  if (!hasProformaValue(proforma)) return null;
-  try {
-    const data = typeof proforma === 'string' ? JSON.parse(proforma) : proforma;
-    const createdAt = (data as { createdAt?: unknown })?.createdAt;
-    return dateToDayKey(createdAt);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Daily trend for the finance dashboard line chart (last `dayCount` days).
  * - Paid: rows marked paid on that calendar day
  * - Pending with/without proforma: unpaid rows with due date on that day
- * - Invoice created: proforma invoices created / automation invoices sent that day
+ * - Invoice sent: rows whose proforma invoice went out to the client that day, by hand or by the
+ *   send automation
  */
 export async function fetchFinancePaymentTrend(
   dayCount = 30,
@@ -528,32 +526,25 @@ export async function fetchFinancePaymentTrend(
   const dayKeys = lastNDayKeys(dayCount);
   const rangeStart = dayKeys[0];
   const rangeEnd = dayKeys[dayKeys.length - 1];
-  const monthPrefixes = [...new Set(dayKeys.map((k) => k.slice(0, 7)))];
 
   const empty = Object.fromEntries(
     dayKeys.map((k) => [
       k,
-      { paid: 0, pendingWithProforma: 0, pendingWithoutProforma: 0, invoiceCreated: 0 },
+      { paid: 0, pendingWithProforma: 0, pendingWithoutProforma: 0, invoiceSent: 0 },
     ]),
   ) as Record<
     string,
-    { paid: number; pendingWithProforma: number; pendingWithoutProforma: number; invoiceCreated: number }
+    { paid: number; pendingWithProforma: number; pendingWithoutProforma: number; invoiceSent: number }
   >;
 
-  // Deduplicate invoice counts when the same modern plan is counted via sent_at and createdAt.
-  const invoiceCountedIds = new Set<string>();
-
   try {
-    const modernProformaOr = monthPrefixes.map((m) => `proforma.ilike.%${m}%`).join(',');
-
     const [
       paidModern,
       unpaidModern,
       paidLegacy,
       unpaidLegacy,
-      legacyProformas,
-      modernSent,
-      modernProformaCandidates,
+      invoiceSentModern,
+      invoiceSentLegacy,
     ] = await Promise.all([
       fetchAllPaged<any>((from, to) =>
         supabase
@@ -593,43 +584,28 @@ export async function fetchFinancePaymentTrend(
           .lte('due_date', rangeEnd)
           .range(from, to),
       ),
-      fetchAllPaged<any>((from, to) =>
-        supabase
-          .from('proformainvoice')
-          .select('id, cdate, cxd_date')
-          .is('cxd_date', null)
-          .gte('cdate', rangeStart)
-          .lte('cdate', `${rangeEnd}T23:59:59`)
-          .range(from, to),
-      ).catch(() =>
-        fetchAllPaged<any>((from, to) =>
-          supabase
-            .from('proformainvoice')
-            .select('id, cdate')
-            .gte('cdate', rangeStart)
-            .lte('cdate', `${rangeEnd}T23:59:59`)
-            .range(from, to),
-        ),
-      ),
+      // Either timestamp puts the row in range; which one actually dates it is settled below.
       fetchAllPaged<any>((from, to) =>
         supabase
           .from('payment_plans')
-          .select('id, invoice_send_automation_sent_at')
-          .not('invoice_send_automation_sent_at', 'is', null)
-          .gte('invoice_send_automation_sent_at', rangeStart)
-          .lte('invoice_send_automation_sent_at', `${rangeEnd}T23:59:59`)
+          .select('id, invoice_sent_at, invoice_send_automation_sent_at')
+          .or(
+            `and(invoice_sent_at.gte.${rangeStart},invoice_sent_at.lte.${rangeEnd}T23:59:59),` +
+              `and(invoice_send_automation_sent_at.gte.${rangeStart},invoice_send_automation_sent_at.lte.${rangeEnd}T23:59:59)`,
+          )
           .range(from, to),
       ).catch(() => []),
-      modernProformaOr
-        ? fetchAllPaged<any>((from, to) =>
-            supabase
-              .from('payment_plans')
-              .select('id, proforma')
-              .not('proforma', 'is', null)
-              .or(modernProformaOr)
-              .range(from, to),
-          ).catch(() => [])
-        : Promise.resolve([]),
+      fetchAllPaged<any>((from, to) =>
+        supabase
+          .from('finances_paymentplanrow')
+          .select('id, invoice_sent_at, invoice_send_automation_sent_at')
+          .is('cancel_date', null)
+          .or(
+            `and(invoice_sent_at.gte.${rangeStart},invoice_sent_at.lte.${rangeEnd}T23:59:59),` +
+              `and(invoice_send_automation_sent_at.gte.${rangeStart},invoice_send_automation_sent_at.lte.${rangeEnd}T23:59:59)`,
+          )
+          .range(from, to),
+      ).catch(() => []),
     ]);
 
     for (const row of paidModern) {
@@ -659,30 +635,11 @@ export async function fetchFinancePaymentTrend(
       empty[dueKey].pendingWithoutProforma += 1;
     }
 
-    for (const row of legacyProformas) {
-      if (row.cxd_date) continue;
-      const key = dateToDayKey(row.cdate);
-      if (key && empty[key]) empty[key].invoiceCreated += 1;
-    }
-
-    for (const row of modernSent) {
-      const id = `sent-${row.id}`;
-      if (invoiceCountedIds.has(id)) continue;
-      const key = dateToDayKey(row.invoice_send_automation_sent_at);
-      if (!key || !empty[key]) continue;
-      invoiceCountedIds.add(id);
-      empty[key].invoiceCreated += 1;
-    }
-
-    for (const row of modernProformaCandidates) {
-      const id = `created-${row.id}`;
-      const sentId = `sent-${row.id}`;
-      // Prefer sent_at day when both exist — skip createdAt duplicate for same plan.
-      if (invoiceCountedIds.has(sentId) || invoiceCountedIds.has(id)) continue;
-      const key = proformaCreatedDayKey(row.proforma);
-      if (!key || !empty[key]) continue;
-      invoiceCountedIds.add(id);
-      empty[key].invoiceCreated += 1;
+    // One send per row, dated by the manual stamp when both exist — the same precedence the
+    // collection report applies to decide when an invoice went out.
+    for (const row of [...invoiceSentModern, ...invoiceSentLegacy]) {
+      const key = dateToDayKey(row.invoice_sent_at || row.invoice_send_automation_sent_at);
+      if (key && empty[key]) empty[key].invoiceSent += 1;
     }
   } catch (err) {
     console.warn('Finance payment trend:', err);
@@ -694,7 +651,7 @@ export async function fetchFinancePaymentTrend(
     paid: empty[dayKey]?.paid ?? 0,
     pendingWithProforma: empty[dayKey]?.pendingWithProforma ?? 0,
     pendingWithoutProforma: empty[dayKey]?.pendingWithoutProforma ?? 0,
-    invoiceCreated: empty[dayKey]?.invoiceCreated ?? 0,
+    invoiceSent: empty[dayKey]?.invoiceSent ?? 0,
   }));
 }
 
@@ -820,6 +777,108 @@ async function fetchLegacyPlanValueRows(opts: PlanValueFilter): Promise<Array<{ 
     currency: row.currency_id ?? null,
     asOf: opts.paidFrom ? row.actual_date || row.due_date : row.due_date,
   }));
+}
+
+const TAX_RECEIPT_ID_BATCH = 200;
+
+/**
+ * Plan ids that already have a Payper tax receipt, batched to keep the `in` lists short.
+ *
+ * Scoped to one table, because `payment_links` rows point at either `payment_plans` or
+ * `finances_paymentplanrow` and the two id spaces overlap — matching on the id alone would credit a
+ * legacy payment's receipt to whichever new payment happened to share its number.
+ */
+async function fetchPlanIdsWithPayperReceipt(
+  planIds: number[],
+  isLegacy: boolean,
+): Promise<Set<number>> {
+  const found = new Set<number>();
+  const unique = Array.from(new Set(planIds));
+  for (let i = 0; i < unique.length; i += TAX_RECEIPT_ID_BATCH) {
+    const batch = unique.slice(i, i + TAX_RECEIPT_ID_BATCH);
+    const { data, error } = await supabase
+      .from('payment_links')
+      .select('payment_plan_id, payper_invoice_link, payper_invoice_status')
+      .eq('is_legacy_payment_plan', isLegacy)
+      .in('payment_plan_id', batch);
+    if (error) continue;
+    for (const row of data ?? []) {
+      const id = Number(row.payment_plan_id);
+      if (!Number.isFinite(id)) continue;
+      // Same bar the collection report sets: pending and failed attempts sent nothing.
+      if (row.payper_invoice_status === 'success' || String(row.payper_invoice_link ?? '').trim()) {
+        found.add(id);
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Payments collected in the window with no tax receipt to show for them: neither a Payper receipt
+ * from a payment link nor a hand-recorded send.
+ *
+ * Mirrors `rowHasTaxReceipt` in the collection report so this card and the report it opens cannot
+ * disagree about what is missing.
+ */
+async function countPaidWithoutTaxReceipt(range: { from: string; to: string }): Promise<{
+  count: number;
+  rows: Array<{ amountValue: number; currency: CurrencyInput; asOf: string | null }>;
+}> {
+  const [newRows, legacyRows] = await Promise.all([
+    fetchAllPaged<any>((from, to) =>
+      supabase
+        .from('payment_plans')
+        .select('id, value, value_vat, currency, currency_id, paid_at, tax_invoice_sent, tax_invoice_sent_at')
+        .is('cancel_date', null)
+        .eq('paid', true)
+        .gte('paid_at', range.from)
+        .lte('paid_at', `${range.to}T23:59:59`)
+        .range(from, to),
+    ).catch(() => []),
+    fetchAllPaged<any>((from, to) =>
+      supabase
+        .from('finances_paymentplanrow')
+        .select('id, value, value_base, vat_value, currency_id, actual_date, tax_invoice_sent, tax_invoice_sent_at')
+        .is('cancel_date', null)
+        .not('actual_date', 'is', null)
+        .gte('actual_date', range.from)
+        .lte('actual_date', range.to)
+        .range(from, to),
+    ).catch(() => []),
+  ]);
+
+  const markedByHand = (row: any) =>
+    Boolean(row.tax_invoice_sent) || Boolean(row.tax_invoice_sent_at);
+
+  // Payment links exist against both tables, so each is checked against its own id space.
+  const unmarkedNew = newRows.filter((row) => !markedByHand(row));
+  const unmarkedLegacy = legacyRows.filter((row) => !markedByHand(row));
+  const planIds = (rows: any[]) =>
+    rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id));
+  const [newWithReceipt, legacyWithReceipt] = await Promise.all([
+    fetchPlanIdsWithPayperReceipt(planIds(unmarkedNew), false),
+    fetchPlanIdsWithPayperReceipt(planIds(unmarkedLegacy), true),
+  ]);
+
+  const rows = [
+    ...unmarkedNew
+      .filter((row) => !newWithReceipt.has(Number(row.id)))
+      .map((row) => ({
+        amountValue: parseMoney(row.value) + parseMoney(row.value_vat),
+        currency: (row.currency ?? row.currency_id ?? null) as CurrencyInput,
+        asOf: row.paid_at || null,
+      })),
+    ...unmarkedLegacy
+      .filter((row) => !legacyWithReceipt.has(Number(row.id)))
+      .map((row) => ({
+        amountValue: parseMoney(row.value) || parseMoney(row.value_base) + parseMoney(row.vat_value),
+        currency: (row.currency_id ?? null) as CurrencyInput,
+        asOf: row.actual_date || null,
+      })),
+  ];
+
+  return { count: rows.length, rows };
 }
 
 function toAmountParts(

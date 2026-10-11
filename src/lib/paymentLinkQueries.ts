@@ -158,9 +158,24 @@ export type PaymentPlanTaxReceiptInfo = {
   payper_invoice_created_at: string | null;
 };
 
+/**
+ * Identifies the payment row a tax receipt belongs to.
+ *
+ * The id on its own is not enough. A payment lives in `payment_plans` for a new lead and in
+ * `finances_paymentplanrow` for a legacy one, and the two id spaces overlap, so one number can name
+ * two different payments. `payment_links.is_legacy_payment_plan` says which table a receipt is for.
+ *
+ * Callers working within a single lead can keep using plain ids, since every payment under one lead
+ * is the same kind. Anything pooling rows across leads must key on this.
+ */
+export function taxReceiptRowKey(isLegacy: boolean, paymentPlanId: number | string): string {
+  return `${isLegacy ? 'legacy' : 'new'}:${Number(paymentPlanId)}`;
+}
+
 type TaxReceiptLinkRow = {
   secure_token?: string | null;
   payment_plan_id?: number | null;
+  is_legacy_payment_plan?: boolean | null;
   payper_invoice_link?: string | null;
   payper_invoice_number?: string | null;
   payper_invoice_status?: string | null;
@@ -197,6 +212,11 @@ export async function loadPaymentPlanTaxReceipts(options: {
   paymentPlanIds?: Array<number | string>;
   /** When true and paymentPlanIds is non-empty, skip lead-scoped fallback query. */
   planIdsOnly?: boolean;
+  /**
+   * Restrict to receipts for one kind of payment row. Required when `paymentPlanIds` pools ids from
+   * both tables, where an id alone can match the wrong payment — see `taxReceiptRowKey`.
+   */
+  isLegacy?: boolean;
 }): Promise<Map<number, PaymentPlanTaxReceiptInfo>> {
   const result = new Map<number, PaymentPlanTaxReceiptInfo>();
   const planIds = [
@@ -208,7 +228,7 @@ export async function loadPaymentPlanTaxReceipts(options: {
   ];
 
   const selectCols =
-    'secure_token, payment_plan_id, payper_invoice_link, payper_invoice_number, payper_invoice_status, payper_invoice_created_at, status, paid_at';
+    'secure_token, payment_plan_id, is_legacy_payment_plan, payper_invoice_link, payper_invoice_number, payper_invoice_status, payper_invoice_created_at, status, paid_at';
 
   const rowByPlanId = new Map<number, TaxReceiptLinkRow>();
 
@@ -221,11 +241,15 @@ export async function loadPaymentPlanTaxReceipts(options: {
   };
 
   if (planIds.length) {
-    const { data, error } = await supabase
+    let planQuery = supabase
       .from('payment_links')
       .select(selectCols)
       .in('payment_plan_id', planIds)
       .eq('status', 'paid');
+    if (options.isLegacy !== undefined) {
+      planQuery = planQuery.eq('is_legacy_payment_plan', options.isLegacy);
+    }
+    const { data, error } = await planQuery;
     if (error) throw error;
     ingestRows(data as TaxReceiptLinkRow[]);
 

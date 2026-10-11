@@ -10,6 +10,7 @@ export type FinanceCollectionFocusId =
   | 'pending-proforma'
   | 'pending-no-proforma'
   | 'collected-today'
+  | 'paid-no-tax-receipt'
   | 'signed-missing-plan'
   | 'due-unsent-proforma'
   | 'due-sent-proforma'
@@ -67,6 +68,7 @@ export function parseFinanceCollectionFocus(raw: string | null | undefined): Fin
     case 'pending-proforma':
     case 'pending-no-proforma':
     case 'collected-today':
+    case 'paid-no-tax-receipt':
     case 'signed-missing-plan':
     case 'due-unsent-proforma':
     case 'due-sent-proforma':
@@ -257,6 +259,19 @@ export function buildCollectionFiltersForFocus(focus: FinanceCollectionFocusId):
         collected: ['no_without_proforma', 'no_with_proforma'],
         due: 'due_only',
         proformaEmail: 'not_sent',
+      };
+    }
+    case 'paid-no-tax-receipt': {
+      // Filters by payment date, not due date, because the question is about money already in.
+      const last30 = last30DaysRange(today);
+      return {
+        ...base,
+        fromDate: '',
+        toDate: '',
+        paymentFromDate: last30.from,
+        paymentToDate: last30.to,
+        collected: ['yes_without_tax_receipt'],
+        due: 'ignore',
       };
     }
     case 'collected-this-month': {

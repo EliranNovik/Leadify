@@ -3,9 +3,20 @@ const { invokeExpressHandler } = require('../lib/invokeExpressHandler');
 const { sendMessage } = require('../controllers/whatsappController');
 const { normalizePhoneForWhatsApp } = require('../lib/whatsappPhone');
 
-const NINE_HOUR_WHATSAPP_TEMPLATE_ID = Number(
-  process.env.NINE_HOUR_OVERTIME_WHATSAPP_TEMPLATE_ID || 46,
-);
+/**
+ * The two WhatsApp templates the clock-in policy sends, keyed by the stage that triggers them.
+ *
+ * - `reminder` goes out an hour before the employee's `min_hours`, warning them the day is nearly up.
+ * - `clock_out` goes out when the auto clock-out has already fired at `min_hours`, which is why its
+ *   wording is in the past tense and why it must never be sent while a session is still open.
+ */
+const CLOCK_IN_WHATSAPP_TEMPLATE_IDS = {
+  reminder: Number(process.env.CLOCK_IN_MIN_HOURS_REMINDER_TEMPLATE_ID || 46),
+  clock_out: Number(process.env.CLOCK_IN_MIN_HOURS_CLOCK_OUT_TEMPLATE_ID || 51),
+};
+
+/** The stages above, for callers that need to validate one before passing it in. */
+const CLOCK_IN_WHATSAPP_STAGES = Object.keys(CLOCK_IN_WHATSAPP_TEMPLATE_IDS);
 
 function sanitizeWhatsAppTemplateVariableText(text) {
   if (!text) return '';
@@ -15,30 +26,37 @@ function sanitizeWhatsAppTemplateVariableText(text) {
     .trim();
 }
 
-async function hasNineHourWhatsAppBeenSent(employeeId, workDate) {
+/**
+ * Whether this stage's message already went out today, or null when that cannot be determined.
+ *
+ * The null case matters: the scheduler runs every minute, so treating a failed lookup as "not sent
+ * yet" would message the employee once a minute for the rest of their shift. The caller skips instead.
+ */
+async function hasClockInWhatsAppBeenSent(employeeId, workDate, stage) {
   const { data, error } = await supabase
     .from('employee_clock_in_nine_hour_whatsapp_sent')
     .select('employee_id')
     .eq('employee_id', employeeId)
     .eq('work_date', workDate)
+    .eq('stage', stage)
     .maybeSingle();
 
   if (error) {
-    console.error('[NineHourWhatsApp] dedupe lookup failed:', error.message);
-    return false;
+    console.error('[ClockInWhatsApp] dedupe lookup failed:', error.message);
+    return null;
   }
 
   return data != null;
 }
 
-async function markNineHourWhatsAppSent(employeeId, workDate) {
+async function markClockInWhatsAppSent(employeeId, workDate, stage) {
   const { error } = await supabase.from('employee_clock_in_nine_hour_whatsapp_sent').upsert(
-    { employee_id: employeeId, work_date: workDate, sent_at: new Date().toISOString() },
-    { onConflict: 'employee_id,work_date' },
+    { employee_id: employeeId, work_date: workDate, stage, sent_at: new Date().toISOString() },
+    { onConflict: 'employee_id,work_date,stage' },
   );
 
   if (error) {
-    console.error('[NineHourWhatsApp] failed to record send:', error.message);
+    console.error('[ClockInWhatsApp] failed to record send:', error.message);
   }
 }
 
@@ -104,7 +122,7 @@ function buildTemplateParameters(template, displayName) {
   return parameters.slice(0, paramCount);
 }
 
-async function sendNineHourOvertimeWhatsApp({ phoneNumber, displayName, template }) {
+async function sendClockInWhatsApp({ phoneNumber, displayName, template }) {
   const paramCount = Number(template.params) || 0;
   const templateParameters = buildTemplateParameters(template, displayName);
 
@@ -123,12 +141,12 @@ async function sendNineHourOvertimeWhatsApp({ phoneNumber, displayName, template
   const messagePayload = {
     leadId: null,
     phoneNumber,
-    sender_name: 'Nine-hour alert',
+    sender_name: 'Clock-in alert',
     isTemplate: true,
     templateId: Number(template.id),
     templateName: template.name,
     templateLanguage: template.language || 'en',
-    message: filledContent || template.content || 'Nine-hour work limit reached',
+    message: filledContent || template.content || 'Working hours limit reached',
   };
 
   if (paramCount > 0) {
@@ -154,15 +172,28 @@ async function sendNineHourOvertimeWhatsApp({ phoneNumber, displayName, template
 }
 
 /**
- * Send template 46 once per employee per day when the nine-hour popup would appear.
+ * Send one stage's template, at most once per employee per day.
+ *
+ * @param {number} employeeId
+ * @param {string} workDate Jerusalem date key, which is what the dedupe table is keyed on.
+ * @param {'reminder'|'clock_out'} stage
  * @returns {{ sent: boolean, skipped?: string, error?: string }}
  */
-async function sendNineHourOvertimeWhatsAppIfNeeded(employeeId, workDate) {
-  if (!Number.isFinite(NINE_HOUR_WHATSAPP_TEMPLATE_ID) || NINE_HOUR_WHATSAPP_TEMPLATE_ID <= 0) {
+async function sendClockInWhatsAppIfNeeded(employeeId, workDate, stage) {
+  const templateId = CLOCK_IN_WHATSAPP_TEMPLATE_IDS[stage];
+  if (templateId === undefined) {
+    return { sent: false, skipped: 'unknown_stage' };
+  }
+  if (!Number.isFinite(templateId) || templateId <= 0) {
     return { sent: false, skipped: 'invalid_template_id' };
   }
 
-  if (await hasNineHourWhatsAppBeenSent(employeeId, workDate)) {
+  const alreadySent = await hasClockInWhatsAppBeenSent(employeeId, workDate, stage);
+  // Staying quiet beats messaging every minute: without a working dedupe there is nothing to stop it.
+  if (alreadySent === null) {
+    return { sent: false, skipped: 'dedupe_unavailable' };
+  }
+  if (alreadySent) {
     return { sent: false, skipped: 'already_sent' };
   }
 
@@ -171,29 +202,30 @@ async function sendNineHourOvertimeWhatsAppIfNeeded(employeeId, workDate) {
     return { sent: false, skipped: 'no_employee_mobile' };
   }
 
-  const template = await fetchWhatsAppTemplate(NINE_HOUR_WHATSAPP_TEMPLATE_ID);
+  const template = await fetchWhatsAppTemplate(templateId);
 
   try {
-    await sendNineHourOvertimeWhatsApp({
+    await sendClockInWhatsApp({
       phoneNumber: target.phoneNumber,
       displayName: target.displayName,
       template,
     });
-    await markNineHourWhatsAppSent(employeeId, workDate);
+    await markClockInWhatsAppSent(employeeId, workDate, stage);
     console.log(
-      `[NineHourWhatsApp] employee=${employeeId} template=${NINE_HOUR_WHATSAPP_TEMPLATE_ID} sent to ${target.phoneNumber}`,
+      `[ClockInWhatsApp] employee=${employeeId} stage=${stage} template=${templateId} sent to ${target.phoneNumber}`,
     );
     return { sent: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[NineHourWhatsApp] employee=${employeeId} send failed:`, message);
+    console.error(`[ClockInWhatsApp] employee=${employeeId} stage=${stage} send failed:`, message);
     return { sent: false, error: message };
   }
 }
 
 module.exports = {
-  sendNineHourOvertimeWhatsAppIfNeeded,
-  NINE_HOUR_WHATSAPP_TEMPLATE_ID,
+  sendClockInWhatsAppIfNeeded,
+  CLOCK_IN_WHATSAPP_TEMPLATE_IDS,
+  CLOCK_IN_WHATSAPP_STAGES,
   _internal: {
     buildTemplateParameters,
     fetchEmployeeWhatsAppTarget,

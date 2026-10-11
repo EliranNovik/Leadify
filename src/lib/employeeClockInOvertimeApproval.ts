@@ -1,5 +1,9 @@
 import { supabase } from './supabase';
-import { NINE_HOURS_MS } from './employeeClockInOvertime';
+import {
+  DEFAULT_MIN_HOURS,
+  fetchEmployeeMinHours,
+  normalizeMinHours,
+} from './employeeClockInOvertime';
 import {
   CLOCK_IN_HELP_CONTACT_EMPLOYEE_IDS,
   buildHelpContactWhatsAppUrl,
@@ -39,20 +43,31 @@ export function clockSessionDurationMinutes(clockInTime: string, clockOutTime: s
 }
 
 /**
- * Hours a session may run before it needs an overtime approval.
+ * Hours a session may run before it needs an overtime approval: the employee's own contracted
+ * `min_hours`, read from `tenants_employee`.
  *
- * Fixed company-wide rather than the employee's own min_hours, so overtime means the same
- * thing on every contract — the same nine-hour day the auto clock-out and the 125% / 150%
- * calculation are built around.
+ * Was a flat nine hours for everyone, which let the 176 employees on an eight-hour contract log an
+ * extra hour as if it were a normal day. Anything past their base hours is overtime and needs
+ * Michael's sign-off.
+ *
+ * This brings approval in line with how the hours are already *paid*: `employeeExtraHours.ts` has
+ * always measured overtime from `min_hours` too, so a 9h approval limit meant an eight-hour employee
+ * could bank an hour of 125% overtime without anyone signing off on it.
  */
-export const OVERTIME_APPROVAL_BASE_HOURS = NINE_HOURS_MS / 3_600_000;
+export async function fetchOvertimeApprovalBaseHours(employeeId: number): Promise<number> {
+  return fetchEmployeeMinHours(employeeId);
+}
+
+/** Fallback base hours for a UI that has not loaded the employee's contract yet. */
+export const DEFAULT_OVERTIME_APPROVAL_BASE_HOURS = DEFAULT_MIN_HOURS;
 
 export function clockSessionExceedsOvertimeBase(
   clockInTime: string,
   clockOutTime: string,
+  baseHours: number,
 ): boolean {
   const minutes = clockSessionDurationMinutes(clockInTime, clockOutTime);
-  return minutes > OVERTIME_APPROVAL_BASE_HOURS * 60;
+  return minutes > normalizeMinHours(baseHours) * 60;
 }
 
 export function formatClockSessionDurationLabel(clockInTime: string, clockOutTime: string): string {
@@ -80,6 +95,8 @@ export function buildOvertimeApprovalWhatsAppMessage(params: {
   clockOutTime: string;
   dateKeys?: string[];
   notes?: string | null;
+  /** The employee's own base hours, which is what the request is asking to go beyond. */
+  baseHours: number;
 }): string {
   const durationLabel = formatClockSessionDurationLabel(params.clockInTime, params.clockOutTime);
   const dateLabels = [...new Set((params.dateKeys || []).filter(Boolean))]
@@ -90,7 +107,7 @@ export function buildOvertimeApprovalWhatsAppMessage(params: {
     ? `${datePart}, ${params.clockInTime}–${params.clockOutTime} (${durationLabel})`
     : `${params.clockInTime}–${params.clockOutTime} (${durationLabel})`;
   const initial =
-    `Hi Michael, I need overtime approval to clock in more than the ${OVERTIME_APPROVAL_BASE_HOURS}h standard day. Planned session: ${session}.`;
+    `Hi Michael, I need overtime approval to clock in more than my ${normalizeMinHours(params.baseHours)}h standard day. Planned session: ${session}.`;
   const extraNotes = params.notes?.trim();
   if (!extraNotes) return initial;
   return `${initial}\n\nAdditional notes:\n${extraNotes}`;
@@ -124,20 +141,29 @@ export async function fetchMichaelDeckerWhatsAppUrl(
   return `${url}?text=${encodeURIComponent(message)}`;
 }
 
-export function overtimeApprovalRequiredError(): Error {
+export function overtimeApprovalRequiredError(baseHours: number): Error {
   return new Error(
-    `Clock-in/out is longer than the ${OVERTIME_APPROVAL_BASE_HOURS}h standard day. Get WhatsApp approval from Michael Decker and upload the screenshot before saving.`,
+    `Clock-in/out is longer than your ${normalizeMinHours(baseHours)}h standard day. Get WhatsApp approval from Michael Decker and upload the screenshot before saving.`,
   );
 }
 
+/**
+ * The save-time guard.
+ *
+ * Reads the base hours here rather than trusting a caller-supplied number: this is the one check that
+ * actually blocks a write, and a screen that forgot to pass the employee's contract would quietly let
+ * overtime through unapproved.
+ */
 export async function assertManualDurationAllowed(params: {
+  employeeId: number;
   clockInTime: string;
   clockOutTime: string;
   overtimeApprovalStoragePath?: string | null;
 }): Promise<void> {
-  if (!clockSessionExceedsOvertimeBase(params.clockInTime, params.clockOutTime)) return;
+  const baseHours = await fetchOvertimeApprovalBaseHours(params.employeeId);
+  if (!clockSessionExceedsOvertimeBase(params.clockInTime, params.clockOutTime, baseHours)) return;
   if (params.overtimeApprovalStoragePath?.trim()) return;
-  throw overtimeApprovalRequiredError();
+  throw overtimeApprovalRequiredError(baseHours);
 }
 
 export function isAllowedOvertimeApprovalFile(file: File): string | null {

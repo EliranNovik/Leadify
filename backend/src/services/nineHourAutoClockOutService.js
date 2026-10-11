@@ -2,7 +2,7 @@ const supabase = require('../config/supabase');
 const nineHourOvertimeWhatsAppService = require('./nineHourOvertimeWhatsAppService');
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
-const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 const DEFAULT_MIN_HOURS = 8;
 const PRESENCE_STALE_MS = Number(process.env.CLOCK_IN_PRESENCE_STALE_MS || 90_000);
 const WORKDAY_END_HOUR_JERUSALEM = Number(process.env.CLOCK_IN_WORKDAY_END_HOUR_JERUSALEM || 23);
@@ -69,14 +69,16 @@ function normalizeMinHours(value) {
 }
 
 /**
- * End-of-day auto clock-out stores remaining base hours (min_hours minus
- * already-closed sessions today), not the wall-clock span until 23:00.
- * Never writes a time after `now` or before clock-in.
+ * When the open session should be stamped as having ended: the moment the day's allowance ran out.
+ *
+ * Stores the hours the employee is actually owed rather than the wall-clock span up to whenever this
+ * ran, by subtracting what today already has closed against it. Never writes a time after `now` or
+ * before clock-in.
  */
-function computeBaseHoursClockOutIso(clockInIso, minHours, closedMs = 0, nowMs = Date.now()) {
+function computeAllowanceClockOutIso(clockInIso, allowanceMs, closedMs = 0, nowMs = Date.now()) {
   const startMs = new Date(clockInIso).getTime();
   if (!Number.isFinite(startMs)) return new Date(nowMs).toISOString();
-  const remainingMs = Math.max(0, normalizeMinHours(minHours) * 60 * 60 * 1000 - closedMs);
+  const remainingMs = Math.max(0, allowanceMs - closedMs);
   const targetMs = startMs + remainingMs;
   const endMs = Math.min(Math.max(targetMs, startMs), nowMs);
   return new Date(endMs).toISOString();
@@ -90,27 +92,11 @@ async function isExternalAuthUser(userId) {
     .maybeSingle();
 
   if (error) {
-    console.error('[NineHourAutoClockOut] extern lookup failed:', error.message);
+    console.error('[AutoClockOut] extern lookup failed:', error.message);
     return false;
   }
 
   return parseExternFlag(data?.extern);
-}
-
-async function hasOvertimeOptIn(employeeId, workDate) {
-  const { data, error } = await supabase
-    .from('employee_clock_in_overtime_opt_in')
-    .select('employee_id')
-    .eq('employee_id', employeeId)
-    .eq('work_date', workDate)
-    .maybeSingle();
-
-  if (error) {
-    console.error('[NineHourAutoClockOut] overtime opt-in lookup failed:', error.message);
-    return false;
-  }
-
-  return data != null;
 }
 
 async function fetchEmployeeMinHours(employeeId) {
@@ -121,62 +107,141 @@ async function fetchEmployeeMinHours(employeeId) {
     .maybeSingle();
 
   if (error) {
-    console.error('[NineHourAutoClockOut] min_hours lookup failed:', error.message);
+    console.error('[AutoClockOut] min_hours lookup failed:', error.message);
     return DEFAULT_MIN_HOURS;
   }
 
   return normalizeMinHours(data?.min_hours);
 }
 
-async function fetchTodayClosedDurationMs(employeeId, excludeRecordId, now = Date.now()) {
+/**
+ * Whether a session was typed in rather than clocked live.
+ *
+ * `manually` alone is not enough to tell: the manual-entry screens clear it when the session is short
+ * enough to auto-approve, so a pre-added row can look automatic. Every one of them does set
+ * `location_source` to 'manual', which is what actually separates the two.
+ *
+ * An edited live session ends up marked 'manual' too, and that is the right side of the line for it to
+ * land on — an edit is a figure someone signed off on, so it should behave like a pre-added entry.
+ */
+function isPreAddedSession(record) {
+  return (
+    record?.manually === true
+    || String(record?.location_source || '').trim().toLowerCase() === 'manual'
+  );
+}
+
+/**
+ * A timestamp as epoch milliseconds, or null when it cannot be read as one.
+ *
+ * The empty and nullish check has to come first: `new Date(null)` is the epoch rather than an invalid
+ * date, so a row with no clock-in would otherwise measure as decades of work and be clocked straight
+ * back out. The query cannot return such a row today, but nothing about this arithmetic should depend
+ * on that.
+ */
+function toEpochMs(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Split a day's sessions into the three figures the clock-in policy needs.
+ *
+ * - `elapsedMs` — everything worked today, with the still-open session counted up to `now`.
+ * - `preAddedMs` — the share of that which was entered by hand, excluding the open session.
+ * - `closedMs` — the share already clocked out, again excluding the open session.
+ *
+ * Declined sessions are left out of all three: an entry that was rejected is not worked time, so it
+ * must neither push the employee toward their clock-out nor extend their day.
+ *
+ * Kept separate from the query so the arithmetic can be tested without a database.
+ */
+function summarizeTodayHours(rows, activeRecordId = null, now = Date.now()) {
+  let elapsedMs = 0;
+  let preAddedMs = 0;
+  let closedMs = 0;
+
+  for (const record of rows ?? []) {
+    if (record?.declined === true) continue;
+
+    const start = toEpochMs(record.clock_in_time);
+    // No usable start, so there is no duration to attribute and nothing worth guessing at.
+    if (start === null) continue;
+    /*
+     * A clock-out that will not parse leaves the session counted as still running, in both the
+     * duration and the closed bucket below. Splitting those two decisions is how a row ends up
+     * measured to `now` yet filed as finished.
+     */
+    const closedEnd = record.clock_out_time ? toEpochMs(record.clock_out_time) : null;
+    const ms = Math.max(0, (closedEnd ?? now) - start);
+
+    elapsedMs += ms;
+    if (record.id === activeRecordId) continue;
+    if (closedEnd !== null) closedMs += ms;
+    if (isPreAddedSession(record)) preAddedMs += ms;
+  }
+
+  return { elapsedMs, preAddedMs, closedMs };
+}
+
+/**
+ * Today's hours for one employee.
+ *
+ * One query for all three figures rather than one each: the scheduler runs every minute over every
+ * open session, so a round trip here is paid per employee per minute.
+ */
+async function fetchTodayHours(employeeId, activeRecordId = null, now = Date.now()) {
   const dateKey = jerusalemDateKey(new Date(now));
   const todayStart = buildJerusalemStartOfDayIso(dateKey);
   const todayEnd = buildJerusalemEndOfDayIso(dateKey);
 
   const { data, error } = await supabase
     .from('employee_clock_in')
-    .select('id, clock_in_time, clock_out_time')
+    .select('id, clock_in_time, clock_out_time, manually, declined, location_source')
     .eq('employee_id', employeeId)
     .gte('clock_in_time', todayStart)
     .lte('clock_in_time', todayEnd);
 
   if (error) throw error;
 
-  let totalMs = 0;
-  for (const record of data ?? []) {
-    if (record.id === excludeRecordId || !record.clock_out_time) continue;
-    const start = new Date(record.clock_in_time).getTime();
-    const end = new Date(record.clock_out_time).getTime();
-    totalMs += Math.max(0, end - start);
-  }
-  return totalMs;
+  return summarizeTodayHours(data, activeRecordId, now);
 }
 
-async function fetchTodayClockedMs(employeeId, now = Date.now()) {
-  const dateKey = jerusalemDateKey(new Date(now));
-  const todayStart = buildJerusalemStartOfDayIso(dateKey);
-  const todayEnd = buildJerusalemEndOfDayIso(dateKey);
-
+/**
+ * Whether a session is still open right now.
+ *
+ * The run reads every active session up front and then works through them one at a time, so by the
+ * time a record is reached the employee may have clocked out by hand. Both the reminder and the
+ * clock-out check this first — neither should reach someone who has already left for the day.
+ *
+ * Treats a failed lookup as "not clocked in", so an unreadable row is skipped rather than messaged
+ * or clocked out on a guess.
+ */
+async function isStillClockedIn(recordId) {
   const { data, error } = await supabase
     .from('employee_clock_in')
-    .select('clock_in_time, clock_out_time')
-    .eq('employee_id', employeeId)
-    .gte('clock_in_time', todayStart)
-    .lte('clock_in_time', todayEnd);
+    .select('is_active')
+    .eq('id', recordId)
+    .maybeSingle();
 
-  if (error) throw error;
-
-  let totalMs = 0;
-  for (const record of data ?? []) {
-    const start = new Date(record.clock_in_time).getTime();
-    const end = record.clock_out_time
-      ? new Date(record.clock_out_time).getTime()
-      : now;
-    totalMs += Math.max(0, end - start);
+  if (error) {
+    console.error('[AutoClockOut] active-session re-check failed:', error.message);
+    return false;
   }
-  return totalMs;
+
+  return data?.is_active === true;
 }
 
+/**
+ * Close an open session, and report whether this call is the one that closed it.
+ *
+ * `is_active` is part of the match, not just the id: a session closed since the run started is left
+ * untouched, and two overlapping runs cannot both clock the same session out. A match of zero rows is
+ * not an error in PostgREST, so the updated rows are selected back to tell the two apart.
+ *
+ * @returns {Promise<boolean>} true when this call wrote the clock-out.
+ */
 async function clockOutActiveRecord(record, notes, clockOutTime = new Date().toISOString()) {
   const baseUpdate = {
     clock_out_time: clockOutTime,
@@ -184,24 +249,27 @@ async function clockOutActiveRecord(record, notes, clockOutTime = new Date().toI
     notes,
   };
 
+  const applyUpdate = async (payload) => {
+    const { data, error } = await supabase
+      .from('employee_clock_in')
+      .update(payload)
+      .eq('id', record.id)
+      .eq('is_active', true)
+      .select('id');
+    return { rows: data?.length ?? 0, error };
+  };
+
   if (record.clock_in_location_id) {
-    const withLocation = {
+    const { rows, error } = await applyUpdate({
       ...baseUpdate,
       clock_out_location_id: record.clock_in_location_id,
-    };
-    const { error } = await supabase
-      .from('employee_clock_in')
-      .update(withLocation)
-      .eq('id', record.id);
-    if (!error) return;
+    });
+    if (!error) return rows > 0;
   }
 
-  const { error: fallbackError } = await supabase
-    .from('employee_clock_in')
-    .update(baseUpdate)
-    .eq('id', record.id);
-
+  const { rows, error: fallbackError } = await applyUpdate(baseUpdate);
   if (fallbackError) throw fallbackError;
+  return rows > 0;
 }
 
 function isPastJerusalemWorkdayEnd(now = new Date()) {
@@ -209,10 +277,48 @@ function isPastJerusalemWorkdayEnd(now = new Date()) {
   return hour >= WORKDAY_END_HOUR_JERUSALEM;
 }
 
-function shouldSendNineHourWhatsApp(totalMs, overtimeOptIn, now = new Date()) {
-  if (isPastJerusalemWorkdayEnd(now)) return false;
-  if (overtimeOptIn) return false;
-  return totalMs >= NINE_HOURS_MS;
+/**
+ * How long today may run before the open session is closed: the employee's own `min_hours`, plus any
+ * hours they pre-added by hand.
+ *
+ * The pre-added hours are already inside `elapsedMs`, so counting them here cancels them out of the
+ * comparison — which is the entire point. Before this, someone who pre-added an approved extra block
+ * for today carried those hours into the total the moment they arrived, which put them past their
+ * base hours and had them force-closed and notified within a minute of clocking in. Now their live
+ * session still gets its full base hours and the pre-added block sits on top, where it belongs.
+ */
+function resolveClockInAllowanceMs(minHours, preAddedMs = 0) {
+  return normalizeMinHours(minHours) * HOUR_MS + Math.max(0, preAddedMs || 0);
+}
+
+/**
+ * The allowance in words, for the note left on the session and the run's log line.
+ *
+ * Spells out the pre-added part when there is one, so anyone reading a clock-out that landed well
+ * past base hours can see why without going back through the day's other entries.
+ */
+function describeAllowance(minHours, preAddedMs = 0) {
+  const hours = normalizeMinHours(minHours);
+  if (!(preAddedMs > 0)) return `base hours (${hours}h)`;
+  const preAddedHours = Math.round((preAddedMs / HOUR_MS) * 100) / 100;
+  return `${Math.round((hours + preAddedHours) * 100) / 100}h (base ${hours}h + ${preAddedHours}h pre-added)`;
+}
+
+/**
+ * Which stage of the clock-in policy an open session has reached, or null for neither.
+ *
+ * The reminder lands an hour before the allowance and the clock-out on it. Both arguments are
+ * milliseconds, so nothing here needs to know how the allowance was arrived at.
+ *
+ * `clock_out` wins when both thresholds are behind the employee — a session only ever advances, and a
+ * run that catches up on a missed reminder must still clock the session out rather than nudge it.
+ */
+function resolveClockInStage(elapsedMs, allowanceMs) {
+  if (elapsedMs >= allowanceMs) return 'clock_out';
+  // An allowance of an hour or less leaves no room for a reminder ahead of the clock-out.
+  const reminderMs = allowanceMs - HOUR_MS;
+  if (reminderMs > 0 && elapsedMs >= reminderMs) return 'reminder';
+  return null;
 }
 
 async function runNineHourAutoClockOut() {
@@ -227,6 +333,9 @@ async function runNineHourAutoClockOut() {
   const summary = {
     checked: activeRecords?.length ?? 0,
     clockedOut: 0,
+    /** Clock-outs from reaching the employee's own base hours, which is the normal path. */
+    baseHoursClockOuts: 0,
+    /** Clock-outs from the 23:00 sweep, which only catches sessions the base-hours path missed. */
     endOfDayClockOuts: 0,
     whatsappSent: 0,
     whatsappSkipped: 0,
@@ -251,54 +360,117 @@ async function runNineHourAutoClockOut() {
 
       if (pastWorkdayEnd) {
         const minHours = await fetchEmployeeMinHours(record.employee_id);
-        const closedMs = await fetchTodayClosedDurationMs(record.employee_id, record.id, nowMs);
-        const clockOutTime = computeBaseHoursClockOutIso(
+        const today = await fetchTodayHours(record.employee_id, record.id, nowMs);
+        const allowanceMs = resolveClockInAllowanceMs(minHours, today.preAddedMs);
+        const clockOutTime = computeAllowanceClockOutIso(
           record.clock_in_time,
-          minHours,
-          closedMs,
+          allowanceMs,
+          today.closedMs,
           nowMs,
         );
-        await clockOutActiveRecord(
+        const didClockOut = await clockOutActiveRecord(
           record,
-          `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem); duration set to base hours (${minHours}h)`,
+          `Auto clock-out: end of workday (${WORKDAY_END_HOUR_JERUSALEM}:00 Asia/Jerusalem);`
+            + ` duration set to ${describeAllowance(minHours, today.preAddedMs)}`,
           clockOutTime,
         );
+
+        if (!didClockOut) {
+          summary.skipped += 1;
+          continue;
+        }
+
         summary.clockedOut += 1;
         summary.endOfDayClockOuts += 1;
 
         console.log(
-          `[NineHourAutoClockOut] employee=${record.employee_id} end-of-day clock out at ${clockOutTime} (base hours ${minHours}h, session kept)`,
+          `[AutoClockOut] employee=${record.employee_id} end-of-day clock out at ${clockOutTime}`
+            + ` (${describeAllowance(minHours, today.preAddedMs)}, session kept)`,
         );
         continue;
       }
 
-      const overtimeOptIn = await hasOvertimeOptIn(record.employee_id, workDate);
-      const totalMs = await fetchTodayClockedMs(record.employee_id);
+      const minHours = await fetchEmployeeMinHours(record.employee_id);
+      const today = await fetchTodayHours(record.employee_id, record.id, nowMs);
+      const allowanceMs = resolveClockInAllowanceMs(minHours, today.preAddedMs);
+      const stage = resolveClockInStage(today.elapsedMs, allowanceMs);
 
-      if (shouldSendNineHourWhatsApp(totalMs, overtimeOptIn)) {
-        const whatsappResult = await nineHourOvertimeWhatsAppService.sendNineHourOvertimeWhatsAppIfNeeded(
-          record.employee_id,
-          workDate,
-        );
-        if (whatsappResult.sent) {
-          summary.whatsappSent += 1;
-        } else if (whatsappResult.error) {
-          summary.errors.push({
-            employeeId: record.employee_id,
-            message: `Nine-hour WhatsApp: ${whatsappResult.error}`,
-          });
-        } else {
-          summary.whatsappSkipped += 1;
-        }
+      if (!stage) {
+        summary.skipped += 1;
+        continue;
       }
 
-      // 9h is a CRM reminder only — never auto clock-out. 23:00 sets base hours.
-      summary.skipped += 1;
+      /*
+       * Only act on a session that is still open.
+       *
+       * The active list was read at the top of the run and every record since has cost several
+       * queries, so an employee may well have clocked out by hand in the meantime. Checked here for
+       * both stages, because neither a reminder nor a "you have been signed out" notice should reach
+       * someone who already left.
+       */
+      if (!(await isStillClockedIn(record.id))) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      if (stage === 'clock_out') {
+        /*
+         * Stamped at the moment they actually used up the allowance, not at the moment this run
+         * noticed. The scheduler ticks once a minute, so `now` would otherwise drift past it.
+         */
+        const clockOutTime = computeAllowanceClockOutIso(
+          record.clock_in_time,
+          allowanceMs,
+          today.closedMs,
+          nowMs,
+        );
+        const didClockOut = await clockOutActiveRecord(
+          record,
+          `Auto clock-out: reached ${describeAllowance(minHours, today.preAddedMs)}`,
+          clockOutTime,
+        );
+
+        // Lost the race to a manual clock-out, so there is nothing to announce.
+        if (!didClockOut) {
+          summary.skipped += 1;
+          continue;
+        }
+
+        summary.clockedOut += 1;
+        summary.baseHoursClockOuts += 1;
+        console.log(
+          `[AutoClockOut] employee=${record.employee_id} clocked out at ${clockOutTime}`
+            + ` (${describeAllowance(minHours, today.preAddedMs)})`,
+        );
+      }
+
+      /*
+       * Sent after the clock-out, not before: template 51 says the employee *has been* signed out, so
+       * it must not go out until that is true. A send failure leaves them correctly clocked out and is
+       * reported rather than retried, since the next run sees an inactive session.
+       */
+      const whatsappResult = await nineHourOvertimeWhatsAppService.sendClockInWhatsAppIfNeeded(
+        record.employee_id,
+        workDate,
+        stage,
+      );
+      if (whatsappResult.sent) {
+        summary.whatsappSent += 1;
+      } else if (whatsappResult.error) {
+        summary.errors.push({
+          employeeId: record.employee_id,
+          message: `Clock-in WhatsApp (${stage}): ${whatsappResult.error}`,
+        });
+      } else {
+        summary.whatsappSkipped += 1;
+      }
+
+      if (stage === 'reminder') summary.skipped += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       summary.errors.push({ employeeId: record.employee_id, message });
       console.error(
-        `[NineHourAutoClockOut] failed for employee=${record.employee_id}:`,
+        `[AutoClockOut] failed for employee=${record.employee_id}:`,
         message,
       );
     }
@@ -309,17 +481,20 @@ async function runNineHourAutoClockOut() {
 
 module.exports = {
   runNineHourAutoClockOut,
-  NINE_HOURS_MS,
+  HOUR_MS,
   PRESENCE_STALE_MS,
   WORKDAY_END_HOUR_JERUSALEM,
   DEFAULT_MIN_HOURS,
   _internal: {
     jerusalemDateKey,
-    fetchTodayClockedMs,
-    shouldSendNineHourWhatsApp,
+    fetchTodayHours,
+    summarizeTodayHours,
+    isPreAddedSession,
+    resolveClockInAllowanceMs,
+    describeAllowance,
+    resolveClockInStage,
     isPastJerusalemWorkdayEnd,
-    fetchTodayClosedDurationMs,
-    computeBaseHoursClockOutIso,
+    computeAllowanceClockOutIso,
     normalizeMinHours,
   },
 };

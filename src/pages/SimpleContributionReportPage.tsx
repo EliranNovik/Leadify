@@ -39,7 +39,9 @@ import {
   DUE_INVOICED_EXTRA_COLUMNS,
   DUE_INVOICED_LEGACY_EXTRA_COLUMNS,
   DUE_INVOICED_PAID_COLUMNS,
+  applyDueInvoicedWindow,
   dueInvoicedAllRowsFilter,
+  dueInvoicedIncomeDate,
   dueInvoicedReadyToPayFilter,
   scopeDueInvoicedQuery,
   scopeLegacyInvoicedWithoutDueDate,
@@ -1658,12 +1660,11 @@ const SimpleContributionReportPage = () => {
                   .not('due_date', 'is', null)
                   .is('cancel_date', null),
               );
-              if (fromDateTime) q = q.gte('due_date', fromDateTime);
-              if (toDateTime) q = q.lte('due_date', toDateTime);
+              q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
               return q;
             });
 
-            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
+            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
             processedPayments.forEach((amount, leadId) => {
               const current = newPaymentsMap.get(leadId) || 0;
               newPaymentsMap.set(leadId, current + amount);
@@ -1691,8 +1692,7 @@ const SimpleContributionReportPage = () => {
                   .in('lead_id', chunk)
                   .not('due_date', 'is', null),
               );
-              if (fromDateTime) q = q.gte('due_date', fromDateTime);
-              if (toDateTime) q = q.lte('due_date', toDateTime);
+              q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
               return q;
             });
 
@@ -1708,7 +1708,7 @@ const SimpleContributionReportPage = () => {
               ),
             );
 
-            const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
+            const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
             processedPayments.forEach((amount, leadId) => {
               const current = legacyPaymentsMap.get(leadId) || 0;
               legacyPaymentsMap.set(leadId, current + amount);
@@ -1758,12 +1758,11 @@ const SimpleContributionReportPage = () => {
                 .is('cancel_date', null)
                 .in('lead_id', chunk),
             );
-            if (fromDateTimeForPayments) q = q.gte('due_date', fromDateTimeForPayments);
-            if (toDateTimeForPayments) q = q.lte('due_date', toDateTimeForPayments);
+            q = applyDueInvoicedWindow(q, { from: fromDateTimeForPayments, to: toDateTimeForPayments });
             return q;
           });
 
-          const processedPayments = await processNewPaymentsAsync(allHandlerPayments, boiConverter, dueInvoicedReadyToPayFilter);
+          const processedPayments = await processNewPaymentsAsync(allHandlerPayments, boiConverter, dueInvoicedReadyToPayFilter({ from: fromDateTimeForPayments, to: toDateTimeForPayments }));
           processedPayments.forEach((amount, leadId) => {
             // Add to map (sum if already exists from signed leads)
             const current = newPaymentsMap.get(leadId) || 0;
@@ -1794,8 +1793,7 @@ const SimpleContributionReportPage = () => {
               .not('due_date', 'is', null)
               .is('cancel_date', null)
               .in('lead_id', chunk);
-            if (fromDateTimeForPayments) q = q.gte('due_date', fromDateTimeForPayments);
-            if (toDateTimeForPayments) q = q.lte('due_date', toDateTimeForPayments);
+            q = applyDueInvoicedWindow(q, { from: fromDateTimeForPayments, to: toDateTimeForPayments });
             return q;
           });
 
@@ -1812,7 +1810,7 @@ const SimpleContributionReportPage = () => {
             ),
           );
 
-          const processedPayments = await processLegacyPaymentsAsync([...allHandlerLegacyPayments, ...allHandlerLegacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedAllRowsFilter);
+          const processedPayments = await processLegacyPaymentsAsync([...allHandlerLegacyPayments, ...allHandlerLegacyInvoicedNoDueDate], boiConverter, legacyLeadsMap, dueInvoicedAllRowsFilter({ from: fromDateTimeForPayments, to: toDateTimeForPayments }));
           processedPayments.forEach((amount, leadId) => {
             // Add to map (sum if already exists from signed leads)
             const current = legacyPaymentsMap.get(leadId) || 0;
@@ -2424,12 +2422,11 @@ const SimpleContributionReportPage = () => {
                 .is('cancel_date', null)
                 .in('lead_id', chunk),
             );
-            if (fromDateTime) q = q.gte('due_date', fromDateTime);
-            if (toDateTime) q = q.lte('due_date', toDateTime);
+            q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
             return q;
           });
 
-          const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
+          const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
           processedPayments.forEach((amount) => {
             totalDue += amount;
           });
@@ -2470,8 +2467,7 @@ const SimpleContributionReportPage = () => {
               .not('due_date', 'is', null)
               .is('cancel_date', null)
               .in('lead_id', chunk);
-            if (fromDateTime) q = q.gte('due_date', fromDateTime);
-            if (toDateTime) q = q.lte('due_date', toDateTime);
+            q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
             return q;
           });
 
@@ -2489,7 +2485,7 @@ const SimpleContributionReportPage = () => {
           );
 
           const emptyLegacyLeadsMap = new Map<number, any>();
-          const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, emptyLegacyLeadsMap, dueInvoicedAllRowsFilter);
+          const processedPayments = await processLegacyPaymentsAsync([...legacyPayments, ...legacyInvoicedNoDueDate], boiConverter, emptyLegacyLeadsMap, dueInvoicedAllRowsFilter({ from: fromDateTime, to: toDateTime }));
           processedPayments.forEach((amount) => {
             totalDue += amount;
           });
@@ -3064,13 +3060,12 @@ const SimpleContributionReportPage = () => {
                   .is('cancel_date', null)
                   .in('lead_id', chunk),
               );
-              if (fromDateTime) q = q.gte('due_date', fromDateTime);
-              if (toDateTime) q = q.lte('due_date', toDateTime);
+              q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
               return q;
             });
             allNewPaymentRows = newPayments;
 
-            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter);
+            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
             processedPayments.forEach((amount, leadId) => {
               const current = newPaymentsMap.get(leadId) || 0;
               newPaymentsMap.set(leadId, current + amount);
@@ -3089,8 +3084,7 @@ const SimpleContributionReportPage = () => {
                   .not('due_date', 'is', null)
                   .in('lead_id', chunk),
               );
-              if (fromDateTime) q = q.gte('due_date', fromDateTime);
-              if (toDateTime) q = q.lte('due_date', toDateTime);
+              q = applyDueInvoicedWindow(q, { from: fromDateTime, to: toDateTime });
               return q;
             });
 
@@ -3107,7 +3101,7 @@ const SimpleContributionReportPage = () => {
             );
             allLegacyPaymentRows = [...legacyPayments, ...legacyInvoicedNoDueDate];
 
-            const processedPayments = await processLegacyPaymentsAsync(allLegacyPaymentRows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
+            const processedPayments = await processLegacyPaymentsAsync(allLegacyPaymentRows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
             processedPayments.forEach((amount, leadId) => {
               const current = legacyPaymentsMap.get(leadId) || 0;
               legacyPaymentsMap.set(leadId, current + amount);
@@ -3136,11 +3130,11 @@ const SimpleContributionReportPage = () => {
             }
           });
 
-          const groupPaymentsByDay = (rows: any[], legacy = false) => {
+          // Bucketed on the income date, so the daily series adds up to the Total income above it.
+          const groupPaymentsByDay = (rows: any[]) => {
             const grouped = new Map<string, any[]>();
             rows.forEach((row) => {
-              const rawDate = row.due_date || row.invoice_sent_at || row.invoice_send_automation_sent_at || (legacy ? row.date : null);
-              const day = String(rawDate || '').slice(0, 10);
+              const day = dueInvoicedIncomeDate(row);
               if (!day) return;
               grouped.set(day, [...(grouped.get(day) || []), row]);
             });
@@ -3151,13 +3145,13 @@ const SimpleContributionReportPage = () => {
           const [newDailyTotals, legacyDailyTotals] = await Promise.all([
             Promise.all(
               Array.from(groupPaymentsByDay(allNewPaymentRows), async ([day, rows]) => {
-                const amounts = await processNewPaymentsAsync(rows, boiConverter, dueInvoicedReadyToPayFilter);
+                const amounts = await processNewPaymentsAsync(rows, boiConverter, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
                 return [day, Array.from(amounts.values()).reduce((sum, amount) => sum + amount, 0)] as const;
               })
             ),
             Promise.all(
-              Array.from(groupPaymentsByDay(allLegacyPaymentRows, true), async ([day, rows]) => {
-                const amounts = await processLegacyPaymentsAsync(rows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter);
+              Array.from(groupPaymentsByDay(allLegacyPaymentRows), async ([day, rows]) => {
+                const amounts = await processLegacyPaymentsAsync(rows, boiConverter, legacyLeadsMap, dueInvoicedReadyToPayFilter({ from: fromDateTime, to: toDateTime }));
                 return [day, Array.from(amounts.values()).reduce((sum, amount) => sum + amount, 0)] as const;
               })
             ),

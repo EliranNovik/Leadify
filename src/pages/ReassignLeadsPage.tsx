@@ -5,8 +5,10 @@ import ReassignLeadsReport from '../components/reports/ReassignLeadsReport';
 
 const ReassignLeadsPage = () => {
   return (
-    <div>
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    // Grey canvas with white panels floating on it, the same shell the pipeline pages use. The
+    // horizontal inset matches the report's own padding so the heading lines up with the panels.
+    <div className="min-h-full w-full bg-[#f3f4f6]">
+      <div className="flex flex-col gap-4 px-4 pt-6 sm:flex-row sm:items-center sm:justify-between md:px-6">
         <h1 className="text-3xl font-bold">Re-assign leads</h1>
         <Link
           to="/reports"

@@ -3,6 +3,18 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 
+/**
+ * Which scoreboard a deal row came from.
+ *
+ * Everything other than `agreement` is a payment installment, and that is the distinction the role
+ * and contact columns below key off — not the individual measure.
+ */
+export type ScoreboardDealSource =
+  | 'agreement'
+  | 'sent-to-finance'
+  | 'invoiced'
+  | 'tax-receipt';
+
 export type DashboardScoreboardDeal = {
   id: string;
   leadId: string;
@@ -15,11 +27,11 @@ export type DashboardScoreboardDeal = {
   subcontractorFeeNis?: number;
   departmentName: string;
   categoryLabel?: string;
-  /** Closer (agreement) or Handler (invoiced). */
+  /** Closer (agreement) or Handler (every payment-based scoreboard). */
   roleName?: string;
   rolePhotoUrl?: string | null;
   roleEmployeeId?: string | null;
-  source: 'agreement' | 'invoiced';
+  source: ScoreboardDealSource;
   isNewLead?: boolean;
 };
 
@@ -114,9 +126,9 @@ const DashboardScoreboardDealsModal: React.FC<DashboardScoreboardDealsModalProps
   }, [isOpen, onClose]);
 
   const resolvedRoleColumn =
-    roleColumn ?? (deals.some((d) => d.source === 'invoiced') ? 'handler' : 'closer');
+    roleColumn ?? (deals.some((d) => d.source !== 'agreement') ? 'handler' : 'closer');
   const roleHeader = resolvedRoleColumn === 'handler' ? 'Handler' : 'Closer';
-  const showContactColumn = deals.some((d) => d.source === 'invoiced') || resolvedRoleColumn === 'handler';
+  const showContactColumn = deals.some((d) => d.source !== 'agreement') || resolvedRoleColumn === 'handler';
 
   const sortedDeals = useMemo(() => {
     return [...deals].sort((a, b) => {
@@ -298,7 +310,8 @@ export function scoreboardDealPaymentBaseId(dealId: string): string {
 }
 
 function scoreboardDealContentKey(deal: DashboardScoreboardDeal): string {
-  if (deal.source !== 'invoiced') return '';
+  // Only payment rows can arrive twice; agreement rows are already unique per lead.
+  if (deal.source === 'agreement') return '';
   return [
     deal.leadNumber || deal.leadId || '',
     deal.date || '',
