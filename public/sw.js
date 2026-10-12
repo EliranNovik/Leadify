@@ -10,7 +10,9 @@ const NETWORK_ONLY_PATTERNS = [
   /\/api\//,
   /\.html$/,
   /\/index\.html$/,
-  /\/manifest\.json$/,
+  // Every manifest variant (default, -desktop, -entry-kiosk): a stale copy would pin the installed
+  // app to the wrong display mode.
+  /\/manifest[\w-]*\.json$/,
 ];
 
 // Static assets that can be cached (images, fonts, etc.)
@@ -19,11 +21,11 @@ const STATIC_ASSET_PATTERNS = [
   /\.(?:woff|woff2|ttf|eot)$/,
 ];
 
-// Install event - skip waiting to activate immediately
-self.addEventListener('install', (event) => {
-  console.log('Service Worker: Installing new version');
-  // Force the waiting service worker to become the active service worker immediately
-  self.skipWaiting();
+// Install event - stay in `waiting` until the user accepts the update.
+// Do NOT call skipWaiting() here: self-activating leaves `registration.waiting` null, which is what
+// the update prompt watches for, so the prompt becomes a race and its button has nothing to message.
+self.addEventListener('install', () => {
+  console.log('Service Worker: Installed new version, waiting for the user to accept');
 });
 
 // Activate event - clean up old caches

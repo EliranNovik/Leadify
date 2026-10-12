@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import type { ProformaSendEmailInput } from './proformaSendEmail';
+import { sentToFinanceStamp } from './sentToFinanceStamp';
 
 export function resolveInvoiceSentAt(row: {
   invoice_sent_at?: string | null;
@@ -140,7 +141,10 @@ export async function markPaymentPlanInvoiceSent(
   const actor = await resolveInvoiceSentActor();
 
   // Same field set the "Sent to finance" button writes, and the invoice automation after it.
-  const readyToPayFields: Record<string, unknown> = { ready_to_pay: true, due_date: today };
+  const readyToPayFields: Record<string, unknown> = {
+    ...sentToFinanceStamp(new Date(sentAt)),
+    due_date: today,
+  };
   if (isLegacy) readyToPayFields.date = today;
   if (actor.employeeId != null) {
     readyToPayFields.ready_to_pay_by = actor.employeeId;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MagnifyingGlassIcon, CalendarIcon, Squares2X2Icon, ListBulletIcon, FolderIcon, ExclamationTriangleIcon, PlayIcon, PaperAirplaneIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { sentToFinanceStamp } from '../../lib/sentToFinanceStamp';
 import { getUSTimezoneFromPhone } from '../../lib/timezoneHelpers';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../../lib/leadStageManager';
 import { getStageName, fetchStageNames } from '../../lib/stageUtils';
@@ -872,7 +873,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCase
         const { error } = await supabase
           .from('payment_plans')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             due_date: currentDate
           })
           .eq('id', payments[0].id);
@@ -899,7 +900,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCase
         const { error } = await supabase
           .from('finances_paymentplanrow')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             date: currentDate,
             due_date: currentDate
           })

@@ -33,6 +33,7 @@ import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
 import MailboxHealthMonitor from './components/MailboxHealthMonitor';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
+import AppUrlBar from './components/AppUrlBar';
 import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
@@ -933,7 +934,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
-<main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
+<main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))]">
               <RouteSuspense>
                 <LazyCallsLedgerPage />
               </RouteSuspense>
@@ -967,7 +968,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={handleOpenMessaging}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
+              <main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))]">
                 <RouteSuspense>
                   <LazyMyProfilePage />
                 </RouteSuspense>
@@ -1112,13 +1113,13 @@ const AppContentInner: React.FC = () => {
                   } ${
                     isClientDetailPage
                       ? 'clients-detail-scroll scrollbar-hide'
-                      : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
+                      : `pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
                   } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   {pipelinePageMounted ? (
                     <div
                       ref={pipelineScrollRef}
-                      className={`pipeline-keep-alive-scroll absolute bottom-0 left-0 right-0 overflow-x-hidden overflow-y-auto overflow-anchor-none bg-[#f3f4f6] top-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:top-14 ${
+                      className={`pipeline-keep-alive-scroll absolute bottom-0 left-0 right-0 overflow-x-hidden overflow-y-auto overflow-anchor-none bg-[#f3f4f6] top-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:top-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${
                         isPipelinePage ? 'z-0' : 'hidden'
                       }`}
                       aria-hidden={!isPipelinePage}
@@ -1341,6 +1342,7 @@ const AppContent: React.FC = () => {
           <CelebrationProvider>
             <Router>
               <ScrollRestoration />
+              <AppUrlBar />
               <PostLoginRedirectRecovery />
               <AppContentInner />
               <MoneyRainCelebration />

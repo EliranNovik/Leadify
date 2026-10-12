@@ -41,6 +41,12 @@
       "headers": {
         "Cache-Control": "no-cache"
       }
+    },
+    {
+      "route": "/manifest-desktop.json",
+      "headers": {
+        "Cache-Control": "no-cache"
+      }
     }
   ]
 }

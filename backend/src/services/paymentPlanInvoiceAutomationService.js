@@ -220,6 +220,10 @@ async function markAutomationComplete({ table, rowId, isLegacy, leadId, authUser
     invoice_sent: true,
     invoice_sent_at: sentAt,
     ready_to_pay: true,
+    // The day the Dashboard "Sent to finance" scoreboard files this row under. Without it the row
+    // is only datable by `due_date`, which for a scheduled installment can be years away.
+    sent_to_finance: true,
+    sent_to_finance_at: sentAt,
     due_date: today,
   };
 

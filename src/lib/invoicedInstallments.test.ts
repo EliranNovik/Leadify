@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   INVOICE_SENT_INCOME_START_DATE,
   INVOICED_SELECTS_FOR_TEST,
+  installmentDedupKey,
+  isExpenseInstallmentRow,
   sumContributionIncomeNisInRange,
   sumInvoicedNisInRange,
   type InvoicedInstallment,
@@ -163,6 +165,87 @@ test('contribution income is gross, while the due-based total stays net of fees'
 });
 
 /**
+ * A whole payment plan is invoiced in one pass, so every installment carries the same send day.
+ *
+ * Keying only on lead + event date + amount made those installments indistinguishable and the dedup
+ * discarded all but the first: a real plan of 29 equal monthly installments counted as one payment,
+ * and the Invoiced scoreboard lost roughly 40% of its rows.
+ */
+test('dedup keeps installments invoiced on the same day for the same amount', () => {
+  const base = {
+    leadNumber: 'L1001',
+    eventDate: '2026-09-28',
+    amountNisGross: 234,
+    source: 'new' as const,
+  };
+  const keys = new Set(
+    ['2026-10-27', '2026-11-27', '2026-12-27'].map((dueDate, i) =>
+      installmentDedupKey({ ...base, dueDate, paymentId: i + 1 }),
+    ),
+  );
+  assert.equal(keys.size, 3);
+});
+
+test('dedup still collapses the same installment arriving twice', () => {
+  const row = {
+    leadNumber: 'L1001',
+    eventDate: '2026-09-28',
+    dueDate: '2026-10-27',
+    amountNisGross: 234,
+    source: 'new' as const,
+    paymentId: 7,
+  };
+  assert.equal(installmentDedupKey(row), installmentDedupKey({ ...row }));
+});
+
+/** The cross-table duplicate this guards against: same lead, due date and amount, different ids. */
+test('dedup collapses one plan present in both payment tables', () => {
+  const shared = {
+    leadNumber: 'L1001',
+    eventDate: '2026-09-28',
+    dueDate: '2026-10-27',
+    amountNisGross: 234,
+  };
+  assert.equal(
+    installmentDedupKey({ ...shared, source: 'new', paymentId: 'abc' }),
+    installmentDedupKey({ ...shared, source: 'legacy', paymentId: 991 }),
+  );
+});
+
+/** With no date of any kind the id is the only thing left to tell two rows apart. */
+test('dedup falls back to the row id when an installment has no date', () => {
+  const shared = {
+    leadNumber: 'L1001',
+    eventDate: '2026-09-28',
+    dueDate: null,
+    amountNisGross: 234,
+    source: 'legacy' as const,
+  };
+  assert.notEqual(
+    installmentDedupKey({ ...shared, paymentId: 1 }),
+    installmentDedupKey({ ...shared, paymentId: 2 }),
+  );
+});
+
+/**
+ * Without an event scope the event date and the due date are the same value, so the due-based
+ * measures must key exactly as they did before this was changed.
+ */
+test('dedup key is unchanged for the due-based measures', () => {
+  assert.equal(
+    installmentDedupKey({
+      leadNumber: 'L1001',
+      eventDate: '2026-10-27',
+      dueDate: '2026-10-27',
+      amountNisGross: 234,
+      source: 'new',
+      paymentId: 7,
+    }),
+    'L1001|2026-10-27|2026-10-27|234',
+  );
+});
+
+/**
  * Both payment queries must select the columns that record an invoice being sent.
  *
  * Dropping them is silent and total: the `or` filter that widens the fetch is evaluated server-side,
@@ -178,4 +261,39 @@ test('both payment selects carry the invoice_sent columns', () => {
       );
     }
   }
+});
+
+/**
+ * `excludeExpenseRows` can only work if the column holding the order is fetched, and the two tables
+ * keep it under different names. Omitting either is silent — every row reads as not-an-expense and
+ * the filter quietly does nothing.
+ */
+test('both payment selects carry the column that identifies an expense row', () => {
+  assert.match(INVOICED_SELECTS_FOR_TEST.new, /\bpayment_order\b/);
+  assert.match(INVOICED_SELECTS_FOR_TEST.legacy, /"order"/);
+});
+
+test('isExpenseInstallmentRow reads the order column belonging to each table', () => {
+  // Legacy numeric order 99, new-table labels including the pre-rename one.
+  assert.equal(isExpenseInstallmentRow({ order: 99 }, 'legacy'), true);
+  assert.equal(isExpenseInstallmentRow({ order: '99' }, 'legacy'), true);
+  assert.equal(isExpenseInstallmentRow({ payment_order: 'Expense' }, 'new'), true);
+  assert.equal(isExpenseInstallmentRow({ payment_order: 'Expense (no VAT)' }, 'new'), true);
+
+  for (const order of [1, 5, 9, 90]) {
+    assert.equal(isExpenseInstallmentRow({ order }, 'legacy'), false);
+  }
+  for (const label of ['First Payment', 'Intermediate Payment', 'Final Payment', 'Single Payment']) {
+    assert.equal(isExpenseInstallmentRow({ payment_order: label }, 'new'), false);
+  }
+
+  // Each table is read on its own column, so a value parked on the other one must not leak through.
+  // Legacy order 1 carrying an "Expense" label in payment_order is still a first payment.
+  assert.equal(isExpenseInstallmentRow({ order: 1, payment_order: 'Expense' }, 'legacy'), false);
+  assert.equal(isExpenseInstallmentRow({ payment_order: 'First Payment', order: 99 }, 'new'), false);
+
+  // A missing order is not an expense; defaulting the other way would drop real revenue.
+  assert.equal(isExpenseInstallmentRow({}, 'new'), false);
+  assert.equal(isExpenseInstallmentRow({}, 'legacy'), false);
+  assert.equal(isExpenseInstallmentRow({ order: null }, 'legacy'), false);
 });

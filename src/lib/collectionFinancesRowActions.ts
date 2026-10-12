@@ -3,6 +3,7 @@ import { buildClientFinancesTabPath, buildClientInteractionsTabPath } from './pr
 import type { ProformaSendEmailInput } from './proformaSendEmail';
 import type { ProformaSendLanguage } from './proformaSendLanguage';
 import { resolvePaymentPlanContact } from './resolvePaymentPlanContact';
+import { sentToFinanceStamp } from './sentToFinanceStamp';
 import type { SelectedLeadContact } from './interactionsCommunicationPreset';
 
 export type CollectionPaymentRowLike = {
@@ -278,7 +279,7 @@ export async function markRowsSentToFinance(rows: CollectionPaymentRowLike[]): P
       const { table, id } = resolvePaymentRecord(row.id);
       const { error } = await supabase
         .from(table)
-        .update({ sent_to_finance: true, sent_to_finance_at: now })
+        .update(sentToFinanceStamp(new Date(now)))
         .eq('id', id);
       if (error) throw error;
       ok += 1;

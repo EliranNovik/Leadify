@@ -94,6 +94,7 @@ import {
 } from '../lib/invoicedInstallments';
 import {
   fetchInvoiceSentEvents,
+  fetchSentToFinanceEvents,
   fetchTaxReceiptSentEvents,
 } from '../lib/paymentDocumentEvents';
 import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
@@ -383,7 +384,7 @@ const SCOREBOARD_TARGET_ROWS = REVENUE_TARGET_RATIOS.map((row) => ({
   ratio: row.ratio,
 }));
 
-const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0 });
+const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0, expenseExcluded: 0 });
 
 /** Monthly average for a 3-month rolling window total. */
 function scoreboardThreeMonthAverage(totalAmount: number): number {
@@ -465,27 +466,29 @@ function getScoreboardMonthDeptIndex(
   return departmentIds.indexOf(Number(departmentId));
 }
 
-function buildScoreboardPeriodRows(departmentTargets: any[], otherExpected = 0) {
+function buildScoreboardPeriodRows(departmentTargets: any[], otherExpected = 0): DashboardScoreboardRow[] {
   return [
     createEmptyScoreboardRow(),
     ...departmentTargets.map((dept) => ({
       count: 0,
       amount: 0,
       expected: departmentScoreboardExpected(dept),
+      expenseExcluded: 0,
     })),
-    { count: 0, amount: 0, expected: otherExpected },
+    { count: 0, amount: 0, expected: otherExpected, expenseExcluded: 0 },
     createEmptyScoreboardRow(),
   ];
 }
 
-function buildScoreboardMonthRows(departmentTargets: any[], otherExpected = 0) {
+function buildScoreboardMonthRows(departmentTargets: any[], otherExpected = 0): DashboardScoreboardRow[] {
   return [
     ...departmentTargets.map((dept) => ({
       count: 0,
       amount: 0,
       expected: departmentScoreboardExpected(dept),
+      expenseExcluded: 0,
     })),
-    { count: 0, amount: 0, expected: otherExpected },
+    { count: 0, amount: 0, expected: otherExpected, expenseExcluded: 0 },
     createEmptyScoreboardRow(),
   ];
 }
@@ -534,7 +537,18 @@ type PaymentScoreboardTab = 'invoiced' | 'sent-to-finance';
  */
 const PAYMENT_SCOREBOARD_TABS: PaymentScoreboardTab[] = ['invoiced', 'sent-to-finance'];
 
-type DashboardScoreboardRow = { count: number; amount: number; expected: number };
+type DashboardScoreboardRow = {
+  count: number;
+  amount: number;
+  expected: number;
+  /**
+   * NIS of expense rows left out of `amount`, for the tooltip that explains the gap.
+   *
+   * Only the two revenue measures exclude anything, so this stays 0 on the others. Optional because
+   * a cache written before the field existed restores rows without it.
+   */
+  expenseExcluded?: number;
+};
 type DashboardScoreboardData = {
   Today: DashboardScoreboardRow[];
   'Last 30d': DashboardScoreboardRow[];
@@ -4209,8 +4223,9 @@ const Dashboard: React.FC = () => {
    * they share this whole body. Separate copies would leave the department, currency and fee
    * handling free to drift apart.
    *
-   * - `sent-to-finance`: rows that reached finance (`ready_to_pay`), filed by due date. Shown as
-   *   "Invoiced" until an actual invoice-send measure existed, which is not what it measures.
+   * - `sent-to-finance`: rows handed to finance, filed by the day of the handoff
+   *   (`sent_to_finance_at`). Shown as "Invoiced" until an actual invoice-send measure existed,
+   *   which is not what it measures.
    * - `invoiced`: rows whose proforma invoice went out, filed by the day it was sent.
    * - `tax-receipt`: rows whose tax receipt went out, automatically or by hand, filed by the day it
    *   was issued.
@@ -4370,7 +4385,10 @@ const Dashboard: React.FC = () => {
       /*
        * Which rows count, their NIS value, their scoreboard department and their share of the lead's
        * subcontractor fee all come from the shared module, so these scoreboards and the contribution
-       * report's "Total income" cannot drift apart again.
+       * report's "Total income" stay on one implementation.
+       *
+       * `excludeExpenseRows` below is the one deliberate difference between them: the report counts
+       * everything billed, these columns count fee only.
        *
        * The two event measures pick their own rows and hand over the day each belongs to, because
        * neither question can be asked of `due_date`.
@@ -4380,9 +4398,9 @@ const Dashboard: React.FC = () => {
           ? await fetchInvoiceSentEvents({ from: windowFrom, to: windowTo })
           : measure === 'tax-receipt'
             ? await fetchTaxReceiptSentEvents({ from: windowFrom, to: windowTo })
-            : undefined;
+            : await fetchSentToFinanceEvents({ from: windowFrom, to: windowTo });
 
-      const { installments } = await fetchInvoicedInstallments({
+      const { installments, excludedExpenses } = await fetchInvoicedInstallments({
         dueFrom: windowFrom,
         dueTo: windowTo,
         boiConverter: boiPromise,
@@ -4391,11 +4409,16 @@ const Dashboard: React.FC = () => {
         categoryNameToDataMap,
         includeContactNames: true,
         eventScope,
+        // Expense lines rebill a cost to the client and are not revenue, so they do not belong in a
+        // department's billing figure. Tax receipts still include them: a receipt records money
+        // actually coming in, expenses included.
+        excludeExpenseRows: measure === 'invoiced' || measure === 'sent-to-finance',
       });
 
       // --- Scoreboard + deals (amounts net of proportional subcontractor fee) ---
       for (const row of installments) {
-        // `eventDate` is the due date for the due-based measure and the send day for the others.
+        // `eventDate` is the day this row's event happened: the handoff to finance, the invoice
+        // going out, or the tax receipt being issued. Never the due date.
         const { eventDate, subcontractorFeeNis } = row;
         const amountAfterFee = row.amountNis;
 
@@ -4476,38 +4499,86 @@ const Dashboard: React.FC = () => {
         }
       }
 
+      /*
+       * The expense rows `excludeExpenseRows` took out, tallied into the same cells so each figure
+       * can say how much was removed from it.
+       *
+       * Deliberately not added to `count` or `amount` — this only feeds the tooltip. Empty for
+       * tax receipts, which exclude nothing.
+       */
+      for (const row of excludedExpenses) {
+        const { eventDate } = row;
+        const deptIndex = getScoreboardPeriodDeptIndex(
+          row.departmentId,
+          departmentIds,
+          row.mainCategoryId,
+          row.mainCategoryName,
+        );
+        const addExcluded = (period: string, index: number) => {
+          const cell = newData[period]?.[index];
+          if (cell) cell.expenseExcluded = (cell.expenseExcluded || 0) + row.amountNis;
+        };
+
+        if (eventDate === todayStr) {
+          addExcluded('Today', deptIndex);
+          addExcluded('Today', 0);
+        }
+        if (eventDate === yesterdayStr) {
+          addExcluded('Yesterday', deptIndex);
+          addExcluded('Yesterday', 0);
+        }
+        if (eventDate >= oneWeekAgoStr && eventDate <= todayStr) {
+          addExcluded('Week', deptIndex);
+          addExcluded('Week', 0);
+        }
+        if (eventDate >= effectiveThirtyDaysAgo && eventDate <= todayStr) {
+          addExcluded('Last 30d', deptIndex);
+          addExcluded('Last 30d', 0);
+        }
+        if (eventDate >= last3mStartDate && eventDate <= todayStr) {
+          addExcluded(SCOREBOARD_LAST_3M, deptIndex);
+          addExcluded(SCOREBOARD_LAST_3M, 0);
+        }
+        if (eventDate >= startOfMonthStr && eventDate <= endOfMonthStr) {
+          // The month layout has no General row, so its department indexes are shifted.
+          addExcluded(
+            selectedMonthName,
+            getScoreboardMonthDeptIndex(
+              row.departmentId,
+              departmentIds,
+              row.mainCategoryId,
+              row.mainCategoryName,
+            ),
+          );
+        }
+      }
+
       // Calculate totals
       const numDepartments = departmentTargets.length;
       const { totalIndexToday, totalIndexMonth } = getScoreboardTotalIndexes(numDepartments);
 
-      // Today totals (sum of departments + Other, excluding General and Total)
-      const todayTotalCount = newData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const todayTotalAmount = Math.ceil(newData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+      /**
+       * One period's Total cell: its department cells added up, General and Total themselves left
+       * out. The month layout has no General row, so it starts at 0 where the others start at 1.
+       */
+      const totalCellFor = (period: string, firstDeptIndex: number, endIndex: number) => {
+        const cells = newData[period].slice(firstDeptIndex, endIndex);
+        const add = (pick: (cell: DashboardScoreboardRow) => number) =>
+          cells.reduce((sum, cell) => sum + pick(cell), 0);
+        return {
+          count: add((cell) => cell.count),
+          amount: Math.ceil(add((cell) => cell.amount)),
+          expected: 0,
+          expenseExcluded: Math.ceil(add((cell) => cell.expenseExcluded || 0)),
+        };
+      };
 
-      // Yesterday totals
-      const yesterdayTotalCount = newData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const yesterdayTotalAmount = Math.ceil(newData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
-
-      // Week totals
-      const weekTotalCount = newData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const weekTotalAmount = Math.ceil(newData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
-
-      // Last 30d totals
-      const last30TotalCount = newData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const last30TotalAmount = Math.ceil(newData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
-
-      const last3mTotalCount = newData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
-      const last3mTotalAmount = Math.ceil(newData[SCOREBOARD_LAST_3M].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
-      newData[SCOREBOARD_LAST_3M][totalIndexToday] = { count: last3mTotalCount, amount: last3mTotalAmount, expected: 0 };
-
-      // Current month totals
-      const monthTotalCount = newData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
-      const monthTotalAmount = Math.ceil(newData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.amount, 0));
-      newData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
+      newData.Today[totalIndexToday] = totalCellFor('Today', 1, totalIndexToday);
+      newData.Yesterday[totalIndexToday] = totalCellFor('Yesterday', 1, totalIndexToday);
+      newData.Week[totalIndexToday] = totalCellFor('Week', 1, totalIndexToday);
+      newData['Last 30d'][totalIndexToday] = totalCellFor('Last 30d', 1, totalIndexToday);
+      newData[SCOREBOARD_LAST_3M][totalIndexToday] = totalCellFor(SCOREBOARD_LAST_3M, 1, totalIndexToday);
+      newData[selectedMonthName][totalIndexMonth] = totalCellFor(selectedMonthName, 0, totalIndexMonth);
 
       setters.setData(newData);
       // Paint totals first; employee photos fill in afterward without holding the spinner.
@@ -5554,8 +5625,7 @@ const Dashboard: React.FC = () => {
     if (showLast3MonthsCols) visibleColumns.push(SCOREBOARD_LAST_3M);
     if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
-    const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } =
-      scoreboardDataFor(tableType);
+    const dataSource: { [key: string]: DashboardScoreboardRow[] } = scoreboardDataFor(tableType);
     const totalIndexToday = departmentNames.length + 1;
     const totalIndexMonth = departmentNames.length;
     const accentBar = isAltTheme ? 'bg-emerald-500' : 'bg-blue-500';
@@ -5756,12 +5826,39 @@ const Dashboard: React.FC = () => {
       /** When set (e.g. Last 3m raw total), progress bar uses this instead of displayed amount. */
       goalAmount?: number;
       isTotalCol?: boolean;
+      /** Expense NIS left out of `amount`, on the same scale. Explains the figure on hover. */
+      expenseExcluded?: number;
     }) => {
-      const { count, amount, periodKey, deptName, showGoal, target = 0, goalAmount, isTotalCol } = opts;
+      const {
+        count,
+        amount,
+        periodKey,
+        deptName,
+        showGoal,
+        target = 0,
+        goalAmount,
+        isTotalCol,
+        expenseExcluded = 0,
+      } = opts;
+      /*
+       * A plain `title`, not a styled tooltip: both tables sit in an `overflow-x-auto` wrapper, which
+       * clips an absolutely positioned bubble on the vertical axis too.
+       */
+      const amountTitle =
+        expenseExcluded > 0
+          ? `₪${Math.ceil(amount).toLocaleString()} excludes ₪${Math.ceil(
+              expenseExcluded,
+            ).toLocaleString()} of client expenses (rebilled costs, not fee).\nWith expenses: ₪${Math.ceil(
+              amount + expenseExcluded,
+            ).toLocaleString()}`
+          : undefined;
       return (
         <div className={`inline-flex w-full flex-col items-center ${isTotalCol ? '' : ''}`}>
           <div
-            className="whitespace-nowrap tabular-nums leading-snug"
+            className={`whitespace-nowrap tabular-nums leading-snug ${
+              amountTitle ? 'cursor-help decoration-slate-300 decoration-dotted underline-offset-4 hover:underline' : ''
+            }`}
+            title={amountTitle}
             style={{
               fontSize: '15px',
               fontWeight: 600,
@@ -5912,6 +6009,8 @@ const Dashboard: React.FC = () => {
                     const showGoal = p.dataKey === goalPeriod;
                     const goalTarget = showGoal ? getPeriodGoalTarget(deptName, p.dataKey) : 0;
                     const goalAmount = showGoal ? getPeriodGoalAmount(deptName, p.dataKey) : displayAmount;
+                    // The Total row here is the mobile form of the desktop Total column.
+                    const rawExpenseExcluded = deptName === 'Total' ? row.expenseExcluded || 0 : 0;
                     return (
                       <td key={`${deptName}-${p.key}`} className={`px-1.5 py-2.5 text-center ${isMonthCol ? 'bg-slate-50/80' : ''}`}>
                         {renderMetricCell({
@@ -5923,6 +6022,9 @@ const Dashboard: React.FC = () => {
                           target: goalTarget,
                           goalAmount,
                           isTotalCol: deptName === 'Total',
+                          expenseExcluded: p.key === SCOREBOARD_LAST_3M
+                            ? scoreboardThreeMonthAverage(rawExpenseExcluded)
+                            : rawExpenseExcluded,
                         })}
                       </td>
                     );
@@ -6014,6 +6116,11 @@ const Dashboard: React.FC = () => {
                         const totalAmount = isLast3m
                           ? scoreboardThreeMonthAverage(rawTotalAmount)
                           : rawTotalAmount;
+                        const rawExpenseExcluded = isToday ? (dataSource["Today"]?.[totalIndexToday]?.expenseExcluded ?? 0) :
+                          isWeek ? (dataSource["Week"]?.[totalIndexToday]?.expenseExcluded ?? 0) :
+                            isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.expenseExcluded ?? 0) :
+                              isLast3m ? (dataSource[SCOREBOARD_LAST_3M]?.[totalIndexToday]?.expenseExcluded ?? 0) :
+                                (dataSource[selectedMonth]?.[totalIndexMonth]?.expenseExcluded ?? 0);
                         return renderMetricCell({
                           count: totalCount,
                           amount: totalAmount,
@@ -6023,6 +6130,10 @@ const Dashboard: React.FC = () => {
                           target: isGoalRow ? getPeriodGoalTarget('Total', columnType) : 0,
                           goalAmount: totalAmount,
                           isTotalCol: true,
+                          // Averaged alongside the amount so the two numbers stay on one scale.
+                          expenseExcluded: isLast3m
+                            ? scoreboardThreeMonthAverage(rawExpenseExcluded)
+                            : rawExpenseExcluded,
                         });
                       })()}
                     </td>

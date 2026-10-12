@@ -32,6 +32,7 @@ import {
   type LeadSubcontractorFeeTotalsMaps,
 } from './leadSubcontractorFees';
 import { isPaymentPlanInvoiceSent, resolveInvoiceSentAt } from './markPaymentPlanInvoiceSent';
+import { isExpenseNoVatPayment } from './proformaVat';
 
 /** The three columns that each record an invoice having been sent, as a PostgREST `or` list. */
 const INVOICE_SENT_OR_FILTER =
@@ -292,6 +293,7 @@ const NEW_PAYMENT_SELECT = `
   ready_to_pay,
   paid,
   paid_at,
+  payment_order,
   ${INVOICE_SENT_SELECT_COLUMNS}
 `;
 
@@ -309,9 +311,26 @@ const LEGACY_PAYMENT_SELECT = `
   cancel_date,
   ready_to_pay,
   actual_date,
+  "order",
   ${INVOICE_SENT_SELECT_COLUMNS},
   accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
 `;
+
+/**
+ * Whether a row is an expense line rather than a slice of the fee.
+ *
+ * Expense rows rebill a cost the firm paid on the client's behalf — a government fee, a translation,
+ * a courier — so they carry no VAT and are not revenue. The two tables disagree on where this lives:
+ * new rows hold a label in `payment_order` ("Expense", and historically "Expense (no VAT)"), legacy
+ * rows hold the numeric order 99. `source` picks the right one rather than guessing per row.
+ *
+ * `order` cannot be filtered server-side. PostgREST reads `order=` as its own sort parameter, so
+ * `?order=eq.99` comes back as a 400 about a malformed sort, which is why this runs over fetched
+ * rows. Selecting the column is fine; only filtering on it is not.
+ */
+export function isExpenseInstallmentRow(payment: any, source: 'new' | 'legacy'): boolean {
+  return isExpenseNoVatPayment(source === 'new' ? payment?.payment_order : payment?.order);
+}
 
 const NEW_LEAD_SELECT = `
   id, lead_number, name, handler, closer, category_id, category, subcontractor_fee
@@ -348,6 +367,33 @@ export function installmentEventKey(
   return `${source}:${paymentId}`;
 }
 
+/**
+ * Identity of one installment, for collapsing duplicates.
+ *
+ * What this guards against is one logical plan present in both payment tables, where the ids differ
+ * but lead, date and amount all agree, plus the odd row arriving twice from pagination overlap.
+ *
+ * The due date has to be part of it. `leadNumber | eventDate | amount` alone collapses a whole
+ * payment plan under `eventScope`: invoicing a plan stamps every installment with the same send day,
+ * so equal installments share one key and all but the first are discarded — one real plan of 29
+ * equal monthly installments was counting as a single payment. Rows carrying neither a due date nor
+ * a planned date fall back to their id, which cannot collide across tables.
+ *
+ * Without `eventScope` the event date *is* the due date, so the key reduces to what it always was
+ * and the due-based measures select exactly the rows they always did.
+ */
+export function installmentDedupKey(row: {
+  leadNumber: string;
+  eventDate: string;
+  dueDate: string | null;
+  amountNisGross: number;
+  source: 'new' | 'legacy';
+  paymentId: string | number;
+}): string {
+  const installment = row.dueDate || `#${installmentEventKey(row.source, row.paymentId)}`;
+  return `${row.leadNumber}|${row.eventDate}|${installment}|${Math.round(row.amountNisGross || 0)}`;
+}
+
 export type InvoicedInstallment = {
   source: 'new' | 'legacy';
   paymentId: string | number;
@@ -364,6 +410,8 @@ export type InvoicedInstallment = {
   eventDate: string;
   /** Ex-VAT value converted to NIS, before the subcontractor fee share. */
   amountNisGross: number;
+  /** A rebilled cost rather than fee — see `isExpenseInstallmentRow`. */
+  isExpense: boolean;
   subcontractorFeeNis: number;
   /** What the scoreboard and income totals count: gross minus the allocated fee share. */
   amountNis: number;
@@ -426,10 +474,30 @@ export type FetchInvoicedInstallmentsOptions = {
    * membership — though they are still required, so an empty window short-circuits as usual.
    */
   eventScope?: InstallmentEventScope;
+  /**
+   * Move expense rows out of `installments` — rebilled costs rather than fee, see
+   * `isExpenseInstallmentRow`.
+   *
+   * Off by default so callers measuring everything that was billed keep seeing everything. The
+   * Dashboard's revenue scoreboards turn it on: an expense line is money passing through the firm,
+   * not money the firm earned, so counting it flatters a department against an income target.
+   *
+   * They are moved rather than discarded — `excludedExpenses` returns them, valued, so a caller can
+   * show what the exclusion took out. They also leave the subcontractor fee base, so the fee spreads
+   * over contract value only, matching `paymentPlanTotalInNis`.
+   */
+  excludeExpenseRows?: boolean;
 };
 
 export type FetchInvoicedInstallmentsResult = {
   installments: InvoicedInstallment[];
+  /**
+   * The expense rows `excludeExpenseRows` kept out of `installments`, valued the same way.
+   *
+   * Empty when the option is off, because nothing was excluded. Carries no subcontractor fee share:
+   * the fee belongs to contract value, which is exactly why these rows were taken out of its base.
+   */
+  excludedExpenses: InvoicedInstallment[];
   departmentTargets: InvoicedDepartmentTarget[];
   departmentIds: number[];
   allCategoriesData: any[] | null;
@@ -442,7 +510,7 @@ export type FetchInvoicedInstallmentsResult = {
  * and the installment's share of its lead's subcontractor fee.
  *
  * Duplicate installments (pagination overlap, or the same plan present in both the new and legacy
- * tables) are collapsed on lead number + due date + rounded amount.
+ * tables) are collapsed on lead number + event date + due date + rounded amount.
  */
 export async function fetchInvoicedInstallments(
   options: FetchInvoicedInstallmentsOptions,
@@ -452,6 +520,7 @@ export async function fetchInvoicedInstallments(
   if (!dueFrom || !dueTo || dueFrom > dueTo) {
     return {
       installments: [],
+      excludedExpenses: [],
       departmentTargets: options.departmentTargets || [],
       departmentIds: (options.departmentTargets || []).map((d) => d.id),
       allCategoriesData: options.allCategoriesData ?? null,
@@ -716,6 +785,7 @@ export async function fetchInvoicedInstallments(
 
   const seen = new Set<string>();
   const installments: InvoicedInstallment[] = [];
+  const excludedExpenses: InvoicedInstallment[] = [];
   const leadPlanTotalNis = new Map<string, number>();
   const leadFeeNis = new Map<string, number>();
 
@@ -754,18 +824,34 @@ export async function fetchInvoicedInstallments(
     const amountNisGross = await boiConverter.toNis(value, currency, rateAsOf);
     const leadNumber = leadDisplayNumber(lead, source === 'new');
 
-    const key = `${leadNumber}|${eventDate}|${Math.round(amountNisGross || 0)}`;
+    const key = installmentDedupKey({
+      leadNumber,
+      eventDate,
+      dueDate,
+      amountNisGross,
+      source,
+      paymentId: payment.id,
+    });
     if (seen.has(key)) return;
     seen.add(key);
 
+    const isExpense = isExpenseInstallmentRow(payment, source);
+    const excluded = Boolean(options.excludeExpenseRows) && isExpense;
+
     const leadKey = String(payment.lead_id || lead.id);
-    leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountNisGross);
-    if (!leadFeeNis.has(leadKey)) {
-      const feeRaw = resolveLeadSubcontractorFeeAmount(lead, feeMaps, source);
-      leadFeeNis.set(
-        leadKey,
-        feeRaw > 0 ? await boiConverter.toNis(feeRaw, currency, rateAsOf) : 0,
-      );
+    /*
+     * Excluded rows stay out of the fee base so the subcontractor fee spreads over contract value
+     * only. They are still valued and returned, so a caller can report what the exclusion removed.
+     */
+    if (!excluded) {
+      leadPlanTotalNis.set(leadKey, (leadPlanTotalNis.get(leadKey) || 0) + amountNisGross);
+      if (!leadFeeNis.has(leadKey)) {
+        const feeRaw = resolveLeadSubcontractorFeeAmount(lead, feeMaps, source);
+        leadFeeNis.set(
+          leadKey,
+          feeRaw > 0 ? await boiConverter.toNis(feeRaw, currency, rateAsOf) : 0,
+        );
+      }
     }
 
     const resolved = canonicalizeScoreboardDepartment(
@@ -779,7 +865,7 @@ export async function fetchInvoicedInstallments(
       departmentTargets,
     );
 
-    installments.push({
+    (excluded ? excludedExpenses : installments).push({
       source,
       paymentId: payment.id,
       lead,
@@ -788,6 +874,7 @@ export async function fetchInvoicedInstallments(
       dueDate: dueDate || '',
       eventDate,
       amountNisGross,
+      isExpense,
       subcontractorFeeNis: 0,
       amountNis: amountNisGross,
       duePercent: parsePaymentDuePercent(payment.due_percent),
@@ -865,6 +952,7 @@ export async function fetchInvoicedInstallments(
 
   return {
     installments,
+    excludedExpenses,
     departmentTargets,
     departmentIds,
     allCategoriesData,

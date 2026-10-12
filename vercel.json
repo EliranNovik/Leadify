@@ -50,6 +50,15 @@
       ]
     },
     {
+      "source": "/manifest-desktop.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
       "source": "/(.*)",
       "headers": [
         {

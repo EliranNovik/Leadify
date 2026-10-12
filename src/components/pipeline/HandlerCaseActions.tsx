@@ -8,6 +8,7 @@ import {
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { sentToFinanceStamp } from '../../lib/sentToFinanceStamp';
 import { getUSTimezoneFromPhone } from '../../lib/timezoneHelpers';
 import RMQMessagesPage from '../../pages/RMQMessagesPage';
 import { handlerDbId, type HandlerPipelineRow } from './handlerTypes';
@@ -280,7 +281,7 @@ export async function markHandlerReadyToPay(row: HandlerPipelineRow): Promise<vo
     if (!payments || payments.length === 0) throw new Error('No unpaid payments found for this lead');
     const { error } = await supabase
       .from('payment_plans')
-      .update({ ready_to_pay: true, due_date: currentDate })
+      .update({ ...sentToFinanceStamp(), due_date: currentDate })
       .eq('id', payments[0].id);
     if (error) throw error;
     return;
@@ -297,7 +298,7 @@ export async function markHandlerReadyToPay(row: HandlerPipelineRow): Promise<vo
   if (!payments || payments.length === 0) throw new Error('No unpaid payments found for this lead');
   const { error } = await supabase
     .from('finances_paymentplanrow')
-    .update({ ready_to_pay: true, date: currentDate, due_date: currentDate })
+    .update({ ...sentToFinanceStamp(), date: currentDate, due_date: currentDate })
     .eq('id', payments[0].id);
   if (error) throw error;
 }

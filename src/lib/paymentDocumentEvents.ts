@@ -109,6 +109,91 @@ export async function fetchInvoiceSentEvents(
   return scope;
 }
 
+/**
+ * Payment rows handed to finance in the window, dated by the day of the handoff.
+ *
+ * Replaces selecting on `due_date` for this measure. The two are not the same thing: a plan is
+ * invoiced in one pass while its installments stay on a schedule running years out, so a row handed
+ * to finance in September can be due in 2029. Dating by `due_date` filed that row under 2029 and
+ * left September understated.
+ *
+ * `sent_to_finance_at` is written whenever a row is marked sent to finance or its invoice goes out,
+ * and backfilled for history by `sql/2026-10-12_sent_to_finance_date_basis.sql`.
+ */
+export async function fetchSentToFinanceEvents(
+  window: PaymentEventWindow,
+): Promise<InstallmentEventScope> {
+  if (!isValidWindow(window)) return emptyScope();
+
+  const sentFilter = withinWindow('sent_to_finance_at', window);
+
+  /*
+   * Rows not yet carrying a stamp, dated the way this measure always dated them.
+   *
+   * `sent_to_finance_at` is only populated going forward and by the backfill in
+   * `sql/2026-10-12_sent_to_finance_date_basis.sql`. Until that migration runs, selecting on it
+   * alone would report almost nothing, so rows still missing it fall back to `due_date` — which is
+   * where the marking day was being stored, because marking a row sent to finance overwrote it.
+   *
+   * The two sets cannot overlap: this branch requires the stamp to be NULL. It reproduces the old
+   * query exactly, `ready_to_pay` with a non-null `due_date` in range, so the numbers are unchanged
+   * before the backfill and sharpen to the real handoff date after it.
+   */
+  const fetchForTable = async (table: 'payment_plans' | 'finances_paymentplanrow') => {
+    const label = table === 'payment_plans' ? 'new' : 'legacy';
+    const [stamped, unstamped] = await Promise.all([
+      fetchAllPagedRows<any>((from, to) =>
+        supabase
+          .from(table)
+          .select('id, sent_to_finance_at, due_date')
+          .is('cancel_date', null)
+          .or(sentFilter)
+          .order('id', { ascending: true })
+          .range(from, to),
+      ).catch((err) => {
+        console.error(`[payment events] sent to finance (${label}) failed:`, err);
+        return [] as any[];
+      }),
+      fetchAllPagedRows<any>((from, to) =>
+        supabase
+          .from(table)
+          .select('id, sent_to_finance_at, due_date')
+          .is('cancel_date', null)
+          .is('sent_to_finance_at', null)
+          .eq('ready_to_pay', true)
+          .gte('due_date', window.from)
+          .lte('due_date', window.to)
+          .order('id', { ascending: true })
+          .range(from, to),
+      ).catch((err) => {
+        console.error(`[payment events] sent to finance fallback (${label}) failed:`, err);
+        return [] as any[];
+      }),
+    ]);
+    return [...stamped, ...unstamped];
+  };
+
+  const [newRows, legacyRows] = await Promise.all([
+    fetchForTable('payment_plans'),
+    fetchForTable('finances_paymentplanrow'),
+  ]);
+
+  const scope = emptyScope();
+  const collect = (rows: any[], source: 'new' | 'legacy', ids: Array<string | number>) => {
+    for (const row of rows) {
+      const day = eventDayKey(row.sent_to_finance_at) || eventDayKey(row.due_date);
+      if (!day || day < window.from || day > window.to) continue;
+      const key = installmentEventKey(source, row.id);
+      if (scope.eventDateByRow.has(key)) continue;
+      scope.eventDateByRow.set(key, day);
+      ids.push(row.id);
+    }
+  };
+  collect(newRows, 'new', scope.newIds);
+  collect(legacyRows, 'legacy', scope.legacyIds);
+  return scope;
+}
+
 /** Payper rows worth counting: a pending or failed attempt put nothing in the client's hands. */
 const PAYPER_RECEIPT_ISSUED = 'payper_invoice_status.eq.success,payper_invoice_link.not.is.null';
 

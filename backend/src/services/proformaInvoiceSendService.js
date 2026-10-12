@@ -475,12 +475,49 @@ async function sendProformaInvoiceBundleBackend(input, mailboxUserId) {
   const planId = input.paymentPlanId ?? (input.kind === 'new' ? input.recordId : null);
   if (planId != null && String(planId).trim() !== '') {
     const table = input.isLegacyLead || input.kind === 'legacy' ? 'finances_paymentplanrow' : 'payment_plans';
-    const { error: invoiceSentError } = await supabase
+    const sentAt = new Date().toISOString();
+
+    /*
+     * Sending the invoice is also the handoff to finance, so both are recorded here.
+     *
+     * This used to write `invoice_sent` alone, which left every backend-sent invoice as invoiced but
+     * not sent to finance — 317 rows by the time it was found — while the frontend equivalent in
+     * `src/lib/markPaymentPlanInvoiceSent.ts` had always done both.
+     *
+     * `due_date` is deliberately left alone, unlike the frontend path: this service sends whole
+     * payment plans in one pass, and overwriting each installment's due date with today would
+     * replace the client's agreed schedule with a single day.
+     *
+     * The stamp is only written where there is not one already, so re-sending an invoice cannot
+     * re-date a row finance has already picked up.
+     */
+    const { data: marked, error: markError } = await supabase
       .from(table)
-      .update({ invoice_sent: true, invoice_sent_at: new Date().toISOString() })
-      .eq('id', planId);
-    if (invoiceSentError) {
-      console.warn(`[sendProformaInvoiceBundleBackend] invoice_sent (${table}#${planId}):`, invoiceSentError.message);
+      .update({
+        invoice_sent: true,
+        invoice_sent_at: sentAt,
+        sent_to_finance: true,
+        sent_to_finance_at: sentAt,
+        ready_to_pay: true,
+      })
+      .eq('id', planId)
+      .is('cancel_date', null)
+      .is('sent_to_finance_at', null)
+      .select('id');
+
+    if (markError) {
+      console.warn(`[sendProformaInvoiceBundleBackend] sent_to_finance (${table}#${planId}):`, markError.message);
+    }
+
+    // Already handed to finance, cancelled, or the write above failed: still record the send.
+    if (markError || (marked?.length ?? 0) === 0) {
+      const { error: invoiceSentError } = await supabase
+        .from(table)
+        .update({ invoice_sent: true, invoice_sent_at: sentAt })
+        .eq('id', planId);
+      if (invoiceSentError) {
+        console.warn(`[sendProformaInvoiceBundleBackend] invoice_sent (${table}#${planId}):`, invoiceSentError.message);
+      }
     }
   }
 

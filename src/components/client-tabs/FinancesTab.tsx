@@ -152,6 +152,7 @@ import {
   sendProformaInvoiceBundle,
 } from '../../lib/proformaSendInvoice';
 import { paymentPlanInvoiceSentState } from '../../lib/markPaymentPlanInvoiceSent';
+import { sentToFinanceStamp } from '../../lib/sentToFinanceStamp';
 import {
   paymentPlanTaxInvoiceFields,
   paymentPlanTaxInvoiceState,
@@ -1344,7 +1345,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             ready_to_pay_by: currentUserEmployeeId,
             due_by_id: currentUserEmployeeId,
             date: currentDate,
@@ -1357,7 +1358,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const { error: newError } = await supabase
           .from('payment_plans')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             ready_to_pay_by: currentUserEmployeeId,
             due_date: currentDate // Set due date to current date
           })
@@ -1871,14 +1872,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // For legacy payments, update finances_paymentplanrow table
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
-          .update({ sent_to_finance: true, sent_to_finance_at: new Date().toISOString() })
+          .update(sentToFinanceStamp())
           .eq('id', payment.id);
         error = legacyError;
       } else {
         // For new payments, update payment_plans table
         const { error: newError } = await supabase
           .from('payment_plans')
-          .update({ sent_to_finance: true, sent_to_finance_at: new Date().toISOString() })
+          .update(sentToFinanceStamp())
           .eq('id', payment.id);
         error = newError;
       }

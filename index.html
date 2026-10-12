@@ -21,17 +21,45 @@
     <script>
       // Prevent browser from interfering with React Router scroll restoration
       if ("scrollRestoration" in history) history.scrollRestoration = "manual";
-      // Entry kiosk: use fullscreen PWA manifest + dark theme-color before React boots
-      // so Chrome's "Install app" gets display:fullscreen (hides bottom browser chrome).
+      // Pick the PWA manifest before React boots, so the browser reads the right display mode when
+      // the user installs (and when an installed app re-checks the manifest on launch):
+      //   /entry-kiosk      -> fullscreen, hides the tablet's bottom browser chrome
+      //   phones + tablets  -> standalone (default manifest), no browser chrome
+      //   desktop           -> minimal-ui, window keeps its navigation bar
       (function () {
+        /**
+         * True only for desktop operating systems. Android tablets report `userAgentData.mobile`
+         * as false, so platform is the signal to trust, not the mobile flag or pointer type —
+         * a Windows touchscreen laptop is still a desktop.
+         */
+        function isDesktopPlatform() {
+          var uaData = navigator.userAgentData;
+          if (uaData && uaData.platform) {
+            return uaData.platform === 'Windows' || uaData.platform === 'macOS'
+              || uaData.platform === 'Linux' || uaData.platform === 'Chrome OS';
+          }
+          // Safari and Firefox have no userAgentData; fall back to the UA string.
+          var ua = navigator.userAgent || '';
+          if (/Android|iPhone|iPod|iPad|Mobile|Tablet|Silk|Kindle|BlackBerry|Opera Mini|IEMobile|webOS/i.test(ua)) {
+            return false;
+          }
+          // iPadOS Safari claims to be Macintosh; multi-touch gives it away.
+          if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return false;
+          return /Windows|Macintosh|X11|Linux/i.test(ua);
+        }
+
         try {
-          if (location.pathname.indexOf('/entry-kiosk') !== 0) return;
           var manifest = document.querySelector('link[rel="manifest"]');
-          if (manifest) manifest.setAttribute('href', '/manifest-entry-kiosk.json');
-          var theme = document.querySelector('meta[name="theme-color"]');
-          if (theme) theme.setAttribute('content', '#0a1628');
-          document.documentElement.style.backgroundColor = '#0a1628';
-          document.documentElement.style.colorScheme = 'dark';
+          if (!manifest) return;
+          if (location.pathname.indexOf('/entry-kiosk') === 0) {
+            manifest.setAttribute('href', '/manifest-entry-kiosk.json');
+            var theme = document.querySelector('meta[name="theme-color"]');
+            if (theme) theme.setAttribute('content', '#0a1628');
+            document.documentElement.style.backgroundColor = '#0a1628';
+            document.documentElement.style.colorScheme = 'dark';
+            return;
+          }
+          if (isDesktopPlatform()) manifest.setAttribute('href', '/manifest-desktop.json');
         } catch (e) { /* ignore */ }
       })();
       // Business card: tint browser chrome dark green before React boots (no white flash).

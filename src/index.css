@@ -504,8 +504,8 @@ body:has(main.clients-detail-scroll) .navbar {
  * Scrolling: content moves up and may pass behind the fixed header (expected); initial content starts below it.
  */
 .app-main-scroll {
-  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 1.5rem);
-  padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 1.5rem);
+  padding-top: calc(constant(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 2.75rem + 0.5rem + 1.5rem);
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 2.75rem + 0.5rem + 1.5rem);
 }
 @media (max-width: 767px) {
   .app-main-scroll {
@@ -527,9 +527,55 @@ body:has(main.clients-detail-scroll) .navbar {
 }
 @media (min-width: 768px) {
   .app-main-scroll {
-    padding-top: 3.5rem; /* md:h-12 — add breathing room under header */
+    /* md:h-12 — add breathing room under header */
+    padding-top: calc(3.5rem + var(--rmq-urlbar-h, 0px));
     padding-bottom: 0;
   }
+}
+
+/*
+ * Custom URL bar, shown only in chromeless installs (see AppUrlBar.tsx). It owns the notch, so
+ * everything pinned to the top of the viewport shifts down by its height and the app header drops
+ * its own safe-area padding — otherwise the inset gets counted twice.
+ */
+:root {
+  --rmq-urlbar-h: 0px;
+}
+html.rmq-url-bar-active {
+  --rmq-urlbar-h: 2.25rem;
+}
+html.rmq-url-bar-active .navbar.pt-safe {
+  top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h));
+  padding-top: 0 !important;
+}
+/*
+ * The login screen is its own `fixed inset-0` page rather than app shell, so the offsets above miss
+ * it and the bar would sit on top of the sign-in panel. Scoped to the active class, so a plain
+ * browser tab keeps `top: 0`.
+ */
+html.rmq-url-bar-active .login-page {
+  top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h));
+}
+/*
+ * The floating desktop sidebar is `fixed top-20`, measured from the viewport, so it needs the bar's
+ * height as well — plus a little extra so it does not crowd the header on a tablet.
+ */
+html.rmq-url-bar-active .sidebar-frosted-glass {
+  top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h) + 5.75rem);
+}
+
+/* Address field: flat light grey, no border or inset shading. */
+.rmq-urlbar-field {
+  background-color: #f4f5f7;
+}
+.rmq-urlbar-field:hover {
+  background-color: #eceef1;
+}
+html.dark .rmq-urlbar-field {
+  background-color: rgba(255, 255, 255, 0.07);
+}
+html.dark .rmq-urlbar-field:hover {
+  background-color: rgba(255, 255, 255, 0.11);
 }
 
 /* iOS PWA / Safari: fill visible viewport when browser UI hides (pairs with viewport-fit=cover in index.html) */

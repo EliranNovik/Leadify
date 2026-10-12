@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { sentToFinanceStamp } from '../lib/sentToFinanceStamp';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
@@ -1375,7 +1376,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
         const { error } = await supabase
           .from('payment_plans')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             due_date: currentDate
           })
           .eq('id', firstUnpaidPayment.id);
@@ -1405,7 +1406,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
         const { error } = await supabase
           .from('finances_paymentplanrow')
           .update({
-            ready_to_pay: true,
+            ...sentToFinanceStamp(),
             date: currentDate,
             due_date: currentDate
           })
@@ -1469,7 +1470,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
             const { error } = await supabase
               .from('payment_plans')
               .update({
-                ready_to_pay: true,
+                ...sentToFinanceStamp(),
                 due_date: currentDate
               })
               .eq('id', firstUnpaidPayment.id);
@@ -1496,7 +1497,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
             const { error } = await supabase
               .from('finances_paymentplanrow')
               .update({
-                ready_to_pay: true,
+                ...sentToFinanceStamp(),
                 date: currentDate,
                 due_date: currentDate
               })

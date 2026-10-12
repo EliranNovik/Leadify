@@ -6,6 +6,16 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+/** Desktop installs use display:minimal-ui, so `standalone` alone does not mean "not installed". */
+const INSTALLED_DISPLAY_MODES = ['standalone', 'minimal-ui', 'fullscreen'];
+
+function isRunningInstalled(): boolean {
+  if (INSTALLED_DISPLAY_MODES.some((mode) => window.matchMedia(`(display-mode: ${mode})`).matches)) {
+    return true;
+  }
+  return (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
 const PWAInstallPrompt: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
@@ -13,13 +23,7 @@ const PWAInstallPrompt: React.FC = () => {
 
   useEffect(() => {
     // Check if app is already installed
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-      return;
-    }
-
-    // Check if running as PWA
-    if ((window.navigator as any).standalone === true) {
+    if (isRunningInstalled()) {
       setIsInstalled(true);
       return;
     }
@@ -39,7 +43,7 @@ const PWAInstallPrompt: React.FC = () => {
 
     // Check if already installed
     const checkInstalled = () => {
-      if (window.matchMedia('(display-mode: standalone)').matches) {
+      if (isRunningInstalled()) {
         setIsInstalled(true);
         setShowPrompt(false);
       }
