@@ -7,10 +7,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { convertBodyToHtml } from './emailBodyHtml';
 import {
   defaultNotifyLanguage,
   employeeDisplayPhone,
+  pickDepartmentManagerId,
   reassignNotificationSubject,
+  renderBusinessCardLink,
   renderReassignNotificationBody,
   type NotifyContact,
   type ReassignNotifyPeople,
@@ -112,16 +115,17 @@ const ALL_TEMPLATES = [
   TEMPLATE_198_HE_RETENTION,
 ];
 
-const contact = (name: string, id: number): NotifyContact => ({
+const contact = (name: string, id: number, department = 'Austria and Germany'): NotifyContact => ({
   name,
   phone: `050-000-${id}`,
   email: `${name.split(' ')[0].toLowerCase()}@example.com`,
+  department,
   businessCardLink: `https://crm.example.com/business-card/${id}`,
 });
 
-const HANDLER = contact('Dana Levi', 42);
-const MANAGER = contact('Shira Cohen', 61);
-const OFFICE = contact('Anastasya Chemeris', 181);
+const HANDLER = contact('Dana Levi', 42, 'Poland');
+const MANAGER = contact('Shira Cohen', 61, 'Austria and Germany');
+const OFFICE = contact('Anastasya Chemeris', 181, 'Customer service');
 
 const WITH_MANAGER: ReassignNotifyPeople = {
   representative: HANDLER,
@@ -212,10 +216,8 @@ test('a lead with no department manager loses the whole block, not just its valu
   assert.ok(!body.includes('Department Manager'), 'the heading should be gone too');
   assert.ok(!body.includes('Shira'), 'no manager detail should survive');
   // Exactly one blank line between the two remaining blocks: the dropped section took its own with it.
-  assert.match(
-    body,
-    /Contact Details & Digital Business Card: https:\/\/crm\.example\.com\/business-card\/42\n\nOffice General Contact:/,
-  );
+  // Matched on the end of the representative's card link so this does not re-pin its text.
+  assert.match(body, /business-card\/42[^\n]*<\/a>\n\nOffice General Contact:/);
   assert.ok(!/\n\n\n/.test(body), 'no blank-line gap should be left behind');
 });
 
@@ -309,6 +311,44 @@ test('the internal HE suffix never reaches the subject line', () => {
   assert.equal(reassignNotificationSubject(''), 'Case update');
 });
 
+test('the subject carries the lead number ahead of the title', () => {
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned', 'L228842'),
+    '[L228842] New case handler assigned',
+  );
+  // The HE marker is still stripped once the number is in front of it.
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned HE', '228842'),
+    '[228842] New case handler assigned',
+  );
+  assert.equal(reassignNotificationSubject('', 'L1'), '[L1] Case update');
+});
+
+test('the subject never shows a row id in place of a lead number', () => {
+  /*
+   * The report falls back to its own row id for a lead with no number. For a legacy lead that is a
+   * plain integer and reads fine, but for a new lead it is a uuid, which has no business in a
+   * client's inbox — better to send the title alone.
+   */
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned', '23116209-5afc-4da3-954e-3a53ef8bc59d'),
+    'New case handler assigned',
+  );
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned', '  '),
+    'New case handler assigned',
+  );
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned', null),
+    'New case handler assigned',
+  );
+  // A legacy row id is just a number, so it still reads as a case reference.
+  assert.equal(
+    reassignNotificationSubject('New case handler assigned', '48213'),
+    '[48213] New case handler assigned',
+  );
+});
+
 test('the preselected language follows what most of the batch speaks', () => {
   const lead = (language: string | null) => ({
     id: `id-${language}`,
@@ -324,4 +364,110 @@ test('the preselected language follows what most of the batch speaks', () => {
   assert.equal(defaultNotifyLanguage([lead('EN'), lead('RU')]), 'en');
   assert.equal(defaultNotifyLanguage([lead(null)]), 'en');
   assert.equal(defaultNotifyLanguage([]), 'en');
+});
+
+/**
+ * The department's own choice has to beat the bonus-role scan, because the whole reason the column
+ * exists is that appointing a manager through `bonuses_role` changes that employee's pay.
+ */
+test('a manager named on the department outranks whoever carries the manager bonus role', () => {
+  const nobodyFired = () => false;
+
+  // Immigration to Israel: Ariel (19) is named, and carries bonuses_role 'h'.
+  assert.equal(pickDepartmentManagerId({ named: 19, byBonusRole: null, isFired: nobodyFired }), 19);
+  // Named wins even when the department also has a role-flagged manager.
+  assert.equal(pickDepartmentManagerId({ named: 19, byBonusRole: 61, isFired: nobodyFired }), 19);
+  // Departments with nobody named keep resolving the old way (USA -> 43, Austria/Germany -> 61).
+  assert.equal(pickDepartmentManagerId({ named: null, byBonusRole: 43, isFired: nobodyFired }), 43);
+  assert.equal(pickDepartmentManagerId({ byBonusRole: 61, isFired: nobodyFired }), 61);
+  // Neither route resolves anyone, which is most departments: the email drops the block.
+  assert.equal(pickDepartmentManagerId({ isFired: nobodyFired }), null);
+});
+
+test('a fired manager is never introduced to a client', () => {
+  const fired = (id: number) => id === 19;
+
+  // Falls through to the role-flagged manager rather than naming someone who has left.
+  assert.equal(pickDepartmentManagerId({ named: 19, byBonusRole: 61, isFired: fired }), 61);
+  // With no fallback the department simply has no manager.
+  assert.equal(pickDepartmentManagerId({ named: 19, byBonusRole: null, isFired: fired }), null);
+  assert.equal(pickDepartmentManagerId({ named: null, byBonusRole: 19, isFired: fired }), null);
+});
+
+/**
+ * The templates used to print the bare URL. A client now sees who the card belongs to and which
+ * department they are in, which is the whole reason these links are in the email.
+ */
+test('a business card link reads as the person, not as a URL', () => {
+  const link = renderBusinessCardLink(MANAGER);
+
+  assert.equal(
+    link,
+    '<a href="https://crm.example.com/business-card/61" target="_blank" rel="noopener noreferrer">Shira Cohen – Austria and Germany</a>',
+  );
+  // The address still has to be the real one, since the text no longer shows it.
+  assert.match(link, /href="https:\/\/crm\.example\.com\/business-card\/61"/);
+});
+
+test('a business card link degrades rather than going blank', () => {
+  // No department: the name alone, with no stray separator.
+  assert.match(
+    renderBusinessCardLink({ ...MANAGER, department: '' }),
+    />Shira Cohen<\/a>$/,
+  );
+  // No name either: the URL becomes the text, because an empty anchor is invisible to the client.
+  assert.match(
+    renderBusinessCardLink({ ...MANAGER, name: '', department: '' }),
+    />https:\/\/crm\.example\.com\/business-card\/61<\/a>$/,
+  );
+  // No link at all means no anchor, so the renderer drops the line instead of emitting an empty tag.
+  assert.equal(renderBusinessCardLink({ ...MANAGER, businessCardLink: '' }), '');
+});
+
+test('a business card link cannot inject markup through a name', () => {
+  const link = renderBusinessCardLink({
+    ...MANAGER,
+    name: 'Shira <script>alert(1)</script>',
+  });
+
+  assert.ok(!link.includes('<script>'), 'the tag should have been escaped');
+  assert.match(link, /&lt;script&gt;/);
+});
+
+/**
+ * The emails are assembled as plain text and converted to HTML on the way out, so a link only works
+ * if the converter leaves the tag alone. If it ever escaped it instead, clients would receive the
+ * raw `<a href=...>` markup as visible text, and nothing else in these tests would notice.
+ */
+test('the card link survives the conversion to email HTML as a real link', () => {
+  const body = renderReassignNotificationBody(TEMPLATE_199_EN_HANDLER, WITH_MANAGER);
+  const html = convertBodyToHtml(body);
+
+  assert.match(html, /<a href="https:\/\/crm\.example\.com\/business-card\/61"[^>]*>Shira Cohen – Austria and Germany<\/a>/);
+  assert.ok(!html.includes('&lt;a href'), 'the anchor must not arrive escaped');
+  // The surrounding prose still gets escaped, so this is not a blanket "treat the body as HTML".
+  assert.ok(html.includes('Decker, Pex &amp; Levi Law Office'));
+});
+
+test('each block still links to its own person now that the text is a name', () => {
+  /*
+   * The same assertion as the URL-ordering test above, but on the visible text: if the section
+   * resolution broke, every client would be introduced to the same person under three headings.
+   */
+  const body = renderReassignNotificationBody(TEMPLATE_199_EN_HANDLER, WITH_MANAGER);
+  const labels = body.match(/>([^<>]+) – [^<>]+<\/a>/g) ?? [];
+
+  assert.deepEqual(labels, [
+    '>Dana Levi – Poland</a>',
+    '>Shira Cohen – Austria and Germany</a>',
+    '>Anastasya Chemeris – Customer service</a>',
+  ]);
+});
+
+test('an unset department manager column is not mistaken for employee zero', () => {
+  const nobodyFired = () => false;
+  // 0 and NaN both mean "not set"; treating either as an id would look up a nonexistent employee.
+  assert.equal(pickDepartmentManagerId({ named: 0, byBonusRole: 43, isFired: nobodyFired }), 43);
+  assert.equal(pickDepartmentManagerId({ named: Number.NaN, byBonusRole: 43, isFired: nobodyFired }), 43);
+  assert.equal(pickDepartmentManagerId({ named: 0, byBonusRole: 0, isFired: nobodyFired }), null);
 });

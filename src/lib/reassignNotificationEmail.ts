@@ -17,7 +17,8 @@
  */
 import { supabase } from './supabase';
 import { fetchLeadContacts } from './contactHelpers';
-import { convertBodyToHtml } from './emailBodyHtml';
+import { convertBodyToHtml, escapeHtml } from './emailBodyHtml';
+import { employeeEmailsFromUserRows } from './employeeEmail';
 import { buildOutgoingHtmlWithSignature } from './emailSignature';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
 
@@ -56,6 +57,8 @@ export type NotifyContact = {
   name: string;
   phone: string;
   email: string;
+  /** The person's department, used as part of the business card link text. */
+  department: string;
   businessCardLink: string;
 };
 
@@ -135,6 +138,29 @@ function headingSlot(line: string): ContactSlot | null {
   return null;
 }
 
+/**
+ * The business card placeholder as it should appear in the email: a link whose text is the person's
+ * name and department, rather than the bare URL the templates used to show.
+ *
+ * Emitted as real HTML into otherwise plain template text, which `convertBodyToHtml` is built for —
+ * it sets anchors aside before escaping the rest and puts them back afterwards, so the tag survives
+ * instead of arriving at the client as visible markup.
+ *
+ * With no name to show the URL becomes the text. An anchor whose text is empty is invisible, so the
+ * client would see a blank line where their lawyer's card should be.
+ */
+export function renderBusinessCardLink(contact: NotifyContact): string {
+  const url = String(contact.businessCardLink || '').trim();
+  if (!url) return '';
+
+  const label = [contact.name, contact.department]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' – ');
+  const href = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || url)}</a>`;
+}
+
 function contactValue(
   people: ReassignNotifyPeople,
   slot: ContactSlot,
@@ -142,6 +168,8 @@ function contactValue(
 ): string {
   const contact = people[slot];
   if (!contact) return '';
+  // Every card placeholder — named or generic — renders as a titled link, not a URL.
+  if (field === 'businessCardLink') return renderBusinessCardLink(contact);
   return String(contact[field] || '').trim();
 }
 
@@ -218,14 +246,31 @@ export function renderReassignNotificationBody(
 }
 
 /**
- * Subject line for the notification.
+ * The report falls back to its own row id when a lead has no number, and for new leads that is a
+ * uuid — not something anyone should have to read in an inbox.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Subject line for the notification: the lead number, then the title.
  *
- * Taken from the template's own name, minus the trailing " HE" the Hebrew rows carry so staff can
+ * The title is the template's own name, minus the trailing " HE" the Hebrew rows carry so staff can
  * tell the pair apart in the template list. That suffix is an internal marker and has no business
  * arriving in a client's inbox.
+ *
+ * The lead number leads rather than trails, which is both how every other client-facing subject in
+ * the CRM is built and what survives an inbox truncating a long subject. It also makes these emails
+ * findable: the pipeline and calendar views tie a message to a lead by looking for the lead number
+ * in its subject, so without it a reassignment email shows against no case at all.
  */
-export function reassignNotificationSubject(templateName: string): string {
-  return String(templateName || '').replace(/\s+HE$/i, '').trim() || 'Case update';
+export function reassignNotificationSubject(
+  templateName: string,
+  leadNumber?: string | null,
+): string {
+  const title = String(templateName || '').replace(/\s+HE$/i, '').trim() || 'Case update';
+  const lead = String(leadNumber || '').trim();
+  if (!lead || UUID_RE.test(lead)) return title;
+  return `[${lead}] ${title}`;
 }
 
 /** Public business-card page for an employee, which is what the templates link to. */
@@ -272,12 +317,14 @@ type EmployeeRow = {
   official_name: string | null;
   phone: string | null;
   mobile: string | null;
+  department_id: number | null;
 };
 
 /**
- * Contact details for a set of employees, in two queries rather than two per employee.
+ * Contact details for a set of employees, in a handful of queries rather than a handful per employee.
  *
- * Email lives on `users`, keyed by `employee_id`, because `tenants_employee` has no email column.
+ * Email lives on `users`, keyed by `employee_id`, because `tenants_employee` has no email column, and
+ * the department name lives on `tenant_departement` behind `department_id`.
  */
 async function fetchEmployeeContacts(
   employeeIds: number[],
@@ -288,23 +335,33 @@ async function fetchEmployeeContacts(
 
   const { data: rows, error } = await supabase
     .from('tenants_employee')
-    .select('id, display_name, official_name, phone, mobile')
+    .select('id, display_name, official_name, phone, mobile, department_id')
     .in('id', ids);
   if (error) throw error;
 
-  const { data: userRows } = await supabase
-    .from('users')
-    .select('employee_id, email')
-    .in('employee_id', ids);
+  const departmentIds = [
+    ...new Set(
+      ((rows ?? []) as EmployeeRow[])
+        .map((row) => Number(row.department_id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
 
-  const emailByEmployee = new Map<number, string>();
-  for (const row of userRows ?? []) {
-    const employeeId = Number((row as { employee_id: unknown }).employee_id);
-    const email = cleanField((row as { email: unknown }).email);
-    // A few employees have more than one `users` row, so the first address found wins.
-    if (Number.isFinite(employeeId) && email && !emailByEmployee.has(employeeId)) {
-      emailByEmployee.set(employeeId, email);
-    }
+  const [{ data: userRows }, { data: departmentRows }] = await Promise.all([
+    supabase.from('users').select('employee_id, email, is_active').in('employee_id', ids),
+    departmentIds.length > 0
+      ? supabase.from('tenant_departement').select('id, name').in('id', departmentIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  // Several employees have more than one `users` row; see employeeEmail for which one wins.
+  const emailByEmployee = employeeEmailsFromUserRows(userRows ?? []);
+
+  const departmentNameById = new Map<number, string>();
+  for (const row of departmentRows ?? []) {
+    const departmentId = Number((row as { id: unknown }).id);
+    const name = cleanField((row as { name: unknown }).name);
+    if (Number.isFinite(departmentId) && name) departmentNameById.set(departmentId, name);
   }
 
   for (const row of (rows ?? []) as EmployeeRow[]) {
@@ -316,6 +373,8 @@ async function fetchEmployeeContacts(
       // Left empty rather than dashed: the renderer drops the line, which beats printing "-" where
       // an address belongs.
       email: emailByEmployee.get(id) || '',
+      // Empty for an employee with no department, which just shortens the link text to their name.
+      department: departmentNameById.get(Number(row.department_id)) || '',
       businessCardLink: buildBusinessCardLink(id),
     });
   }
@@ -324,14 +383,38 @@ async function fetchEmployeeContacts(
 }
 
 /**
+ * Which employee is a department's manager, given both ways of saying so.
+ *
+ * `named` is the department's own `manager_employee_id`, and it wins. It exists because the only
+ * other way to appoint a manager was to set an employee's `bonuses_role` to 'dm', and that field also
+ * splits bonus pools by headcount and gates staff permissions — so appointing someone changed their
+ * pay. See sql/2026-10-13_department_manager_employee.sql.
+ *
+ * A fired manager is skipped either way and the department falls through to having none, which drops
+ * the block from the email. That beats introducing a client to someone who has left.
+ */
+export function pickDepartmentManagerId(params: {
+  named?: number | null;
+  byBonusRole?: number | null;
+  isFired: (employeeId: number) => boolean;
+}): number | null {
+  const { named, byBonusRole, isFired } = params;
+  if (named && Number.isFinite(named) && named > 0 && !isFired(named)) return named;
+  if (byBonusRole && Number.isFinite(byBonusRole) && byBonusRole > 0 && !isFired(byBonusRole)) {
+    return byBonusRole;
+  }
+  return null;
+}
+
+/**
  * The department manager for each of the given lead categories, by category id.
  *
- * Reproduces what the client portal does in SQL: the lead's category hangs off a main category, the
- * main category belongs to a department, and the department's manager is the employee in it flagged
- * `bonuses_role` 'dm'. Categories with no manager are simply absent from the map.
+ * Mirrors what the client portal does in SQL: the lead's category hangs off a main category, the main
+ * category belongs to a department, and the department names its manager. Categories whose department
+ * names nobody are simply absent from the map, and their emails lose the block.
  *
- * Only two departments currently have such an employee, which covers 25 of the 143 categories; the
- * rest land in that absent case and get the department manager block dropped from their email.
+ * Three departments resolve a manager today — Immigration to Israel by name, USA and Austria/Germany
+ * through the older `bonuses_role` route — so most categories still land in that absent case.
  *
  * Activity is judged on `fired` rather than the portal's check for an active staff `users` row. The
  * two agree on today's data and this needs no second query, but it is a deliberate difference.
@@ -380,25 +463,70 @@ export async function fetchDepartmentManagersByCategory(
   const departmentIds = [...new Set(departmentByParent.values())];
   if (departmentIds.length === 0) return byCategory;
 
-  const { data: managers } = await supabase
-    .from('tenants_employee')
-    .select('id, department_id, bonuses_role, fired')
-    .in('department_id', departmentIds)
-    .order('id', { ascending: true });
+  /*
+   * Managers named on the department itself.
+   *
+   * `data` comes back null if the column is missing, which leaves this empty and falls the whole
+   * lookup back to `bonuses_role` — the behaviour before the column existed. So the frontend is safe
+   * to deploy either side of the migration.
+   */
+  const { data: departmentRows } = await supabase
+    .from('tenant_departement')
+    .select('id, manager_employee_id')
+    .in('id', departmentIds);
 
-  const managerByDepartment = new Map<string, number>();
-  for (const row of managers ?? []) {
+  const namedByDepartment = new Map<string, number>();
+  for (const row of departmentRows ?? []) {
+    const departmentId = String((row as { id: unknown }).id ?? '').trim();
+    const employeeId = Number((row as { manager_employee_id: unknown }).manager_employee_id);
+    if (departmentId && Number.isFinite(employeeId) && employeeId > 0) {
+      namedByDepartment.set(departmentId, employeeId);
+    }
+  }
+
+  const namedIds = [...new Set(namedByDepartment.values())];
+  const [{ data: inDepartment }, { data: namedEmployees }] = await Promise.all([
+    supabase
+      .from('tenants_employee')
+      .select('id, department_id, bonuses_role, fired')
+      .in('department_id', departmentIds)
+      .order('id', { ascending: true }),
+    // Fetched by id as well: a named manager need not sit in the department they manage.
+    namedIds.length > 0
+      ? supabase.from('tenants_employee').select('id, department_id, bonuses_role, fired').in('id', namedIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const firedById = new Map<number, boolean>();
+  for (const row of [...(inDepartment ?? []), ...(namedEmployees ?? [])]) {
+    const employeeId = Number((row as { id: unknown }).id);
+    if (Number.isFinite(employeeId)) {
+      firedById.set(employeeId, (row as { fired: unknown }).fired === true);
+    }
+  }
+
+  const byBonusRole = new Map<string, number>();
+  for (const row of inDepartment ?? []) {
     const role = String((row as { bonuses_role: unknown }).bonuses_role ?? '')
       .trim()
       .toLowerCase();
     if (role !== 'dm' && role !== 'department manager') continue;
-    if ((row as { fired: unknown }).fired === true) continue;
     const departmentId = String((row as { department_id: unknown }).department_id ?? '').trim();
     const employeeId = Number((row as { id: unknown }).id);
     // Lowest employee id wins, matching the portal's `ORDER BY te.id LIMIT 1`.
-    if (departmentId && Number.isFinite(employeeId) && !managerByDepartment.has(departmentId)) {
-      managerByDepartment.set(departmentId, employeeId);
+    if (departmentId && Number.isFinite(employeeId) && !byBonusRole.has(departmentId)) {
+      byBonusRole.set(departmentId, employeeId);
     }
+  }
+
+  const managerByDepartment = new Map<string, number>();
+  for (const departmentId of departmentIds) {
+    const managerId = pickDepartmentManagerId({
+      named: namedByDepartment.get(departmentId),
+      byBonusRole: byBonusRole.get(departmentId),
+      isFired: (employeeId) => firedById.get(employeeId) === true,
+    });
+    if (managerId) managerByDepartment.set(departmentId, managerId);
   }
 
   for (const row of categories) {
@@ -551,7 +679,13 @@ export async function buildReassignNotifyContext(params: {
     ...managerIdByCategory.values(),
   ]);
 
-  const blank: NotifyContact = { name: '', phone: '', email: '', businessCardLink: '' };
+  const blank: NotifyContact = {
+    name: '',
+    phone: '',
+    email: '',
+    department: '',
+    businessCardLink: '',
+  };
   const representative = contacts.get(params.newEmployeeId) ?? blank;
   const officeBase = contacts.get(OFFICE_GENERAL_CONTACT_EMPLOYEE_ID) ?? blank;
   const office: NotifyContact = {
@@ -659,8 +793,6 @@ export async function sendReassignNotifications(params: {
     newEmployeeId: params.newEmployeeId,
     leads: params.leads,
   });
-  const subject = reassignNotificationSubject(context.template.name);
-
   let done = 0;
   for (const lead of params.leads) {
     try {
@@ -684,7 +816,8 @@ export async function sendReassignNotifications(params: {
 
       await sendEmailViaBackend({
         userId: user.id,
-        subject,
+        // Per lead, not per batch: the subject carries this lead's number.
+        subject: reassignNotificationSubject(context.template.name, lead.leadNumber),
         bodyHtml: html,
         bodyContentType: 'HTML',
         to: [to],

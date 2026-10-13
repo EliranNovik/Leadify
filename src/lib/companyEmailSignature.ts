@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { isUsableEmployeePhotoUrl, resolveEmployeePhotoUrl } from './employeePhotoUrl';
+import { employeeEmailsFromUserRows } from './employeeEmail';
 
 export const COMPANY_SIGNATURE_SETTINGS_ID = 1;
 export const SIGNATURE_IMAGES_BUCKET = 'signature-templates';
@@ -353,12 +354,16 @@ export async function updateEmployeeSignatureContact(
 }
 
 async function fetchEmployeeEmail(employeeId: number): Promise<string | null> {
+  /*
+   * Not `maybeSingle()`: an employee with a disabled old account alongside their current one has two
+   * `users` rows, and more than one match makes it error — so those employees used to end up with no
+   * address in their signature at all.
+   */
   const { data } = await supabase
     .from('users')
-    .select('email')
-    .eq('employee_id', employeeId)
-    .maybeSingle();
-  return asNullableString(data?.email);
+    .select('employee_id, email, is_active')
+    .eq('employee_id', employeeId);
+  return asNullableString(employeeEmailsFromUserRows(data ?? []).get(employeeId));
 }
 
 export async function fetchSignatureEmployee(
@@ -434,12 +439,10 @@ export async function fetchSignatureEmployeeDirectory(): Promise<SignatureEmploy
   if (ids.length > 0) {
     const { data: users } = await supabase
       .from('users')
-      .select('employee_id, email')
+      .select('employee_id, email, is_active')
       .in('employee_id', ids);
-    for (const user of users || []) {
-      const employeeId = Number(user.employee_id);
-      const email = asNullableString(user.email);
-      if (employeeId && email) emailByEmployeeId.set(employeeId, email);
+    for (const [employeeId, email] of employeeEmailsFromUserRows(users ?? [])) {
+      emailByEmployeeId.set(employeeId, email);
     }
   }
 

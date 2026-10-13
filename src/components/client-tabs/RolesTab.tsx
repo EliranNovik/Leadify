@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -16,6 +16,13 @@ import {
   fetchLeadSubEffortContributors,
   type LeadSubEffortContributor,
 } from '../../lib/leadSubEfforts';
+import {
+  addLeadHelperHandler,
+  fetchLeadHelperHandlerIds,
+  isHelperHandler,
+  normalizeHelperHandlerIds,
+  removeLeadHelperHandler,
+} from '../../lib/leadHelperHandlers';
 import { resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
 
 const loadedRoleAvatarUrls = new Set<string>();
@@ -82,10 +89,21 @@ const RoleEmployeeAvatar: React.FC<{
 type RolesTabCacheSlice = {
   isSuperuser?: boolean;
 };
+/**
+ * The one role several employees can hold at once, so it is not one of the single-assignee `roles`.
+ *
+ * Everything in `roles` is a name in one column, saved by `handleSaveRoles`. This card keeps its own
+ * list of employee ids and writes `lead_helper_handlers` instead, so it has to stay out of that
+ * array — a role in it with no matching column would have the save write a name into nothing.
+ * `ROLE_SECTIONS` still places it, which is what keeps it sitting beside Retention Handler.
+ */
+const HELPER_HANDLER_ROLE_ID = 'helper_handler';
+const HELPER_HANDLER_TITLE = 'Helper Handler';
+
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
   { title: 'Sales', roleIds: ['scheduler', 'manager', 'helper', 'expert', 'closer'] },
-  { title: 'Handlers', roleIds: ['handler', 'retainer_handler'] },
+  { title: 'Handlers', roleIds: ['handler', 'retainer_handler', HELPER_HANDLER_ROLE_ID] },
   { title: 'Finance', roleIds: ['collection_manager'] },
   { title: 'Marketing', roleIds: ['marketing_officer'] },
 ];
@@ -452,11 +470,57 @@ const RolesTab: React.FC<ClientTabProps> = ({
   const cachedRolesTabData = readClientsTabCache<RolesTabCacheSlice>(rolesLeadKey, 'roles');
   const [isSuperuser, setIsSuperuser] = useState<boolean>(() => cachedRolesTabData?.isSuperuser ?? false);
 
+  // Helper Handler holds a list rather than one name, so it keeps its own state. See the role id.
+  const [helperHandlerIds, setHelperHandlerIds] = useState<number[]>(
+    () => normalizeHelperHandlerIds((client as any)?.helper_handler_ids ?? []),
+  );
+  const [isSavingHelperHandler, setIsSavingHelperHandler] = useState(false);
+  /*
+   * Adding and removing are separate modes rather than one edit mode, because the card is read far
+   * more often than it is changed: at rest it should look like the single-assignee cards, with no
+   * search box and no row of delete buttons inviting a mis-click.
+   */
+  const [helperHandlerMode, setHelperHandlerMode] = useState<'add' | 'remove' | null>(null);
+
   // Update roles state when computed roles change
   useEffect(() => {
     setRoles(computedRoles);
     setOriginalRoles(computedRoles);
   }, [computedRoles]);
+
+  /*
+   * The lead row's `helper_handler_ids` is a trigger-maintained copy, so it is only a head start:
+   * it shows the right people straight away, then the table confirms them. Reading the table is what
+   * makes the card correct even against a lead loaded from cache or fetched without the column.
+   *
+   * Only seeds when the column actually came back. Treating an absent column as "nobody" would blank
+   * the card on every parent refetch whose select does not list it.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const fromLeadRow = (client as any)?.helper_handler_ids;
+    if (Array.isArray(fromLeadRow)) {
+      setHelperHandlerIds(normalizeHelperHandlerIds(fromLeadRow));
+    }
+
+    fetchLeadHelperHandlerIds(supabase, client?.id)
+      .then((ids) => {
+        if (!cancelled) setHelperHandlerIds(ids);
+      })
+      .catch((error) => {
+        // The table is missing until the migration runs; the card just stays on the lead row's copy.
+        console.error('Error loading helper handlers:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id]);
+
+  // Losing write access, by a lock from anywhere, has to close an open mode rather than strand it.
+  useEffect(() => {
+    if (readOnly || isRolesLocked) setHelperHandlerMode(null);
+  }, [readOnly, isRolesLocked]);
 
   // Update locked status from client data
   useEffect(() => {
@@ -847,6 +911,97 @@ const RolesTab: React.FC<ClientTabProps> = ({
     await handleSaveRoles(newRoles);
   };
 
+  /** The employees holding the Helper Handler role, in the order the lead row stores them. */
+  const helperHandlerAssignees = useMemo(() => {
+    return helperHandlerIds.map((employeeId) => {
+      const employee = getEmployeeById(employeeId);
+      return {
+        employeeId,
+        employee,
+        // An employee row the dropdown never loaded still has to show as something.
+        displayName: employee?.display_name || employee?.official_name || `Employee #${employeeId}`,
+      };
+    });
+  }, [helperHandlerIds, allEmployees, allEmployeesProp]);
+
+  /**
+   * Who can still be added, narrowed by whatever is typed.
+   *
+   * Works in employee ids rather than the names the single-assignee dropdowns use, because the role
+   * is saved by id and two employees are allowed to share a display name.
+   */
+  const helperHandlerOptions = useMemo(() => {
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    const search = (searchTerms[HELPER_HANDLER_ROLE_ID] || '').trim().toLowerCase();
+
+    return (employeesToUse || [])
+      .filter((emp: any) => {
+        const name = String(emp?.display_name || '').trim();
+        if (!name || /^not[_\s]?assigned$/i.test(name)) return false;
+        if (isHelperHandler(helperHandlerIds, emp?.id)) return false;
+        return !search || name.toLowerCase().includes(search);
+      })
+      .slice(0, 50);
+  }, [allEmployees, allEmployeesProp, searchTerms, helperHandlerIds]);
+
+  /** Open the add or remove mode from the card's menu, closing the menu and any open row editor. */
+  const handleHelperHandlerMode = (mode: 'add' | 'remove' | null) => {
+    (document.activeElement as HTMLElement)?.blur();
+    if (mode && isRolesLocked) {
+      toast.error('Roles are locked. Please unlock roles first.');
+      return;
+    }
+    setHelperHandlerMode(mode);
+    setSearchTerms(prev => ({ ...prev, [HELPER_HANDLER_ROLE_ID]: '' }));
+    setShowDropdowns(prev => ({ ...prev, [HELPER_HANDLER_ROLE_ID]: mode === 'add' }));
+    if (mode) setEditingRoleId(null);
+  };
+
+  /*
+   * Add and remove save straight away, matching the single-assignee cards, which commit on select
+   * rather than behind a Save button. Each writes one row, so the list is edited one person at a
+   * time and there is no half-saved state to reconcile.
+   */
+  const handleAddHelperHandler = async (employeeId: unknown) => {
+    const id = Number(employeeId);
+    if (!Number.isFinite(id) || isHelperHandler(helperHandlerIds, id)) return;
+
+    setIsSavingHelperHandler(true);
+    try {
+      const actor = await fetchStageActorInfo();
+      await addLeadHelperHandler(supabase, {
+        clientId: client?.id,
+        employeeId: id,
+        createdBy: actor?.fullName || null,
+      });
+      setHelperHandlerIds(normalizeHelperHandlerIds([...helperHandlerIds, id]));
+      setSearchTerms(prev => ({ ...prev, [HELPER_HANDLER_ROLE_ID]: '' }));
+      toast.success(`${getEmployeeById(id)?.display_name || 'Employee'} added as ${HELPER_HANDLER_TITLE}`);
+    } catch (error: any) {
+      console.error('Error adding helper handler:', error);
+      toast.error(`Failed to add ${HELPER_HANDLER_TITLE}: ${error?.message || 'unknown error'}`);
+    } finally {
+      setIsSavingHelperHandler(false);
+    }
+  };
+
+  const handleRemoveHelperHandler = async (employeeId: number) => {
+    setIsSavingHelperHandler(true);
+    try {
+      await removeLeadHelperHandler(supabase, { clientId: client?.id, employeeId });
+      const remaining = helperHandlerIds.filter((id) => id !== employeeId);
+      setHelperHandlerIds(remaining);
+      // Nothing left to remove, so drop back to the resting card rather than an empty remove mode.
+      if (remaining.length === 0) setHelperHandlerMode(null);
+      toast.success(`${HELPER_HANDLER_TITLE} removed`);
+    } catch (error: any) {
+      console.error('Error removing helper handler:', error);
+      toast.error(`Failed to remove ${HELPER_HANDLER_TITLE}: ${error?.message || 'unknown error'}`);
+    } finally {
+      setIsSavingHelperHandler(false);
+    }
+  };
+
   const handleToggleLock = async () => {
     try {
       const newLockStatus = !isRolesLocked;
@@ -986,6 +1141,8 @@ const RolesTab: React.FC<ClientTabProps> = ({
         return CogIcon;
       case 'retainer_handler':
         return BriefcaseIcon;
+      case HELPER_HANDLER_ROLE_ID:
+        return UserGroupIcon;
       case 'collection_manager':
         return BanknotesIcon;
       case 'marketing_officer':
@@ -1049,6 +1206,160 @@ const RolesTab: React.FC<ClientTabProps> = ({
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {section.roleIds.map((roleId) => {
+                  if (roleId === HELPER_HANDLER_ROLE_ID) {
+                    const canEditHelperHandlers = !readOnly && !isRolesLocked;
+                    const isAddingHelperHandler = helperHandlerMode === 'add';
+                    const isRemovingHelperHandler = helperHandlerMode === 'remove';
+                    /*
+                     * One assignee at rest reads as a single-assignee role, so it is drawn as one —
+                     * same avatar size and type as the other cards. The compact list only earns its
+                     * keep once there is a list, or once the delete buttons need somewhere to sit.
+                     */
+                    const showAsSingleRole = helperHandlerAssignees.length === 1 && !helperHandlerMode;
+
+                    return (
+                      <div
+                        key={HELPER_HANDLER_ROLE_ID}
+                        className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-blue-600 dark:text-blue-400">
+                            {HELPER_HANDLER_TITLE}
+                            {helperHandlerAssignees.length > 0 && (
+                              <span className="text-sm font-semibold text-gray-500">
+                                {helperHandlerAssignees.length}
+                              </span>
+                            )}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {isSavingHelperHandler && <span className="loading loading-spinner loading-xs" />}
+                            {canEditHelperHandlers && helperHandlerMode && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                onClick={() => handleHelperHandlerMode(null)}
+                                title="Done"
+                              >
+                                <XMarkIcon className="w-5 h-5" />
+                              </button>
+                            )}
+                            {canEditHelperHandlers && (
+                              <div className="dropdown dropdown-end">
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                  title={`${HELPER_HANDLER_TITLE} options`}
+                                >
+                                  <ChevronDownIcon className="w-5 h-5" />
+                                </button>
+                                <ul
+                                  tabIndex={0}
+                                  className="dropdown-content menu menu-md p-2 shadow bg-base-100 rounded-box w-52 text-base z-[1000]"
+                                >
+                                  <li>
+                                    <button type="button" onClick={() => handleHelperHandlerMode('add')}>
+                                      <UserPlusIcon className="w-6 h-6 text-gray-500 shrink-0" />
+                                      Add
+                                    </button>
+                                  </li>
+                                  <li className={helperHandlerAssignees.length === 0 ? 'disabled' : undefined}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleHelperHandlerMode('remove')}
+                                      disabled={helperHandlerAssignees.length === 0}
+                                    >
+                                      <UserMinusIcon className="w-6 h-6 text-gray-500 shrink-0" />
+                                      Remove
+                                    </button>
+                                  </li>
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {helperHandlerAssignees.length === 0 ? (
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 flex-shrink-0">
+                              {React.createElement(getRoleIcon(HELPER_HANDLER_ROLE_ID), { className: 'w-6 h-6 text-gray-500' })}
+                            </div>
+                            <span className="text-base text-gray-500 italic">Unassigned</span>
+                          </div>
+                        ) : showAsSingleRole ? (
+                          <div className="flex items-center gap-3">
+                            <RoleEmployeeAvatar
+                              employee={helperHandlerAssignees[0].employee}
+                              displayName={helperHandlerAssignees[0].displayName}
+                              size="md"
+                              onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
+                            />
+                            <span className="flex-1 min-w-0 truncate text-base font-medium text-gray-900">
+                              {helperHandlerAssignees[0].displayName}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {helperHandlerAssignees.map((assignee) => (
+                              <div key={assignee.employeeId} className="flex items-center gap-2">
+                                <RoleEmployeeAvatar
+                                  employee={assignee.employee}
+                                  displayName={assignee.displayName}
+                                  size="sm"
+                                  onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
+                                />
+                                <span className="flex-1 min-w-0 truncate text-sm font-medium text-gray-900">
+                                  {assignee.displayName}
+                                </span>
+                                {canEditHelperHandlers && isRemovingHelperHandler && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0 shrink-0 text-error"
+                                    onClick={() => handleRemoveHelperHandler(assignee.employeeId)}
+                                    disabled={isSavingHelperHandler}
+                                    title={`Remove ${assignee.displayName}`}
+                                  >
+                                    <XMarkIcon className="w-6 h-6" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {canEditHelperHandlers && isAddingHelperHandler && (
+                          <div className="relative mt-3">
+                            <input
+                              type="text"
+                              className="input input-bordered w-full max-w-[280px] min-h-12 text-base"
+                              placeholder="Type to add someone..."
+                              value={searchTerms[HELPER_HANDLER_ROLE_ID] || ''}
+                              onChange={(e) => handleSearchChange(HELPER_HANDLER_ROLE_ID, e.target.value)}
+                              onFocus={() => handleShowDropdown(HELPER_HANDLER_ROLE_ID)}
+                              onBlur={() => handleHideDropdown(HELPER_HANDLER_ROLE_ID)}
+                              autoFocus
+                            />
+                            {showDropdowns[HELPER_HANDLER_ROLE_ID] && helperHandlerOptions.length > 0 && (
+                              <div
+                                className="absolute z-50 w-full max-w-[280px] mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto"
+                                style={{ top: '100%', left: 0 }}
+                              >
+                                {helperHandlerOptions.map((emp: any) => (
+                                  <div
+                                    key={String(emp.id)}
+                                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                                    onClick={() => handleAddHelperHandler(emp.id)}
+                                  >
+                                    {emp.display_name}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
                   const role = roles.find((r) => r.id === roleId);
                   if (!role) return null;
                   const hasAssignee = role.assignee && role.assignee !== '---';
@@ -1067,8 +1378,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}
                     >
                       <div className="flex items-start justify-between gap-2 mb-2">
-                        <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-gray-700">
-                          {React.createElement(getRoleIcon(role.id), { className: 'w-5 h-5 text-black shrink-0' })}
+                        <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-blue-600 dark:text-blue-400">
                           {role.title}
                         </span>
                         <div className="flex items-center gap-1 shrink-0">

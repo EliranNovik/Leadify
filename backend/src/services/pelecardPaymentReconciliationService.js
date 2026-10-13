@@ -20,6 +20,7 @@ const {
   readStoredParamX,
   parseLeadContactParamX,
 } = require('../lib/pelecardParamX');
+const { pelecardChargeBelongsToPayment } = require('../lib/pelecardChargeMatch');
 
 const DB_RETRY_ATTEMPTS = Number(process.env.PELECARD_DB_RETRY_ATTEMPTS || '3');
 const DB_RETRY_DELAY_MS = Number(process.env.PELECARD_DB_RETRY_DELAY_MS || '300');
@@ -474,7 +475,52 @@ async function verifyPelecardTransaction(transactionId, callbackData, profile = 
   };
 }
 
-async function persistPaymentSuccess(payment, secureToken, callbackData, verifyResult) {
+/**
+ * Park a link whose charge turned out to belong to a different row, and leave it for a human.
+ *
+ * Deliberately not 'failed': nothing failed. Some other installment on this case was charged, and
+ * this row simply has no charge of its own yet.
+ */
+async function persistChargeAttributionMismatch(payment, callbackData, verifyResult, match) {
+  const previousRaw =
+    payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
+      ? payment.pelecard_raw_response
+      : {};
+  const { transactionId } = extractPelecardMeta(callbackData);
+
+  console.error('[Pelecard] REFUSED to mark paid — charge amount belongs to another payment', {
+    paymentId: payment.secure_token,
+    paymentLinkId: payment.id,
+    planId: payment.payment_plan_id,
+    transactionId: transactionId || null,
+    chargedNis: match.chargedNis,
+    expectedNis: match.expectedNis,
+  });
+
+  const { error } = await supabase
+    .from('payment_links')
+    .update({
+      pelecard_raw_response: {
+        ...previousRaw,
+        callback: callbackData,
+        pelecard: verifyResult.verifyPayload?.pelecard ?? verifyResult.verifyPayload,
+        lastReconcileAt: new Date().toISOString(),
+        lastReconcileVerified: false,
+        chargeAttributionMismatch: {
+          at: new Date().toISOString(),
+          chargedNis: match.chargedNis,
+          expectedNis: match.expectedNis,
+          transactionId: transactionId ? String(transactionId) : null,
+        },
+      },
+    })
+    .eq('id', payment.id);
+
+  if (error) logSupabaseError('charge attribution mismatch update failed', error);
+  return { ok: false, error: 'charge_attribution_mismatch', match };
+}
+
+async function persistPaymentSuccess(payment, secureToken, callbackData, verifyResult, options = {}) {
   const { resolvedStatusCode, verifyPayload } = verifyResult;
   const transactionId =
     extractPelecardMeta(callbackData).transactionId || getStoredTransactionId(payment);
@@ -482,6 +528,28 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
     payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
       ? payment.pelecard_raw_response
       : {};
+
+  /*
+   * Last gate before anything is recorded as collected. Every route to "paid" lands here, so this is
+   * the only place the check has to exist to cover callbacks, status polls, the scheduler and
+   * manual reconciles alike.
+   */
+  const match = pelecardChargeBelongsToPayment(
+    callbackData,
+    verifyPayload,
+    chargeAmountFromPayment(payment),
+  );
+  if (!match.ok) {
+    // An operator who has the Pelecard terminal in front of them can still overrule this.
+    if (!options.allowAmountMismatch) {
+      return persistChargeAttributionMismatch(payment, callbackData, verifyResult, match);
+    }
+    console.warn('[Pelecard] Marking paid despite an amount mismatch, by explicit override', {
+      paymentId: secureToken,
+      chargedNis: match.chargedNis,
+      expectedNis: match.expectedNis,
+    });
+  }
 
   const wasAlreadyPaid = payment.status === 'paid';
   const paidAt = new Date().toISOString();
@@ -772,6 +840,39 @@ async function reconcilePaidLinkPlan(payment) {
 }
 
 /**
+ * Whether a ParamX identifies exactly one payment link, so a charge found under it can be credited.
+ *
+ * Checks both the stored ParamX and the secure_token, since a link can be matched either way.
+ * Returns false when the lookup itself fails: not knowing whether a reference is shared is not a
+ * reason to credit money against it.
+ */
+async function isParamXUniqueToPayment(paramX, paymentLinkId) {
+  const value = String(paramX || '').trim();
+  if (!value) return false;
+
+  // Two plain queries rather than one `.or()`: a JSON path inside `or` is parsed as part of the
+  // filter string, so a ParamX containing a comma or a dot would change what is being asked.
+  const [byParam, byToken] = await Promise.all([
+    supabase
+      .from('payment_links')
+      .select('id')
+      .filter('pelecard_raw_response->>paramX', 'eq', value)
+      .limit(5),
+    supabase.from('payment_links').select('id').eq('secure_token', value).limit(5),
+  ]);
+
+  if (byParam.error || byToken.error) {
+    logSupabaseError('paramX uniqueness check failed', byParam.error || byToken.error);
+    return false;
+  }
+
+  const others = [...(byParam.data || []), ...(byToken.data || [])].filter(
+    (row) => row.id !== paymentLinkId,
+  );
+  return others.length === 0;
+}
+
+/**
  * Reconcile one link via GetTransaction (status poll, callbacks, scheduler).
  */
 async function tryReconcilePaymentLink(payment, options = {}) {
@@ -801,6 +902,18 @@ async function tryReconcilePaymentLink(payment, options = {}) {
     const uniqueParams = [...new Set(paramCandidates.map((p) => String(p)))];
 
     for (const paramX of uniqueParams) {
+      /*
+       * A ParamX of `{leadNumber}-{plan_contact_id}` is shared by every installment on the case, so
+       * asking Pelecard about it answers for whichever installment was charged most recently — not
+       * necessarily this one. Only recover through a reference that points at a single link.
+       */
+      if (!(await isParamXUniqueToPayment(paramX, full.id))) {
+        console.warn('[Pelecard] Skipping ParamX recovery — reference is shared by several links', {
+          paymentId: full.secure_token,
+          paramX,
+        });
+        continue;
+      }
       try {
         const found = await pelecardService.checkGoodParamX(paramX, profileFromPayment(full), {
           shvaSuccessOnly: true,
@@ -866,6 +979,8 @@ async function tryReconcilePaymentLink(payment, options = {}) {
         verified: true,
         resolvedStatusCode: verifyResult.resolvedStatusCode || (forcePaid ? '000' : verifyResult.resolvedStatusCode),
       },
+      // forcePaid is an operator looking at the terminal, so it also overrules the amount check.
+      { allowAmountMismatch: forcePaid },
     );
     return fetchPaymentByToken(full.secure_token);
   }
