@@ -15,6 +15,7 @@ import LeadAllocationBudgetAssistModal from '../components/employeeLeadReporting
 import LeadAllocationSavedModal from '../components/employeeLeadReporting/LeadAllocationSavedModal';
 import {
   addLeadToAllocationBuckets,
+  allocationOverflowPercent,
   allocationRowFromCombinedLead,
   buildAllocationDayWorkedMs,
   canAccessLeadTimeReport,
@@ -28,7 +29,8 @@ import {
   enrichAllocationLeadDisplayMeta,
   formatAllocationPercent,
   formatAllocationWorkedDuration,
-  formatLeadAllocationMissingDayLabel,
+  formatLeadAllocationMissingDayMenuLabel,
+  formatLeadAllocationMissingDayTabLabel,
   getJerusalemTodayIsoDate,
   isDailyAllocationValid,
   isLeadAllocationEligibleStage,
@@ -42,6 +44,7 @@ import {
   resolveLegacyLeadDisplayNumbers,
   saveDailyAllocation,
   setLeadAllocationPercentDraft,
+  splitMissingAllocationDatesByWeek,
   setOtherWorkAllocationPercent,
   setOtherWorkAllocationPercentDraft,
   syncAllocationTo100,
@@ -209,6 +212,19 @@ function deriveHoursFormDefaults(
     toTime: isoToTimeInput(latestOut),
     locationId,
   };
+}
+
+/**
+ * One tab inside the grey oval, shared by the week's days and the "more" trigger.
+ *
+ * The open day is the white one, the way a segmented control marks its selection.
+ */
+function missingDayTabClass(active: boolean): string {
+  return `rounded-full px-4 py-2 text-sm font-semibold leading-none transition ${
+    active
+      ? 'bg-white text-gray-900 shadow-sm'
+      : 'text-gray-600 hover:bg-white/60 hover:text-gray-900'
+  }`;
 }
 
 const EmployeeLeadReportingPage: React.FC = () => {
@@ -546,8 +562,24 @@ const EmployeeLeadReportingPage: React.FC = () => {
     setOtherWorkPercent(next.otherWorkPercent);
   }, [otherWorkMax]);
 
+  /*
+   * Only the current week is shown beside the date box; an older backlog goes behind "more" so the
+   * strip cannot grow until it shoves the heading around.
+   */
+  const { thisWeek: thisWeekMissingDates, earlier: earlierMissingDates } = useMemo(
+    () => splitMissingAllocationDatesByWeek(missingDates),
+    [missingDates],
+  );
+
   const includedRows = useMemo(() => rows.filter((row) => row.included), [rows]);
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
+  /*
+   * Over 100% is blocked rather than rescaled: a day that adds up to 160% cannot be saved as what
+   * the person meant, and quietly scaling it down submits numbers they never chose. Under 100% is
+   * still balanced up on save, which takes nothing away from them.
+   */
+  const overAllocatedBy = allocationOverflowPercent(includedRows, otherWorkPercent);
+  const isOverAllocated = overAllocatedBy > 0;
   // Save is allowed whenever something is allocated; save itself normalizes to 100% + 10/30 other-work cap.
   const canSave =
     includedRows.length > 0 || Number(otherWorkPercent) > 0;
@@ -678,6 +710,12 @@ const EmployeeLeadReportingPage: React.FC = () => {
     if (!employeeContext) return;
     if (!canSave) {
       toast.error('Select at least one lead or set other work before saving.');
+      return;
+    }
+    if (isOverAllocated) {
+      toast.error(
+        `Your day adds up to ${formatAllocationPercent(grandTotal)}%. You can allocate at most 100% — take off ${formatAllocationPercent(overAllocatedBy)}% and save again.`,
+      );
       return;
     }
 
@@ -890,105 +928,132 @@ const EmployeeLeadReportingPage: React.FC = () => {
       <div className="flex min-w-0 w-full flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-6 md:pb-12 md:pt-4">
         <div className="space-y-5">
           <div className="mx-auto w-full max-w-6xl space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="mb-1.5 text-lg font-medium text-gray-700">
-                Welcome, {employeeContext.employeeName}
-              </p>
-              <div className="flex flex-wrap items-center gap-3">
-                <h1 className="flex items-center gap-2.5 text-2xl font-bold text-gray-900">
-                  <ClipboardDocumentListIcon className="h-7 w-7 shrink-0 text-primary" aria-hidden />
-                  Daily lead allocation
-                </h1>
-                <label className="inline-flex items-center gap-2">
-                  <span className="sr-only">Work date</span>
-                  <input
-                    type="date"
-                    className="input h-10 min-h-10 w-auto min-w-[10.5rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                    value={workDate}
-                    max={getJerusalemTodayIsoDate()}
-                    onChange={(e) => selectWorkDate(e.target.value)}
-                    title="Work date"
-                  />
-                </label>
-              </div>
-            </div>
+          <div className="min-w-0">
+            <p className="mb-1.5 text-lg font-medium text-gray-700">
+              Welcome, {employeeContext.employeeName}
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="flex items-center gap-2.5 text-2xl font-bold text-gray-900">
+                <ClipboardDocumentListIcon className="h-7 w-7 shrink-0 text-primary" aria-hidden />
+                Daily lead allocation
+              </h1>
+              <label className="inline-flex items-center gap-2">
+                <span className="sr-only">Work date</span>
+                <input
+                  type="date"
+                  className="input h-10 min-h-10 w-auto min-w-[10.5rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                  value={workDate}
+                  max={getJerusalemTodayIsoDate()}
+                  onChange={(e) => selectWorkDate(e.target.value)}
+                  title="Work date"
+                />
+              </label>
 
-            {missingDates.length > 0 ? (
-              <div className="w-full max-w-xl sm:w-auto sm:min-w-[16rem]">
-                <div className="mb-1.5 flex items-center justify-between gap-2 sm:justify-end">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-amber-700">
-                    Missing reports
+              {missingDates.length > 0 ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700">
+                    Missing
+                    <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold tabular-nums text-white">
+                      {missingDates.length}
+                    </span>
                   </span>
-                  <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold tabular-nums text-white">
-                    {missingDates.length}
-                  </span>
-                </div>
-                <div className="flex flex-wrap justify-start gap-1.5 sm:justify-end">
-                  {missingDates.map((day) => {
-                    const active = day === workDate;
-                    return (
+
+                  <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-full bg-gray-200/80 p-1">
+                    {thisWeekMissingDates.map((day) => (
                       <button
                         key={day}
                         type="button"
                         onClick={() => selectWorkDate(day)}
-                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                          active
-                            ? 'bg-amber-500 text-white shadow-sm'
-                            : 'bg-white text-amber-800 ring-1 ring-amber-200 hover:bg-amber-50'
-                        }`}
+                        className={missingDayTabClass(day === workDate)}
                         title={`Open allocation for ${day}`}
                       >
-                        {formatLeadAllocationMissingDayLabel(day)}
+                        {formatLeadAllocationMissingDayTabLabel(day)}
                       </button>
-                    );
-                  })}
+                    ))}
+
+                    {earlierMissingDates.length > 0 ? (
+                      <div className="dropdown dropdown-end">
+                        <div
+                          tabIndex={0}
+                          role="button"
+                          className={missingDayTabClass(
+                            earlierMissingDates.includes(workDate),
+                          )}
+                          title="Earlier days still missing a report"
+                        >
+                          {earlierMissingDates.length} more
+                        </div>
+                        <ul className="dropdown-content menu z-[60] mt-2 max-h-80 w-60 flex-nowrap overflow-y-auto rounded-2xl bg-white p-2 shadow-xl ring-1 ring-black/5">
+                          {earlierMissingDates.map((day) => (
+                            <li key={day}>
+                              <button
+                                type="button"
+                                className={`justify-start whitespace-nowrap text-xs font-semibold ${
+                                  day === workDate ? 'text-gray-900' : 'text-gray-600'
+                                }`}
+                                onClick={(event) => {
+                                  selectWorkDate(day);
+                                  // Focus is what holds a DaisyUI dropdown open; dropping it closes the menu.
+                                  event.currentTarget.blur();
+                                }}
+                              >
+                                {formatLeadAllocationMissingDayMenuLabel(day)}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </div>
 
           {showHoursForm ? (
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-              <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-                {manualIntervalMs > 0 ? (
+              {manualIntervalMs > 0 ? (
+                <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                     <ClockIcon className="h-5 w-5" />
                     {formatAllocationWorkedDuration(manualIntervalMs)}
                   </span>
-                ) : null}
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm h-8 min-h-8 rounded-full px-3 text-primary"
-                  disabled={isAllocationLocked}
-                  title={`Fill From/To with your ${minHours}h base day`}
-                  onClick={() => {
-                    const start = fromTime || DEFAULT_BASE_HOURS_FROM;
-                    const end = timeInputPlusHours(start, minHours);
-                    if (!end) {
-                      toast.error('Could not fill base hours.');
-                      return;
-                    }
-                    setFromTime(start);
-                    setToTime(end);
-                    toast.success(`Filled ${minHours}h base hours (${start}–${end}).`);
-                  }}
-                >
-                  Base hours
-                </button>
-              </div>
+                </div>
+              ) : null}
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <label className="block">
-                  <span className="mb-1.5 block text-sm font-medium text-gray-600">From</span>
-                  <input
-                    type="time"
-                    className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                    value={fromTime}
+                {/* Base hours fills From and To, so it belongs beside From rather than off in a corner. */}
+                <div className="flex items-end gap-2">
+                  <label className="block min-w-0 flex-1">
+                    <span className="mb-1.5 block text-sm font-medium text-gray-600">From</span>
+                    <input
+                      type="time"
+                      className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                      value={fromTime}
+                      disabled={isAllocationLocked}
+                      onChange={(e) => setFromTime(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-ghost h-10 min-h-10 shrink-0 whitespace-nowrap rounded-[14px] border-0 px-3 text-xs font-semibold text-primary ring-1 ring-gray-300/80 hover:bg-primary/5"
                     disabled={isAllocationLocked}
-                    onChange={(e) => setFromTime(e.target.value)}
-                  />
-                </label>
+                    title={`Fill From/To with your ${minHours}h base day`}
+                    onClick={() => {
+                      const start = fromTime || DEFAULT_BASE_HOURS_FROM;
+                      const end = timeInputPlusHours(start, minHours);
+                      if (!end) {
+                        toast.error('Could not fill base hours.');
+                        return;
+                      }
+                      setFromTime(start);
+                      setToTime(end);
+                      toast.success(`Filled ${minHours}h base hours (${start}–${end}).`);
+                    }}
+                  >
+                    Base hours
+                  </button>
+                </div>
                 <label className="block">
                   <span className="mb-1.5 block text-sm font-medium text-gray-600">To</span>
                   <input
@@ -1093,8 +1158,15 @@ const EmployeeLeadReportingPage: React.FC = () => {
                 · Other {formatAllocationPercent(otherWorkPercent)}%
                 {includedRows.length > 0 ? ` · ${includedRows.length} lead(s)` : ''}
                 · {formatAllocationPercent(grandTotal)}% current
-                {Math.abs(grandTotal - 100) > 0.01 ? ' · save balances to 100%' : ''}
+                {!isOverAllocated && Math.abs(grandTotal - 100) > 0.01
+                  ? ' · save balances to 100%'
+                  : ''}
               </span>
+              {isOverAllocated && (
+                <span className="ml-2 font-semibold text-rose-600">
+                  · {formatAllocationPercent(overAllocatedBy)}% over the 100% maximum
+                </span>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {isEditingSavedAllocation && (
@@ -1120,7 +1192,16 @@ const EmployeeLeadReportingPage: React.FC = () => {
               <button
                 type="button"
                 className="btn btn-primary rounded-full px-6 shadow-sm"
-                disabled={isAllocationLocked ? saving : !canSave || saving || checkingBudget}
+                disabled={
+                  isAllocationLocked
+                    ? saving
+                    : !canSave || isOverAllocated || saving || checkingBudget
+                }
+                title={
+                  isOverAllocated && !isAllocationLocked
+                    ? `Allocate at most 100% — you are ${formatAllocationPercent(overAllocatedBy)}% over`
+                    : undefined
+                }
                 onClick={() => {
                   if (isAllocationLocked) {
                     handleStartEdit();

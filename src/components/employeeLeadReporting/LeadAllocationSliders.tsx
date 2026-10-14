@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BriefcaseIcon, PlusIcon } from '@heroicons/react/24/outline';
 import {
+  allocationOverflowPercent,
   dailyAllocationGrandTotal,
   buildClientRouteFromAllocationRow,
   formatAllocationPercent,
@@ -377,6 +378,12 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
   const someSelected = includedRows.length > 0 && !allSelected;
   const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
   const isTotalValid = Math.abs(grandTotal - 100) <= 0.01;
+  /*
+   * Over 100% is a different thing from under it: under, saving balances the day up, while over is
+   * refused — so it gets its own colour and label instead of the amber "will balance".
+   */
+  const overAllocatedBy = allocationOverflowPercent(includedRows, otherWorkPercent);
+  const isOverAllocated = overAllocatedBy > 0;
   const otherWorkCap = Math.max(0, Math.min(100, Math.round(otherWorkMaxPercent)));
 
   const applyChange = (next: LeadAllocationChangeState) => {
@@ -415,14 +422,18 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
           </p>
           <div
             className={`inline-flex items-center gap-2.5 rounded-full pl-2.5 pr-4 py-1.5 shadow-sm ${
-              isTotalValid
-                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
-                : 'bg-gradient-to-r from-amber-400 to-orange-500 text-white'
+              isOverAllocated
+                ? 'bg-gradient-to-r from-rose-500 to-red-600 text-white'
+                : isTotalValid
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white'
+                  : 'bg-gradient-to-r from-amber-400 to-orange-500 text-white'
             }`}
             title={
-              isTotalValid
-                ? 'Ready to save at 100%'
-                : `Currently ${formatAllocationPercent(grandTotal)}% — save will balance to 100%`
+              isOverAllocated
+                ? `${formatAllocationPercent(grandTotal)}% allocated — the maximum is 100%, so take off ${formatAllocationPercent(overAllocatedBy)}%`
+                : isTotalValid
+                  ? 'Ready to save at 100%'
+                  : `Currently ${formatAllocationPercent(grandTotal)}% — save will balance to 100%`
             }
           >
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-xs font-bold">
@@ -430,7 +441,7 @@ const LeadAllocationSliders: React.FC<LeadAllocationSlidersProps> = ({
             </span>
             <span className="leading-tight">
               <span className="block text-[10px] font-semibold uppercase tracking-wider opacity-90">
-                {isTotalValid ? 'Total' : 'Current total'}
+                {isOverAllocated ? 'Over the maximum' : isTotalValid ? 'Total' : 'Current total'}
               </span>
               <span className="text-base font-bold">
                 {formatAllocationPercent(grandTotal)}%

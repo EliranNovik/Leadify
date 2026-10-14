@@ -3,7 +3,12 @@ import type { RecentLead } from './recentSearchStorage';
 import type { CombinedLead } from './legacyLeadsApi';
 import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { formatDurationMs } from './employeeClockInOvertime';
-import { eachDayInRange } from './employeeClockInFormat';
+import {
+  eachDayInRange,
+  getSundayWeekStartKey,
+  parseDateKeyLocal,
+  toDateInputValue,
+} from './employeeClockInFormat';
 import { fetchClockInRecordsInRange, type ClockInWithEmployee } from './workingHoursExport';
 import {
   expandUnavailabilitiesToDailyRows,
@@ -286,6 +291,58 @@ export function formatLeadAllocationMissingDayLabel(isoDate: string): string {
   } catch {
     return isoDate;
   }
+}
+
+/** The day before an ISO date, for naming yesterday without doing month arithmetic by hand. */
+function previousIsoDate(isoDate: string): string {
+  const date = parseDateKeyLocal(isoDate);
+  date.setDate(date.getDate() - 1);
+  return toDateInputValue(date);
+}
+
+/**
+ * A missing day as it reads on its tab.
+ *
+ * Today and yesterday are named rather than dated: those are the two someone is most likely to be
+ * filling in, and "Today" is read quicker than a date that has to be matched against one.
+ */
+export function formatLeadAllocationMissingDayTabLabel(
+  isoDate: string,
+  todayIso: string = getJerusalemTodayIsoDate(),
+): string {
+  if (isoDate === todayIso) return 'Today';
+  if (isoDate === previousIsoDate(todayIso)) return 'Yesterday';
+  return formatLeadAllocationMissingDayLabel(isoDate);
+}
+
+/**
+ * A missing day as it reads in the backlog menu: `Thursday, 06.08.2026`.
+ *
+ * Spelled out in full because the menu holds days from weeks back, where a short label leaves you
+ * guessing which month or year it belongs to. Today and yesterday keep their names here too, since
+ * either can fall outside the current week when the week has only just turned over.
+ */
+export function formatLeadAllocationMissingDayMenuLabel(
+  isoDate: string,
+  todayIso: string = getJerusalemTodayIsoDate(),
+): string {
+  const [year, month, day] = String(isoDate || '').split('-');
+  if (!year || !month || !day) return isoDate;
+
+  let name: string;
+  if (isoDate === todayIso) name = 'Today';
+  else if (isoDate === previousIsoDate(todayIso)) name = 'Yesterday';
+  else {
+    try {
+      name = new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(
+        parseDateKeyLocal(isoDate),
+      );
+    } catch {
+      return isoDate;
+    }
+  }
+
+  return `${name}, ${day}.${month}.${year}`;
 }
 
 /**
@@ -1141,6 +1198,31 @@ export async function fetchMissingLeadAllocationDates(
   return expected.filter((day) => !submitted.has(day));
 }
 
+/**
+ * This week's missing reports, and everything older.
+ *
+ * The strip of missing days sits beside the date box, where only a handful fit before it starts
+ * pushing the page around — and a backlog can reach back to the day reporting began. The week is
+ * what someone is actually expected to catch up on, so that stays in view and the rest goes behind
+ * a "more" button. Sunday starts the week, as the work week here runs Sunday to Thursday.
+ */
+export function splitMissingAllocationDatesByWeek(
+  missingDates: string[],
+  todayIso: string = getJerusalemTodayIsoDate(),
+): { thisWeek: string[]; earlier: string[] } {
+  const weekStart = getSundayWeekStartKey(todayIso);
+  const thisWeek: string[] = [];
+  const earlier: string[] = [];
+
+  for (const day of missingDates) {
+    // YYYY-MM-DD compares correctly as text, so no date objects are needed here.
+    if (String(day || '') >= weekStart) thisWeek.push(day);
+    else earlier.push(day);
+  }
+
+  return { thisWeek, earlier };
+}
+
 export function latestMissingLeadAllocationDate(
   missingDates: string[],
 ): string | null {
@@ -1162,6 +1244,40 @@ export function dailyAllocationGrandTotal(
   otherWorkPercent: number,
 ): number {
   return allocationPercentTotal(leadItems) + Number(otherWorkPercent || 0);
+}
+
+/** A day is a day: leads plus other work can never be worth more than all of it. */
+export const ALLOCATION_MAX_TOTAL_PERCENT = 100;
+
+/**
+ * How far past 100% a draft reaches, and 0 when it fits.
+ *
+ * The sliders each clamp themselves to 0–100 but the sum is free, so three leads at 100% is a
+ * reachable state. Saving used to rescale that silently, which meant the day someone submitted was
+ * not the day they typed — so the total is blocked instead, and this is the number to tell them to
+ * take off.
+ */
+export function allocationOverflowPercent(
+  leadItems: { percent: number }[],
+  otherWorkPercent: number,
+): number {
+  /*
+   * Measured on the rounded total because that is the number on screen: percentages are displayed
+   * whole, so a day showing 100% must never be refused for a fraction nobody can see or remove.
+   * A day only counts as over when it reads as 101% or more, and then the amount to take off is a
+   * whole percent too.
+   */
+  const total = Math.round(dailyAllocationGrandTotal(leadItems, otherWorkPercent));
+  const over = total - ALLOCATION_MAX_TOTAL_PERCENT;
+  return over > 0 ? over : 0;
+}
+
+/** Whether a draft is over the 100% maximum and must not be saved. */
+export function isAllocationOverAllocated(
+  leadItems: { percent: number }[],
+  otherWorkPercent: number,
+): boolean {
+  return allocationOverflowPercent(leadItems, otherWorkPercent) > 0;
 }
 
 /** Display whole-number percent (no decimals). */
