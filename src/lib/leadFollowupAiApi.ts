@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import { caseSheetIdentity, fetchCaseSheetsTextForAi } from './caseSheetApi';
+import { CASE_SHEET_AI_MARKER } from './caseSheetAiText';
 import type { Lead } from './supabase';
 import { getStageName } from './stageUtils';
 import { getFrontendBaseUrl } from './api';
@@ -497,6 +499,27 @@ function mergeEdgeAndLocalCaseFiles(edgeCaseFile: string, localCaseFile: string)
   );
 }
 
+/**
+ * The handler's own spreadsheet tabs, as a block to append to a case file.
+ *
+ * Built here rather than inside either case-file builder because there are two of them — the edge
+ * function and the local assembly — and the sheets are the same either way. Read with the signed-in
+ * user's own session, so a handler's AI sees exactly the sheets they could open themselves.
+ *
+ * An empty string when the case has no sheets: better to say nothing than to put a heading over
+ * "(none)" and have the model remark on the absence.
+ */
+async function fetchCaseSheetBlock(leadId: string, isLegacy: boolean): Promise<string> {
+  /* `caseSheetIdentity` reads the legacy prefix the UI uses, which a bare legacy id arrives without. */
+  const identity = caseSheetIdentity(
+    isLegacy && !leadId.startsWith('legacy_') ? `legacy_${leadId}` : leadId,
+  );
+
+  // Already carries its own heading and reading notes, so there is nothing to label it with here.
+  const sheets = await fetchCaseSheetsTextForAi(supabase, identity);
+  return sheets ? `\n\n${sheets}` : '';
+}
+
 /** Full CRM case file used by pipeline follow-up AI — no extra OpenAI call. */
 export async function fetchLeadCaseFileForAi(params: {
   leadId: string;
@@ -505,6 +528,15 @@ export async function fetchLeadCaseFileForAi(params: {
   const leadId = String(params.leadId || '').trim();
   const isLegacy = params.isLegacy === true || leadId.startsWith('legacy_');
   const localPromise = assembleLeadCaseFileFromDb(leadId, isLegacy);
+
+  /* Started alongside the case file rather than after it, so the sheets cost no extra wait. */
+  const sheetsPromise = fetchCaseSheetBlock(leadId, isLegacy);
+  const appendSheets = async (caseFile: string) => {
+    // The deployed edge function includes the sheets itself; older ones do not. One copy either way.
+    if (caseFile.includes(CASE_SHEET_AI_MARKER)) return caseFile;
+    return `${caseFile}${await sheetsPromise}`;
+  };
+
   try {
     const { data, error } = await supabase.functions.invoke('ai-lead-followup', {
       body: { leadId, isLegacy, caseFileOnly: true },
@@ -513,16 +545,16 @@ export async function fetchLeadCaseFileForAi(params: {
       const text = typeof data?.caseFile === 'string' ? data.caseFile.trim() : '';
       if (text) {
         try {
-          return mergeEdgeAndLocalCaseFiles(text, await localPromise);
+          return await appendSheets(mergeEdgeAndLocalCaseFiles(text, await localPromise));
         } catch {
-          return text;
+          return await appendSheets(text);
         }
       }
     }
   } catch (error) {
     console.warn('[leadFollowup] caseFileOnly unavailable, loading CRM tables locally', error);
   }
-  return localPromise;
+  return appendSheets(await localPromise);
 }
 
 function clipCaseText(raw: unknown, max = 400): string {

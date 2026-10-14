@@ -78,6 +78,7 @@ import {
   CalendarIcon,
   CurrencyDollarIcon,
   ChatBubbleLeftRightIcon,
+  TableCellsIcon,
   PencilSquareIcon,
   Square2StackIcon,
   AcademicCapIcon,
@@ -130,6 +131,7 @@ const loadExpertTab = () => import('./client-tabs/ExpertTab');
 const loadMeetingTab = () => import('./client-tabs/MeetingTab');
 const loadPriceOfferTab = () => import('./client-tabs/PriceOfferTab');
 const loadInteractionsTab = () => import('./client-tabs/InteractionsTab');
+const loadCaseHandlingTab = () => import('./client-tabs/CaseHandlingTab');
 const loadFinancesTab = () => import('./client-tabs/FinancesTab');
 // const loadDocumentsTab = () => import('./client-tabs/DocumentsTab');
 
@@ -142,6 +144,7 @@ const ExpertTab = lazy(loadExpertTab);
 const MeetingTab = lazy(loadMeetingTab);
 const PriceOfferTab = lazy(loadPriceOfferTab);
 const InteractionsTab = lazy(loadInteractionsTab);
+const CaseHandlingTab = lazy(loadCaseHandlingTab);
 const FinancesTab = lazy(loadFinancesTab);
 // const DocumentsTab = lazy(loadDocumentsTab);
 import { useMsal } from '@azure/msal-react';
@@ -255,6 +258,7 @@ const TAB_LOADERS: Record<string, () => Promise<any>> = {
   meeting: loadMeetingTab,
   price: loadPriceOfferTab,
   interactions: loadInteractionsTab,
+  caseHandling: loadCaseHandlingTab,
   finances: loadFinancesTab,
   // documents: loadDocumentsTab,
 };
@@ -10900,6 +10904,7 @@ const Clients: React.FC<ClientsProps> = ({
       { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
       { id: 'price', label: 'Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
       { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: finalCount, component: InteractionsTab },
+      { id: 'caseHandling', label: 'Case Handling', icon: TableCellsIcon, component: CaseHandlingTab },
       { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
       // { id: 'documents', label: 'Documents', icon: DocumentIcon, component: DocumentsTab },
     ];

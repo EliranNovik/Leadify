@@ -1,7 +1,12 @@
 /** Shared writing rules for client outreach and meeting summaries. */
 
 export const DETAILED_CLIENT_OUTREACH_INSTRUCTION =
-  'Read the full case file before writing: meetings and briefs, last WhatsApp and email, contracts/POA/invoices and whether they are signed, eligibility, proposal/payments, and the open next step. ' +
+  'Read the full case file before writing: meetings and briefs, last WhatsApp and email, contracts/POA/invoices and whether they are signed, eligibility, proposal/payments, the CASE HANDLING SHEETS, and the open next step. ' +
+  /*
+   * The handler's spreadsheet is the most concrete thing in the case file — it is where the
+   * documents actually are — so an outreach email that ignores it asks for papers already received.
+   */
+  'CASE HANDLING SHEETS are the case manager\'s spreadsheet tabs, kept by hand in Hebrew and English, mostly one row per document per contact: which document was ordered for which person, when, and whether it arrived. A V (or ✓ / וי) in a cell means it was received; an empty cell means it is still missing. Where those tabs exist, name the specific documents still outstanding and the person each one belongs to, rather than asking in general terms. Never ask the client for a document the sheet records as received, and never tell them something arrived unless the sheet says so. ' +
   'Write a detailed, professional message — never a short “just checking in”. ' +
   'Use 4–7 short paragraphs: greeting; why you are writing, grounded in real case facts; what was last discussed or agreed; current status (unsigned documents, payments, next meeting) only if those facts exist; a clear call to action. ' +
   'Do not invent facts, dates, amounts, or URLs. Do not write a one-paragraph note.';

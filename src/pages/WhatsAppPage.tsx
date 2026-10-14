@@ -49,8 +49,17 @@ import {
 } from '../lib/whatsappChatMessages';
 import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import { whatsAppPhoneMatchesSearch } from '../lib/whatsappPhone';
+import { useWhatsAppTheme } from '../lib/whatsappTheme';
+import WhatsAppThemeStyles from '../components/WhatsAppThemeStyles';
+import WhatsAppThemeToggle from '../components/WhatsAppThemeToggle';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
+  WHATSAPP_INCOMING_BUBBLE_CLASS,
+  WHATSAPP_CONTACT_PANEL_WIDTH_CLASS,
+  WHATSAPP_PANEL_EDGE_CLASS,
+  whatsAppTimestampClass,
+  WHATSAPP_RECEIPT_ICON_CLASS,
+  WHATSAPP_READ_RECEIPT_ICON_CLASS,
   WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
@@ -74,6 +83,7 @@ import {
   whatsAppMessageLinkFontWeight,
   WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
 } from '../lib/whatsappOutgoingMessageStyle';
+import { whatsAppMessageLinkLabel } from '../lib/whatsappMessageLinkLabel';
 import { generateSearchVariants } from '../lib/transliteration';
 import { RMQ_AI_COMPOSE_DRAFT_EVENT, takeRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
 import EmojiPicker from 'emoji-picker-react';
@@ -475,6 +485,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   }, [selectedFile]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const whatsAppTheme = useWhatsAppTheme();
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [shouldCloseOnNavigate, setShouldCloseOnNavigate] = useState(false);
@@ -900,16 +911,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           displayText = matchedText;
         }
 
-        // Replace long URLs with "Meeting Link" text
-        if (/^https?:\/\//i.test(href)) {
-          if (
-            matchedText.length > 50 ||
-            /teams\.microsoft\.com/i.test(href) ||
-            href.includes('meetup-join') ||
-            href.includes('meeting')
-          ) {
-            displayText = 'Meeting Link';
-          }
+        // Name the link by what it opens: a payment page, contract, proforma or meeting.
+        const linkLabel = whatsAppMessageLinkLabel(href, matchedText);
+        if (linkLabel) {
+          displayText = linkLabel;
         }
 
         parts.push(
@@ -1389,7 +1394,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     // Don't show "failed" in UI if message was actually sent.
     const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
 
-    const baseClasses = "w-3.5 h-3.5";
+    const baseClasses = WHATSAPP_RECEIPT_ICON_CLASS;
 
     switch (effectiveStatus) {
       case 'sent':
@@ -1407,7 +1412,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         );
       case 'read':
         return (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className={WHATSAPP_READ_RECEIPT_ICON_CLASS} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -5876,12 +5881,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   };
 
   return (
-    <div className="fixed inset-0 bg-gray-100 z-[9999]" style={{ overflow: 'visible' }}>
+    <div
+      className={`fixed inset-0 bg-gray-100 z-[9999] ${whatsAppTheme.rootClass}`}
+      /* DaisyUI's own per-element theming, so buttons, inputs and dropdowns follow the switch too. */
+      data-theme={whatsAppTheme.isDark ? 'dark' : 'light'}
+      style={{ overflow: 'visible' }}
+    >
+      <WhatsAppThemeStyles />
       <div className="h-full flex flex-col" style={{ height: '100vh', maxHeight: '100vh', overflow: 'visible' }}>
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Desktop: grey icon rail (All / My / New message + Settings) */}
           {!isMobile && (
-            <div className="flex-shrink-0 w-[4.5rem] bg-gray-50 border-r border-gray-200 flex flex-col items-center min-h-0">
+            <div className={`flex-shrink-0 w-[4.5rem] bg-gray-50 border-r border-gray-200 ${WHATSAPP_PANEL_EDGE_CLASS} flex flex-col items-center min-h-0`}>
               <div className="flex flex-col items-center gap-4 pt-4 px-1 w-full">
                 {(isSuperuser === true || isCollection === true) && (
                   <>
@@ -6000,12 +6011,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           )}
 
           {/* Left Panel - Client List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : WHATSAPP_CONTACT_PANEL_WIDTH_CLASS} border-r border-gray-200 ${WHATSAPP_PANEL_EDGE_CLASS} flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
             {!isMobile && (
               <div className="flex-shrink-0 px-4 pt-4 pb-1 bg-white">
                 <div className="flex items-center gap-3">
                   <FaWhatsapp className="w-7 h-7 text-green-600 flex-shrink-0" />
                   <h1 className="text-xl font-semibold text-gray-900 tracking-tight">Chats</h1>
+                  <WhatsAppThemeToggle
+                    isDark={whatsAppTheme.isDark}
+                    onToggle={whatsAppTheme.toggle}
+                    className="ml-auto"
+                  />
                 </div>
               </div>
             )}
@@ -6043,11 +6059,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               >
                 {isMobile && (
                   <>
-                    <div className="flex items-center justify-between px-4 pt-4 pb-3 bg-white">
+                    <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-3 bg-white">
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         <FaWhatsapp className="w-6 h-6 text-green-600 flex-shrink-0" />
                         <h1 className="text-xl font-semibold text-gray-900 tracking-tight">Chats</h1>
                       </div>
+                      <WhatsAppThemeToggle
+                        isDark={whatsAppTheme.isDark}
+                        onToggle={whatsAppTheme.toggle}
+                      />
                       <button
                         type="button"
                         onClick={() => (onClose ? onClose() : window.history.back())}
@@ -6158,7 +6178,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                                 <div className={`flex flex-col items-end flex-shrink-0 ${isMobile ? 'gap-1' : 'gap-0.5'}`}>
                                   {lastMessageAt && (
-                                    <span className={`text-gray-500 ${isMobile ? 'text-sm' : 'text-xs'}`}>
+                                    <span className={`${whatsAppTimestampClass(unreadCount > 0)} ${isMobile ? 'text-base' : 'text-sm'}`}>
                                       {formatLastMessageTime(lastMessageAt)}
                                     </span>
                                   )}
@@ -6177,7 +6197,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               </div>
                               {lastMessagePreview ? (
                                 <p
-                                  className={`truncate leading-snug ${isMobile ? 'text-base mt-1' : 'text-sm mt-0.5'} ${unreadCount > 0 ? 'text-gray-800 font-medium' : 'text-gray-500'}`}
+                                  className={`line-clamp-2 leading-snug ${isMobile ? 'text-base mt-1' : 'text-sm mt-0.5'} ${unreadCount > 0 ? 'text-gray-800 font-medium' : 'text-gray-500'}`}
                                   dir={previewIsRtl ? 'rtl' : 'ltr'}
                                   style={{ textAlign: previewIsRtl ? 'right' : 'left' }}
                                 >
@@ -6615,7 +6635,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 <div
                                   className={`group ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
                                     ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                                    : 'bg-white text-gray-900'
+                                    : WHATSAPP_INCOMING_BUBBLE_CLASS
                                     }`}
                                   style={{
                                     wordBreak: 'break-word',

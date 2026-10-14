@@ -25,6 +25,11 @@ import {
 } from '../lib/whatsappLeadsArchive';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
+  WHATSAPP_INCOMING_BUBBLE_CLASS,
+  WHATSAPP_CONTACT_PANEL_WIDTH_CLASS,
+  WHATSAPP_PANEL_EDGE_CLASS,
+  whatsAppTimestampClass,
+  WHATSAPP_READ_RECEIPT_ICON_CLASS,
   WHATSAPP_OUTGOING_EDIT_TEXTAREA_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
@@ -49,6 +54,7 @@ import {
   whatsAppMessageLinkFontWeight,
   WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
 } from '../lib/whatsappOutgoingMessageStyle';
+import { whatsAppMessageLinkLabel } from '../lib/whatsappMessageLinkLabel';
 import {
   isPexWhatsAppThread,
   WhatsAppPexComposerHint,
@@ -66,6 +72,9 @@ import {
   resolveWhatsAppOutgoingSenderUi,
 } from '../lib/pexWhatsAppChat';
 import { collectWhatsAppPhoneVariants, canonicalWhatsAppPhone, whatsAppPhonesMatch } from '../lib/whatsappPhone';
+import { useWhatsAppTheme } from '../lib/whatsappTheme';
+import WhatsAppThemeStyles from '../components/WhatsAppThemeStyles';
+import WhatsAppThemeToggle from '../components/WhatsAppThemeToggle';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import {
   findWhatsAppMessagesMatchingPhone,
@@ -271,6 +280,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+  const whatsAppTheme = useWhatsAppTheme();
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -2572,16 +2582,10 @@ const WhatsAppLeadsPage: React.FC = () => {
           displayText = matchedText;
         }
 
-        // Replace long URLs with "Meeting Link" text
-        if (/^https?:\/\//i.test(href)) {
-          if (
-            matchedText.length > 50 ||
-            /teams\.microsoft\.com/i.test(href) ||
-            href.includes('meetup-join') ||
-            href.includes('meeting')
-          ) {
-            displayText = 'Meeting Link';
-          }
+        // Name the link by what it opens: a payment page, contract, proforma or meeting.
+        const linkLabel = whatsAppMessageLinkLabel(href, matchedText);
+        if (linkLabel) {
+          displayText = linkLabel;
         }
 
         parts.push(
@@ -2721,7 +2725,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         );
       case 'read':
         return (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className={WHATSAPP_READ_RECEIPT_ICON_CLASS} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -3162,7 +3166,12 @@ const WhatsAppLeadsPage: React.FC = () => {
   );
 
   return (
-    <div className="fixed inset-0 bg-gray-100 z-[9999] overflow-hidden">
+    <div
+      className={`fixed inset-0 bg-gray-100 z-[9999] overflow-hidden ${whatsAppTheme.rootClass}`}
+      /* DaisyUI's own per-element theming, so buttons, inputs and dropdowns follow the switch too. */
+      data-theme={whatsAppTheme.isDark ? 'dark' : 'light'}
+    >
+      <WhatsAppThemeStyles />
       <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
         {/* Page header — on desktop, active chat contact + actions live here (not in chat panel) */}
         <div className={`relative z-30 flex items-center gap-3 md:gap-4 p-4 md:px-6 md:py-3 min-h-0 ${WHATSAPP_CHAT_HEADER_GLASS_CLASS}`}>
@@ -3174,6 +3183,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                 ? `${archivedLeadCount} Archived`
                 : `${inboxLeadCount} Leads`}
             </span>
+            <WhatsAppThemeToggle
+              isDark={whatsAppTheme.isDark}
+              onToggle={whatsAppTheme.toggle}
+              className="md:ml-1"
+            />
           </div>
 
           {!isMobile && selectedLead && (
@@ -3432,7 +3446,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           )}
 
           {/* Left Panel - Leads List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : WHATSAPP_CONTACT_PANEL_WIDTH_CLASS} border-r border-gray-200 ${WHATSAPP_PANEL_EDGE_CLASS} flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
             <div className={`flex-none px-3 pb-3 ${isMobile ? 'pt-3 border-b border-gray-200' : 'pt-3'} bg-white`}>
               <div className="relative search-container">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -3551,13 +3565,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                             <div className={`flex items-center flex-shrink-0 ${isMobile ? 'gap-1.5' : 'gap-1'}`}>
                               <span
-                                className={`text-gray-500 whitespace-nowrap ${isMobile ? 'text-sm' : 'text-xs'}`}
+                                className={`${whatsAppTimestampClass((lead.unread_count ?? 0) > 0)} whitespace-nowrap ${isMobile ? 'text-base' : 'text-sm'}`}
                               >
                                 {formatTime(lead.last_message_at)}
                               </span>
                               {lead.unread_count && lead.unread_count > 0 && (
                                 <span
-                                  className={`bg-cyan-500 text-white rounded-full text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)] flex-shrink-0 font-semibold ${
+                                  className={`bg-green-500 text-white rounded-full text-center shadow-[0_4px_12px_rgba(34,197,94,0.35)] flex-shrink-0 font-semibold ${
                                     isMobile
                                       ? 'text-sm min-w-[26px] min-h-[26px] px-2 py-1 flex items-center justify-center leading-none'
                                       : 'text-xs px-1.5 py-0.5 min-w-[16px]'
@@ -3570,7 +3584,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           </div>
 
                           <p
-                            className={`truncate leading-snug ${isMobile ? 'text-base mt-1' : 'text-sm mt-0.5'} ${
+                            className={`line-clamp-2 leading-snug ${isMobile ? 'text-base mt-1' : 'text-sm mt-0.5'} ${
                               (lead.unread_count ?? 0) > 0 ? 'text-gray-800 font-medium' : 'text-gray-600'
                             }`}
                           >
@@ -3841,7 +3855,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                               <div
                                 className={`group ${getMessageBubbleWidthClass(message.direction)} rounded-2xl px-4 py-2.5 shadow-sm relative ${message.direction === 'out'
                                   ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                                  : 'bg-white text-gray-900'
+                                  : WHATSAPP_INCOMING_BUBBLE_CLASS
                                   }`}
                                 style={{
                                   wordBreak: 'break-word',

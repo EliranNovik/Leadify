@@ -34,6 +34,11 @@ import { useRealtimeRefresh } from '../hooks/useRealtimeRefresh';
 import { useNavigate } from 'react-router-dom';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
+  WHATSAPP_INCOMING_BUBBLE_CLASS,
+  WHATSAPP_CONTACT_PANEL_WIDTH_CLASS,
+  WHATSAPP_PANEL_EDGE_CLASS,
+  WHATSAPP_READ_RECEIPT_ICON_CLASS,
+  WHATSAPP_TIMESTAMP_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
   WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
@@ -57,6 +62,10 @@ import {
   whatsAppMessageLinkFontWeight,
   WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
 } from '../lib/whatsappOutgoingMessageStyle';
+import { whatsAppMessageLinkLabel } from '../lib/whatsappMessageLinkLabel';
+import { useWhatsAppTheme } from '../lib/whatsappTheme';
+import WhatsAppThemeStyles from './WhatsAppThemeStyles';
+import WhatsAppThemeToggle from './WhatsAppThemeToggle';
 import {
   isPexWhatsAppThread,
   WhatsAppPexComposerHint,
@@ -125,6 +134,7 @@ interface SchedulerWhatsAppModalProps {
 const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false, showContactSidebar = false }) => {
   const { isSuperUser } = useAdminRole();
   const navigate = useNavigate();
+  const whatsAppTheme = useWhatsAppTheme();
 
   // Debug: Log when propSelectedContact changes
   useEffect(() => {
@@ -711,16 +721,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           displayText = matchedText;
         }
 
-        // Replace long URLs with "Meeting Link" text
-        if (/^https?:\/\//i.test(href)) {
-          if (
-            matchedText.length > 50 ||
-            /teams\.microsoft\.com/i.test(href) ||
-            href.includes('meetup-join') ||
-            href.includes('meeting')
-          ) {
-            displayText = 'Meeting Link';
-          }
+        // Name the link by what it opens: a payment page, contract, proforma or meeting.
+        const linkLabel = whatsAppMessageLinkLabel(href, matchedText);
+        if (linkLabel) {
+          displayText = linkLabel;
         }
 
         parts.push(
@@ -950,7 +954,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         );
       case 'read':
         return (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_READ_RECEIPT_COLOR }}>
+          <svg className={WHATSAPP_READ_RECEIPT_ICON_CLASS} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: WHATSAPP_READ_RECEIPT_COLOR }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -1987,11 +1991,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const clientLocked = lastIncomingMessage ? isClientLocked(lastIncomingMessage.sent_at) : false;
 
   return createPortal(
-    <div className={`fixed inset-0 ${WHATSAPP_CHAT_THREAD_BG_CLASS} z-[9999] overflow-hidden`}>
+    <div
+      className={`fixed inset-0 ${WHATSAPP_CHAT_THREAD_BG_CLASS} z-[9999] overflow-hidden ${whatsAppTheme.rootClass}`}
+      /* DaisyUI's own per-element theming, so buttons, inputs and dropdowns follow the switch too. */
+      data-theme={whatsAppTheme.isDark ? 'dark' : 'light'}
+    >
+      <WhatsAppThemeStyles />
       <div className="h-full flex">
         {/* Left contacts sidebar (WhatsApp-page style) — lists all of the lead's contacts */}
         {showContactSidebar && !isMobile && (
-          <div className="w-80 flex-none border-r border-gray-200 flex flex-col min-h-0 bg-white">
+          <div className={`${WHATSAPP_CONTACT_PANEL_WIDTH_CLASS} flex-none border-r border-gray-200 ${WHATSAPP_PANEL_EDGE_CLASS} flex flex-col min-h-0 bg-white`}>
             <div className="flex-none px-4 pt-4 pb-3">
               <div className="flex items-center gap-3">
                 <FaWhatsapp className="w-7 h-7 text-green-600 flex-shrink-0" />
@@ -2040,12 +2049,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             </span>
                           )}
                           {lastMessage?.time && (
-                            <span className="ml-auto flex-none text-[10px] text-gray-400">
+                            <span className={`${WHATSAPP_TIMESTAMP_CLASS} ml-auto flex-none text-xs text-gray-400`}>
                               {formatSidebarTimestamp(lastMessage.time)}
                             </span>
                           )}
                         </div>
-                        <div className="truncate text-xs text-gray-500">
+                        <div className="line-clamp-2 text-xs text-gray-500">
                           {lastMessage?.text || 'No messages yet'}
                         </div>
                       </div>
@@ -2102,6 +2111,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               </div>
             )}
           </div>
+          <WhatsAppThemeToggle
+            isDark={whatsAppTheme.isDark}
+            onToggle={whatsAppTheme.toggle}
+            className="flex-shrink-0 scale-90"
+          />
           <button
             onClick={onClose}
             className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
@@ -2224,7 +2238,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       <div
                         className={`group ${WHATSAPP_CHAT_BUBBLE_WIDTH_CLASS} ${whatsAppChatBubbleAlignClass(message.direction)} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
                           ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                          : 'bg-white text-gray-900'
+                          : WHATSAPP_INCOMING_BUBBLE_CLASS
                           }`}
                         style={{
                           wordBreak: 'break-word',

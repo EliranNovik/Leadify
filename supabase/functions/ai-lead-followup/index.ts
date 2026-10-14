@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase } from '../_shared/supabase-client.ts';
 import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../_shared/openaiModels.ts';
+import { renderCaseSheetsForAi, type CaseSheetAiCell } from '../_shared/caseSheetAiText.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -186,6 +187,77 @@ function parseLeadRef(leadId: string, isLegacyFlag?: boolean) {
   return { isLegacy: false, legacyId: null as number | null, uuid: raw || null };
 }
 
+/**
+ * The case manager's handling sheets, as text for the prompt.
+ *
+ * Read here as well as in the browser because this function builds its own case file and its own
+ * follow-up verdict; without the sheets the verdict cannot tell a case that is waiting on an
+ * archive from one that nobody has touched.
+ *
+ * Cells only, no formatting, and capped — past this much the renderer drops rows to stay inside its
+ * prompt budget anyway. Returns an empty string on any failure, so a missing table or a tightened
+ * policy costs a sheets block rather than the whole follow-up.
+ */
+const CASE_SHEET_CELL_LIMIT = 6000;
+
+async function loadCaseSheetsBlock(ref: {
+  isLegacy: boolean;
+  legacyId: number | null;
+  uuid: string | null;
+}): Promise<string> {
+  try {
+    let sheetQuery = supabase
+      .from('case_sheets')
+      .select('id, name, rtl, columns, updated_at')
+      .order('tab_position', { ascending: true })
+      .order('created_at', { ascending: true });
+    sheetQuery = ref.isLegacy
+      ? sheetQuery.eq('legacy_lead_id', ref.legacyId)
+      : sheetQuery.eq('new_lead_id', ref.uuid);
+
+    const { data: sheetRows, error: sheetError } = await sheetQuery;
+    if (sheetError) throw sheetError;
+    if (!sheetRows || sheetRows.length === 0) return '';
+
+    const { data: cellRows, error: cellError } = await supabase
+      .from('case_sheet_cells')
+      .select('sheet_id, row_index, col_index, value')
+      .in('sheet_id', sheetRows.map((row: Record<string, unknown>) => row.id))
+      // Cells kept only for their formatting have nothing to say in a prompt.
+      .neq('value', '')
+      .order('sheet_id', { ascending: true })
+      .order('row_index', { ascending: true })
+      .order('col_index', { ascending: true })
+      .limit(CASE_SHEET_CELL_LIMIT);
+    if (cellError) throw cellError;
+
+    const bySheet = new Map<string, CaseSheetAiCell[]>();
+    for (const row of cellRows ?? []) {
+      const key = String((row as Record<string, unknown>).sheet_id ?? '');
+      const cells = bySheet.get(key) ?? [];
+      cells.push({
+        rowIndex: Number((row as Record<string, unknown>).row_index),
+        colIndex: Number((row as Record<string, unknown>).col_index),
+        value: String((row as Record<string, unknown>).value ?? ''),
+      });
+      bySheet.set(key, cells);
+    }
+
+    return renderCaseSheetsForAi(
+      sheetRows.map((row: Record<string, unknown>) => ({
+        name: String(row.name ?? 'Sheet'),
+        rtl: row.rtl === true,
+        columns: Array.isArray(row.columns) ? (row.columns as string[]) : undefined,
+        updatedAt: row.updated_at ? String(row.updated_at) : null,
+        cells: bySheet.get(String(row.id)) ?? [],
+      })),
+    );
+  } catch (error) {
+    console.warn('[ai-lead-followup] could not read case handling sheets', error);
+    return '';
+  }
+}
+
 function cacheKeyFor(ref: { isLegacy: boolean; legacyId: number | null; uuid: string | null }): string {
   return ref.isLegacy ? `legacy_${ref.legacyId}` : String(ref.uuid);
 }
@@ -264,6 +336,7 @@ function assembleCaseFile(args: {
   contractsBlock?: string;
   poaBlock?: string;
   proformasBlock?: string;
+  caseSheetsBlock?: string;
 }): string {
   const formatLine = (items: Array<string | null | undefined>) =>
     items.filter((item) => item && String(item).trim()).join(' · ');
@@ -375,7 +448,10 @@ Recent interactions (newest first):
 ${JSON.stringify(args.recent)}
 
 Computed stats:
-${JSON.stringify(args.stats)}`;
+${JSON.stringify(args.stats)}${
+    // Carries its own heading and reading notes; left out entirely when the case has no sheets.
+    args.caseSheetsBlock?.trim() ? `\n\n${args.caseSheetsBlock.trim()}` : ''
+  }`;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -992,6 +1068,8 @@ serve(async (req) => {
     }
     const proformasBlock = proformaLines.join('\n');
 
+    const caseSheetsBlock = await loadCaseSheetsBlock(ref);
+
     const caseFile = assembleCaseFile({
       caseBlock,
       meetings,
@@ -1005,6 +1083,7 @@ serve(async (req) => {
       contractsBlock,
       poaBlock,
       proformasBlock,
+      caseSheetsBlock,
     });
 
     if (caseFileOnly === true) {
@@ -1025,6 +1104,8 @@ serve(async (req) => {
         poaBlock,
         proformasBlock,
         recent,
+        /* So ticking a document off in the sheet re-runs the verdict instead of serving the old one. */
+        caseSheetsBlock,
       }),
     );
 
@@ -1080,6 +1161,7 @@ serve(async (req) => {
       'The summary must explain THIS client\'s situation: who they are, what they want, eligibility/family/documents, and what was actually said in facts, meeting notes, WhatsApp, and email. ' +
       'Do NOT write a generic recap of last communication channel, stage, and balance — those are shown separately in the UI. Mention them only if they change the follow-up decision. ' +
       'If a source is empty, skip it; do not pad the summary with "no WhatsApp" / "stage is X" / "balance is Y". ' +
+      'When a CASE HANDLING SHEETS block is present, follow its HOW TO READ THEM notes: those are the case manager\'s own tabs, mostly one row per document per contact, where a V means the document was received and an empty cell means it is still missing. Use them to say which documents are outstanding and to ground nextAction — waiting on an archive is a different follow-up from nobody having ordered anything. Never invent a row or a status. ' +
       (!ref.isLegacy
         ? 'This is a NEW lead. Add one short sentence naming the lead source (the source name, never the numeric id) and how many days have passed without contact (daysWithoutContact). Put that sentence at the end, not as the whole summary. '
         : '') +

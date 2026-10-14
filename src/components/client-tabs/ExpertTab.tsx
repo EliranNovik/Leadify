@@ -26,6 +26,7 @@ import {
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { supabase } from '../../lib/supabase';
+import { caseSheetIdentity, fetchCaseSheetsTextForAi } from '../../lib/caseSheetApi';
 import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../../lib/openaiModels';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
@@ -806,6 +807,16 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploy
         }
       });
 
+      /*
+       * The case manager's own spreadsheet tabs, where the documents actually are. Without them a
+       * summary describes what the case is about but not a single thing that has been done on it.
+       * Left out entirely when the case has no sheets, rather than claiming there are none.
+       */
+      const caseSheets = await fetchCaseSheetsTextForAi(
+        supabase,
+        caseSheetIdentity(client?.id),
+      );
+
       // Combine all the summary fields
       combinedText = `
 Special Notes:
@@ -819,6 +830,7 @@ ${summaryData.facts || 'No facts available'}
 
 Manager Notes:
 ${summaryData.managerNotes || 'No manager notes'}
+${caseSheets ? `\n${caseSheets}` : ''}
       `.trim();
 
       // Debug: Log combined text info
