@@ -43,6 +43,8 @@ const BOOKING_GRAPH_SCOPES = [
 const SHARED_CALENDARS = {
   potential_client: 'shared-potentialclients@lawoffice.org.il',
   active_client: 'shared-newclients@lawoffice.org.il',
+  // Staff and external meetings, the calendar the CRM reads staff meetings from.
+  staff: 'shared-staffcalendar@lawoffice.org.il',
 };
 
 const INVITATION_TEMPLATE_IDS = {
@@ -927,17 +929,26 @@ async function createSharedCalendarEvent(accessToken, params) {
     },
   };
 
+  const attendees = [];
   if (params.attendeeEmail && params.sendCalendarInvite) {
-    body.attendees = [
-      {
-        emailAddress: {
-          address: params.attendeeEmail,
-          name: params.attendeeName || params.attendeeEmail,
-        },
-        type: 'required',
+    attendees.push({
+      emailAddress: {
+        address: params.attendeeEmail,
+        name: params.attendeeName || params.attendeeEmail,
       },
-    ];
+      type: 'required',
+    });
   }
+  // Guests the CRM added to the meeting. Graph emails them the invite from the shared mailbox.
+  for (const guest of Array.isArray(params.attendees) ? params.attendees : []) {
+    const address = String(guest?.email || '').trim();
+    if (!address || attendees.some((row) => row.emailAddress.address.toLowerCase() === address.toLowerCase())) continue;
+    attendees.push({
+      emailAddress: { address, name: String(guest?.name || '').trim() || address },
+      type: 'required',
+    });
+  }
+  if (attendees.length > 0) body.attendees = attendees;
 
   if (teamsMeeting) {
     body.isOnlineMeeting = true;
@@ -2071,11 +2082,62 @@ async function createPartnerMeeting(payload) {
   };
 }
 
+/**
+ * Put a meeting the CRM already saved on its shared Outlook calendar.
+ *
+ * For callers with no Microsoft session of their own — RMQ AI books meetings from the chat, and a
+ * staff member is not necessarily signed in to Outlook in that tab. The mailbox token used here is
+ * the same one client self-booking uses, so the event lands in the same place either way.
+ *
+ * Times are local Jerusalem wall clock (`2026-10-20`, `19:00`), which is how the firm reads them.
+ */
+async function createCrmCalendarEvent(input) {
+  const calendarType = SHARED_CALENDARS[input?.calendarType] ? input.calendarType : 'potential_client';
+  const date = String(input?.date || '').trim();
+  const time = String(input?.time || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date must be YYYY-MM-DD');
+  if (!/^\d{1,2}:\d{2}$/.test(time)) throw new Error('time must be HH:MM');
+
+  const duration = Number(input?.durationMinutes);
+  const durationMinutes = Number.isFinite(duration) && duration > 0 ? Math.round(duration) : 30;
+  const startMinutes = parseTimeToMinutes(time);
+  const endTime = minutesToTime(startMinutes + durationMinutes);
+  const location = String(input?.location || '').trim();
+  const isTeams = input?.isTeams === true || /teams/i.test(location);
+  // Guests, capped so a bad caller cannot turn one meeting into a mailing list.
+  const attendees = (Array.isArray(input?.attendees) ? input.attendees : [])
+    .map((guest) => ({ email: String(guest?.email || '').trim(), name: String(guest?.name || '').trim() }))
+    .filter((guest) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(guest.email))
+    .slice(0, 25);
+
+  const { accessToken, authMode } = await getGraphAccessToken(input?.hostEmployeeId || null);
+  const event = await createSharedCalendarEvent(accessToken, {
+    calendarType,
+    subject: String(input?.subject || 'Meeting').slice(0, 250),
+    startDateTime: `${date}T${time.padStart(5, '0')}:00`,
+    endDateTime: `${date}T${endTime}:00`,
+    timeZone: BUSINESS_TZ,
+    location,
+    isTeams,
+    attendees,
+    description: String(input?.description || '').slice(0, 4000),
+  });
+
+  return {
+    eventId: event.id || null,
+    invitedGuests: attendees.length,
+    joinUrl: event.joinUrl || '',
+    calendarEmail: calendarMailbox(calendarType),
+    authMode,
+  };
+}
+
 module.exports = {
   getPublicConfig,
   getAvailableSlots,
   getScheduledMeetings,
   bookMeeting,
   createPartnerMeeting,
+  createCrmCalendarEvent,
   isPexCrmOutboundEnabled,
 };

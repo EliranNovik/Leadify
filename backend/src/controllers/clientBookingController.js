@@ -67,4 +67,30 @@ const clientBookingController = {
   },
 };
 
+
+/**
+ * Add an already-saved CRM meeting to its shared Outlook calendar.
+ * Staff-facing: used when the caller has no Microsoft session of their own, such as RMQ AI.
+ */
+clientBookingController.calendarEvent = async function calendarEvent(req, res) {
+  try {
+    const data = await clientBookingService.createCrmCalendarEvent({
+      calendarType: req.body?.calendar_type,
+      subject: req.body?.subject,
+      date: req.body?.date,
+      time: req.body?.time,
+      durationMinutes: req.body?.duration_minutes,
+      location: req.body?.location,
+      isTeams: req.body?.is_teams,
+      attendees: req.body?.attendees,
+      description: req.body?.description,
+      hostEmployeeId: req.body?.host_employee_id,
+    });
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('client-booking calendar-event error:', error);
+    res.status(400).json({ success: false, error: error.message || 'Failed to create calendar event' });
+  }
+};
+
 module.exports = clientBookingController;

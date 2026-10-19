@@ -45,7 +45,12 @@ import {
   recordLeadStageChange,
   updateLeadStageWithHistory,
 } from '../../lib/leadStageManager';
-import { areStagesEquivalent, getStageName, shouldPreserveLeadStageOnMeeting } from '../../lib/stageUtils';
+import {
+  allowsAdditionalLeadMeetings,
+  areStagesEquivalent,
+  getStageName,
+  shouldPreserveLeadStageOnMeeting,
+} from '../../lib/stageUtils';
 import {
   fetchAllUnavailabilitiesInRange,
   formatUnavailabilityTime,
@@ -93,12 +98,24 @@ import {
   resolveMeetingLocationId,
   type EmailAutomationCache,
 } from '../../lib/emailTemplatesAutomation';
+import {
+  MEETING_HEADER_COLORS,
+  MEETING_HEADER_KIND_LABELS,
+  resolveMeetingHeaderKind,
+} from '../../lib/meetingHeaderColors';
+import {
+  EMPTY_MEETING_FILTERS,
+  MEETING_KIND_FILTER_OPTIONS,
+  hasActiveMeetingFilters,
+  meetingMatchesFilters,
+  type MeetingFilterValues,
+} from '../../lib/meetingFilters';
 import { buildApiUrl } from '../../lib/api';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createStaffCalendarEvent, createStaffTeamsMeeting, resolveTeamsJoinUrlForEvent } from '../../lib/graph';
+import { createTeamsMeeting, sendEmail, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createClientCalendarEventViaServer, createStaffCalendarEvent, createStaffTeamsMeeting } from '../../lib/graph';
 import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../../lib/outlookTeamsMeetingsApi';
 import { getValidTeamsLink as getValidTeamsLinkShared } from '../../lib/meetingJoinLink';
 import { generateICSFromDateTime, stripHtmlForIcs } from '../../lib/icsGenerator';
@@ -722,6 +739,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
   // Scheduling information history
   const [showPastMeetingsPanel, setShowPastMeetingsPanel] = useState(false);
+  const [meetingFilters, setMeetingFilters] = useState<MeetingFilterValues>(EMPTY_MEETING_FILTERS);
+  const [expandedSchedulingHistoryId, setExpandedSchedulingHistoryId] = useState<string | null>(null);
   const [subEffortsModalOpen, setSubEffortsModalOpen] = useState(false);
 
   const [schedulingHistory, setSchedulingHistory] = useState<Array<{
@@ -3703,6 +3722,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({
   // Split meetings into upcoming and past
   const upcomingMeetings = meetings.filter(m => !isPastMeeting(m));
   const pastMeetings = meetings.filter(m => isPastMeeting(m));
+
+  const getMeetingHeaderKind = (meeting: Meeting) =>
+    resolveMeetingHeaderKind(
+      meeting.calendar_type,
+      typeof meeting.id === 'number' ? meetingParticipantsById[Number(meeting.id)]?.participants : undefined,
+    );
+  // The unfiltered lists stay as they are: brief editing and the reschedule drawer still need to
+  // find a meeting the filter happens to be hiding.
+  const meetingFiltersActive = hasActiveMeetingFilters(meetingFilters);
+  const matchesMeetingFilters = (meeting: Meeting) =>
+    meetingMatchesFilters(meeting, getMeetingHeaderKind(meeting), meetingFilters);
+  const visibleUpcomingMeetings = meetingFiltersActive
+    ? upcomingMeetings.filter(matchesMeetingFilters)
+    : upcomingMeetings;
+  const visiblePastMeetings = meetingFiltersActive
+    ? pastMeetings.filter(matchesMeetingFilters)
+    : pastMeetings;
   const meetingSummariesCount = meetings.filter((m) =>
     Boolean(m.meeting_summary_notes?.trim() || m.brief?.trim()),
   ).length;
@@ -3731,7 +3767,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       if (!error && data) {
         const sorted = sortMeetingsForRescheduleCancel(data);
         setRescheduleMeetings(sorted);
-        setMeetingsToCancel(defaultMeetingIdsToCancel(sorted));
+        setMeetingsToCancel(
+          defaultMeetingIdsToCancel(sorted, undefined, {
+            // A signed case can hold several bookings, so moving one must not cancel the others.
+            onlySoonest: allowsAdditionalLeadMeetings(client?.stage),
+          }),
+        );
         setRescheduleMeetingPickerOpen(false);
       } else {
         setRescheduleMeetings([]);
@@ -3828,11 +3869,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     }
   };
 
-  // Create calendar event function (same as Clients.tsx)
-  const createCalendarEvent = async (accessToken: string, meetingDetails: {
+  /**
+   * Put the meeting on the Potential Clients or New Clients shared calendar.
+   *
+   * The request is made by the server with the firm's own Graph credentials — the same path RMQ AI
+   * books through — so scheduling no longer waits on a browser token that can need a popup or a
+   * redirect. Date and time are passed as Jerusalem wall clock, exactly as the form holds them.
+   */
+  const createCalendarEvent = async (meetingDetails: {
     subject: string;
-    startDateTime: string;
-    endDateTime: string;
+    date: string;
+    time: string;
+    durationMinutes: number;
     location: string;
     calendar?: string;
     manager?: string;
@@ -3845,95 +3893,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     amount?: number;
     currency?: string;
   }) => {
-    const calendarEmail = meetingDetails.calendar === 'active_client'
-      ? 'shared-newclients@lawoffice.org.il'
-      : 'shared-potentialclients@lawoffice.org.il';
-
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
-
-    const description = [
-      'Meeting Details:',
-      `Manager: ${meetingDetails.manager || 'Not specified'}`,
-      `Helper: ${meetingDetails.helper || 'Not specified'}`,
-      `Expert: ${meetingDetails.expert || 'Not specified'}`,
-      `Amount: ${meetingDetails.currency || '₪'}${meetingDetails.amount || 0}`,
-      `Attendance Probability: ${meetingDetails.attendance_probability || 'Not specified'}`,
-      `Complexity: ${meetingDetails.complexity || 'Not specified'}`,
-      meetingDetails.car_number ? `Car Number: ${meetingDetails.car_number}` : '',
-      meetingDetails.brief ? `Brief: ${meetingDetails.brief}` : '',
-      '',
-      'Generated by RMQ 2.0 System'
-    ].filter(line => line !== '').join('\n');
-
-    const body: any = {
-      subject: meetingDetails.subject,
-      start: {
-        dateTime: meetingDetails.startDateTime,
-        timeZone: 'UTC'
-      },
-      end: {
-        dateTime: meetingDetails.endDateTime,
-        timeZone: 'UTC'
-      },
-      location: {
-        displayName: meetingDetails.location
-      },
-      body: {
-        contentType: 'text',
-        content: description
-      },
-    };
-
-    if (isTeamsMeetingLocationName(meetingDetails.location)) {
-      body.isOnlineMeeting = true;
-      body.onlineMeetingProvider = 'teamsForBusiness';
-    }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
+    const { calendar, ...rest } = meetingDetails;
+    return createClientCalendarEventViaServer({
+      ...rest,
+      calendarType: resolveStoredCalendarType(calendar),
     });
-
-    if (!response.ok) {
-      const error = await response.json();
-      let errorMessage = 'Failed to create calendar event';
-      if (response.status === 403) {
-        errorMessage = `Access denied to calendar ${calendarEmail}. Please check permissions.`;
-      } else if (response.status === 404) {
-        errorMessage = `Calendar ${calendarEmail} not found. Please verify the calendar exists.`;
-      } else if (response.status === 400) {
-        errorMessage = `Invalid request to calendar ${calendarEmail}. ${error.error?.message || ''}`;
-      } else {
-        errorMessage = error.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-      }
-      throw new Error(errorMessage);
-    }
-
-    const data = await response.json();
-    let joinUrl = '';
-    let onlineMeeting = data.onlineMeeting;
-    if (isTeamsMeetingLocationName(meetingDetails.location)) {
-      const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
-        calendarUserEmail: calendarEmail,
-        eventId: data.id,
-        eventData: data,
-        subject: meetingDetails.subject,
-        startDateTime: meetingDetails.startDateTime,
-        endDateTime: meetingDetails.endDateTime,
-      });
-      joinUrl = resolved.joinUrl;
-      onlineMeeting = resolved.onlineMeeting || data.onlineMeeting;
-    }
-
-    return {
-      joinUrl,
-      id: data.id,
-      onlineMeeting,
-    };
   };
 
   // Create an internal meeting (staff calendar) tied to the current lead, with
@@ -4154,25 +4118,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     return { meetingId, teamsMeetingUrl: teamsJoinUrl };
   };
 
-  // Test calendar access permissions
-  const testCalendarAccess = async (accessToken: string, calendarEmail: string) => {
-    try {
-      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      return response.ok;
-    } catch (error) {
-      console.error(`Calendar access test failed for ${calendarEmail}:`, error);
-      return false;
-    }
-  };
-
   // Handle schedule meeting from drawer (same logic as Clients.tsx)
   const handleScheduleMeetingFromDrawer = async () => {
     if (!client) return;
@@ -4309,63 +4254,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         }
       }
 
-      // If this is a Teams meeting, create an online event via Graph
+      // If this is a Teams meeting, the server creates the shared-calendar event
       if (isTeamsMeetingLocationName(scheduleMeetingFormData.location)) {
-        let accessToken: string | null = null;
-        try {
-          const request = { ...loginRequest, account };
-          accessToken = await getAccessTokenWithFallback(
-            instance,
-            request,
-            account,
-            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
-          );
-          if (!accessToken) {
-            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
-            setIsSchedulingMeeting(false);
-            return;
-          }
-        } catch (error) {
-          if (error instanceof AuthPopupBlockedError) {
-            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
-            setShowAuthRedirectOption(true);
-            toast.error(error.message, { duration: 10000 });
-            setIsSchedulingMeeting(false);
-            return;
-          }
-          throw error;
-        }
-
-        const [year, month, day] = scheduleMeetingFormData.date.split('-').map(Number);
-        const [hours, minutes] = scheduleMeetingFormData.time.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes);
-        const meetingDurationMinutes = normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration);
-        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
-
-        const calendarEmail = resolveStoredCalendarType(scheduleMeetingFormData.calendar) === 'active_client'
-          ? 'shared-newclients@lawoffice.org.il'
-          : 'shared-potentialclients@lawoffice.org.il';
-
-        try {
-          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-          if (!hasAccess) {
-            // Show warning but continue - calendar creation will be attempted and will fail gracefully
-            toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`);
-          }
-        } catch (accessError) {
-          // If access check fails, show warning but continue
-          console.warn('⚠️ Calendar access check failed:', accessError);
-          toast.error(`Calendar access check failed. Meeting will still be created without calendar sync.`);
-        }
-
         const categoryName = client.category || 'No Category';
         const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - ${scheduleMeetingFormData.brief || 'Meeting'}`;
 
         try {
-          const calendarEventData = await createCalendarEvent(accessToken, {
+          const calendarEventData = await createCalendarEvent({
             subject: meetingSubject,
-            startDateTime: start.toISOString(),
-            endDateTime: end.toISOString(),
+            date: scheduleMeetingFormData.date,
+            time: scheduleMeetingFormData.time,
+            durationMinutes: normalizeMeetingDurationMinutes(scheduleMeetingFormData.duration),
             location: scheduleMeetingFormData.location,
             calendar: scheduleMeetingFormData.calendar,
             manager: scheduleMeetingFormData.manager,
@@ -5117,61 +5016,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         }
       }
 
-      // If this is a Teams meeting, create an online event via Graph
+      // If this is a Teams meeting, the server creates the shared-calendar event
       if (isTeamsMeetingLocationName(rescheduleFormData.location)) {
-        let accessToken: string | null = null;
-        try {
-          const request = { ...loginRequest, account };
-          accessToken = await getAccessTokenWithFallback(
-            instance,
-            request,
-            account,
-            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
-          );
-          if (!accessToken) {
-            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
-            setIsReschedulingMeeting(false);
-            return;
-          }
-        } catch (error) {
-          if (error instanceof AuthPopupBlockedError) {
-            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
-            setShowAuthRedirectOption(true);
-            toast.error(error.message, { duration: 10000 });
-            setIsReschedulingMeeting(false);
-            return;
-          }
-          throw error;
-        }
-
-        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
-        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes);
-        const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
-        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
-
-        const calendarEmail = resolveStoredCalendarType(rescheduleFormData.calendar) === 'active_client'
-          ? 'shared-newclients@lawoffice.org.il'
-          : 'shared-potentialclients@lawoffice.org.il';
-
-        try {
-          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-          if (!hasAccess) {
-            toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`);
-          }
-        } catch (accessError) {
-          console.warn('⚠️ Calendar access check failed:', accessError);
-          toast.error('Calendar access check failed. Meeting will still be created without calendar sync.');
-        }
-
         const categoryName = client.category || 'No Category';
         const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
 
         try {
-          const calendarEventData = await createCalendarEvent(accessToken, {
+          const calendarEventData = await createCalendarEvent({
             subject: meetingSubject,
-            startDateTime: start.toISOString(),
-            endDateTime: end.toISOString(),
+            date: rescheduleFormData.date,
+            time: rescheduleFormData.time,
+            durationMinutes: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
             location: rescheduleFormData.location,
             calendar: rescheduleFormData.calendar,
             manager: rescheduleFormData.manager,
@@ -6225,7 +6080,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
     const past = isPastMeeting(meeting);
     const showPastActions = past && isRecentPastMeeting(meeting);
-    const headerColor = past ? '#6B7280' : 'rgb(25, 49, 31)'; // Grey for past, dark green for upcoming
+    const participantBundle =
+      typeof meeting.id === 'number' ? meetingParticipantsById[Number(meeting.id)] : undefined;
+    const headerKind = getMeetingHeaderKind(meeting);
+    const headerKindLabel = MEETING_HEADER_KIND_LABELS[headerKind];
+    const headerColor = MEETING_HEADER_COLORS[headerKind];
 
     const calendarTypeBadge = getCalendarTypeBadgeStyles(meeting.calendar_type);
     const meetingFieldLabelClass = 'text-xs font-medium uppercase tracking-wide text-gray-500';
@@ -6540,11 +6399,47 @@ const MeetingTab: React.FC<ClientTabProps> = ({
 
     const hasAnyActionButton = !past;
 
+    // Header details are left out entirely when there is nothing to show, rather than printing '--'.
     const amountDisplay =
       meeting.amount && meeting.amount > 0
         ? `${getCurrencySymbol(meeting.currency)} ${typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}`
-        : '--';
-    const carNumberDisplay = meeting.car_number?.trim() ? meeting.car_number.trim() : '--';
+        : null;
+    const carNumberDisplay = meeting.car_number?.trim() ? meeting.car_number.trim() : null;
+    const timeDisplay = meeting.time ? meeting.time.substring(0, 5) : null;
+    const resolvedLocationName = getMeetingLocationName(meeting.location);
+    const locationDisplay = resolvedLocationName === 'Not specified' ? null : resolvedLocationName;
+    const headerDetails: Array<{ key: string; node: React.ReactNode }> = [];
+    if (locationDisplay) {
+      headerDetails.push({
+        key: 'location',
+        node: (
+          <span className="inline-flex items-center gap-1.5 min-w-0">
+            <MapPinIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0" aria-hidden="true" />
+            <span className="truncate" title={locationDisplay}>{locationDisplay}</span>
+          </span>
+        ),
+      });
+    }
+    if (amountDisplay) {
+      headerDetails.push({
+        key: 'amount',
+        node: (
+          <span className="whitespace-nowrap" title={`Amount: ${amountDisplay}`}>
+            {amountDisplay}
+          </span>
+        ),
+      });
+    }
+    if (carNumberDisplay) {
+      headerDetails.push({
+        key: 'car',
+        node: (
+          <span className="whitespace-nowrap" title={`Car number: ${carNumberDisplay}`}>
+            {carNumberDisplay}
+          </span>
+        ),
+      });
+    }
     const isActiveMeeting = meeting.calendar_type === 'active_client';
     const isStaffMeeting = meeting.calendar_type === 'staff';
     const isPotentialMeeting = meeting.calendar_type === 'potential_client';
@@ -6554,8 +6449,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({
     const roleLeadLabel = isActiveMeeting ? 'Handler' : 'Manager';
     const hasGuestEmployee = (guestId?: string | null) =>
       Boolean(guestId && guestId !== '--' && String(guestId).trim() !== '');
-    const participantBundle =
-      typeof meeting.id === 'number' ? meetingParticipantsById[Number(meeting.id)] : undefined;
 
     return (
       <div
@@ -6576,33 +6469,36 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         )}
         <div className="flex-1 min-w-0 overflow-hidden rounded-l-xl">
         {/* Header */}
-        <div className="px-2 sm:px-4 py-2 sm:py-3 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
+        <div className="px-2 sm:px-4 py-1.5 sm:py-2 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-              <div className="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg shadow-sm flex-shrink-0" style={{ backgroundColor: headerColor }}>
-                <CalendarIcon className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+              <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex-shrink-0" style={{ backgroundColor: headerColor }} title={headerKindLabel}>
+                <CalendarIcon className="w-5 h-5 sm:w-7 sm:h-7 text-white" />
               </div>
-              <div className="min-w-0">
-                <p className="font-bold text-sm sm:text-lg text-white truncate">{formattedDate}</p>
-                <div className="flex items-center gap-1 sm:gap-2 text-white flex-wrap">
-                  <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0" />
-                  <span className="text-xs sm:text-sm font-medium">{meeting.time ? meeting.time.substring(0, 5) : ''}</span>
-                  <span className="hidden md:inline-flex items-center gap-1.5 min-w-0 text-white/90">
-                    <span className="text-white/50" aria-hidden="true">·</span>
-                    <MapPinIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0" aria-hidden="true" />
-                    <span className="text-xs sm:text-sm font-medium truncate" title={getMeetingLocationName(meeting.location)}>
-                      {getMeetingLocationName(meeting.location)}
-                    </span>
-                  </span>
-                  <span className="hidden md:inline text-white/50" aria-hidden="true">·</span>
-                  <span className="hidden md:inline text-xs sm:text-sm font-medium text-white/90 whitespace-nowrap" title={`Amount: ${amountDisplay}`}>
-                    {amountDisplay}
-                  </span>
-                  <span className="hidden md:inline text-white/50" aria-hidden="true">·</span>
-                  <span className="hidden md:inline text-xs sm:text-sm font-medium text-white/90 whitespace-nowrap" title={`Car number: ${carNumberDisplay}`}>
-                    {carNumberDisplay}
-                  </span>
-                </div>
+              <div className="min-w-0 leading-tight">
+                <p className="font-bold text-sm sm:text-base text-white truncate">{formattedDate}</p>
+                {(timeDisplay || headerDetails.length > 0) && (
+                  <div className="flex items-center gap-1.5 min-w-0 text-xs sm:text-sm font-medium text-white/90">
+                    {timeDisplay && (
+                      <span className="inline-flex items-center gap-1.5 text-white whitespace-nowrap">
+                        <ClockIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0" />
+                        {timeDisplay}
+                      </span>
+                    )}
+                    {headerDetails.length > 0 && (
+                      <span className="hidden md:flex items-center gap-1.5 min-w-0">
+                        {headerDetails.map((detail, index) => (
+                          <React.Fragment key={detail.key}>
+                            {(index > 0 || timeDisplay) && (
+                              <span className="text-white/50" aria-hidden="true">·</span>
+                            )}
+                            {detail.node}
+                          </React.Fragment>
+                        ))}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex flex-col items-end gap-1 min-w-0 sm:flex-row sm:items-center sm:gap-2 shrink">
@@ -6618,13 +6514,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               {calendarTypeBadge && (
                 <span
                   className="inline-flex items-center justify-center min-w-[2.25rem] px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap flex-shrink-0 border border-white/40 bg-white/20 text-white backdrop-blur-md shadow-sm"
-                  title={
-                    meeting.calendar_type === 'staff'
-                      ? 'Internal Meeting (External Participants)'
-                      : meeting.calendar_type === 'active_client'
-                        ? 'Active Client'
-                        : 'Potential Client'
-                  }
+                  title={headerKindLabel}
                 >
                   {calendarTypeBadge.label}
                 </span>
@@ -7765,59 +7655,72 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         leadType={client?.lead_type}
       />
 
-      {/* Scheduling History Table */}
+      {/* Scheduling History — collapsed to date and author; the notes open on click */}
       {schedulingHistory.length > 0 && (
-        <div className="mb-16">
+        <div className="mb-16 text-left">
           <h4 className="text-base font-semibold text-gray-900 mb-4">Scheduling History</h4>
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="table w-full">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
-                    <th className="text-xs font-semibold text-gray-600 uppercase">Created By</th>
-                    <th className="text-xs font-semibold text-gray-600 uppercase">Scheduling Notes</th>
-                    <th className="text-xs font-semibold text-gray-600 uppercase">Next Follow-up</th>
-                    <th className="text-xs font-semibold text-gray-600 uppercase">Follow-up Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {schedulingHistory.map((entry) => {
-                    const date = new Date(entry.created_at);
-                    const day = date.getDate().toString().padStart(2, '0');
-                    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-                    const year = date.getFullYear().toString().slice(-2);
-                    const mobileDate = `${day}.${month}.${year}`;
-                    const desktopDate = date.toLocaleDateString('en-US', {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    });
-                    
-                    return (
-                    <tr key={entry.id}>
-                      <td className="text-sm text-gray-900">
-                        <span className="md:hidden">{mobileDate}</span>
-                        <span className="hidden md:inline">{desktopDate}</span>
-                      </td>
-                      <td className="text-sm text-gray-900">{entry.created_by || 'Unknown'}</td>
-                      <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
-                        {entry.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
-                      </td>
-                      <td className="text-sm text-gray-900">
-                        {entry.next_followup ? new Date(entry.next_followup).toLocaleDateString() : <span className="text-gray-400 italic">Not set</span>}
-                      </td>
-                      <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
-                        {entry.followup || entry.followup_log || <span className="text-gray-400 italic">No notes</span>}
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+          <div className="flex flex-col items-start gap-2">
+            {schedulingHistory.map((entry) => {
+              const date = new Date(entry.created_at);
+              const day = date.getDate().toString().padStart(2, '0');
+              const month = (date.getMonth() + 1).toString().padStart(2, '0');
+              const year = date.getFullYear().toString().slice(-2);
+              const mobileDate = `${day}.${month}.${year}`;
+              const desktopDate = date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+              const isOpen = expandedSchedulingHistoryId === entry.id;
+              const followupNotes = entry.followup || entry.followup_log || '';
+
+              return (
+                <div key={entry.id} className="w-fit max-w-full bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-gray-50"
+                    onClick={() => setExpandedSchedulingHistoryId(isOpen ? null : entry.id)}
+                    aria-expanded={isOpen}
+                  >
+                    <ChevronDownIcon
+                      className={`w-4 h-4 flex-shrink-0 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+                      aria-hidden="true"
+                    />
+                    <span className="text-sm font-medium text-gray-900">
+                      <span className="md:hidden">{mobileDate}</span>
+                      <span className="hidden md:inline">{desktopDate}</span>
+                    </span>
+                    <span className="text-sm text-gray-500 truncate">{entry.created_by || 'Unknown'}</span>
+                  </button>
+                  {isOpen && (
+                    <div className="border-t border-gray-100 px-4 py-3 space-y-3 text-left max-w-xl">
+                      <div>
+                        <p className="text-xs font-semibold text-gray-600 uppercase mb-1">Scheduling Notes</p>
+                        <p className="text-sm text-gray-900 whitespace-pre-line text-left">
+                          {entry.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-600 uppercase mb-1">Next Follow-up</p>
+                        <p className="text-sm text-gray-900">
+                          {entry.next_followup
+                            ? new Date(entry.next_followup).toLocaleDateString()
+                            : <span className="text-gray-400 italic">Not set</span>}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-gray-600 uppercase mb-1">Follow-up Notes</p>
+                        <p className="text-sm text-gray-900 whitespace-pre-line text-left">
+                          {followupNotes || <span className="text-gray-400 italic">No notes</span>}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -7879,7 +7782,52 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               : 'mx-auto'
           }${subEffortsModalOpen ? '' : ' pr-14 sm:pr-16'}`}
         >
-          <div className="flex items-center justify-end mb-5">
+          <div className="flex flex-wrap items-end justify-between gap-3 mb-5">
+            <div className="flex flex-wrap items-end gap-2 sm:gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase tracking-wide text-gray-500">From</span>
+                <input
+                  type="date"
+                  className="input input-bordered input-sm h-9 rounded-lg bg-white"
+                  value={meetingFilters.dateFrom}
+                  onChange={(e) => setMeetingFilters((prev) => ({ ...prev, dateFrom: e.target.value }))}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase tracking-wide text-gray-500">To</span>
+                <input
+                  type="date"
+                  className="input input-bordered input-sm h-9 rounded-lg bg-white"
+                  value={meetingFilters.dateTo}
+                  onChange={(e) => setMeetingFilters((prev) => ({ ...prev, dateTo: e.target.value }))}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-medium uppercase tracking-wide text-gray-500">Type</span>
+                <select
+                  className="select select-bordered select-sm h-9 rounded-lg bg-white"
+                  value={meetingFilters.kind}
+                  onChange={(e) =>
+                    setMeetingFilters((prev) => ({ ...prev, kind: e.target.value as MeetingFilterValues['kind'] }))
+                  }
+                >
+                  {MEETING_KIND_FILTER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {meetingFiltersActive && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm h-9 rounded-lg text-gray-600"
+                  onClick={() => setMeetingFilters(EMPTY_MEETING_FILTERS)}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
             {upcomingMeetings.length > 0 && (
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
                 {leadSchedulingInfo.meeting_confirmation && leadSchedulingInfo.meeting_confirmation_by ? (
@@ -7899,13 +7847,26 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             )}
           </div>
           <div className="space-y-8">
-            {upcomingMeetings.length > 0 ? (
-              upcomingMeetings.map(renderMeetingCard)
+            {visibleUpcomingMeetings.length > 0 ? (
+              visibleUpcomingMeetings.map(renderMeetingCard)
             ) : (
               <div className="text-center py-8 text-gray-500">
                 <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                <p className="font-medium">No upcoming meetings</p>
-                <p className="text-sm">Schedule a meeting to get started</p>
+                {meetingFiltersActive ? (
+                  <>
+                    <p className="font-medium">No meetings match these filters</p>
+                    <p className="text-sm">
+                      {visiblePastMeetings.length > 0
+                        ? `${visiblePastMeetings.length} past meeting${visiblePastMeetings.length === 1 ? '' : 's'} match — open Past Meetings`
+                        : 'Widen the dates or change the type'}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-medium">No upcoming meetings</p>
+                    <p className="text-sm">Schedule a meeting to get started</p>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -7921,12 +7882,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                   ? 'bg-gray-100 border-gray-300 hover:bg-gray-50'
                   : 'bg-white border-gray-200 hover:shadow-xl hover:bg-gray-50'
               }`}
-              title={`Past Meetings${pastMeetings.length > 0 ? ` (${pastMeetings.length})` : ''}`}
+              title={`Past Meetings${visiblePastMeetings.length > 0 ? ` (${visiblePastMeetings.length})` : ''}`}
             >
               <ClockIcon className="w-6 h-6 text-gray-600" />
-              {pastMeetings.length > 0 && (
+              {visiblePastMeetings.length > 0 && (
                 <span className="absolute -top-1 -right-1 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center text-sm font-semibold bg-red-500 text-white rounded-full">
-                  {pastMeetings.length}
+                  {visiblePastMeetings.length}
                 </span>
               )}
             </button>
@@ -8045,13 +8006,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               </div>
               <div className="flex-1 overflow-y-auto p-6">
                 <div className="space-y-6">
-                  {pastMeetings.length > 0 ? (
-                    pastMeetings.map(renderMeetingCard)
+                  {visiblePastMeetings.length > 0 ? (
+                    visiblePastMeetings.map(renderMeetingCard)
                   ) : (
                     <div className="py-8 text-center text-gray-500">
                       <ClockIcon className="mx-auto mb-3 h-12 w-12 text-gray-300" />
-                      <p className="font-medium">No past meetings</p>
-                      <p className="text-sm">Completed meetings will appear here</p>
+                      <p className="font-medium">
+                        {meetingFiltersActive ? 'No past meetings match these filters' : 'No past meetings'}
+                      </p>
+                      <p className="text-sm">
+                        {meetingFiltersActive
+                          ? 'Widen the dates or change the type'
+                          : 'Completed meetings will appear here'}
+                      </p>
                     </div>
                   )}
                 </div>

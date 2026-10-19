@@ -22,6 +22,8 @@ import toast from 'react-hot-toast';
 import {
   ArrowPathIcon,
   ArrowUpTrayIcon,
+  ArrowUturnLeftIcon,
+  ArrowUturnRightIcon,
   ArrowsPointingInIcon,
   ArrowsPointingOutIcon,
   Bars3BottomLeftIcon,
@@ -66,9 +68,11 @@ import {
   applyRemoteShape,
   bandRange,
   cellChange,
+  changedCellsBetween,
   columnLabel,
   createEmptyGrid,
   deleteRow,
+  gridShapeChanged,
   getCell,
   getFormat,
   gridFromAoa,
@@ -81,6 +85,8 @@ import {
   parsePastedBlock,
   rangeCells,
   renameColumn,
+  restoreCells,
+  restoreGridShape,
   resolveCellBackground,
   resolveColumnWidth,
   resolveRowHeight,
@@ -125,6 +131,17 @@ const AUTOSCROLL_EDGE = 56;
 /** The most one frame will scroll, so the far end of a wide sheet is reachable but not a blur. */
 const AUTOSCROLL_MAX_STEP = 22;
 const ROWS_PER_ADD = 20;
+
+/**
+ * One undoable step: the sheet before the change and the sheet after it.
+ *
+ * Both versions are kept because undoing needs the old values and redoing needs the new ones, and
+ * the pair also says which cells the step touched — the only cells either direction writes.
+ */
+type CaseSheetHistoryStep = { before: CaseSheetGrid; after: CaseSheetGrid };
+
+/** Deep enough to walk back out of a mistake, shallow enough not to hold a big sheet many times. */
+const MAX_HISTORY_STEPS = 50;
 
 /** The row-number gutter, wide enough for a four-digit row and the delete control beside it. */
 const GUTTER_WIDTH = 56;
@@ -331,7 +348,7 @@ function exportCellStyle(
 }
 
 const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
-  const { user, userFullName } = useAuthContext();
+  const { user, userFullName, isAdmin } = useAuthContext();
 
   const identity = useMemo(() => caseSheetIdentity(client?.id), [client?.id]);
 
@@ -356,8 +373,15 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<string>('');
   const [editingHeader, setEditingHeader] = useState<number | null>(null);
+  /** Mirrors the stacks' depth, which lives in a ref: the buttons have to re-render when it moves. */
+  const [historyDepth, setHistoryDepth] = useState({ past: 0, future: 0 });
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const historyRef = useRef<{ past: CaseSheetHistoryStep[]; future: CaseSheetHistoryStep[] }>({
+    past: [],
+    future: [],
+  });
+  /** The sheet as it was when a resize drag began, since the drag itself changes it every frame. */
+  const resizeBaseRef = useRef<CaseSheetGrid | null>(null);
   const queueRef = useRef<CaseSheetSaveQueue | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const subscriptionRef = useRef<CaseSheetSubscription | null>(null);
@@ -512,6 +536,111 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
     [scheduleSave],
   );
 
+  // ---------------------------------------------------------------- undo / redo
+
+  const recordHistory = useCallback((before: CaseSheetGrid, after: CaseSheetGrid) => {
+    if (before === after) return;
+
+    const history = historyRef.current;
+    history.past.push({ before, after });
+    if (history.past.length > MAX_HISTORY_STEPS) history.past.shift();
+    // A new edit is a new branch, so anything that was undone is no longer ahead of us.
+    history.future = [];
+    setHistoryDepth({ past: history.past.length, future: 0 });
+  }, []);
+
+  /*
+   * History is per tab. A step records cell addresses, and those addresses mean something different
+   * in another sheet, so switching tabs starts again rather than risk writing into the wrong one.
+   */
+  useEffect(() => {
+    historyRef.current = { past: [], future: [] };
+    setHistoryDepth({ past: 0, future: 0 });
+  }, [sheetId]);
+
+  /**
+   * Moves the sheet between the two sides of a step.
+   *
+   * Only the cells the step itself changed are written: everything else stays as it is now, which is
+   * what keeps an undo from reverting a colleague's edit that arrived after the step was recorded.
+   */
+  const applyHistoryStep = useCallback(
+    (from: CaseSheetGrid, to: CaseSheetGrid) => {
+      const current = gridRef.current;
+      if (!current) return;
+
+      const cells = changedCellsBetween(from, to);
+      let next = restoreCells(current, to, cells);
+      if (gridShapeChanged(from, to)) {
+        next = restoreGridShape(next, to);
+        shapeDirtyRef.current = true;
+      }
+
+      // Assigned here as well as on render, so a second undo in the same tick sees this one.
+      gridRef.current = next;
+      setGrid(next);
+      // The old selection may point at a row the step just put back or took away.
+      setRange(null);
+      setEditing(false);
+
+      if (cells.length > 0) {
+        queueChanges(cells.map((cell) => cellChange(next, cell.rowIndex, cell.colIndex)));
+      } else {
+        scheduleSave();
+      }
+    },
+    [queueChanges, scheduleSave],
+  );
+
+  const undo = useCallback(() => {
+    const history = historyRef.current;
+    const step = history.past.pop();
+    if (!step) return;
+
+    history.future.push(step);
+    setHistoryDepth({ past: history.past.length, future: history.future.length });
+    applyHistoryStep(step.after, step.before);
+  }, [applyHistoryStep]);
+
+  const redo = useCallback(() => {
+    const history = historyRef.current;
+    const step = history.future.pop();
+    if (!step) return;
+
+    history.past.push(step);
+    setHistoryDepth({ past: history.past.length, future: history.future.length });
+    applyHistoryStep(step.before, step.after);
+  }, [applyHistoryStep]);
+
+  useEffect(() => {
+    if (!canEdit) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.metaKey && !event.ctrlKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+
+      /*
+       * Inside a cell, a name box or any other input, undo belongs to that input: the browser can
+       * step back through what is being typed, which this cannot once the value is committed.
+       */
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      if (key === 'y' || event.shiftKey) redo();
+      else undo();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canEdit, undo, redo]);
+
   /*
    * Leaving the tab must not lose the last few seconds of typing, and the debounce timer does not
    * survive unmount. Flushing here is what makes closing the tab safe.
@@ -603,11 +732,12 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       if (!result.changed) return;
 
       if (result.grid.rowCount !== current.rowCount) shapeDirtyRef.current = true;
+      recordHistory(current, result.grid);
       setGrid(result.grid);
       // Built from the new grid so the cell's formatting goes along with its text.
       queueChanges([cellChange(result.grid, target.rowIndex, target.colIndex)]);
     },
-    [queueChanges],
+    [queueChanges, recordHistory],
   );
 
   /** Commits whatever is in the input, so a half-typed cell is never abandoned. */
@@ -690,12 +820,29 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
    */
   const [fullscreen, setFullscreen] = useState(false);
 
+  /** The "add an Excel sheet" dialog, for when the case already has tabs. */
+  const [importOpen, setImportOpen] = useState(false);
+
+  useEffect(() => {
+    if (!importOpen) return;
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setImportOpen(false);
+    };
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [importOpen]);
+
   useEffect(() => {
     if (!fullscreen) return;
 
     const closeOnEscape = (event: KeyboardEvent) => {
       // Not while a cell is open, where Escape already means "undo this cell".
-      if (event.key === 'Escape' && !editing) setFullscreen(false);
+      if (event.key !== 'Escape' || editing) return;
+      // One Escape closes one thing, and the dialog on top is the one it belongs to.
+      if (importOpen) return;
+      setFullscreen(false);
     };
 
     // The page behind must not scroll under the overlay.
@@ -707,7 +854,7 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [fullscreen, editing]);
+  }, [fullscreen, editing, importOpen]);
 
   /**
    * An in-progress row or column resize.
@@ -731,6 +878,8 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       // The handle sits inside the gutter and the heading, both of which start a selection.
       event.preventDefault();
       event.stopPropagation();
+
+      resizeBaseRef.current = current;
 
       setResizing({
         band,
@@ -775,6 +924,10 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
     // Saved once on release rather than on every frame, so one drag is one write.
     const onUp = () => {
       setResizing(null);
+      const base = resizeBaseRef.current;
+      resizeBaseRef.current = null;
+      // One drag is one undoable step, measured from where the pointer went down.
+      if (base && gridRef.current) recordHistory(base, gridRef.current);
       shapeDirtyRef.current = true;
       scheduleSave();
     };
@@ -785,7 +938,7 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [resizing, scheduleSave]);
+  }, [resizing, scheduleSave, recordHistory]);
 
   const selectedCells = useMemo(() => rangeCells(range), [range]);
   const selectedKeys = useMemo(
@@ -980,10 +1133,11 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       if (next === current) return;
 
       shapeDirtyRef.current = true;
+      recordHistory(current, next);
       setGrid(next);
       scheduleSave();
     },
-    [selectedCells, scheduleSave],
+    [selectedCells, scheduleSave, recordHistory],
   );
 
   const applyBorders = useCallback(
@@ -994,19 +1148,22 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       const { grid: next, changes } = applyBorderPreset(current, range, preset);
       if (next === current) return;
 
+      recordHistory(current, next);
       setGrid(next);
       queueChanges(changes);
     },
-    [range, queueChanges],
+    [range, queueChanges, recordHistory],
   );
 
   const toggleRtl = useCallback(() => {
     const current = gridRef.current;
     if (!current) return;
+    const next = { ...current, rtl: !current.rtl };
     shapeDirtyRef.current = true;
-    setGrid({ ...current, rtl: !current.rtl });
+    recordHistory(current, next);
+    setGrid(next);
     scheduleSave();
-  }, [scheduleSave]);
+  }, [scheduleSave, recordHistory]);
 
   /**
    * Applies a formatting change to the selection.
@@ -1023,10 +1180,11 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       if (result.changes.length === 0) return;
 
       if (result.grid.rowCount !== current.rowCount) shapeDirtyRef.current = true;
+      recordHistory(current, result.grid);
       setGrid(result.grid);
       queueChanges(result.changes);
     },
-    [selectedCells, queueChanges],
+    [selectedCells, queueChanges, recordHistory],
   );
 
   const handleCellKeyDown = useCallback(
@@ -1069,6 +1227,7 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLInputElement>) => {
       if (!range || !gridRef.current) return;
+      const current = gridRef.current;
       const anchor = range.anchor;
 
       const text = event.clipboardData?.getData('text/plain') ?? '';
@@ -1077,56 +1236,84 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
       if (block.length <= 1 && (block[0]?.length ?? 0) <= 1) return;
 
       event.preventDefault();
-      const result = applyPastedBlock(gridRef.current, anchor.rowIndex, anchor.colIndex, block);
+      const result = applyPastedBlock(current, anchor.rowIndex, anchor.colIndex, block);
       shapeDirtyRef.current = true;
+      recordHistory(current, result.grid);
       setGrid(result.grid);
       setDraft(getCell(result.grid, anchor.rowIndex, anchor.colIndex));
       queueChanges(result.changes);
       toast.success(`Pasted ${result.changes.length} cells`);
     },
-    [range, queueChanges],
+    [range, queueChanges, recordHistory],
   );
 
   const handleDeleteRow = useCallback(
     (rowIndex: number) => {
-      if (!gridRef.current) return;
-      const result = deleteRow(gridRef.current, rowIndex);
+      const current = gridRef.current;
+      if (!current) return;
+      const result = deleteRow(current, rowIndex);
       shapeDirtyRef.current = true;
+      recordHistory(current, result.grid);
       setGrid(result.grid);
       setRange(null);
       setEditing(false);
       queueChanges(result.changes);
     },
-    [queueChanges],
+    [queueChanges, recordHistory],
   );
 
   const handleAddRows = useCallback(() => {
-    if (!gridRef.current) return;
+    const current = gridRef.current;
+    if (!current) return;
+    const next = appendRows(current, ROWS_PER_ADD);
     shapeDirtyRef.current = true;
-    setGrid(appendRows(gridRef.current, ROWS_PER_ADD));
+    recordHistory(current, next);
+    setGrid(next);
     scheduleSave();
-  }, [scheduleSave]);
+  }, [scheduleSave, recordHistory]);
 
   const handleAddColumn = useCallback(() => {
-    if (!gridRef.current) return;
-    if (gridRef.current.columns.length >= CASE_SHEET_MAX_COLUMNS) {
+    const current = gridRef.current;
+    if (!current) return;
+    if (current.columns.length >= CASE_SHEET_MAX_COLUMNS) {
       toast.error('This sheet already has the maximum number of columns');
       return;
     }
+    const next = appendColumn(current);
     shapeDirtyRef.current = true;
-    setGrid(appendColumn(gridRef.current));
+    recordHistory(current, next);
+    setGrid(next);
     scheduleSave();
-  }, [scheduleSave]);
+  }, [scheduleSave, recordHistory]);
 
   const handleRenameColumn = useCallback(
     (colIndex: number, label: string) => {
-      if (!gridRef.current) return;
+      const current = gridRef.current;
+      if (!current) return;
       setEditingHeader(null);
+      const next = renameColumn(current, colIndex, label);
       shapeDirtyRef.current = true;
-      setGrid(renameColumn(gridRef.current, colIndex, label));
+      recordHistory(current, next);
+      setGrid(next);
       scheduleSave();
     },
-    [scheduleSave],
+    [scheduleSave, recordHistory],
+  );
+
+  /** Back to the default size, the way double-clicking a divider does in Excel. */
+  const resetBandSize = useCallback(
+    (band: 'row' | 'column', index: number) => {
+      const current = gridRef.current;
+      if (!current) return;
+      const next =
+        band === 'row' ? setRowHeight(current, index, null) : setColumnWidth(current, index, null);
+      if (next === current) return;
+      shapeDirtyRef.current = true;
+      recordHistory(current, next);
+      setGrid(next);
+      scheduleSave();
+    },
+    [scheduleSave, recordHistory],
   );
 
   // ---------------------------------------------------------------- create / import / export
@@ -1293,10 +1480,17 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
     [selfKey, sheets],
   );
 
+  /*
+   * Deleting takes a whole spreadsheet, and the people who work a case share it — so it is an
+   * admin's call. Checked again inside the handler, not only on the button: the control is hidden
+   * for everyone else, and a hidden control is not a check.
+   */
+  const canDeleteSheet = !readOnly && isAdmin;
+
   const handleDeleteTab = useCallback(
     async (sheetIdToDelete: string) => {
       const record = sheets.find((candidate) => candidate.id === sheetIdToDelete);
-      if (!record || readOnly) return;
+      if (!record || !canDeleteSheet) return;
 
       // A tab is a whole spreadsheet, and the cells go with it — worth asking.
       const confirmed = window.confirm(
@@ -1331,7 +1525,7 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
         setBusy(false);
       }
     },
-    [activeId, readOnly, sheets],
+    [activeId, canDeleteSheet, sheets],
   );
 
   // ---------------------------------------------------------------- import / export
@@ -1419,7 +1613,6 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
         toast.error(err instanceof Error ? err.message : 'Could not read that file');
       } finally {
         setBusy(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
       }
     },
     [startSheets],
@@ -1547,41 +1740,23 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
     return (
       <div className="flex flex-col items-center justify-center gap-6 p-12 text-center">
         <TableCellsIcon className="w-16 h-16 text-gray-300" />
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">No case sheet yet</h3>
-          <p className="mt-1 max-w-md text-sm text-gray-500">
-            Upload a spreadsheet you already have, or start a blank one. Everyone working this case
-            edits the same sheet, and changes save as you type.
-          </p>
-        </div>
+        <h3 className="text-lg font-semibold text-gray-900">No case sheet yet</h3>
         {!readOnly && (
-          <div className="flex flex-wrap items-center justify-center gap-3">
+          <div className="flex w-full max-w-md flex-col items-center gap-4">
+            <ExcelDropZone busy={busy} onFile={(file) => void handleUpload(file)} />
+            <div className="flex w-full items-center gap-3 text-xs uppercase tracking-wide text-gray-400">
+              <span className="h-px flex-1 bg-gray-200" />
+              or
+              <span className="h-px flex-1 bg-gray-200" />
+            </div>
             <button
-              className="btn btn-primary gap-2"
+              className="btn btn-primary gap-2 rounded-full px-6"
               disabled={busy}
               onClick={() => void startSheet(createEmptyGrid(), null)}
             >
               <PlusIcon className="w-5 h-5" />
               New sheet
             </button>
-            <button
-              className="btn btn-outline gap-2"
-              disabled={busy}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <ArrowUpTrayIcon className="w-5 h-5" />
-              Upload Excel
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleUpload(file);
-              }}
-            />
           </div>
         )}
         {busy && <span className="loading loading-spinner loading-sm" />}
@@ -1690,6 +1865,10 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
           onChange={changeFormat}
           onPaintBand={paintBand}
           onBorders={applyBorders}
+          canUndo={historyDepth.past > 0}
+          canRedo={historyDepth.future > 0}
+          onUndo={undo}
+          onRedo={redo}
         />
       )}
 
@@ -1824,11 +2003,8 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
                       title="Drag to resize this column"
                       onMouseDown={(event) => beginResize('column', colIndex, event)}
                       onDoubleClick={(event) => {
-                        // Back to the default, the way double-clicking a divider does in Excel.
                         event.stopPropagation();
-                        setGrid((prev) => (prev ? setColumnWidth(prev, colIndex, null) : prev));
-                        shapeDirtyRef.current = true;
-                        scheduleSave();
+                        resetBandSize('column', colIndex);
                       }}
                     />
                   )}
@@ -1901,9 +2077,7 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
                         onMouseDown={(event) => beginResize('row', rowIndex, event)}
                         onDoubleClick={(event) => {
                           event.stopPropagation();
-                          setGrid((prev) => (prev ? setRowHeight(prev, rowIndex, null) : prev));
-                          shapeDirtyRef.current = true;
-                          scheduleSave();
+                          resetBandSize('row', rowIndex);
                         }}
                       />
                     )}
@@ -2031,13 +2205,56 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
         busy={busy}
         switching={switching}
         readOnly={readOnly}
+        canDelete={canDeleteSheet}
         renaming={renamingTab}
         onSelect={(id) => void selectSheet(id)}
         onAdd={() => void handleAddTab()}
+        onImport={() => setImportOpen(true)}
         onStartRename={setRenamingTab}
         onRename={(id, name) => void handleRenameTab(id, name)}
         onDelete={(id) => void handleDeleteTab(id)}
       />
+
+      {importOpen && (
+        <div
+          className="fixed inset-0 z-[300] flex items-center justify-center bg-black/30 p-4"
+          onClick={() => setImportOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add an Excel sheet"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Add an Excel sheet</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Its sheets arrive as new tabs. Nothing already here is replaced.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-square shrink-0"
+                aria-label="Close"
+                onClick={() => setImportOpen(false)}
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex justify-center">
+              <ExcelDropZone
+                busy={busy}
+                onFile={(file) => {
+                  setImportOpen(false);
+                  void handleUpload(file);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {editor && (
         <span className="flex items-center gap-1.5 px-1 text-xs text-gray-500">
@@ -2078,6 +2295,92 @@ const CaseHandlingTab: React.FC<ClientTabProps> = ({ client, readOnly }) => {
   );
 };
 
+/** What SheetJS can read here; a handler's own file is nearly always .xlsx. */
+const WORKBOOK_FILE_PATTERN = /\.(xlsx|xls|csv)$/i;
+const WORKBOOK_FILE_ACCEPT = '.xlsx,.xls,.csv';
+
+/**
+ * Where a workbook comes in: a drop target that is also a button.
+ *
+ * A button rather than a styled div, so it is reachable by keyboard and announces itself. Dragging
+ * a file is a mouse gesture, and it cannot be the only way in.
+ */
+const ExcelDropZone: React.FC<{
+  busy: boolean;
+  onFile: (file: File) => void;
+}> = ({ busy, onFile }) => {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const take = (file: File | null | undefined) => {
+    if (!file) return;
+    if (!WORKBOOK_FILE_PATTERN.test(file.name)) {
+      toast.error('That is not a spreadsheet — use .xlsx, .xls or .csv');
+      return;
+    }
+    onFile(file);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`flex w-full max-w-md flex-col items-center gap-3 rounded-2xl border-2 border-dashed px-6 py-8 text-center transition-colors ${
+          dragging
+            ? 'border-primary bg-primary/5'
+            : 'border-gray-300 bg-gray-50 hover:border-primary/60 hover:bg-white'
+        }`}
+        disabled={busy}
+        onClick={() => inputRef.current?.click()}
+        /* Dragover has to be prevented too, or the browser opens the file instead of dropping it. */
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          take(event.dataTransfer?.files?.[0]);
+        }}
+      >
+        <span
+          className={`flex h-12 w-12 items-center justify-center rounded-full ${
+            dragging ? 'bg-primary text-white' : 'bg-white text-primary shadow-sm'
+          }`}
+        >
+          {busy ? (
+            <span className="loading loading-spinner loading-sm" />
+          ) : (
+            <ArrowUpTrayIcon className="h-6 w-6" />
+          )}
+        </span>
+        <span className="text-sm font-semibold text-gray-900">
+          {dragging ? 'Drop it to add the sheets' : 'Drag an Excel file here'}
+        </span>
+        <span className="text-xs text-gray-500">
+          or click to browse — .xlsx, .xls or .csv. Every sheet in the file becomes a tab.
+        </span>
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={WORKBOOK_FILE_ACCEPT}
+        className="hidden"
+        onChange={(event) => {
+          take(event.target.files?.[0]);
+          // Cleared so picking the same file again still counts as a change.
+          event.target.value = '';
+        }}
+      />
+    </>
+  );
+};
+
 /**
  * The row of sheet tabs under the grid, where a workbook keeps them.
  *
@@ -2090,9 +2393,12 @@ const SheetTabStrip: React.FC<{
   busy: boolean;
   switching: boolean;
   readOnly?: boolean;
+  /** Deleting is an admin's call, so the control is not simply the opposite of `readOnly`. */
+  canDelete: boolean;
   renaming: string | null;
   onSelect: (id: string) => void;
   onAdd: () => void;
+  onImport: () => void;
   onStartRename: (id: string | null) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
@@ -2102,9 +2408,11 @@ const SheetTabStrip: React.FC<{
   busy,
   switching,
   readOnly,
+  canDelete,
   renaming,
   onSelect,
   onAdd,
+  onImport,
   onStartRename,
   onRename,
   onDelete,
@@ -2160,39 +2468,47 @@ const SheetTabStrip: React.FC<{
 
             {active && switching && <span className="loading loading-spinner loading-xs" />}
 
-            {!readOnly && (
-              <button
-                type="button"
-                /*
-                 * Only on the open tab, and only on hover: a delete control on every tab would put
-                 * an irreversible action a stray click away from the one that just switches tabs.
-                 */
-                className={`rounded p-0.5 text-gray-400 transition-opacity hover:bg-gray-200 hover:text-error ${
-                  active ? 'opacity-0 group-hover:opacity-100' : 'hidden'
-                }`}
-                disabled={busy}
-                title="Delete this tab"
-                onClick={() => onDelete(entry.id)}
-              >
-                <XMarkIcon className="w-3 h-3" />
-              </button>
-            )}
           </div>
         );
       })}
     </div>
 
     {!readOnly && (
-      <button
-        type="button"
-        className="btn btn-xs btn-ghost shrink-0 gap-1"
-        disabled={busy}
-        title="Add a sheet"
-        onClick={onAdd}
-      >
-        <PlusIcon className="w-3.5 h-3.5" />
-        Sheet
-      </button>
+      <>
+        <button
+          type="button"
+          className="btn btn-xs btn-ghost shrink-0 gap-1"
+          disabled={busy}
+          title="Add a sheet"
+          onClick={onAdd}
+        >
+          <PlusIcon className="w-3.5 h-3.5" />
+          Sheet
+        </button>
+        <button
+          type="button"
+          className="btn btn-xs btn-ghost shrink-0 gap-1"
+          disabled={busy}
+          title="Add the sheets from an Excel file"
+          onClick={onImport}
+        >
+          <ArrowUpTrayIcon className="w-3.5 h-3.5" />
+          Excel
+        </button>
+        {/* Deletes the open tab, which is the one the grid above is showing. Admins only. */}
+        {canDelete && activeId && (
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost shrink-0 gap-1 text-error hover:bg-error/10"
+            disabled={busy}
+            title="Delete the open sheet and everything in it"
+            onClick={() => onDelete(activeId)}
+          >
+            <TrashIcon className="w-3.5 h-3.5" />
+            Delete sheet
+          </button>
+        )}
+      </>
     )}
   </div>
 );
@@ -2221,7 +2537,11 @@ const FormatToolbar: React.FC<{
   onChange: (patch: { [K in keyof CaseSheetCellFormat]?: CaseSheetCellFormat[K] | null }) => void;
   onPaintBand: (band: 'row' | 'column', color: string | null) => void;
   onBorders: (preset: CaseSheetBorderPreset) => void;
-}> = ({ grid, targets, onChange, onPaintBand, onBorders }) => {
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+}> = ({ grid, targets, onChange, onPaintBand, onBorders, canUndo, canRedo, onUndo, onRedo }) => {
   const disabled = targets.length === 0;
   const keepFocus = (event: React.MouseEvent) => event.preventDefault();
 
@@ -2238,6 +2558,30 @@ const FormatToolbar: React.FC<{
 
   return (
     <div className="flex flex-wrap items-center gap-1 rounded-xl border border-gray-200 bg-gray-50 px-2 py-1.5">
+      {/* A step back and a step forward through the sheet's own edits, not the browser's history. */}
+      <button
+        type="button"
+        className="btn btn-xs btn-ghost"
+        disabled={!canUndo}
+        title="Undo the last change"
+        onMouseDown={keepFocus}
+        onClick={onUndo}
+      >
+        <ArrowUturnLeftIcon className="w-3.5 h-3.5" />
+      </button>
+      <button
+        type="button"
+        className="btn btn-xs btn-ghost"
+        disabled={!canRedo}
+        title="Redo the change you undid"
+        onMouseDown={keepFocus}
+        onClick={onRedo}
+      >
+        <ArrowUturnRightIcon className="w-3.5 h-3.5" />
+      </button>
+
+      <span className="mx-1 h-5 w-px bg-gray-300" />
+
       <button
         type="button"
         className={`btn btn-xs font-serif font-bold ${bold ? 'btn-primary' : 'btn-ghost'}`}

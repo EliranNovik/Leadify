@@ -13,7 +13,8 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage } from '../lib/stageUtils';
+import { clientMatchesLeadRouteKey } from '../lib/leadRouteMatch';
+import { allowsAdditionalLeadMeetings, getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage, applyLocalLeadStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -149,7 +150,7 @@ const FinancesTab = lazy(loadFinancesTab);
 // const DocumentsTab = lazy(loadDocumentsTab);
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
-import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, resolveTeamsJoinUrlForEvent, formatLocalDateTimeForGraph } from '../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createClientCalendarEventViaServer, formatLocalDateTimeForGraph } from '../lib/graph';
 import { getValidTeamsLink as getValidTeamsLinkShared } from '../lib/meetingJoinLink';
 import { generateICSFromDateTime, stripHtmlForIcs } from '../lib/icsGenerator';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
@@ -2432,6 +2433,8 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Check if lead is in highlights
   useEffect(() => {
+    // Switching leads re-runs this, so the previous lead's answer must not land on the new one.
+    let cancelled = false;
     const checkHighlightStatus = async () => {
       if (!selectedClient?.id) {
         setIsInHighlightsState(false);
@@ -2444,21 +2447,28 @@ const Clients: React.FC<ClientsProps> = ({
         : selectedClient.id;
 
       const highlighted = await isInHighlights(leadId, isLegacyLead);
+      if (cancelled) return;
       setIsInHighlightsState(highlighted);
     };
 
     checkHighlightStatus();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedClient?.id, selectedClient?.lead_type]);
 
   // Listen for highlight changes
   useEffect(() => {
+    let cancelled = false;
     const handleHighlightChange = () => {
       if (selectedClient?.id) {
         const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
         const leadId = isLegacyLead
           ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
           : selectedClient.id;
-        isInHighlights(leadId, isLegacyLead).then(setIsInHighlightsState);
+        isInHighlights(leadId, isLegacyLead).then((highlighted) => {
+          if (!cancelled) setIsInHighlightsState(highlighted);
+        });
       }
     };
 
@@ -2466,6 +2476,7 @@ const Clients: React.FC<ClientsProps> = ({
     window.addEventListener('highlights:removed', handleHighlightChange);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('highlights:added', handleHighlightChange);
       window.removeEventListener('highlights:removed', handleHighlightChange);
     };
@@ -2802,8 +2813,7 @@ const Clients: React.FC<ClientsProps> = ({
         });
 
         setSelectedClient((prev: any) => ({
-          ...prev,
-          stage: successStageId,
+          ...applyLocalLeadStage(prev ?? {}, successStageId, stageTimestamp, actor?.fullName),
           // Don't update lead_number - keep original "L" prefix in database
           proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants ?? prev?.number_of_applicants_meeting,
@@ -2875,8 +2885,7 @@ const Clients: React.FC<ClientsProps> = ({
         });
 
         setSelectedClient((prev: any) => ({
-          ...prev,
-          stage: successStageId,
+          ...applyLocalLeadStage(prev ?? {}, successStageId, stageTimestamp, actor?.fullName),
           // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
           proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants,
@@ -2903,6 +2912,8 @@ const Clients: React.FC<ClientsProps> = ({
   };
   // Check for scheduled meetings (upcoming, not canceled)
   useEffect(() => {
+    // Switching leads re-runs this, so the previous lead's meeting must not show on the new one.
+    let cancelled = false;
     const checkScheduledMeetings = async () => {
       if (!selectedClient?.id) {
         setHasScheduledMeetings(false);
@@ -2928,6 +2939,7 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       const { data, error } = await query.limit(1);
+      if (cancelled) return;
 
       if (!error && data && data.length > 0) {
         setHasScheduledMeetings(true);
@@ -2939,6 +2951,9 @@ const Clients: React.FC<ClientsProps> = ({
     };
 
     checkScheduledMeetings();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedClient?.id]);
 
   // Add useEffect to fetch meetings when reschedule drawer opens
@@ -2965,7 +2980,12 @@ const Clients: React.FC<ClientsProps> = ({
       if (!error && data) {
         const sorted = sortMeetingsForRescheduleCancel(data);
         setRescheduleMeetings(sorted);
-        setMeetingsToCancel(defaultMeetingIdsToCancel(sorted));
+        setMeetingsToCancel(
+          defaultMeetingIdsToCancel(sorted, undefined, {
+            // A signed case can hold several bookings, so moving one must not cancel the others.
+            onlySoonest: allowsAdditionalLeadMeetings(selectedClient?.stage),
+          }),
+        );
         setRescheduleMeetingPickerOpen(false);
       } else {
         setRescheduleMeetings([]);
@@ -3114,7 +3134,10 @@ const Clients: React.FC<ClientsProps> = ({
       let error;
 
       if (isLegacyLead) {
-        // For legacy leads, fetch from leads_lead table with currency information
+        // For legacy leads, fetch from leads_lead table with currency information.
+        // stage_changed_at is part of the column list below because the merge at the end of this
+        // function dates this row against a stage the user may have just set; without it the two
+        // always look equally old and the fetched (older) stage wins.
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const { data: legacyData, error: legacyError } = await supabase
           .from('leads_lead')
@@ -3130,6 +3153,8 @@ const Clients: React.FC<ClientsProps> = ({
             mobile,
             topic,
             stage,
+            stage_changed_at,
+            stage_changed_by,
             cdate,
             udate,
             file_id,
@@ -3151,6 +3176,7 @@ const Clients: React.FC<ClientsProps> = ({
             closer_id,
             case_handler_id,
             retainer_handler_id,
+            client_support_id,
             meeting_collection_id,
             marketing_officer_id,
             retention_handler_started,
@@ -3252,6 +3278,9 @@ const Clients: React.FC<ClientsProps> = ({
               ? String(data.id)
               : formatLegacyLeadNumber(data, subLeadSuffix), // Linked-only: actual id; else format with /1 or /X
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
+            // Carried through so the stage merge can date this row against a local change.
+            stage_changed_at: data.stage_changed_at ?? null,
+            stage_changed_by: data.stage_changed_by ?? null,
             stage_name: stageNameFromJoin || undefined,
             stage_colour: stageColourFromJoin || undefined,
             source: getSourceDisplayFromJoin(data) ?? String(data.source_id ?? ''),
@@ -3321,6 +3350,7 @@ const Clients: React.FC<ClientsProps> = ({
             meeting_lawyer_id: data.meeting_lawyer_id || null,
             expert_id: data.expert_id || null,
             retainer_handler_id: data.retainer_handler_id || null,
+            client_support_id: (data as any).client_support_id ?? null,
             meeting_collection_id: (data as any).meeting_collection_id ?? null,
             marketing_officer_id: (data as any).marketing_officer_id ?? null,
             retention_handler_started: data.retention_handler_started === true || (data as any).retention_handler_started === 'true',
@@ -3441,6 +3471,9 @@ const Clients: React.FC<ClientsProps> = ({
             language: languageName || data.language || '',
             source: sourceName || undefined,
             stage: newLeadStageId ?? (typeof data.stage === 'number' ? data.stage : null),
+            // Carried through so the stage merge can date this row against a local change.
+            stage_changed_at: data.stage_changed_at ?? null,
+            stage_changed_by: data.stage_changed_by ?? null,
             emails: [],
             handler:
               (data.handler && data.handler.trim() !== '' && data.handler !== 'Not assigned')
@@ -3577,6 +3610,9 @@ const Clients: React.FC<ClientsProps> = ({
     // Removed setTimeout delay - load immediately for faster page load
     // Execute immediately instead of deferring
     (() => {
+      // Set when this run throws the painted lead away, so nothing further down can treat the lead
+      // from this render as still being on screen.
+      let clearedSelectedClient = false;
       const currentRoute = location.pathname;
       clientsLoadStartRef.current = performance.now();
       clientsPerfMark('load-start');
@@ -3758,36 +3794,29 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
-      // Note: routeChanged can be true on POP navigation, so we check navType first
-      if (navType === 'POP' && selectedClient && lead_number) {
-        const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-        const currentClientId = isLegacy
-          ? selectedClient.id?.toString().replace('legacy_', '')
-          : selectedClient.id?.toString();
-        const currentLeadNumber = selectedClient.lead_number;
-
-        // Check if we have the correct client already loaded
-        if (isLegacy) {
-          if (currentClientId === lead_number) {
-            console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
-            setLocalLoading(false);
-            lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
-            return; // Skip fetch - we have the cached client
-          }
-        } else {
-          if (currentLeadNumber === lead_number || currentClientId === lead_number) {
-            console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
-            setLocalLoading(false);
-            lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
-            return; // Skip fetch - we have the cached client
-          }
+      // We are already holding this lead, so keep it and skip the fetch. This covers back/forward
+      // (POP) and landing here from a client subpage that replaces its own history entry — the
+      // schedule-meeting and reschedule-meeting pages both navigate back with `replace: true`.
+      // Clearing the lead here instead left the page on "Please select a client": the fetch below
+      // reads selectedClient from this same render, still sees the matching lead, and skips its own
+      // work, while the clear lands and leaves nothing on screen.
+      if (selectedClient && clientMatchesLeadRouteKey(selectedClient, effectiveLeadNumber)) {
+        console.log('🔍 Clients: already holding this lead, skipping fetch');
+        setLocalLoading(false);
+        lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+        if (navType !== 'POP') {
+          // Those subpages can change the lead while we were away (meeting booked, stage moved),
+          // so bring it up to date without blanking what is already painted.
+          const id = selectedClient.id ?? selectedClient.lead_number;
+          if (id != null) void syncClientFromServer(id, { silent: true });
         }
+        return; // Skip fetch - we have the client
       }
 
       // Always refetch if route changed (including coming back from /master)
       // But skip if it's a POP navigation and we already handled it above
       if (routeChanged && navType !== 'POP') {
+        clearedSelectedClient = true;
         // Set BOTH flags IMMEDIATELY and ATOMICALLY to prevent race conditions
         // This must happen before ANY other operations to ensure the second useEffect sees both flags
         isFetchingRef.current = true;
@@ -3801,6 +3830,8 @@ const Clients: React.FC<ClientsProps> = ({
         setMasterLeadNumberForLegacy(null);
         setIsMasterLead(false);
         setSubLeads([]);
+        // Retire any sub-lead lookup still running for the lead we just left.
+        subLeadsRequestRef.current += 1;
         setMasterSubLeadsCount(0);
         setDuplicateContacts([]);
         setIsDuplicateDropdownOpen(false);
@@ -3859,7 +3890,7 @@ const Clients: React.FC<ClientsProps> = ({
         const effectiveLeadNumber = lead_number || fullLeadNumber;
 
         // Avoid second loading overlay: if we already have the correct client for this route, do not show overlay again
-        if (selectedClient && effectiveLeadNumber) {
+        if (!clearedSelectedClient && selectedClient && effectiveLeadNumber) {
           const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
           const currentId = isLegacy ? selectedClient.id?.toString().replace('legacy_', '') : selectedClient.id?.toString();
           const currentLeadNumber = selectedClient.lead_number;
@@ -4188,6 +4219,9 @@ const Clients: React.FC<ClientsProps> = ({
                     ? String(legacyLead.id)
                     : formatLegacyLeadNumber(legacyLead, subLeadSuffix),
                   stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
+                  // Carried through so the stage merge can date this row against a local change.
+                  stage_changed_at: legacyLead.stage_changed_at ?? null,
+                  stage_changed_by: legacyLead.stage_changed_by ?? null,
                   stage_name: stageNameFromJoin || undefined,
                   stage_colour: stageColourFromJoin || undefined,
                   source: getSourceDisplayFromJoin(legacyLead) ?? String(legacyLead.source_id || ''),
@@ -4240,6 +4274,7 @@ const Clients: React.FC<ClientsProps> = ({
                   meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
                   expert_id: legacyLead.expert_id || null,
                   retainer_handler_id: legacyLead.retainer_handler_id || null,
+                  client_support_id: (legacyLead as any).client_support_id ?? null,
                   meeting_collection_id: (legacyLead as any).meeting_collection_id ?? null,
                   marketing_officer_id: (legacyLead as any).marketing_officer_id ?? null,
                   retention_handler_started: legacyLead.retention_handler_started === true || (legacyLead as any).retention_handler_started === 'true',
@@ -4280,6 +4315,9 @@ const Clients: React.FC<ClientsProps> = ({
                   source: getSourceDisplayFromJoin(newLead) ?? String(newLead.source_id ?? ''),
                   language: getLanguageDisplayFromJoin(newLead) ?? newLead.language ?? '',
                   stage: newStageId ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
+                  // Kept on the row so later merges can date it; without it every refresh ties.
+                  stage_changed_at: newLead.stage_changed_at ?? null,
+                  stage_changed_by: newLead.stage_changed_by ?? null,
                   emails: [],
                   handler:
                     (newLead.handler && newLead.handler.trim() !== '' && newLead.handler !== 'Not assigned')
@@ -4343,6 +4381,9 @@ const Clients: React.FC<ClientsProps> = ({
                   source: getSourceDisplayFromJoin(leadByManualId) ?? String(leadByManualId.source_id ?? ''),
                   language: getLanguageDisplayFromJoin(leadByManualId) ?? leadByManualId.language ?? '',
                   stage: manualStageId ?? (typeof leadByManualId.stage === 'number' ? leadByManualId.stage : null),
+                  // Kept on the row so later merges can date it; without it every refresh ties.
+                  stage_changed_at: leadByManualId.stage_changed_at ?? null,
+                  stage_changed_by: leadByManualId.stage_changed_by ?? null,
                   emails: [],
                   handler:
                     (leadByManualId.handler && leadByManualId.handler.trim() !== '' && leadByManualId.handler !== 'Not assigned')
@@ -4938,6 +4979,8 @@ const Clients: React.FC<ClientsProps> = ({
   useEffect(() => {
     if (!selectedClient?.id) return;
 
+    // Switching leads re-runs this, so the previous lead's date must not land on the new one.
+    let cancelled = false;
     const loadAdditionalData = async () => {
       try {
         // Check if this is a legacy lead
@@ -4960,15 +5003,19 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         const { data, error } = await query;
+        if (cancelled) return;
         if (!error && data && data.length > 0) setLatestMeetingDate(data[0].meeting_date);
         else setLatestMeetingDate(null);
       } catch (error) {
         console.error('Error fetching latest meeting:', error);
-        setLatestMeetingDate(null);
+        if (!cancelled) setLatestMeetingDate(null);
       }
     };
 
     loadAdditionalData();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedClient?.id]);
 
   // Set default location when meeting locations are loaded
@@ -5280,10 +5327,9 @@ const Clients: React.FC<ClientsProps> = ({
         timestamp,
       });
 
-      setSelectedClient((prev: any) => {
-        if (!prev) return prev;
-        return { ...prev, stage: resolvedStageValue };
-      });
+      setSelectedClient((prev: any) =>
+        prev ? applyLocalLeadStage(prev, resolvedStageValue, timestamp, actor.fullName) : prev,
+      );
 
       await onClientUpdate();
       setSelectedStage(null);
@@ -5851,42 +5897,18 @@ const Clients: React.FC<ClientsProps> = ({
     setShowCustomLocationModal(false);
   };
 
-  // Function to test calendar access permissions
-  const testCalendarAccess = async (accessToken: string, calendarEmail: string) => {
-    try {
-      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      console.log(`🔍 Calendar access test for ${calendarEmail}:`, {
-        status: response.status,
-        statusText: response.statusText
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`✅ Calendar access confirmed for ${calendarEmail}:`, data.name);
-        return true;
-      } else {
-        const error = await response.json();
-        console.error(`❌ Calendar access denied for ${calendarEmail}:`, error);
-        return false;
-      }
-    } catch (error) {
-      console.error(`❌ Calendar access test failed for ${calendarEmail}:`, error);
-      return false;
-    }
-  };
-  // Function to create calendar event in selected calendar
-  const createCalendarEvent = async (accessToken: string, meetingDetails: {
+  /**
+   * Put the meeting on the Potential Clients or New Clients shared calendar.
+   *
+   * The request is made by the server with the firm's own Graph credentials — the same path RMQ AI
+   * and the Meeting tab book through — so scheduling no longer waits on a browser token that can
+   * need a popup or a redirect. Date and time are Jerusalem wall clock, as the form holds them.
+   */
+  const createCalendarEvent = async (meetingDetails: {
     subject: string;
-    startDateTime: string;
-    endDateTime: string;
+    date: string;
+    time: string;
+    durationMinutes: number;
     location: string;
     calendar?: string;
     manager?: string;
@@ -5899,140 +5921,11 @@ const Clients: React.FC<ClientsProps> = ({
     amount?: number;
     currency?: string;
   }) => {
-    // Determine which calendar to use based on selection
-    const calendarEmail = meetingDetails.calendar === 'active_client'
-      ? 'shared-newclients@lawoffice.org.il'
-      : 'shared-potentialclients@lawoffice.org.il';
-
-    console.log('Using calendar:', calendarEmail, 'for selection:', meetingDetails.calendar);
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
-
-    console.log('🔍 Calendar creation details:', {
-      calendarEmail,
-      url,
-      subject: meetingDetails.subject,
-      startDateTime: meetingDetails.startDateTime,
-      endDateTime: meetingDetails.endDateTime,
-      location: meetingDetails.location
+    const { calendar, ...rest } = meetingDetails;
+    return createClientCalendarEventViaServer({
+      ...rest,
+      calendarType: calendar === 'active_client' ? 'active_client' : 'potential_client',
     });
-
-    // Create detailed description with meeting information
-    const description = [
-      'Meeting Details:',
-      `Manager: ${meetingDetails.manager || 'Not specified'}`,
-      `Helper: ${meetingDetails.helper || 'Not specified'}`,
-      `Expert: ${meetingDetails.expert || 'Not specified'}`,
-      `Amount: ${meetingDetails.currency || '₪'}${meetingDetails.amount || 0}`,
-      `Attendance Probability: ${meetingDetails.attendance_probability || 'Not specified'}`,
-      `Complexity: ${meetingDetails.complexity || 'Not specified'}`,
-      meetingDetails.car_number ? `Car Number: ${meetingDetails.car_number}` : '',
-      meetingDetails.brief ? `Brief: ${meetingDetails.brief}` : '',
-      '',
-      'Generated by RMQ 2.0 System'
-    ].filter(line => line !== '').join('\n');
-
-    const body: any = {
-      subject: meetingDetails.subject,
-      start: {
-        dateTime: meetingDetails.startDateTime,
-        timeZone: 'UTC'
-      },
-      end: {
-        dateTime: meetingDetails.endDateTime,
-        timeZone: 'UTC'
-      },
-      location: {
-        displayName: meetingDetails.location
-      },
-      body: {
-        contentType: 'text',
-        content: description
-      },
-      // Removed attendees to prevent automatic email invitations
-      // attendees: (meetingDetails.attendees || []).map(a => ({
-      //   emailAddress: {
-      //     address: a.email
-      //   },
-      //   type: 'required'
-      // }))
-    };
-
-    // Add Teams meeting properties only if location is Teams
-    if (isTeamsMeetingLocationName(meetingDetails.location)) {
-      body.isOnlineMeeting = true;
-      body.onlineMeetingProvider = 'teamsForBusiness';
-    }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      console.error('❌ Calendar event creation error:', {
-        status: response.status,
-        statusText: response.statusText,
-        calendarEmail,
-        error: error
-      });
-
-      // Provide more specific error messages
-      let errorMessage = 'Failed to create calendar event';
-      if (response.status === 403) {
-        errorMessage = `Access denied to calendar ${calendarEmail}. Please check permissions.`;
-      } else if (response.status === 404) {
-        errorMessage = `Calendar ${calendarEmail} not found. Please verify the calendar exists.`;
-      } else if (response.status === 400) {
-        errorMessage = `Invalid request to calendar ${calendarEmail}. ${error.error?.message || ''}`;
-      } else {
-        errorMessage = error.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-      }
-
-      throw new Error(errorMessage);
-    }
-
-    const data = await response.json();
-    console.log('Calendar event creation response:', {
-      id: data.id,
-      hasOnlineMeeting: !!data.onlineMeeting,
-      joinUrl: data.onlineMeeting?.joinUrl,
-      // webLink is Outlook calendar item URL — never use as Teams join link
-      webLink: data.webLink,
-    });
-
-    let joinUrl = '';
-    let onlineMeeting = data.onlineMeeting;
-    if (isTeamsMeetingLocationName(meetingDetails.location)) {
-      const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
-        calendarUserEmail: calendarEmail,
-        eventId: data.id,
-        eventData: data,
-        subject: meetingDetails.subject,
-        startDateTime: meetingDetails.startDateTime,
-        endDateTime: meetingDetails.endDateTime,
-      });
-      joinUrl = resolved.joinUrl;
-      onlineMeeting = resolved.onlineMeeting || data.onlineMeeting;
-    }
-
-    if (isTeamsMeetingLocationName(meetingDetails.location) && !joinUrl) {
-      console.warn('⚠️ Calendar event created but no Teams joinUrl could be resolved', {
-        hasOnlineMeeting: !!onlineMeeting,
-        eventId: data.id,
-        calendarEmail,
-      });
-    }
-
-    return {
-      joinUrl,
-      id: data.id,
-      onlineMeeting,
-    };
   };
 
   const handleScheduleMeeting = async () => {
@@ -6183,103 +6076,16 @@ const Clients: React.FC<ClientsProps> = ({
       // If this is a Teams meeting, create an online event via Graph as before.
       // Otherwise, if the chosen location has a default_link, use that as the join URL.
       if (isTeamsMeetingLocationName(meetingFormData.location)) {
-        // Create calendar event for all locations in potential clients calendar
-        let accessToken: string | null = null;
-        try {
-          const request = { ...loginRequest, account };
-          accessToken = await getAccessTokenWithFallback(
-            instance,
-            request,
-            account,
-            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
-          );
-          if (!accessToken) {
-            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
-            setIsCreatingMeeting(false);
-            return;
-          }
-        } catch (error) {
-          if (error instanceof AuthPopupBlockedError) {
-            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
-            setShowAuthRedirectOption(true);
-            toast.error((error as Error).message, { duration: 10000 });
-            setIsCreatingMeeting(false);
-            return;
-          }
-          throw error;
-        }
-
-        // Convert date and time to start/end times
-        const [year, month, day] = meetingFormData.date.split('-').map(Number);
-        const [hours, minutes] = meetingFormData.time.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes);
-        const meetingDurationMinutes = normalizeMeetingDurationMinutes(meetingFormData.duration);
-        const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
-
-        // Test calendar access first (skip for legacy leads with potential_client calendar type)
-        const isLegacyLeadForCalendar = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-        const calendarEmail = meetingFormData.calendar === 'active_client'
-          ? 'shared-newclients@lawoffice.org.il'
-          : 'shared-potentialclients@lawoffice.org.il';
-
-        // Skip calendar access check for legacy leads when using potential_client calendar
-        const shouldSkipCalendarCheck = isLegacyLeadForCalendar && meetingFormData.calendar !== 'active_client';
-
-        if (!shouldSkipCalendarCheck) {
-          console.log('🔍 Testing calendar access for:', calendarEmail);
-          try {
-            const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-            if (!hasAccess) {
-              // Show warning but continue - calendar creation will be attempted and will fail gracefully
-              toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`, {
-                duration: 5000,
-                position: 'top-right',
-                style: {
-                  background: '#f59e0b',
-                  color: '#fff',
-                  fontWeight: '500',
-                  maxWidth: '500px',
-                },
-                icon: '🔒',
-              });
-            }
-          } catch (accessError) {
-            // If access check fails, show warning but continue
-            console.warn('⚠️ Calendar access check failed:', accessError);
-            toast.error(`Calendar access check failed. Meeting will still be created without calendar sync.`, {
-              duration: 5000,
-              position: 'top-right',
-              style: {
-                background: '#f59e0b',
-                color: '#fff',
-                fontWeight: '500',
-                maxWidth: '500px',
-              },
-            });
-          }
-        } else {
-          console.log('⏭️ Skipping calendar access check for legacy lead with potential_client calendar');
-        }
-
-        // Create calendar event with client name, category, and lead number in subject
-        console.log('🔍 Selected client data for calendar:', {
-          id: selectedClient.id,
-          name: selectedClient.name,
-          lead_number: selectedClient.lead_number,
-          category: selectedClient.category,
-          category_id: selectedClient.category_id,
-          isLegacy: selectedClient.id.toString().startsWith('legacy_')
-        });
+        // The server creates the shared-calendar event with the firm's own Graph credentials.
         const categoryName = selectedClient.category || 'No Category';
         const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
-        console.log('Creating meeting in calendar:', meetingFormData.calendar);
 
         try {
-
-          const calendarEventData = await createCalendarEvent(accessToken, {
+          const calendarEventData = await createCalendarEvent({
             subject: meetingSubject,
-            startDateTime: start.toISOString(),
-            endDateTime: end.toISOString(),
+            date: meetingFormData.date,
+            time: meetingFormData.time,
+            durationMinutes: normalizeMeetingDurationMinutes(meetingFormData.duration),
             location: meetingFormData.location,
             calendar: meetingFormData.calendar,
             manager: meetingFormData.manager,
@@ -6656,7 +6462,11 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (!preserveStageOnMeeting) {
         rememberOptimisticLeadStage(selectedClient.id, mainLeadStageId);
-        setSelectedClient((prev: any) => (prev ? { ...prev, stage: mainLeadStageId } : prev));
+        setSelectedClient((prev: any) =>
+          prev
+            ? applyLocalLeadStage(prev, mainLeadStageId, stageTimestamp, stageActor?.fullName)
+            : prev,
+        );
       }
 
       // For paid meetings, create a linked sublead (combine-chain) with stage 20 + meeting
@@ -7967,10 +7777,13 @@ const Clients: React.FC<ClientsProps> = ({
         emailMessageId: messageId,
       });
 
+      // The same stamp goes to the row and to the local patch, so a refetch can tell which is newer.
+      const stageTimestamp = now.toISOString();
       await updateLeadStageWithHistory({
         lead: selectedClient,
         stage: stageId,
         additionalFields,
+        timestamp: stageTimestamp,
       });
 
       try {
@@ -7997,10 +7810,9 @@ const Clients: React.FC<ClientsProps> = ({
         );
       }
 
-      setSelectedClient((prev: any) => {
-        if (!prev) return prev;
-        return { ...prev, stage: stageId };
-      });
+      setSelectedClient((prev: any) =>
+        prev ? applyLocalLeadStage(prev, stageId, stageTimestamp) : prev,
+      );
 
       await onClientUpdate();
       setShowManualPriceOfferModal(false);
@@ -9060,73 +8872,34 @@ const Clients: React.FC<ClientsProps> = ({
       // For Teams meetings, create the Teams URL BEFORE inserting the meeting
       // This ensures the URL is available for all Teams meetings, not just Microsoft email addresses
       if (isTeamsMeetingLocationName(rescheduleFormData.location) && !teamsMeetingUrl) {
-
         try {
-          const account = instance.getAllAccounts()[0];
-          if (!account) {
-            console.warn('⚠️ No Microsoft account found for Teams meeting creation');
-          } else {
-            const request = { ...loginRequest, account };
-            let accessToken: string | null = null;
-            try {
-              accessToken = await getAccessTokenWithFallback(
-                instance,
-                request,
-                account,
-                () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
-              );
-              if (!accessToken) {
-                toast.error('Redirecting to sign in… Use "Sign in (this tab)" in the drawer if the option appears.', { duration: 8000 });
-                teamsMeetingUrl = '';
-              }
-            } catch (tokenError) {
-              if (tokenError instanceof AuthPopupBlockedError) {
-                authRedirectParamsRef.current = { request, account };
-                setShowAuthRedirectOption(true);
-                toast.error((tokenError as Error).message, { duration: 10000 });
-                teamsMeetingUrl = '';
-              } else {
-                throw tokenError;
-              }
-            }
+          const categoryName = selectedClient.category || 'No Category';
+          const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
 
-            if (accessToken) {
-            // Convert date and time to start/end times
-            const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
-            const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-            const start = new Date(year, month - 1, day, hours, minutes);
-            const meetingDurationMinutes = normalizeMeetingDurationMinutes(rescheduleFormData.duration);
-            const end = new Date(start.getTime() + meetingDurationMinutes * 60000);
+          const calendarEventData = await createCalendarEvent({
+            subject: meetingSubject,
+            date: rescheduleFormData.date,
+            time: rescheduleFormData.time,
+            durationMinutes: normalizeMeetingDurationMinutes(rescheduleFormData.duration),
+            location: rescheduleFormData.location,
+            calendar: rescheduleFormData.calendar,
+            manager: rescheduleFormData.manager,
+            helper: rescheduleFormData.helper,
+            brief: '',
+            attendance_probability: rescheduleFormData.attendance_probability,
+            complexity: rescheduleFormData.complexity,
+            car_number: rescheduleFormData.car_number,
+            expert: selectedClient.expert || '---',
+            amount: 0,
+            currency: '₪',
+          });
 
-            const categoryName = selectedClient.category || 'No Category';
-            const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
-
-            const calendarEventData = await createCalendarEvent(accessToken, {
-              subject: meetingSubject,
-              startDateTime: start.toISOString(),
-              endDateTime: end.toISOString(),
-              location: rescheduleFormData.location,
-              calendar: rescheduleFormData.calendar,
-              manager: rescheduleFormData.manager,
-              helper: rescheduleFormData.helper,
-              brief: '',
-              attendance_probability: rescheduleFormData.attendance_probability,
-              complexity: rescheduleFormData.complexity,
-              car_number: rescheduleFormData.car_number,
-              expert: selectedClient.expert || '---',
-              amount: 0,
-              currency: '₪',
-            });
-
-            teamsMeetingUrl = getValidTeamsLink(calendarEventData.joinUrl);
-            console.log('✅ Reschedule: Teams meeting URL created before insert:', teamsMeetingUrl);
-            if (!teamsMeetingUrl) {
-              toast.error(
-                'Calendar event was created, but a Teams join link could not be obtained. The meeting was saved without a join link.',
-                { duration: 8000 }
-              );
-            }
-            }
+          teamsMeetingUrl = getValidTeamsLink(calendarEventData.joinUrl);
+          if (!teamsMeetingUrl) {
+            toast.error(
+              'Calendar event was created, but a Teams join link could not be obtained. The meeting was saved without a join link.',
+              { duration: 8000 }
+            );
           }
         } catch (teamsError) {
           console.error('❌ Reschedule: Failed to create Teams meeting URL before insert:', teamsError);
@@ -10977,12 +10750,18 @@ const Clients: React.FC<ClientsProps> = ({
       return;
     }
 
+    // Switching leads re-runs this, so a late count must not be shown against the new lead.
+    let cancelled = false;
     const updateInteractionCount = async () => {
       const count = await calculateFullInteractionCount();
+      if (cancelled) return;
       setInteractionCount(count);
     };
 
     updateInteractionCount();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedClient?.id, interactionsCache?.leadId]);
 
   const handleInteractionsCacheUpdate = useCallback(
@@ -11215,6 +10994,8 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Fetch master lead number for new leads
   useEffect(() => {
+    // Switching leads re-runs this, so a lookup for the lead we left must not set the number here.
+    let cancelled = false;
     if (!isSubLead || isLegacyLead) {
       const clientLeadNum = selectedClient?.lead_number ?? '';
       if (!clientLeadNum.includes('/')) {
@@ -11317,18 +11098,24 @@ const Clients: React.FC<ClientsProps> = ({
           masterLeadNumber: leadNumber,
           isUUID
         });
+        if (cancelled) return;
         setMasterLeadNumberForNewLead(leadNumber);
       } catch (error) {
         console.error('Error fetching master lead number:', error);
-        setMasterLeadNumberForNewLead(null);
+        if (!cancelled) setMasterLeadNumberForNewLead(null);
       }
     };
 
     fetchMasterLeadNumber();
+    return () => {
+      cancelled = true;
+    };
   }, [isSubLead, isLegacyLead, selectedClient?.master_id, selectedClient?.linked_master_lead]);
 
   // Fetch master lead number for legacy leads with master_id or linked_master_lead (not lead_number pattern)
   useEffect(() => {
+    // Switching leads re-runs this, so a lookup for the lead we left must not set the number here.
+    let cancelled = false;
     if (!isSubLead || !isLegacyLead) {
       const clientLeadNum = selectedClient?.lead_number ?? '';
       if (!clientLeadNum.includes('/')) {
@@ -11365,11 +11152,12 @@ const Clients: React.FC<ClientsProps> = ({
             .single();
 
           if (error) throw error;
+          if (cancelled) return;
           // For legacy leads, master lead number is just the master_id as a string
           setMasterLeadNumberForLegacy(String(selectedClient.master_id));
         } catch (error) {
           console.error('Error fetching legacy master lead number:', error);
-          setMasterLeadNumberForLegacy(null);
+          if (!cancelled) setMasterLeadNumberForLegacy(null);
         }
       };
 
@@ -11378,6 +11166,9 @@ const Clients: React.FC<ClientsProps> = ({
       // If lead_number contains '/', extract it from the pattern
       setMasterLeadNumberForLegacy(clientLeadNumber.split('/')[0]);
     }
+    return () => {
+      cancelled = true;
+    };
   }, [isSubLead, isLegacyLead, selectedClient?.master_id, selectedClient?.linked_master_lead, clientLeadNumber]);
 
   // Memoize master lead number calculation
@@ -11395,19 +11186,41 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [isSubLead, isLegacyLead, clientLeadNumber, masterLeadNumberForLegacy, masterLeadNumberForNewLead]);
 
+  // Two places start this lookup (the initial load and the effect further down) and the lead can
+  // change while one is in flight, so each run takes a ticket and only the newest one may write the
+  // header state. Without it an older answer — nearly always "not a master lead" — lands last and
+  // the master button disappears until the page is reloaded.
+  const subLeadsRequestRef = useRef(0);
+
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
+    const requestId = subLeadsRequestRef.current + 1;
+    subLeadsRequestRef.current = requestId;
+    const requestLeadId = selectedClient?.id?.toString() ?? '';
+    const isCurrentRequest = () => subLeadsRequestRef.current === requestId;
+    // Commit a resolved answer: show it and remember it, so the button is instant next time round.
+    const commit = (leads: any[]) => {
+      if (!isCurrentRequest()) return leads;
+      if (requestLeadId) {
+        masterChildrenCache.set(requestLeadId, { isMasterLead: leads.length > 0, subLeads: leads });
+      }
+      setSubLeads(leads);
+      setIsMasterLead(leads.length > 0);
+      return leads;
+    };
+
     if (!baseLeadNumber || baseLeadNumber.trim() === '') {
-      setSubLeads([]);
-      setIsMasterLead(false);
+      // Nothing to look up, so this is not an answer worth caching.
+      if (isCurrentRequest()) {
+        setSubLeads([]);
+        setIsMasterLead(false);
+      }
       return [];
     }
 
     // Don't fetch subleads if current client is a traditional or linked-only sublead
     if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
-      setSubLeads([]);
-      setIsMasterLead(false);
-      return [];
+      return commit([]);
     }
     if (
       isNonSelfLinkedMasterLead(
@@ -11416,9 +11229,7 @@ const Clients: React.FC<ClientsProps> = ({
         selectedClient?.id
       )
     ) {
-      setSubLeads([]);
-      setIsMasterLead(false);
-      return [];
+      return commit([]);
     }
 
     // Check if the BASE LEAD (the one we're checking for subleads) has master_id and manual_id NULL
@@ -11545,9 +11356,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       // If the base lead has a master_id, it IS a sublead - don't fetch its subleads
       if (hasMasterId) {
-        setSubLeads([]);
-        setIsMasterLead(false);
-        return [];
+        return commit([]);
       }
       // If master_id is NULL, it's a master lead - proceed to fetch subleads
     }
@@ -11604,14 +11413,10 @@ const Clients: React.FC<ClientsProps> = ({
           pushUnique(byLinkedNew);
 
           if (allSubLeads.length > 0) {
-            setSubLeads(allSubLeads);
-            setIsMasterLead(true);
-            return allSubLeads;
+            return commit(allSubLeads);
           }
         }
-        setSubLeads([]);
-        setIsMasterLead(false);
-        return [];
+        return commit([]);
       }
 
       // For new leads, use the baseLeadId we already found (UUID) or try to find it now
@@ -11823,24 +11628,20 @@ const Clients: React.FC<ClientsProps> = ({
           subLeadsCount: allSubLeads.length,
           isMasterLead: true
         });
-        setSubLeads(allSubLeads);
-        setIsMasterLead(true);
-        return allSubLeads;
-      } else {
-        setSubLeads([]);
-        setIsMasterLead(false);
-        return [];
+        return commit(allSubLeads);
       }
+      return commit([]);
     } catch (error) {
+      // A failed lookup is not an answer: leave whatever is on screen rather than hiding the button.
       console.error('Error fetching sub-leads:', error);
-      setSubLeads([]);
-      setIsMasterLead(false);
       return [];
     }
   }, [selectedClient?.master_id, selectedClient?.linked_master_lead, selectedClient?.lead_number, selectedClient?.id, selectedClient?.lead_type]);
 
   // Fetch master's sub-leads count when viewing a sub-lead
   useEffect(() => {
+    // Moving to another lead re-runs this, so the count from the lead we left must not land here.
+    let cancelled = false;
     const cacheKey = selectedClient?.id?.toString() ?? null;
     const buildLinkedMasterValues = (base: string): string[] => {
       const trimmed = (base || '').trim();
@@ -11965,16 +11766,20 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         const count = uniqueIds.size;
+        if (cancelled) return;
         if (cacheKey) subLeadMasterCountCache.set(cacheKey, count);
         setMasterSubLeadsCount(count);
         if (CLIENTS_DEBUG) console.log('🔍 Master connected leads count:', { rootBase, count });
       } catch (error) {
+        // A failed count is not a count of zero: leave the badge showing whatever we had.
         console.error('Error fetching master sub-leads count:', error);
-        setMasterSubLeadsCount(0);
       }
     };
 
     fetchMasterSubLeadsCount();
+    return () => {
+      cancelled = true;
+    };
   }, [isSubLead, masterLeadNumber, selectedClient?.id, selectedClient?.lead_type, selectedClient?.master_id, selectedClient?.linked_master_lead, selectedClient?.lead_number]);
 
   // Fetch sub-leads when client changes
@@ -12049,12 +11854,7 @@ const Clients: React.FC<ClientsProps> = ({
         setSubLeads(cached.subLeads);
         setIsMasterLead(cached.isMasterLead);
       }
-      void fetchSubLeads(subLeadBase).then((leads) => {
-        if (cacheKey) {
-          const arr = leads || [];
-          masterChildrenCache.set(cacheKey, { isMasterLead: arr.length > 0, subLeads: arr });
-        }
-      });
+      void fetchSubLeads(subLeadBase);
     } else {
       setSubLeads([]);
       setIsMasterLead(false);
@@ -12075,7 +11875,8 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient?.id) return;
     const stage = consumeOptimisticLeadStage(selectedClient.id);
     if (stage == null || Number(selectedClient.stage) === stage) return;
-    setSelectedClient((prev: any) => (prev ? { ...prev, stage } : prev));
+    // Stamped, so the refresh that runs alongside this mount cannot put the old stage back.
+    setSelectedClient((prev: any) => (prev ? applyLocalLeadStage(prev, stage) : prev));
   }, [selectedClient?.id, setSelectedClient]);
 
   // Stage 60 ("Client signed agreement") should never stay visible once a handler is set.
@@ -12116,10 +11917,11 @@ const Clients: React.FC<ClientsProps> = ({
       });
       if (autoAdvanceHandlerSetRef.current !== key) return;
       if (result.advanced) {
-        setSelectedClient((prev: any) => {
-          if (!prev || String(prev.id) !== String(clientId)) return prev;
-          return { ...prev, stage: 105 };
-        });
+        setSelectedClient((prev: any) =>
+          prev && String(prev.id) === String(clientId)
+            ? applyLocalLeadStage(prev, 105)
+            : prev,
+        );
         try {
           await refreshClientData(clientId);
         } catch (err) {
@@ -12130,15 +11932,18 @@ const Clients: React.FC<ClientsProps> = ({
       if (!result.rpcAvailable) {
         try {
           const actor = await fetchStageActorInfo();
+          const stageTimestamp = new Date().toISOString();
           await updateLeadStageWithHistory({
             lead,
             stage: 105,
             actor,
+            timestamp: stageTimestamp,
           });
-          setSelectedClient((prev: any) => {
-            if (!prev || String(prev.id) !== String(clientId)) return prev;
-            return { ...prev, stage: 105 };
-          });
+          setSelectedClient((prev: any) =>
+            prev && String(prev.id) === String(clientId)
+              ? applyLocalLeadStage(prev, 105, stageTimestamp, actor?.fullName)
+              : prev,
+          );
           await refreshClientData(clientId);
         } catch (err) {
           console.warn('fallback 60→105 failed', err);
@@ -12691,6 +12496,27 @@ const Clients: React.FC<ClientsProps> = ({
       variant="inline"
     />
   ) : null;
+  // Deactivated leads are read-only until someone reactivates them.
+  const leadIsUnactivated = Boolean(
+    selectedClient &&
+      (selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_')
+        ? selectedClient.status === 10
+        : selectedClient.status === 'inactive'),
+  );
+
+  // The same Schedule Meeting action the earlier stages use, reused from "Client signed agreement"
+  // (60) onwards: a case there can need any number of meetings, and scheduling one no longer moves
+  // the stage, so the stages below offer it alongside whatever actions they already had.
+  const scheduleMeetingDropdownItem =
+    allowsAdditionalLeadMeetings((selectedClient as any)?.stage) && !leadIsUnactivated ? (
+      <li>
+        <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
+          <CalendarDaysIcon className="w-5 h-5 text-black" />
+          {scheduleMenuLabel}
+        </a>
+      </li>
+    ) : null;
+
   // Before the return statement, add:
   let dropdownItems = null;
 
@@ -12731,22 +12557,28 @@ const Clients: React.FC<ClientsProps> = ({
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-base-content/70">
-        No action available
-      </li>
+      scheduleMeetingDropdownItem ?? (
+        <li className="px-2 py-2 text-sm text-base-content/70">
+          No action available
+        </li>
+      )
     );
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Success')) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-base-content/70">
-        No action available
-      </li>
+      scheduleMeetingDropdownItem ?? (
+        <li className="px-2 py-2 text-sm text-base-content/70">
+          No action available
+        </li>
+      )
     );
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Handler Set')) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-base-content/70">
-        No action available
-      </li>
+      scheduleMeetingDropdownItem ?? (
+        <li className="px-2 py-2 text-sm text-base-content/70">
+          No action available
+        </li>
+      )
     );
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Handler Started')) {
@@ -12764,35 +12596,35 @@ const Clients: React.FC<ClientsProps> = ({
             Case finalized
           </a>
         </li>
+        {scheduleMeetingDropdownItem}
       </>
     );
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Application submitted')) {
     dropdownItems = (
-      <li>
-        <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage(200); (document.activeElement as HTMLElement)?.blur(); }}>
-          <CheckCircleIcon className="w-5 h-5 text-black" />
-          Case finalized
-        </a>
-      </li>
+      <>
+        <li>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage(200); (document.activeElement as HTMLElement)?.blur(); }}>
+            <CheckCircleIcon className="w-5 h-5 text-black" />
+            Case finalized
+          </a>
+        </li>
+        {scheduleMeetingDropdownItem}
+      </>
     );
   }
   else if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-base-content/70">
-        No action available
-      </li>
+      scheduleMeetingDropdownItem ?? (
+        <li className="px-2 py-2 text-sm text-base-content/70">
+          No action available
+        </li>
+      )
     );
   }
   // Note: "Meeting rescheduling" (stage 21) is now handled in the main condition below
   // to show the same options as meeting_scheduled (Reschedule Meeting and Meeting Ended)
-  else if (selectedClient && (() => {
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-    const isUnactivated = isLegacy
-      ? (selectedClient.status === 10)
-      : (selectedClient.status === 'inactive');
-    return isUnactivated;
-  })()) {
+  else if (selectedClient && leadIsUnactivated) {
     dropdownItems = (
       <li className="px-2 py-2 text-sm text-base-content/70">
         Please activate lead in actions first.
@@ -12808,6 +12640,7 @@ const Clients: React.FC<ClientsProps> = ({
             Payment Received - new Client !!!
           </a>
         </li>
+        {scheduleMeetingDropdownItem}
         {/* <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('finances_and_payments_plan'); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />

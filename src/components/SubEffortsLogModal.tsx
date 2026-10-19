@@ -381,12 +381,6 @@ function subEffortHeroImageUrl(params: {
   return SUB_EFFORT_HERO_IMAGES[hash % SUB_EFFORT_HERO_IMAGES.length];
 }
 
-function truncateToMaxWords(text: string, maxWords = 16): string {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length <= maxWords) return words.join(' ');
-  return `${words.slice(0, maxWords).join(' ')}…`;
-}
-
 type SubCategoryEffortItem = {
   id: number;
   name: string;
@@ -2616,22 +2610,6 @@ export function SubEffortsLogModal({
                                 <QuestionMarkCircleIcon className="h-5 w-5" />
                               </button>
                             </div>
-                            {(() => {
-                              const subtitleFull =
-                                selectedSubCategoryEfforts.length > 0
-                                  ? selectedSubCategoryEfforts.map((item) => item.name).join(' · ')
-                                  : readSubEffortDescription(selectedRow);
-                              if (!subtitleFull?.trim()) return null;
-                              const subtitleShort = truncateToMaxWords(subtitleFull, 16);
-                              return (
-                                <p
-                                  className="mt-2 inline-block max-w-full truncate rounded-full bg-white/15 px-3 py-1 text-sm leading-snug text-white shadow-sm ring-1 ring-white/20 backdrop-blur-md"
-                                  title={subtitleFull}
-                                >
-                                  {subtitleShort}
-                                </p>
-                              );
-                            })()}
                           </div>
                         </div>
                       </div>

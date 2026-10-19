@@ -18,7 +18,7 @@ import {
 } from '../../lib/documentShares';
 import { resolveAuthEmployeeId } from '../../lib/leadShares';
 import { EMAIL_ATTACHMENTS_STORAGE_BUCKET } from '../../lib/leadEmailAttachments';
-import { caseSheetSharePath } from '../../lib/caseSheetApi';
+import { caseSheetSharePath, viewerInitials } from '../../lib/caseSheetApi';
 
 const XLSX_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -36,6 +36,37 @@ type Props = {
 };
 
 type Panel = 'menu' | 'employee';
+
+/**
+ * A colleague's photo, or their initials.
+ *
+ * The error path matters as much as the missing one: plenty of employees have a photo URL recorded
+ * that no longer resolves, and an `img` that fails to load draws the browser's broken-image glyph
+ * rather than nothing at all.
+ */
+const ShareEmployeeAvatar: React.FC<{ name: string; photoUrl: string | null | undefined }> = ({
+  name,
+  photoUrl,
+}) => {
+  const [failed, setFailed] = useState(false);
+
+  if (photoUrl && !failed) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        className="h-7 w-7 shrink-0 rounded-full object-cover"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-gray-500">
+      {viewerInitials(name)}
+    </span>
+  );
+};
 
 /**
  * Share for a case sheet: internally to a colleague's notification bell, or externally as a file.
@@ -277,17 +308,7 @@ export function CaseSheetShareMenu({
                         disabled={busy}
                         onClick={() => void shareWithEmployee(employee)}
                       >
-                        {employee.photoUrl ? (
-                          <img
-                            src={employee.photoUrl}
-                            alt=""
-                            className="h-7 w-7 shrink-0 rounded-full object-cover"
-                          />
-                        ) : (
-                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-semibold text-gray-500">
-                            {employee.name.slice(0, 1).toUpperCase()}
-                          </span>
-                        )}
+                        <ShareEmployeeAvatar name={employee.name} photoUrl={employee.photoUrl} />
                         <span className="min-w-0 truncate">{employee.name}</span>
                       </button>
                     ))

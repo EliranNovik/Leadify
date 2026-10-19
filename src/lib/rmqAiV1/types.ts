@@ -93,6 +93,8 @@ export const MEETING_TOOLS = new Set(['list_client_meetings', 'list_calendar_day
 export const WRITE_TOOLS = new Set([
   'create_lead',
   'create_meeting',
+  'reschedule_meeting',
+  'update_meeting_participants',
   'set_follow_up',
   'log_manual_note',
   'setup_client_portal',

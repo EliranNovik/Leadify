@@ -43,6 +43,10 @@ interface FloatingFilterBarProps {
     onOpenActiveHandlerModal?: () => void;
     /** When true (e.g. zero search results), bar is visible but not interactive */
     interactionsDisabled?: boolean;
+    /** Every role the results can show, and the ones showing now. Omit to hide the settings button. */
+    roleColumnOptions?: Array<{ value: string; label: string }>;
+    visibleRoleColumns?: string[];
+    onToggleRoleColumn?: (role: string) => void;
 }
 
 type AssignEmployee = {
@@ -85,6 +89,74 @@ const AssignEmployeeDropdownRow: React.FC<{
     );
 };
 
+/**
+ * Which roles the results show, as a menu rather than a row of toggles: nine roles would take more
+ * of the bar than the assigning it exists for.
+ *
+ * Opens upwards, because the bar it hangs off sits at the bottom of the window.
+ */
+const ReassignViewSettingsMenu: React.FC<{
+    options: Array<{ value: string; label: string }>;
+    visible: string[];
+    onToggle: (role: string) => void;
+}> = ({ options, visible, onToggle }) => {
+    const [open, setOpen] = React.useState(false);
+    const containerRef = React.useRef<HTMLDivElement>(null);
+
+    React.useEffect(() => {
+        if (!open) return;
+        const handleClickOutside = (event: MouseEvent) => {
+            if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+                setOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [open]);
+
+    return (
+        <div className="relative shrink-0" ref={containerRef}>
+            <button
+                type="button"
+                className={`btn btn-sm btn-circle ${open ? 'btn-primary' : 'btn-ghost'}`}
+                title="Choose which roles the results show"
+                aria-label="View settings"
+                aria-expanded={open}
+                onClick={() => setOpen(value => !value)}
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+            </button>
+            {open && (
+                <div className="absolute bottom-full right-0 mb-2 z-50 w-64 rounded-xl border border-base-300/70 bg-white shadow-lg">
+                    <div className="border-b border-base-200 px-3 py-2">
+                        <p className="text-sm font-semibold">Roles shown</p>
+                        <p className="text-xs text-base-content/60">In the table and the card view.</p>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto p-2">
+                        {options.map(option => (
+                            <label
+                                key={option.value}
+                                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-base-200"
+                            >
+                                <input
+                                    type="checkbox"
+                                    className="checkbox checkbox-sm checkbox-primary"
+                                    checked={visible.includes(option.value)}
+                                    onChange={() => onToggle(option.value)}
+                                />
+                                <span className="min-w-0 truncate">{option.label}</span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
     fromDate,
     toDate,
@@ -111,11 +183,22 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
     showRoleDropdown,
     setShowRoleDropdown,
     onOpenActiveHandlerModal,
-    interactionsDisabled = false
+    interactionsDisabled = false,
+    roleColumnOptions,
+    visibleRoleColumns = [],
+    onToggleRoleColumn
 }) => {
     // Dimmed enough to read as disabled, but still clearly present: on the grey page background the
     // old 40% left the bar looking like it had disappeared.
     const barLockClass = interactionsDisabled ? 'pointer-events-none opacity-70 select-none' : '';
+    const roleColumnMenu =
+        roleColumnOptions && roleColumnOptions.length > 0 && onToggleRoleColumn ? (
+            <ReassignViewSettingsMenu
+                options={roleColumnOptions}
+                visible={visibleRoleColumns}
+                onToggle={onToggleRoleColumn}
+            />
+        ) : null;
     const showActiveHandlerBulk =
         Boolean(onOpenActiveHandlerModal) &&
         (selectedRoleForReassign === 'handler' || selectedRoleForReassign === 'retainer_handler');
@@ -148,6 +231,8 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         { value: 'helper', label: 'Helper' },
         { value: 'expert', label: 'Expert' },
         { value: 'retainer_handler', label: 'Retention Handler' },
+        { value: 'helper_handler', label: 'Helper Handler' },
+        { value: 'client_support', label: 'Client Support' },
     ];
 
     const roleLabels: { [key: string]: string } = {
@@ -158,6 +243,8 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         helper: 'Helper',
         expert: 'Expert',
         retainer_handler: 'Retention Handler',
+        helper_handler: 'Helper Handler',
+        client_support: 'Client Support',
     };
     return (
         <>
@@ -287,6 +374,8 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             'Assign role'
                         )}
                     </button>
+
+                    {roleColumnMenu}
                 </div>
             </div>
 
@@ -410,6 +499,8 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                             'Assign role'
                         )}
                     </button>
+
+                    {roleColumnMenu}
                 </div>
             </div>
         </>

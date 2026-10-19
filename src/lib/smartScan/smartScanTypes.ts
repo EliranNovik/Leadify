@@ -143,6 +143,7 @@ export const SMART_SCAN_DOCUMENT_TYPES = [
   'Naturalization Certificate',
   'Military Records',
   'Dissolution Hearing Summons',
+  'Application',
   'Other',
   'Unknown',
 ] as const;

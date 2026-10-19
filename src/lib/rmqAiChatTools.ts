@@ -44,7 +44,30 @@ import {
   isThisClientQuery,
   queryMatchesOpenLead,
 } from './rmqAiChatContext';
-import { requireResolvedLead } from './rmqAiLeadResolver';
+import { formatLeadResolutionForModel, requireResolvedLead, resolveCrmLead } from './rmqAiLeadResolver';
+import {
+  bookLeadMeeting,
+  buildMeetingConfirmation,
+  formatMeetingDate,
+  MEETING_BOOKED_UI_MARKER,
+  loadActiveLeadMeetings,
+  loadLeadForMeeting,
+  normalizeMeetingCalendarRequest,
+  normalizeMeetingDateInput,
+  normalizeMeetingTimeInput,
+  shouldAskToRescheduleInstead,
+  type AiMeetingEmployeeRef,
+  type AiMeetingGuest,
+  type AiMeetingSummary,
+} from './aiMeetingBooking';
+import { fetchStageActorInfo } from './leadStageManager';
+import {
+  changeMeetingParticipants,
+  describeMeetingForPick,
+  loadEditableLeadMeetings,
+  nameMeansSignedInUser,
+  pickMeetingForParticipantEdit,
+} from './aiMeetingParticipants';
 import { logRmqAiToolRouting } from './rmqAiRoutingLog';
 import { getPastChat, searchFirmKnowledge, searchMyPastChats } from './rmqAiV1';
 import { recordTraceTool } from './rmqAiV1/trace';
@@ -966,18 +989,175 @@ export const RMQ_AI_TOOLS = [
     type: 'function',
     function: {
       name: 'create_meeting',
-      description: 'Set meeting date/time/brief on a new lead by lead number.',
+      description:
+        'Book one or several real meetings for a lead — new or legacy — exactly as the Meeting tab does: it creates the meeting, puts a Teams meeting on the right shared Outlook calendar (Potential Clients before the client signed the agreement, New/Active Clients after), and moves the lead stage. Use it whenever they ask to schedule, book, or set a meeting. For two or more meetings on the same lead, pass meetings=[…] in ONE call instead of calling this tool repeatedly. Never use query_crm to write a meeting. If the date or the time is missing, ask for it instead of guessing.',
       parameters: {
         type: 'object',
         properties: {
-          lead_number: { type: 'string' },
-          meeting_date: { type: 'string' },
-          meeting_time: { type: 'string' },
-          meeting_brief: { type: 'string' },
+          query: {
+            type: 'string',
+            description: 'Lead number, name, email, or phone. Omit when a client page is open.',
+          },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          date: { type: 'string', description: 'YYYY-MM-DD, or today / tomorrow / a weekday / DD.MM.YYYY.' },
+          time: { type: 'string', description: '24-hour HH:MM (19:00). 7pm is also understood.' },
+          duration_minutes: { type: 'number', description: 'Default 30.' },
+          location: {
+            type: 'string',
+            description:
+              'Meeting location name. Default Teams. For a signed client, Court / Government / Ministry of Interior / Embassy / Bank are booked as external meetings automatically.',
+          },
+          manager: { type: 'string', description: 'Meeting manager, by employee name.' },
+          helper: { type: 'string', description: 'Helper, by employee name.' },
+          brief: { type: 'string', description: 'What the meeting is about.' },
+          calendar: {
+            type: 'string',
+            enum: ['auto', 'potential_client', 'active_client', 'internal'],
+            description:
+              'Which shared Outlook calendar. Leave as auto — the lead stage decides Potential Clients vs Active Clients. Use internal only for a staff / external meeting, which goes on the staff calendar and does not move the lead stage.',
+          },
+          subject: { type: 'string', description: 'Subject line for an internal meeting.' },
+          attendance_probability: { type: 'string', enum: ['Low', 'Medium', 'High', 'Very High'] },
+          complexity: { type: 'string', enum: ['Simple', 'Complex'] },
+          allow_second_meeting: {
+            type: 'boolean',
+            description:
+              'Only after the user confirmed they want an extra meeting alongside an existing one on a lead that has not signed yet.',
+          },
+          participants: {
+            type: 'array',
+            description:
+              'Colleagues coming to the meeting, by employee name; "me" means the signed-in user. Only pass what they asked for.',
+            items: { type: 'string' },
+          },
+          guests: {
+            type: 'array',
+            description:
+              'People outside the firm coming to the meeting. A guest with an email address is invited to the calendar event; the others are only recorded on the meeting.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                email: { type: 'string' },
+                phone: { type: 'string' },
+              },
+              required: ['name'],
+            },
+          },
+          meetings: {
+            type: 'array',
+            description:
+              'Two or more meetings for this lead, booked in one go. Use this instead of date and time when they asked for several. Every entry needs its own date and time.',
+            items: {
+              type: 'object',
+              properties: {
+                date: { type: 'string', description: 'YYYY-MM-DD, or today / tomorrow / a weekday.' },
+                time: { type: 'string', description: '24-hour HH:MM.' },
+                location: { type: 'string', description: 'Default Teams.' },
+                duration_minutes: { type: 'number', description: 'Default 30.' },
+                brief: { type: 'string' },
+              },
+              required: ['date', 'time'],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reschedule_meeting',
+      description:
+        'Move an existing meeting: books the new one and cancels the old one, the way the Reschedule page does, and puts the lead back on Meeting scheduled unless it has signed or is already on Another meeting. Use it when they ask to reschedule, move, or change the time of a meeting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Lead number or name. Omit when a client page is open.' },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          date: { type: 'string', description: 'New date: YYYY-MM-DD, or today / tomorrow / a weekday.' },
+          time: { type: 'string', description: 'New time, 24-hour HH:MM.' },
+          duration_minutes: { type: 'number' },
+          location: { type: 'string' },
           manager: { type: 'string' },
           helper: { type: 'string' },
+          brief: { type: 'string' },
+          meeting_id: {
+            type: 'number',
+            description: 'Which meeting to replace. Omit to move the soonest active one.',
+          },
+          participants: {
+            type: 'array',
+            description: 'Colleagues coming along, by employee name; "me" is the signed-in user.',
+            items: { type: 'string' },
+          },
+          guests: {
+            type: 'array',
+            description: 'People outside the firm coming along; one with an email is invited to the event.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                email: { type: 'string' },
+                phone: { type: 'string' },
+              },
+              required: ['name'],
+            },
+          },
         },
-        required: ['lead_number', 'meeting_date', 'meeting_time'],
+        required: ['date', 'time'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_meeting_participants',
+      description:
+        'Add or remove people on a meeting that ALREADY exists, without touching its date, time or location. Use it whenever they ask to add or remove a guest, a participant, a colleague or an attendee on a meeting that is already booked — never call create_meeting for that. Identify the meeting with whatever they said about it (date, time, or place such as court / ministry / bank); if several of the lead\u2019s meetings fit, the tool asks which one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Lead number or name. Omit when a client page is open.',
+          },
+          lead_id: { type: 'string' },
+          is_legacy: { type: 'boolean' },
+          meeting_id: { type: 'number', description: 'The meeting row id, when it is known.' },
+          date: { type: 'string', description: 'The meeting date they referred to: YYYY-MM-DD, today, tomorrow, a weekday.' },
+          time: { type: 'string', description: 'The meeting time they referred to, 24-hour HH:MM.' },
+          location: {
+            type: 'string',
+            description: 'The place they referred to, e.g. Court, Ministry of Interior, Teams.',
+          },
+          add_participants: {
+            type: 'array',
+            description: 'Colleagues to add, by employee name; "me" is the signed-in user.',
+            items: { type: 'string' },
+          },
+          add_guests: {
+            type: 'array',
+            description:
+              'People outside the firm to add. They are recorded on the meeting; a guest added after the meeting exists is not emailed automatically.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                email: { type: 'string' },
+                phone: { type: 'string' },
+              },
+              required: ['name'],
+            },
+          },
+          remove: {
+            type: 'array',
+            description: 'Names to take off the meeting, colleagues or guests alike.',
+            items: { type: 'string' },
+          },
+        },
       },
     },
   },
@@ -1105,6 +1285,20 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'Pass channel=whatsapp / email / call only when they asked for one channel. Pass date=today when they say today; otherwise omit date. ' +
   'Reply with one short sentence only. The UI shows lead, client, channel, detail, and date. Do not list those rows in prose. ' +
   'Do not say you cannot verify missed WhatsApp, emails, or calls. Do not use query_crm or get_lead_case_file for a portfolio-wide missed-inbox question. ' +
+  'When they ask to schedule, book, or set a meeting for a client, ALWAYS call create_meeting. When they ask to reschedule, move, or change a meeting time, ALWAYS call reschedule_meeting. Both work for new and legacy leads. Never write a meeting with query_crm. ' +
+  'If a client page is open, that is the client: call the tool with no query at all and never ask which lead it is for. Only pass query when they named a different client. ' +
+  'Pass date and time as they said them (tomorrow, Monday, 19:00, 7pm) — the tool resolves them in Asia/Jerusalem against today\'s date above. If either is missing, ask for it in one short question and do not call the tool. ' +
+  'For several meetings on the same client, call create_meeting ONCE with meetings=[{date,time,location},…] rather than once per meeting. Every entry needs its own date and time; ask for any that are missing before calling. ' +
+  'For a client who has already signed, a meeting at a court, government office, Ministry of Interior, embassy or bank is an external meeting: the tool files it on the staff calendar as an external meeting and leaves the lead stage alone. It does that from the location by itself — book it normally and say it was booked as an external meeting. Before the agreement is signed those places are ordinary client meetings. ' +
+  'Potential Client and Active Client are the two shared Outlook calendars a client meeting is created in, not kinds of meeting. Leave calendar on auto: the lead stage decides it, because before Client signed agreement the meeting belongs on the Potential Clients calendar and from that stage on the New (Active) Clients calendar. Pass calendar=internal only for a staff or external meeting, which goes on the staff calendar and does not move the lead stage. ' +
+  'A Teams meeting is created in that Outlook calendar by the server, so the user does not have to be signed in to Microsoft. If the reply says Outlook was not reached, tell them the meeting is saved in the CRM but is not on the shared calendar yet. ' +
+  'When they ask for other people on a meeting they are booking now, pass participants=["Name",…] and guests=[{name,email,phone},…] in the same create_meeting call — "book a meeting at the bank at 2pm and add me as a guest" is ONE call with location=Bank, time=14:00 and guests=[{name:"me"}]. Pass the words they used: "me" becomes whoever is signed in, and a colleague\'s name becomes that colleague with their work address, so never invent a name or an email. A guest with an email address is invited to the calendar event; without one they are only recorded on the meeting. Only add people they actually asked for. ' +
+  'Adding a second person later adds to the list, it does not replace it: if they already have one guest and ask to add Irina as a guest too, call update_meeting_participants with add_guests=[{name:"Irina"}] and she joins the existing guest as the next one. The same holds for participants. Guest and participant are the same gesture to most people — colleagues can be passed either way, and the tool resolves the person either way. ' +
+  'To add or remove someone on a meeting that ALREADY exists, call update_meeting_participants — never create_meeting and never reschedule_meeting. Adding a guest to Tuesday\'s hearing is an edit, not a new meeting, and it does not change the date, time or location. Pass whatever they said about which meeting (date, time, or place like court / ministry / bank) and the tool finds it; it asks which one when several fit, so pass that question on instead of booking anything. A guest added this way is recorded on the meeting but not emailed — say that the Outlook invitation still has to be sent from the calendar. ' +
+  'People say a meeting location the short way: the court meeting is the one at Court, the ministry meeting is Ministry of Interior, the bank meeting is Bank. Read it as the location of one of the lead\'s existing meetings before you decide no such meeting exists, and if the time they said does not match any of them, tell them what the lead actually has and ask which meeting they mean. ' +
+  'Scheduling moves the lead to Meeting scheduled, a lead that already passed the meeting round to Another meeting, and never moves a signed client. Rescheduling puts the lead back on Meeting scheduled. Say what happened to the stage in your reply. ' +
+  'These tools answer with a confirmation or with a question. When the answer ends with "Nothing was booked", nothing was written: pass that question on to the user in your own words and wait. Never claim a meeting was booked unless the tool confirmed it. ' +
+  'When a booking succeeds the UI draws the meeting as a card with the date, time, location, calendar, manager, helper and stage. Reply with one short sentence only — who it is for and when — and never repeat the When / Calendar / Manager / Lead stage lines or the JSON block. Do not invent a Teams link or an attendee. ' +
   'When they ask to set a follow-up date, call set_follow_up. When they ask to log a call or note, call log_manual_note. ' +
   'When they ask who a role is (handler, expert, manager, closer, scheduler, helper), ALWAYS call get_lead_case_file and copy only that line from ASSIGNED ROLES. ' +
   'Handler = Roles tab Handler (case handler). Manager = Roles tab Manager (meeting manager), not the handler. Closer = Roles tab Closer. Expert = Roles tab / Expert tab Expert. Scheduler = Roles tab Scheduler. ' +
@@ -4508,29 +4702,504 @@ async function executeCreateLead(args: {
   return `Created lead ${newLead.name} (${newLead.lead_number}).`;
 }
 
-async function executeCreateMeeting(args: {
-  lead_number: string;
-  meeting_date: string;
-  meeting_time: string;
-  meeting_brief?: string;
+type MeetingBookingToolArgs = {
+  query?: string;
+  lead_id?: string;
+  is_legacy?: boolean;
+  /** Older name for `query`, kept so a replayed tool call still books the right lead. */
+  lead_number?: string;
+  date?: string;
+  meeting_date?: string;
+  time?: string;
+  meeting_time?: string;
+  duration_minutes?: number | string;
+  location?: string;
   manager?: string;
   helper?: string;
-}): Promise<string> {
-  const payload: Record<string, unknown> = {
-    meeting_date: args.meeting_date,
-    meeting_time: args.meeting_time,
-    meeting_brief: args.meeting_brief || null,
-  };
-  if (args.manager) payload.manager = args.manager;
-  if (args.helper) payload.helper = args.helper;
-  const { data, error } = await supabase
-    .from('leads')
-    .update(payload)
-    .eq('lead_number', args.lead_number)
-    .select('name, lead_number')
-    .single();
-  if (error) throw error;
-  return `Scheduled meeting for ${data.name} (${data.lead_number}) on ${args.meeting_date} at ${args.meeting_time}.`;
+  brief?: string;
+  meeting_brief?: string;
+  subject?: string;
+  calendar?: string;
+  /** Older name for `calendar`. */
+  meeting_type?: string;
+  attendance_probability?: string;
+  complexity?: string;
+  meeting_id?: number | string;
+  allow_second_meeting?: boolean;
+  /** Colleagues coming along, by employee name. "me" means whoever is signed in. */
+  participants?: string[] | string;
+  /** People outside the firm; one with an email address is invited to the calendar event. */
+  guests?: Array<{ name?: string; email?: string; phone?: string }>;
+  /** Several meetings for the same lead in one call; `date` and `time` are then ignored. */
+  meetings?: Array<{
+    date?: string;
+    time?: string;
+    location?: string;
+    duration_minutes?: number | string;
+    brief?: string;
+  }>;
+};
+
+/**
+ * Toast text for a booking that really happened.
+ *
+ * The chat window cannot tell a booked meeting from a question about one by reading the reply, and
+ * it must not pop "Meeting scheduled" when the tool actually asked for a date.
+ */
+let lastMeetingBookingToast: string | null = null;
+
+export function takeRmqAiMeetingBookingToast(): string | null {
+  const value = lastMeetingBookingToast;
+  lastMeetingBookingToast = null;
+  return value;
+}
+
+async function resolveMeetingRoleEmployee(
+  role: string,
+  typed: string | undefined,
+): Promise<{ ok: true; employee: AiMeetingEmployeeRef | null } | { ok: false; message: string }> {
+  const name = String(typed || '').trim();
+  if (!name || name === '---') return { ok: true, employee: null };
+  const employees = await loadCloserEmployees();
+  const hits = matchEmployees(employees, name);
+  if (hits.length === 0) {
+    return {
+      ok: false,
+      message: `No employee matches "${name}" for the ${role}. Ask the user who they mean, or book without a ${role}.`,
+    };
+  }
+  if (hits.length > 1) {
+    return {
+      ok: false,
+      message: `"${name}" matches ${hits.map((hit) => hit.name).join(', ')}. Ask which of them is the ${role}.`,
+    };
+  }
+  const id = Number(hits[0].id);
+  return { ok: true, employee: { id: Number.isFinite(id) ? id : null, name: hits[0].name } };
+}
+
+/**
+ * Turn the names the model passed into employee ids.
+ *
+ * Ambiguity comes back as a sentence rather than a guess: booking the wrong colleague into a court
+ * hearing is worse than asking. "Me" is whoever is signed in, which is how people say it.
+ */
+async function resolveMeetingStaffParticipants(
+  typed: string[] | string | undefined,
+): Promise<{ ok: true; employeeIds: number[] } | { ok: false; message: string }> {
+  const names = (Array.isArray(typed) ? typed : String(typed || '').split(','))
+    .map((name) => String(name || '').trim())
+    .filter((name) => name !== '');
+  if (names.length === 0) return { ok: true, employeeIds: [] };
+
+  const employees = await loadCloserEmployees();
+  const employeeIds: number[] = [];
+  for (const name of names) {
+    if (/^(me|myself|i)$/i.test(name)) {
+      const actor = await fetchStageActorInfo();
+      const own = Number(actor.employeeId);
+      if (!Number.isFinite(own) || own <= 0) {
+        return { ok: false, message: 'I could not work out which employee you are, so ask for the name to add.' };
+      }
+      if (!employeeIds.includes(own)) employeeIds.push(own);
+      continue;
+    }
+    const hits = matchEmployees(employees, name);
+    if (hits.length === 0) {
+      return { ok: false, message: `No employee matches "${name}" for the participants. Ask who they mean.` };
+    }
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        message: `"${name}" matches ${hits.map((hit) => hit.name).join(', ')}. Ask which of them is coming.`,
+      };
+    }
+    const id = Number(hits[0].id);
+    if (Number.isFinite(id) && id > 0 && !employeeIds.includes(id)) employeeIds.push(id);
+  }
+  return { ok: true, employeeIds };
+}
+
+/** Guests as the booker wants them: a name is required, an email only earns them an invitation. */
+function readMeetingGuests(typed: MeetingBookingToolArgs['guests']): AiMeetingGuest[] {
+  return (Array.isArray(typed) ? typed : [])
+    .map((guest) => ({
+      name: String(guest?.name || '').trim(),
+      email: String(guest?.email || '').trim() || null,
+      phone: String(guest?.phone || '').trim() || null,
+    }))
+    .filter((guest) => guest.name !== '');
+}
+
+/** The work address a colleague is reachable at, so adding them also invites them. */
+async function employeeWorkEmail(employeeId: number | null): Promise<string | null> {
+  if (!Number.isFinite(Number(employeeId)) || Number(employeeId) <= 0) return null;
+  const { data } = await supabase
+    .from('users')
+    .select('email')
+    .eq('employee_id', Number(employeeId))
+    .not('email', 'is', null)
+    .limit(1)
+    .maybeSingle();
+  return String((data as { email?: unknown } | null)?.email || '').trim() || null;
+}
+
+/**
+ * Give every guest a real identity before they are saved.
+ *
+ * "Add me as a guest" has to become the person typing, and a colleague named as a guest should be
+ * that colleague, with their work address, so the meeting reads properly and the invitation can go
+ * out. A name is only taken to be an employee when it is unmistakably theirs — a client's
+ * accountant who happens to share a first name with someone here stays a plain guest — and never
+ * when an email address was given with it, because that settles who they are.
+ */
+async function resolveMeetingGuests(
+  typed: MeetingBookingToolArgs['guests'],
+): Promise<{ ok: true; guests: AiMeetingGuest[] } | { ok: false; message: string }> {
+  const asked = readMeetingGuests(typed);
+  if (asked.length === 0) return { ok: true, guests: [] };
+
+  const employees = await loadCloserEmployees();
+  const guests: AiMeetingGuest[] = [];
+  for (const guest of asked) {
+    if (nameMeansSignedInUser(guest.name)) {
+      const actor = await fetchStageActorInfo();
+      if (!actor.fullName) {
+        return { ok: false, message: 'I could not work out who you are, so ask for the name to add as a guest.' };
+      }
+      guests.push({
+        name: actor.fullName,
+        email: guest.email || (await employeeWorkEmail(Number(actor.employeeId))),
+        phone: guest.phone,
+      });
+      continue;
+    }
+    if (!guest.email) {
+      const hits = matchEmployees(employees, guest.name).filter(
+        (hit) => scoreEmployeeName(guest.name, hit.name) >= 90,
+      );
+      if (hits.length > 1) {
+        return {
+          ok: false,
+          message: `"${guest.name}" matches ${hits.map((hit) => hit.name).join(', ')}. Ask which of them is coming, or give an email address.`,
+        };
+      }
+      if (hits.length === 1) {
+        guests.push({
+          name: hits[0].name,
+          email: await employeeWorkEmail(Number(hits[0].id)),
+          phone: guest.phone,
+        });
+        continue;
+      }
+    }
+    guests.push(guest);
+  }
+  return { ok: true, guests };
+}
+
+/**
+ * Book or move a meeting for any lead, new or legacy.
+ *
+ * Everything that could go wrong quietly comes back as a sentence for the user instead: an
+ * unreadable date, a name that matches two people, a room already taken, or a lead that should be
+ * rescheduled rather than given a second meeting. Only a real booking sets the toast.
+ */
+async function executeMeetingBooking(
+  mode: 'schedule' | 'reschedule',
+  args: MeetingBookingToolArgs,
+): Promise<string> {
+  const resolution = await resolveCrmLead({
+    query: args.query || args.lead_number,
+    lead_id: args.lead_id,
+    is_legacy: args.is_legacy,
+  });
+  /*
+   * A client page that is open is the answer to "which lead", even when the model passed a name or
+   * a spelling the search could not pin down. The OPEN CLIENT block promises the model it will
+   * never be asked again while that page is up, so asking here would contradict it.
+   */
+  let resolved = resolution.status === 'resolved' ? resolution.lead : null;
+  if (!resolved) {
+    const open = getRmqAiCurrentLead();
+    const openId = open?.id != null ? String(open.id) : '';
+    if (openId) {
+      resolved = {
+        entityType: 'lead',
+        leadId: openId,
+        leadNumber: String(open?.lead_number || openId),
+        displayName: String(open?.name || '').trim() || String(open?.lead_number || openId),
+        isLegacy: open?.lead_type === 'legacy' || openId.startsWith('legacy_'),
+      };
+    }
+  }
+  if (!resolved) {
+    return `${formatLeadResolutionForModel(resolution)} Nothing was booked.`;
+  }
+
+  const lead = await loadLeadForMeeting({
+    leadId: resolved.leadId,
+    isLegacy: resolved.isLegacy,
+    leadNumber: resolved.leadNumber,
+  });
+  if (!lead) {
+    return `I matched ${resolved.leadNumber} but could not load that lead, so nothing was booked.`;
+  }
+
+  const today = jerusalemTodayIso();
+  /*
+   * One call can carry several meetings. Each is read and checked before anything is written, so a
+   * date the model got wrong in the third meeting does not leave the first two booked.
+   */
+  const asked =
+    mode === 'schedule' && Array.isArray(args.meetings) && args.meetings.length > 0
+      ? args.meetings
+      : [
+          {
+            date: args.date ?? args.meeting_date,
+            time: args.time ?? args.meeting_time,
+            location: args.location,
+            duration_minutes: args.duration_minutes,
+            brief: args.brief ?? args.meeting_brief,
+          },
+        ];
+
+  const slots: Array<{ date: string; time: string; location?: string; durationMinutes?: number | string; brief?: string }> = [];
+  for (const [index, entry] of asked.entries()) {
+    const label = asked.length > 1 ? `Meeting ${index + 1}: ` : '';
+    const date = normalizeMeetingDateInput(entry.date, today);
+    if ('error' in date) return `${label}${date.error} Nothing was booked.`;
+    const time = normalizeMeetingTimeInput(entry.time);
+    if ('error' in time) return `${label}${time.error} Nothing was booked.`;
+    if (date.date < today) {
+      return `${label}${formatMeetingDate(date.date)} has already passed. Confirm the date with the user before booking. Nothing was booked.`;
+    }
+    slots.push({
+      date: date.date,
+      time: time.time,
+      location: entry.location ?? args.location,
+      durationMinutes: entry.duration_minutes ?? args.duration_minutes,
+      brief: entry.brief ?? args.brief ?? args.meeting_brief,
+    });
+  }
+
+  const manager = await resolveMeetingRoleEmployee('meeting manager', args.manager);
+  if (!manager.ok) return `${manager.message} Nothing was booked.`;
+  const helper = await resolveMeetingRoleEmployee('helper', args.helper);
+  if (!helper.ok) return `${helper.message} Nothing was booked.`;
+  const staffParticipants = await resolveMeetingStaffParticipants(args.participants);
+  if (!staffParticipants.ok) return `${staffParticipants.message} Nothing was booked.`;
+  const resolvedGuests = await resolveMeetingGuests(args.guests);
+  if (!resolvedGuests.ok) return `${resolvedGuests.message} Nothing was booked.`;
+  const guests = resolvedGuests.guests;
+
+  const calendarRequest = normalizeMeetingCalendarRequest(args.calendar ?? args.meeting_type);
+
+  if (mode === 'schedule' && calendarRequest !== 'internal' && !args.allow_second_meeting) {
+    const activeMeetings = await loadActiveLeadMeetings(lead);
+    const verdict = shouldAskToRescheduleInstead({
+      stage: lead.stage,
+      activeMeetings,
+      todayIso: today,
+    });
+    if (verdict.ask) {
+      return [
+        `${lead.leadNumber} ${lead.name} already has a meeting on ${formatMeetingDate(
+          String(verdict.upcoming.meeting_date),
+        )} and is on ${lead.stageName}, where the CRM keeps one meeting at a time.`,
+        'Ask the user whether to move that meeting (then call reschedule_meeting) or to add a second one anyway (then call create_meeting again with allow_second_meeting=true).',
+        'Nothing was booked.',
+      ].join(' ');
+    }
+  }
+
+  // One at a time: each booking moves the lead stage and checks the room for that hour, so they
+  // have to see each other's work.
+  const summaries: AiMeetingSummary[] = [];
+  const problems: string[] = [];
+  for (const [index, slot] of slots.entries()) {
+    const result = await bookLeadMeeting({
+      lead,
+      mode,
+      date: slot.date,
+      time: slot.time,
+      durationMinutes: slot.durationMinutes,
+      location: slot.location,
+      manager: manager.employee,
+      helper: helper.employee,
+      participants: { staffEmployeeIds: staffParticipants.employeeIds, guests },
+      brief: slot.brief,
+      subject: args.subject,
+      attendanceProbability: args.attendance_probability,
+      complexity: args.complexity,
+      calendarRequest,
+      preferredMeetingId:
+        args.meeting_id != null && String(args.meeting_id).trim() !== ''
+          ? Number(args.meeting_id)
+          : null,
+    });
+    if (result.status === 'booked') {
+      summaries.push(result.summary);
+    } else {
+      const label = slots.length > 1 ? `Meeting ${index + 1} (${formatMeetingDate(slot.date)}): ` : '';
+      problems.push(`${label}${result.message}`);
+    }
+  }
+
+  if (summaries.length === 0) {
+    return `${problems.join(' ')} Nothing was booked.`;
+  }
+
+  const single = summaries.length === 1;
+  const written = single
+    ? buildMeetingConfirmation(summaries[0])
+    : [
+        `Scheduled ${summaries.length} meetings for ${lead.leadNumber} ${lead.name}: ${summaries
+          .map((summary) => `${formatMeetingDate(summary.date)} at ${summary.time} · ${summary.location}`)
+          .join('; ')}.`,
+        `Calendar: ${summaries[0].calendarLabel}${lead.isLegacy ? ' (legacy lead)' : ''}`,
+        summaries[0].stageNote,
+      ]
+        .filter(Boolean)
+        .join('\n');
+  lastMeetingBookingToast = single
+    ? written.split('\n')[0]
+    : `${summaries.length} meetings created`;
+
+  /*
+   * The confirmation lines stay in the result as grounding for follow-up questions, but the chat
+   * draws every booking as a card, so the model is told to keep its own reply to one sentence.
+   */
+  const cards = summaries.map((summary) => ({ kind: 'meeting_booked', ...summary }));
+  return [
+    written,
+    ...problems,
+    '',
+    `${MEETING_BOOKED_UI_MARKER} (the UI shows ${
+      single ? 'this meeting' : 'these meetings'
+    } as cards — reply with one short sentence and do not quote, list or repeat these details):`,
+    JSON.stringify(single ? cards[0] : cards),
+  ].join('\n');
+}
+
+type MeetingParticipantEditArgs = {
+  query?: string;
+  lead_id?: string;
+  is_legacy?: boolean;
+  lead_number?: string;
+  meeting_id?: number | string;
+  date?: string;
+  time?: string;
+  location?: string;
+  add_participants?: string[] | string;
+  add_guests?: Array<{ name?: string; email?: string; phone?: string }>;
+  remove?: string[] | string;
+};
+
+/**
+ * Add or remove people on a meeting that already exists.
+ *
+ * "Add Irina as a guest to the court meeting on Tuesday" is an edit, not a second meeting, so this
+ * never writes a meeting row. The meeting is found from the date, time or place they mentioned, and
+ * anything less than one clear match comes back as a question.
+ */
+async function executeMeetingParticipantEdit(args: MeetingParticipantEditArgs): Promise<string> {
+  const resolution = await resolveCrmLead({
+    query: args.query || args.lead_number,
+    lead_id: args.lead_id,
+    is_legacy: args.is_legacy,
+  });
+  let resolved = resolution.status === 'resolved' ? resolution.lead : null;
+  if (!resolved) {
+    const open = getRmqAiCurrentLead();
+    const openId = open?.id != null ? String(open.id) : '';
+    if (openId) {
+      resolved = {
+        entityType: 'lead',
+        leadId: openId,
+        leadNumber: String(open?.lead_number || openId),
+        displayName: String(open?.name || '').trim() || String(open?.lead_number || openId),
+        isLegacy: open?.lead_type === 'legacy' || openId.startsWith('legacy_'),
+      };
+    }
+  }
+  if (!resolved) return `${formatLeadResolutionForModel(resolution)} Nothing was changed.`;
+
+  const lead = await loadLeadForMeeting({
+    leadId: resolved.leadId,
+    isLegacy: resolved.isLegacy,
+    leadNumber: resolved.leadNumber,
+  });
+  if (!lead) return `I matched ${resolved.leadNumber} but could not load that lead, so nothing was changed.`;
+
+  const staffParticipants = await resolveMeetingStaffParticipants(args.add_participants);
+  if (!staffParticipants.ok) return `${staffParticipants.message} Nothing was changed.`;
+  const resolvedGuests = await resolveMeetingGuests(args.add_guests);
+  if (!resolvedGuests.ok) return `${resolvedGuests.message} Nothing was changed.`;
+  const guests = resolvedGuests.guests;
+  const removeNames = (Array.isArray(args.remove) ? args.remove : String(args.remove || '').split(','))
+    .map((name) => String(name || '').trim())
+    .filter((name) => name !== '');
+  if (staffParticipants.employeeIds.length === 0 && guests.length === 0 && removeNames.length === 0) {
+    return 'Ask who should be added to or removed from the meeting. Nothing was changed.';
+  }
+
+  const meetings = await loadEditableLeadMeetings(lead);
+  const askedDate = args.date ? normalizeMeetingDateInput(args.date, jerusalemTodayIso()) : null;
+  if (askedDate && 'error' in askedDate) return `${askedDate.error} Nothing was changed.`;
+  const askedTime = args.time ? normalizeMeetingTimeInput(args.time) : null;
+  if (askedTime && 'error' in askedTime) return `${askedTime.error} Nothing was changed.`;
+
+  const pick = pickMeetingForParticipantEdit(meetings, {
+    meetingId: args.meeting_id != null ? Number(args.meeting_id) : null,
+    date: askedDate && 'date' in askedDate ? askedDate.date : null,
+    time: askedTime && 'time' in askedTime ? askedTime.time : null,
+    location: args.location,
+  });
+  if (pick.status !== 'picked') {
+    const list = pick.meetings.map((meeting) => describeMeetingForPick(meeting));
+    if (list.length === 0) {
+      return `${lead.leadNumber} ${lead.name} has no active meeting to change. Nothing was changed.`;
+    }
+    const leadLabel = `${lead.leadNumber} ${lead.name}`;
+    return pick.status === 'ambiguous'
+      ? `More than one meeting for ${leadLabel} fits that: ${list.join('; ')}. Ask which one. Nothing was changed.`
+      : `No meeting for ${leadLabel} matches that. Its meetings are: ${list.join('; ')}. Ask which one they mean. Nothing was changed.`;
+  }
+
+  const change = await changeMeetingParticipants({
+    meeting: pick.meeting,
+    addStaffEmployeeIds: staffParticipants.employeeIds,
+    addGuests: guests,
+    removeNames,
+  });
+  if (change.error) {
+    return `Could not change the participants on the ${describeMeetingForPick(pick.meeting)} meeting (${change.error}). Nothing was changed.`;
+  }
+
+  const lines: string[] = [];
+  if (change.added.length > 0) {
+    lines.push(`Added ${change.added.join(', ')} to the ${describeMeetingForPick(pick.meeting)} meeting for ${lead.leadNumber} ${lead.name}.`);
+  }
+  if (change.removed.length > 0) {
+    lines.push(`Removed ${change.removed.join(', ')} from the ${describeMeetingForPick(pick.meeting)} meeting.`);
+  }
+  if (lines.length === 0) lines.push(`Nothing changed on the ${describeMeetingForPick(pick.meeting)} meeting.`);
+  if (change.unchanged.length > 0) lines.push(`${change.unchanged.join('. ')}.`);
+  // Same rule as booking: only a real change earns the toast the chat window pops.
+  lastMeetingBookingToast =
+    change.added.length > 0 || change.removed.length > 0 ? 'Meeting participants updated' : null;
+  lines.push(
+    change.attendees.length > 0
+      ? `On the meeting now: ${change.attendees.map((row) => row.name).join(', ')}.`
+      : 'Nobody is on the meeting now.',
+  );
+  if (change.added.length > 0) {
+    lines.push(
+      'A guest added after the meeting was created is recorded on the meeting but not emailed — the Outlook invitation has to be sent from the calendar.',
+    );
+  }
+  return lines.join(' ');
 }
 
 function withLeadOnAppPath(path: string, leadNumber: string): string {
@@ -5017,7 +5686,13 @@ export async function executeRmqAiTool(toolCall: {
       return await executeCreateLead(args as Parameters<typeof executeCreateLead>[0]);
     }
     if (name === 'create_meeting') {
-      return await executeCreateMeeting(args as Parameters<typeof executeCreateMeeting>[0]);
+      return await executeMeetingBooking('schedule', args as MeetingBookingToolArgs);
+    }
+    if (name === 'reschedule_meeting') {
+      return await executeMeetingBooking('reschedule', args as MeetingBookingToolArgs);
+    }
+    if (name === 'update_meeting_participants') {
+      return await executeMeetingParticipantEdit(args as MeetingParticipantEditArgs);
     }
     if (name === 'list_my_sales_day') {
       return await executeListMySalesDay();

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LifebuoyIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -103,7 +103,7 @@ const HELPER_HANDLER_TITLE = 'Helper Handler';
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
   { title: 'Sales', roleIds: ['scheduler', 'manager', 'helper', 'expert', 'closer'] },
-  { title: 'Handlers', roleIds: ['handler', 'retainer_handler', HELPER_HANDLER_ROLE_ID] },
+  { title: 'Handlers', roleIds: ['handler', 'retainer_handler', 'client_support', HELPER_HANDLER_ROLE_ID] },
   { title: 'Finance', roleIds: ['collection_manager'] },
   { title: 'Marketing', roleIds: ['marketing_officer'] },
 ];
@@ -327,6 +327,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
         { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
         { id: 'retainer_handler', title: 'Retention Handler', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
+        { id: 'client_support', title: 'Client Support', assignee: '---', fieldName: 'client_support_id', legacyFieldName: 'client_support_id' },
         { id: 'collection_manager', title: 'Collection manager', assignee: '---', fieldName: 'meeting_collection_id', legacyFieldName: 'meeting_collection_id' },
         { id: 'marketing_officer', title: 'Marketing Officer', assignee: '---', fieldName: 'marketing_officer_id', legacyFieldName: 'marketing_officer_id' },
       ];
@@ -437,6 +438,14 @@ const RolesTab: React.FC<ClientTabProps> = ({
         legacyFieldName: 'retainer_handler_id'
       },
       {
+        id: 'client_support',
+        title: 'Client Support',
+        // One id column of the same name on both lead tables, so there is nothing to tell apart.
+        assignee: getEmployeeDisplayName((client as any).client_support_id, employeesToUse) || '---',
+        fieldName: 'client_support_id',
+        legacyFieldName: 'client_support_id'
+      },
+      {
         id: 'collection_manager',
         title: 'Collection manager',
         assignee: getEmployeeDisplayName((client as any).meeting_collection_id, employeesToUse) || '---',
@@ -517,10 +526,14 @@ const RolesTab: React.FC<ClientTabProps> = ({
     };
   }, [client?.id]);
 
-  // Losing write access, by a lock from anywhere, has to close an open mode rather than strand it.
+  /*
+   * Losing write access has to close an open mode rather than strand it. The roles lock is not that:
+   * helper handlers are deliberately outside it, so a locked lead can still have one added or taken
+   * off while the assigned roles stay fixed.
+   */
   useEffect(() => {
-    if (readOnly || isRolesLocked) setHelperHandlerMode(null);
-  }, [readOnly, isRolesLocked]);
+    if (readOnly) setHelperHandlerMode(null);
+  }, [readOnly]);
 
   // Update locked status from client data
   useEffect(() => {
@@ -729,7 +742,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         } else {
           // For new leads, check if this role needs ID conversion
           // Roles stored as employee IDs on new leads
-          const rolesNeedingIdConversion = ['manager', 'expert', 'helper', 'retainer_handler', 'collection_manager', 'marketing_officer'];
+          const rolesNeedingIdConversion = ['manager', 'expert', 'helper', 'retainer_handler', 'client_support', 'collection_manager', 'marketing_officer'];
           if (rolesNeedingIdConversion.includes(role.id)) {
             // Convert display name to employee ID for these roles
             const employeeId = getEmployeeIdFromDisplayName(role.assignee);
@@ -947,10 +960,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
   /** Open the add or remove mode from the card's menu, closing the menu and any open row editor. */
   const handleHelperHandlerMode = (mode: 'add' | 'remove' | null) => {
     (document.activeElement as HTMLElement)?.blur();
-    if (mode && isRolesLocked) {
-      toast.error('Roles are locked. Please unlock roles first.');
-      return;
-    }
+    // No lock check: the roles lock covers the assigned roles, not who is helping on the case.
     setHelperHandlerMode(mode);
     setSearchTerms(prev => ({ ...prev, [HELPER_HANDLER_ROLE_ID]: '' }));
     setShowDropdowns(prev => ({ ...prev, [HELPER_HANDLER_ROLE_ID]: mode === 'add' }));
@@ -1141,6 +1151,8 @@ const RolesTab: React.FC<ClientTabProps> = ({
         return CogIcon;
       case 'retainer_handler':
         return BriefcaseIcon;
+      case 'client_support':
+        return LifebuoyIcon;
       case HELPER_HANDLER_ROLE_ID:
         return UserGroupIcon;
       case 'collection_manager':
@@ -1163,7 +1175,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
             readOnly
               ? 'Team roles and assignments'
               : isRolesLocked
-                ? 'Roles are locked and cannot be modified'
+                ? `Roles are locked — only ${HELPER_HANDLER_TITLE} can still be changed`
                 : 'Manage team roles and assignments'
           }
           titleExtra={
@@ -1207,7 +1219,8 @@ const RolesTab: React.FC<ClientTabProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {section.roleIds.map((roleId) => {
                   if (roleId === HELPER_HANDLER_ROLE_ID) {
-                    const canEditHelperHandlers = !readOnly && !isRolesLocked;
+                    // Outside the roles lock on purpose: a locked lead still needs helpers moved on and off.
+                    const canEditHelperHandlers = !readOnly;
                     const isAddingHelperHandler = helperHandlerMode === 'add';
                     const isRemovingHelperHandler = helperHandlerMode === 'remove';
                     /*

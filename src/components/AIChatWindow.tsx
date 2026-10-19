@@ -6,7 +6,14 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import RmqAiIntroModal from './RmqAiIntroModal';
-import { executeRmqAiTool, RMQ_AI_SYSTEM_PROMPT, RMQ_AI_TOOLS } from '../lib/rmqAiChatTools';
+import ChatCreateMeetingModal from './ChatCreateMeetingModal';
+import { formatMeetingDate, type AiMeetingSummary } from '../lib/aiMeetingBooking';
+import {
+  executeRmqAiTool,
+  RMQ_AI_SYSTEM_PROMPT,
+  RMQ_AI_TOOLS,
+  takeRmqAiMeetingBookingToast,
+} from '../lib/rmqAiChatTools';
 import { streamRmqAiChat } from '../lib/rmqAiChatStream';
 import { executeGetClientPortalAccess, parsePortalLinkFromToolResult } from '../lib/rmqAiPortalTools';
 import {
@@ -88,6 +95,7 @@ import {
   ChatEmployeePresenceTable,
   ChatExpensesTable,
   ChatLeadSummaryCards,
+  ChatMeetingBookedCards,
   ChatMeetingCards,
   ChatMissedCommsTable,
   ChatPaidPaymentsTable,
@@ -98,14 +106,17 @@ import {
   parseEmployeePresenceCard,
   parseExpensesCard,
   parseLeadSummaryCard,
+  parseMeetingBookedCards,
   parseMissedCommsCard,
   parsePaidPaymentsCard,
   parseSignedContractsCard,
   splitLeadSummaryParts,
+  stripMeetingBookedMarker,
   type ChatCalendarDayData,
   type ChatEmployeePresenceData,
   type ChatExpensesData,
   type ChatLeadSummaryData,
+  type ChatMeetingBookedData,
   type ChatMeetingCardData,
   type ChatMissedCommsData,
   type ChatPaidPaymentsData,
@@ -161,6 +172,7 @@ interface Message {
   attachments?: RmqAiChatFile[];
   draftAction?: RmqAiDraftMeta;
   meetingCard?: ChatMeetingCardData;
+  meetingBooked?: ChatMeetingBookedData[];
   calendarMeetings?: ChatCalendarDayData;
   signedContracts?: ChatSignedContractsData;
   paidPayments?: ChatPaidPaymentsData;
@@ -278,6 +290,8 @@ type WelcomeAction = {
   hint: string;
   prompt: string;
   Icon: typeof CalendarDaysIcon;
+  /** Opens a form instead of asking the model, for the few things a person just fills in. */
+  opens?: 'create_meeting';
 };
 
 const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
@@ -286,7 +300,7 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
     hint: "What's coming up?",
     prompt:
       'What is the next meeting scheduled for this client? Call list_client_meetings. Give the next upcoming date, time, location, and quote summary, brief, and caseBrief from the tool.',
-    Icon: CalendarDaysIcon,
+    Icon: ClockOutlineIcon,
   },
   {
     label: 'Lead summary',
@@ -296,11 +310,12 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
     Icon: DocumentTextIcon,
   },
   {
-    label: 'Last communication',
-    hint: 'See recent messages',
-    prompt:
-      'Show the last communication with this client. Use CRM tools. Include channel, date, and a short snippet. Be concise. Do not greet.',
-    Icon: ChatOutlineIcon,
+    label: 'Create meeting',
+    hint: 'Pick a date, time and location',
+    // Handled by the form, not the model, so the prompt is only a fallback label for history.
+    prompt: 'Schedule a meeting for this client.',
+    Icon: CalendarDaysIcon,
+    opens: 'create_meeting',
   },
   {
     label: 'Draft follow-up',
@@ -539,11 +554,13 @@ function ChatWelcomeHome({
   hasLead,
   disabled,
   onAction,
+  onOpenCreateMeeting,
   signals = [],
 }: {
   hasLead: boolean;
   disabled?: boolean;
   onAction: (prompt: string, label?: string) => void;
+  onOpenCreateMeeting: () => void;
   signals?: Array<{ id: string; title: string; reason: string; actions: Array<{ label: string; prompt: string }> }>;
 }) {
   const actions = hasLead ? WELCOME_LEAD_ACTIONS : WELCOME_GENERAL_ACTIONS;
@@ -585,13 +602,13 @@ function ChatWelcomeHome({
         </div>
       ) : null}
       <div className="mt-7 grid w-full grid-cols-1 gap-2.5 sm:grid-cols-2">
-        {actions.map(({ label, hint, prompt, Icon }) => (
+        {actions.map(({ label, hint, prompt, Icon, opens }) => (
           <button
             key={label}
             type="button"
             className="ai-welcome-card"
             disabled={disabled}
-            onClick={() => onAction(prompt, label)}
+            onClick={() => (opens === 'create_meeting' ? onOpenCreateMeeting() : onAction(prompt, label))}
           >
             <span className="ai-welcome-card-icon">
               <Icon className="h-6 w-6 max-md:h-7 max-md:w-7" />
@@ -744,6 +761,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [showRmqAiIntroModal, setShowRmqAiIntroModal] = useState(false);
+  const [createMeetingOpen, setCreateMeetingOpen] = useState(false);
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [messageFeedback, setMessageFeedback] = useState<Record<string, 'up' | 'down'>>({});
@@ -769,6 +787,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [copiedBubbleKey, setCopiedBubbleKey] = useState<string | null>(null);
   const copiedBubbleTimerRef = useRef<number | null>(null);
   const [isVoiceBusy, setIsVoiceBusy] = useState(false);
+  /** Which of the two recording buttons is being waited on, so the spinner sits on that one. */
+  const [voicePendingAction, setVoicePendingAction] = useState<'input' | 'send' | null>(null);
   const voiceBaseInputRef = useRef('');
   const voiceShownTextRef = useRef('');
   const {
@@ -1030,6 +1050,52 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   // Quick action handlers
   const handleQuickAction = (action: string, label?: string) => {
     handleSend(action, { display: label || shortAskLabel(action) || undefined });
+  };
+
+  /**
+   * The Create meeting card books through the form rather than the model: the date, time and
+   * location are things the user already knows, so there is nothing to interpret.
+   */
+  const openCreateMeeting = () => {
+    const lead = currentLead || getRmqAiCurrentLead();
+    if (lead?.id == null || String(lead.id).trim() === '') {
+      toast.error('Open a client first to create a meeting.');
+      return;
+    }
+    setCreateMeetingOpen(true);
+  };
+
+  /** Show the bookings in the thread, so the chat (and its saved history) records what happened. */
+  const handleMeetingCreated = (booking: {
+    summaries: AiMeetingSummary[];
+    failures: string[];
+  }) => {
+    const { summaries, failures } = booking;
+    if (summaries.length === 0) return;
+    const lead = `${summaries[0].leadNumber} ${summaries[0].leadName}`.trim();
+    const asked = summaries
+      .map((summary) => `${formatMeetingDate(summary.date)} at ${summary.time}, ${summary.location}`)
+      .join('; ');
+    const answer =
+      summaries.length === 1
+        ? `Scheduled the meeting for ${lead} on ${formatMeetingDate(summaries[0].date)} at ${summaries[0].time}.`
+        : `Scheduled ${summaries.length} meetings for ${lead}.`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        content:
+          summaries.length === 1
+            ? `Create a meeting on ${asked}.`
+            : `Create ${summaries.length} meetings: ${asked}.`,
+      },
+      {
+        role: 'assistant',
+        // One sentence only: the cards below carry the date, calendar and stage.
+        content: failures.length > 0 ? `${answer} ${failures.join(' ')}` : answer,
+        meetingBooked: summaries.map((summary) => ({ kind: 'meeting_booked', ...summary })),
+      },
+    ]);
   };
 
   const insertClientPortalLink = async () => {
@@ -1570,6 +1636,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       ({
         attachments: _attachments,
         meetingCard: _meetingCard,
+        meetingBooked: _meetingBooked,
         calendarMeetings: _calendarMeetings,
         signedContracts: _signedContracts,
         paidPayments: _paidPayments,
@@ -1660,6 +1727,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       const createdFiles: RmqAiChatFile[] = [];
       const appMapLinks: string[] = [];
       let meetingCard: ChatMeetingCardData | undefined;
+      let meetingBooked: ChatMeetingBookedData[] | undefined;
       let calendarMeetings: ChatCalendarDayData | undefined;
       let signedContracts: ChatSignedContractsData | undefined;
       let paidPayments: ChatPaidPaymentsData | undefined;
@@ -1737,12 +1805,32 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                 if (match) appMapLinks.push(`[${match[1]}](${match[2]})`);
               }
             }
-            if (fnName === 'create_lead' || fnName === 'create_meeting') {
+            if (fnName === 'create_lead') {
               if (!String(toolResult).startsWith('Error')) {
                 toast.success(toolResult);
                 onClientUpdate?.();
               } else {
                 toast.error(toolResult);
+              }
+            }
+            if (
+              fnName === 'create_meeting' ||
+              fnName === 'reschedule_meeting' ||
+              fnName === 'update_meeting_participants'
+            ) {
+              // These tools also answer with questions ("I need the meeting time"), which must not
+              // show up as a green "meeting booked". Only a real write leaves a toast behind.
+              const booked = takeRmqAiMeetingBookingToast();
+              if (booked) {
+                toast.success(booked);
+                onClientUpdate?.();
+              } else if (String(toolResult).startsWith('Error')) {
+                toast.error(toolResult);
+              }
+              const bookedCards = parseMeetingBookedCards(toolResult);
+              if (bookedCards.length > 0) {
+                meetingBooked = [...(meetingBooked || []), ...bookedCards];
+                holdTypewriter = true;
               }
             }
             if (fnName === 'setup_client_portal') {
@@ -1909,6 +1997,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           attachments: createdFiles.length ? createdFiles : undefined,
           draftAction,
           meetingCard,
+          meetingBooked,
           calendarMeetings,
           signedContracts,
           paidPayments,
@@ -2068,10 +2157,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   };
 
-  const stopVoiceToInput = async () => {
+  /**
+   * Finish recording and put the transcript in the composer.
+   *
+   * With `send`, it goes straight to the chat instead: dictating and then having to reach for the
+   * send button is two steps for one thought. The confirm button is still there for anyone who
+   * wants to read it over or add to it first.
+   */
+  const stopVoiceToInput = async (options?: { send?: boolean }) => {
     if (!isVoiceRecording || isVoiceBusy) return;
     const base = voiceBaseInputRef.current.trim();
     setIsVoiceBusy(true);
+    setVoicePendingAction(options?.send ? 'send' : 'input');
     try {
       const spoken = (await stopVoiceRecording()).trim();
       const message = combineLiveTranscript(voiceBaseInputRef.current, spoken, '');
@@ -2086,12 +2183,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       setInput(message);
       setCaret(message.length);
       setSuggestDismissed(false);
+      if (options?.send && message.trim()) {
+        setInput('');
+        setCaret(0);
+        await handleSend(message);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to stop recording');
       setInput(base);
       setCaret(base.length);
     } finally {
       setIsVoiceBusy(false);
+      setVoicePendingAction(null);
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
@@ -5625,6 +5728,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   hasLead={onClientPage}
                   disabled={isLoading}
                   onAction={handleQuickAction}
+                  onOpenCreateMeeting={openCreateMeeting}
                   signals={
                     onClientPage && openClientChip?.id
                       ? buildLeadSignals({
@@ -5652,7 +5756,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   ? stripAiEmailSignature(String(msg.content || ''))
                   : msg.calendarMeetings || msg.signedContracts || msg.paidPayments || msg.missedComms || msg.expenses || msg.employeePresence
                     ? calendarDayIntro(String(msg.content || ''))
-                    : String(msg.content || '');
+                    : stripMeetingBookedMarker(String(msg.content || ''));
                 const summaryText = msg.leadSummary ? String(msg.content || '') : '';
                 const userVisible =
                   msg.role === 'user'
@@ -5724,6 +5828,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         })}
                         {msg.streaming ? <span className="ai-stream-caret" aria-hidden /> : null}
                       </>
+                    ) : null}
+                    {msg.role === 'assistant' && msg.meetingBooked?.length ? (
+                      <ChatMeetingBookedCards data={msg.meetingBooked} />
                     ) : null}
                     {msg.role === 'assistant' && msg.meetingCard ? (
                       <ChatMeetingCards data={msg.meetingCard} />
@@ -6059,40 +6166,48 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     </button>
                               </div>
                   ) : null}
-                  <div className="relative shrink-0 self-center pr-1.5">
-                    {isVoiceActive || !(input.trim() || images.length > 0) ? (
+                  <div className="relative flex shrink-0 items-center gap-1.5 self-center pr-1.5">
+                    {isVoiceActive ? (
+                      <>
+                        <button
+                          type="button"
+                          className="ai-voice-accept-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0"
+                          onClick={() => void stopVoiceToInput()}
+                          disabled={isVoiceBusy}
+                          aria-label="Put the recording in the box"
+                          title="Put the recording in the box"
+                        >
+                          {isVoiceBusy && voicePendingAction === 'input' ? (
+                            <span className="loading loading-spinner loading-xs text-white" />
+                          ) : (
+                            <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="ai-send-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white"
+                          onClick={() => void stopVoiceToInput({ send: true })}
+                          disabled={isVoiceBusy}
+                          aria-label="Send the recording"
+                          title="Send the recording"
+                        >
+                          {isVoiceBusy && voicePendingAction === 'send' ? (
+                            <span className="loading loading-spinner loading-xs text-white" />
+                          ) : (
+                            <PaperAirplaneIcon className="h-5 w-5" />
+                          )}
+                        </button>
+                      </>
+                    ) : !(input.trim() || images.length > 0) ? (
                     <button
                       type="button"
-                      className={`ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 ${
-                        isVoiceRecording || isVoiceBusy
-                          ? 'ai-voice-accept-btn'
-                          : 'ai-send-btn text-white'
-                      }`}
+                      className="ai-send-btn ai-composer-btn btn btn-circle btn-sm h-10 w-10 shrink-0 border-0 text-white"
                       onClick={() => toggleVoiceInput()}
-                      disabled={(isLoading && !isVoiceActive) || isVoiceBusy}
-                      aria-pressed={isVoiceRecording}
-                      aria-label={
-                        isVoiceBusy
-                          ? 'Transcribing'
-                          : isVoiceRecording
-                            ? 'Use recording'
-                            : 'Voice input'
-                      }
-                      title={
-                        isVoiceBusy
-                          ? 'Transcribing'
-                          : isVoiceRecording
-                            ? 'Use recording'
-                            : 'Voice input'
-                      }
+                      disabled={isLoading}
+                      aria-label="Voice input"
+                      title="Voice input"
                     >
-                      {isVoiceBusy ? (
-                        <span className="loading loading-spinner loading-xs text-white" />
-                      ) : isVoiceRecording ? (
-                        <CheckIcon className="h-5 w-5" strokeWidth={2.5} />
-                      ) : (
-                        <MicrophoneIcon className="h-5 w-5" />
-                      )}
+                      <MicrophoneIcon className="h-5 w-5" />
                     </button>
                     ) : (
                           <button
@@ -6183,6 +6298,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       onClose={() => setShowRmqAiIntroModal(false)}
       isDarkTheme={isDarkTheme}
       isMobile={isMobile}
+    />
+    <ChatCreateMeetingModal
+      open={createMeetingOpen}
+      lead={currentLead || getRmqAiCurrentLead()}
+      onClose={() => setCreateMeetingOpen(false)}
+      onBooked={handleMeetingCreated}
     />
     </>
   );

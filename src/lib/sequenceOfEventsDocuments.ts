@@ -4,6 +4,7 @@ import {
   buildCaseDocumentStoragePath,
   resolveCaseDocumentUploadContentType,
 } from './caseDocumentsStorage';
+import { expandLeadCaseDocumentLeadNumbers } from './leadCaseDocumentKeys';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from './leadOneDrivePaths';
 import {
   leadSubEffortSavedUpdatedBy,
@@ -268,21 +269,53 @@ function mapEmailAttachmentsToCaseDocuments(
   }));
 }
 
+/**
+ * One row per file, keeping the newest.
+ *
+ * Reading every spelling of the lead number can turn up the same file twice, because a document
+ * filed again later (a Smart Scan re-run, say) is a second row pointing at the same object.
+ * Expects the rows newest-first, which is how they are fetched.
+ */
+export function dedupeCaseRowsByStoragePath<T extends { storage_path: string }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of rows) {
+    const key = normalizeStorageKey(row.storage_path);
+    if (!key) {
+      out.push(row);
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
 async function fetchCaseCategoryRows(leadNumber: string, classificationIds: string[]): Promise<CaseDocRow[]> {
+  /*
+   * Every spelling of the lead number, not just the one this screen happens to hold.
+   * `lead_case_documents.lead_number` is text, and what gets written there depends on who wrote the
+   * row: Smart Scan files a legacy lead under its bare id, the client page uses `L123`, a master
+   * lead is shown as `123/1`. Matching one string exactly hides whole uploaders from the list, which
+   * is why the document viewer has always expanded them.
+   */
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
     .select(
       'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
     )
-    .eq('lead_number', leadNumber)
+    .in('lead_number', expandLeadCaseDocumentLeadNumbers(leadNumber))
     .in('classification_id', classificationIds)
     .not('storage_path', 'is', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return ((rows ?? []) as CaseDocRow[]).filter(
-    (r) => !isInternalFolder(r.onedrive_subfolder) && r.contact_id == null,
+  return dedupeCaseRowsByStoragePath(
+    ((rows ?? []) as CaseDocRow[]).filter(
+      (r) => !isInternalFolder(r.onedrive_subfolder) && r.contact_id == null,
+    ),
   );
 }
 
@@ -655,7 +688,7 @@ async function fetchCaseDocPortalMetaByPaths(
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
     .select('storage_path, contact_id, document_type_id, uploaded_by')
-    .eq('lead_number', leadNumber)
+    .in('lead_number', expandLeadCaseDocumentLeadNumbers(leadNumber))
     .in('storage_path', unique);
   if (error || !rows?.length) return out;
 
@@ -753,14 +786,16 @@ async function fetchClientPortalCaseRows(leadNumber: string): Promise<CaseDocRow
     .select(
       'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
     )
-    .eq('lead_number', leadNumber)
+    .in('lead_number', expandLeadCaseDocumentLeadNumbers(leadNumber))
     .not('contact_id', 'is', null)
     .not('storage_path', 'is', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
 
-  return ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder));
+  return dedupeCaseRowsByStoragePath(
+    ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder)),
+  );
 }
 
 export async function fetchClientPortalUploadCount(
@@ -817,7 +852,7 @@ export async function deleteCaseCategoryDocument(params: {
     const { error: delByPath } = await supabase
       .from('lead_case_documents')
       .delete()
-      .eq('lead_number', lead)
+      .in('lead_number', expandLeadCaseDocumentLeadNumbers(lead))
       .eq('storage_path', path);
     if (delByPath) throw delByPath;
   }

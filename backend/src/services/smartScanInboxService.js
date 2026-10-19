@@ -304,20 +304,21 @@ async function processItem(id) {
   return smartScanClassifyService.processByItemId(id, { force: true });
 }
 
-async function updateItem(id, patch) {
-  return smartScanClassifyService.updateByItemId(id, patch);
+async function updateItem(id, patch, actor) {
+  return smartScanClassifyService.updateByItemId(id, patch, actor);
 }
 
-async function assignLead(id, lead) {
-  return smartScanClassifyService.assignLeadByItemId(id, lead);
+/** `actor` is the signed-in reviewer doing the filing; the documents are credited to them. */
+async function assignLead(id, lead, actor) {
+  return smartScanClassifyService.assignLeadByItemId(id, lead, actor);
 }
 
-async function approveItem(id) {
-  return smartScanClassifyService.approveByItemId(id);
+async function approveItem(id, actor) {
+  return smartScanClassifyService.approveByItemId(id, actor);
 }
 
-async function splitCaseDocument(caseDocumentId) {
-  return smartScanClassifyService.splitLeadCaseDocument(caseDocumentId);
+async function splitCaseDocument(caseDocumentId, actor) {
+  return smartScanClassifyService.splitLeadCaseDocument(caseDocumentId, actor);
 }
 
 async function removeItem(id) {

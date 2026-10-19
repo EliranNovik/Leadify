@@ -737,6 +737,23 @@ async function copyScanFileToCaseDocuments(row, leadNumber) {
   return { destPath, fileName, contentType, fileSize: buffer.length };
 }
 
+/**
+ * Who a filed document is credited to.
+ *
+ * The person who assigned the scan to the lead, when the caller says who that was. Smart Scan is
+ * only the fallback: the document viewer and the sub-efforts log resolve this text against `users`
+ * to show a name and photo, and 'Smart Scan' matches nobody — which also makes those screens read it
+ * as an outside upload rather than a colleague's.
+ */
+const FILED_BY_FALLBACK = 'Smart Scan';
+const FILED_BY_MAX = 120;
+
+function filedBy(actor) {
+  const name = String(actor || '').trim();
+  if (!name || name.toLowerCase() === 'unknown user') return FILED_BY_FALLBACK;
+  return name.slice(0, FILED_BY_MAX);
+}
+
 /** The lead's Sequence of Events sub-effort, matched by classification and falling back to its name. */
 async function findSequenceOfEventsSubEffort(identity, classificationId) {
   if (!identity?.newLeadId && !identity?.legacyLeadId) return null;
@@ -763,7 +780,7 @@ async function findSequenceOfEventsSubEffort(identity, classificationId) {
   );
 }
 
-async function attachToSequenceOfEventsSubEffort(identity, classificationId, destPath, fileName, contentType) {
+async function attachToSequenceOfEventsSubEffort(identity, classificationId, destPath, fileName, contentType, actor) {
   const soe = await findSequenceOfEventsSubEffort(identity, classificationId);
   if (!soe) return;
 
@@ -772,14 +789,14 @@ async function attachToSequenceOfEventsSubEffort(identity, classificationId, des
   items.push({ path: destPath, name: fileName, mimeType: contentType });
   const { error: upErr } = await supabase
     .from('lead_sub_efforts')
-    .update({ document_url: items, updated_by: 'Smart Scan', updated_at: nowIso() })
+    .update({ document_url: items, updated_by: filedBy(actor), updated_at: nowIso() })
     .eq('id', soe.id);
   if (upErr) {
     console.warn('⚠️  Smart Scan sub-effort attach failed:', upErr.message || upErr);
   }
 }
 
-async function removePathFromSequenceOfEvents(identity, classificationId, destPath) {
+async function removePathFromSequenceOfEvents(identity, classificationId, destPath, actor) {
   const soe = await findSequenceOfEventsSubEffort(identity, classificationId);
   if (!soe) return;
   const items = normalizeSubEffortDocs(soe.document_url).filter(
@@ -787,7 +804,7 @@ async function removePathFromSequenceOfEvents(identity, classificationId, destPa
   );
   await supabase
     .from('lead_sub_efforts')
-    .update({ document_url: items, updated_by: 'Smart Scan', updated_at: nowIso() })
+    .update({ document_url: items, updated_by: filedBy(actor), updated_at: nowIso() })
     .eq('id', soe.id);
 }
 
@@ -848,7 +865,7 @@ function filingFilenameFor(source) {
   );
 }
 
-async function saveScanToLeadCaseDocuments(row, lead) {
+async function saveScanToLeadCaseDocuments(row, lead, actor) {
   const source = await resolveScanSourceRow(row);
   const identity = await resolveLeadIdentity(lead);
   if (!identity.leadNumber) throw new Error('Lead number is required');
@@ -863,6 +880,7 @@ async function saveScanToLeadCaseDocuments(row, lead) {
         raw.caseDocumentPath,
         filingFilenameFor(source),
         source.content_type || 'application/pdf',
+        actor,
       );
     }
     return raw;
@@ -891,7 +909,7 @@ async function saveScanToLeadCaseDocuments(row, lead) {
       file_size: copied.fileSize,
       mime_type: copied.contentType,
       classification_id: classificationId,
-      uploaded_by: 'Smart Scan',
+      uploaded_by: filedBy(actor),
       ai_summary_status: 'pending',
       contact_id: null,
       document_type_id: documentTypeId,
@@ -916,6 +934,7 @@ async function saveScanToLeadCaseDocuments(row, lead) {
     copied.destPath,
     copied.fileName,
     copied.contentType,
+    actor,
   );
 
   raw.caseDocumentPath = copied.destPath;
@@ -962,7 +981,7 @@ async function pdfPageCount(buffer) {
   }
 }
 
-async function splitLeadCaseDocument(caseDocumentId) {
+async function splitLeadCaseDocument(caseDocumentId, actor) {
   const id = String(caseDocumentId || '').trim();
   if (!id) throw new Error('Document is required');
 
@@ -1030,7 +1049,7 @@ async function splitLeadCaseDocument(caseDocumentId) {
           file_size: bytes.length,
           mime_type: 'application/pdf',
           classification_id: caseDoc.classification_id,
-          uploaded_by: 'Smart Scan',
+          uploaded_by: filedBy(actor),
           ai_summary_status: 'pending',
           contact_id: null,
           document_type_id: documentTypeId,
@@ -1068,7 +1087,7 @@ async function splitLeadCaseDocument(caseDocumentId) {
   }));
   const classificationId = caseDoc.classification_id || (await resolveSequenceOfEventsClassificationId());
   if (classificationId && (identity.newLeadId || identity.legacyLeadId)) {
-    await removePathFromSequenceOfEvents(identity, classificationId, caseDoc.storage_path);
+    await removePathFromSequenceOfEvents(identity, classificationId, caseDoc.storage_path, actor);
     for (const part of insertedPaths) {
       await attachToSequenceOfEventsSubEffort(
         identity,
@@ -1076,6 +1095,7 @@ async function splitLeadCaseDocument(caseDocumentId) {
         part.destPath,
         part.fileName,
         'application/pdf',
+        actor,
       );
     }
   }
@@ -1144,7 +1164,7 @@ function normalizeEditedFilename(value, originalFilename) {
  * `file_name` is what every screen displays. Moving the object would break live links in order to
  * change a string nobody reads.
  */
-async function renameFiledCaseDocument(row, nextName) {
+async function renameFiledCaseDocument(row, nextName, actor) {
   const raw = asAiRaw(row);
   const caseDocumentId = String(raw.caseDocumentId || '').trim();
   if (!caseDocumentId) return;
@@ -1186,7 +1206,7 @@ async function renameFiledCaseDocument(row, nextName) {
   if (!changed) return;
   const { error: soeErr } = await supabase
     .from('lead_sub_efforts')
-    .update({ document_url: renamed, updated_by: 'Smart Scan', updated_at: nowIso() })
+    .update({ document_url: renamed, updated_by: filedBy(actor), updated_at: nowIso() })
     .eq('id', soe.id);
   if (soeErr) {
     console.warn('⚠️  Smart Scan sub-effort rename failed:', soeErr.message || soeErr);
@@ -1199,7 +1219,7 @@ async function renameFiledCaseDocument(row, nextName) {
  * Without this the drawer's Save only touched client state, so the typed filename survived until the
  * next fetch and the AI's suggestion was what actually got filed under the lead.
  */
-async function updateByItemId(id, patch) {
+async function updateByItemId(id, patch, actor) {
   const row = await findDocument(parseItemRef(id));
   if (!row) throw new Error('Scan not found');
 
@@ -1228,17 +1248,17 @@ async function updateByItemId(id, patch) {
   if (Object.keys(fields).length === 0) return row;
   const saved = await patchDocument(row, fields, 'Details updated');
   // After the scan is renamed, not before: the filed copy should never end up ahead of the record.
-  if (fields.suggested_filename) await renameFiledCaseDocument(row, fields.suggested_filename);
+  if (fields.suggested_filename) await renameFiledCaseDocument(row, fields.suggested_filename, actor);
   return saved;
 }
 
-async function assignLeadByItemId(id, leadInput) {
+async function assignLeadByItemId(id, leadInput, actor) {
   const row = await findDocument(parseItemRef(id));
   if (!row) throw new Error('Scan not found');
   const lead = sanitizeLeadRef(leadInput);
   if (!lead) throw new Error('Lead is required');
   const source = await resolveScanSourceRow(row);
-  const aiRaw = await saveScanToLeadCaseDocuments(source, lead);
+  const aiRaw = await saveScanToLeadCaseDocuments(source, lead, actor);
   aiRaw.assignedLead = lead;
   aiRaw.leadAssignedBy = 'user';
   aiRaw.leadMatchApplied = true;
@@ -1250,14 +1270,14 @@ async function assignLeadByItemId(id, leadInput) {
   );
 }
 
-async function approveByItemId(id) {
+async function approveByItemId(id, actor) {
   const row = await findDocument(parseItemRef(id));
   if (!row) throw new Error('Scan not found');
   const source = await resolveScanSourceRow(row);
   const aiRaw = asAiRaw(source);
   const lead = sanitizeLeadRef(aiRaw.assignedLead || aiRaw.suggestedLead);
   if (!lead) throw new Error('No AI lead match to approve');
-  const savedRaw = await saveScanToLeadCaseDocuments(source, lead);
+  const savedRaw = await saveScanToLeadCaseDocuments(source, lead, actor);
   savedRaw.assignedLead = lead;
   savedRaw.leadAssignedBy = savedRaw.leadAssignedBy === 'user' ? 'user' : 'ai';
   savedRaw.approvedAt = nowIso();

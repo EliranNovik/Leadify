@@ -8,6 +8,11 @@ import {
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
 import { getValidTeamsLink } from '../lib/meetingJoinLink';
+import {
+  formatMeetingDate as formatBookedMeetingDate,
+  MEETING_BOOKED_UI_MARKER,
+  type AiMeetingSummary,
+} from '../lib/aiMeetingBooking';
 import { getLeadRoleIcon } from '../lib/leadEmployeeRoles';
 import { getSoftStageBadgeStyle, getStageColour, getStageName } from '../lib/stageUtils';
 import { formatChatCurrencyText } from '../lib/leadCurrencyDisplay';
@@ -489,6 +494,132 @@ function MeetingCardBlock({
           <Field label="Case brief" value={caseBrief} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A meeting the chat just booked, rendered instead of the plain confirmation lines.
+ *
+ * The data is the booker's own summary, so the card and the sentence it replaces can never
+ * disagree about the date, the calendar or what happened to the lead stage.
+ */
+export type ChatMeetingBookedData = AiMeetingSummary & { kind?: string };
+
+/**
+ * The meetings a booking tool just created, one card each.
+ *
+ * The tool writes its JSON on the single line after the marker — one object for one meeting, an
+ * array when several were booked together — so the whole line can be parsed as it stands.
+ */
+export function parseMeetingBookedCards(raw: string): ChatMeetingBookedData[] {
+  const text = String(raw || '');
+  const marker = text.indexOf(MEETING_BOOKED_UI_MARKER);
+  if (marker < 0) return [];
+  const newline = text.indexOf('\n', marker);
+  if (newline < 0) return [];
+  try {
+    const parsed = JSON.parse(text.slice(newline + 1).split('\n')[0].trim());
+    const rows = (Array.isArray(parsed) ? parsed : [parsed]) as ChatMeetingBookedData[];
+    return rows.filter((row) => row?.date && row?.time);
+  } catch {
+    return [];
+  }
+}
+
+/** The confirmation lines with the card drawn, so the text is not said twice. */
+export function stripMeetingBookedMarker(text: string): string {
+  const marker = String(text || '').indexOf(MEETING_BOOKED_UI_MARKER);
+  return marker < 0 ? String(text || '') : String(text || '').slice(0, marker).trimEnd();
+}
+
+/** One card per meeting booked in the same turn, stacked the way the other chat cards are. */
+export function ChatMeetingBookedCards({ data }: { data: ChatMeetingBookedData[] }) {
+  const rows = (data || []).filter(Boolean);
+  if (rows.length === 0) return null;
+  return (
+    <div className="ai-meeting-stack">
+      {rows.map((row, index) => (
+        <ChatMeetingBookedCard key={`${row.leadNumber}-${row.date}-${row.time}-${index}`} data={row} />
+      ))}
+    </div>
+  );
+}
+
+function ChatMeetingBookedCard({ data }: { data: ChatMeetingBookedData }) {
+  const joinUrl = getValidTeamsLink(data.joinUrl || '');
+  const location = cleanCardText(data.location);
+  const manager = cleanCardText(data.manager);
+  const helper = cleanCardText(data.helper);
+  const when = [
+    formatBookedMeetingDate(String(data.date || '')),
+    cleanCardText(data.time),
+    data.durationMinutes ? `${data.durationMinutes} min` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const notes = [
+    data.replaced?.date
+      ? `Replaces the meeting on ${formatBookedMeetingDate(String(data.replaced.date))}${
+          data.replaced.time ? ` at ${data.replaced.time}` : ''
+        }, now cancelled.`
+      : '',
+    ...(data.notes || []),
+  ].filter(Boolean);
+
+  return (
+    <div className="ai-meeting-card">
+      <div className="ai-meeting-card-head">
+        <span className="ai-meeting-card-title">
+          {data.mode === 'reschedule' ? 'Meeting moved' : 'Meeting created'}
+        </span>
+        {data.leadNumber ? (
+          <span className="ai-meeting-card-lead">
+            <ChatLeadNumberText text={data.leadNumber} />
+            {data.leadName ? <span className="ai-meeting-card-name">{data.leadName}</span> : null}
+          </span>
+        ) : null}
+      </div>
+      <div className="ai-meeting-body">
+        <div className="ai-meeting-when">
+          <CalendarDaysIcon className="h-5 w-5 shrink-0" />
+          <span>{when || '—'}</span>
+        </div>
+        {location ? (
+          <div className="ai-meeting-when">
+            <MapPinIcon className="h-5 w-5 shrink-0" />
+            <span>{location}</span>
+          </div>
+        ) : null}
+        {data.calendarLabel ? (
+          <div className="ai-meeting-when">
+            <BuildingOffice2Icon className="h-5 w-5 shrink-0" />
+            <span>
+              {data.calendarLabel}
+              {data.isLegacy ? ' (legacy lead)' : ''}
+            </span>
+          </div>
+        ) : null}
+        <Field label="Manager" value={manager} rtl={false} />
+        <Field label="Helper" value={helper} rtl={false} />
+        <Field label="Lead stage" value={cleanCardText(data.stageNote)} rtl={false} />
+        {notes.map((note) => (
+          <p key={note} className="ai-meeting-empty">
+            {note}
+          </p>
+        ))}
+        {joinUrl ? (
+          <a
+            href={joinUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ai-cal-meeting-join ai-send-btn self-start"
+          >
+            <VideoCameraIcon className="h-5 w-5 shrink-0" />
+            Join
+          </a>
+        ) : null}
+      </div>
     </div>
   );
 }

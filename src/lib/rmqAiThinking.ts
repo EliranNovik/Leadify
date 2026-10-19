@@ -218,6 +218,10 @@ export function labelForTool(name: string, argsRaw?: unknown): string {
       return 'Creating the lead';
     case 'create_meeting':
       return 'Scheduling the meeting';
+    case 'reschedule_meeting':
+      return 'Moving the meeting';
+    case 'update_meeting_participants':
+      return 'Updating who is on the meeting';
     case 'search_my_past_chats':
       return 'Searching past chats';
     case 'get_past_chat':

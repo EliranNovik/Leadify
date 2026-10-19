@@ -1,6 +1,16 @@
 const smartScanInboxService = require('../services/smartScanInboxService');
 const scanCenterInboxScheduler = require('../services/scanCenterInboxScheduler');
 
+/**
+ * The signed-in reviewer the browser says is doing this, so documents filed under a lead are
+ * credited to them rather than to Smart Scan. Advisory only — nothing is authorised by it, and the
+ * service falls back to Smart Scan when it is missing.
+ */
+function actorFrom(req) {
+  const name = String(req.body?.actorName || req.body?.uploadedBy || '').trim();
+  return name ? name.slice(0, 120) : null;
+}
+
 const smartScanController = {
   async inbox(req, res) {
     try {
@@ -69,7 +79,7 @@ const smartScanController = {
         return res.status(400).json({ success: false, error: 'id is required' });
       }
       const patch = req.body?.patch && typeof req.body.patch === 'object' ? req.body.patch : {};
-      const row = await smartScanInboxService.updateItem(id, patch);
+      const row = await smartScanInboxService.updateItem(id, patch, actorFrom(req));
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       // The saved name goes back to the caller because it may have been normalised here — the drawer
       // has to show the name the document was actually filed under, not the raw typed one.
@@ -93,7 +103,7 @@ const smartScanController = {
       if (!lead) {
         return res.status(400).json({ success: false, error: 'lead is required' });
       }
-      await smartScanInboxService.assignLead(id, lead);
+      await smartScanInboxService.assignLead(id, lead, actorFrom(req));
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.status(200).json({ success: true });
     } catch (error) {
@@ -111,7 +121,7 @@ const smartScanController = {
       if (!caseDocumentId) {
         return res.status(400).json({ success: false, error: 'caseDocumentId is required' });
       }
-      const data = await smartScanInboxService.splitCaseDocument(caseDocumentId);
+      const data = await smartScanInboxService.splitCaseDocument(caseDocumentId, actorFrom(req));
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.status(200).json({ success: true, ...data });
     } catch (error) {
@@ -129,7 +139,7 @@ const smartScanController = {
       if (!id) {
         return res.status(400).json({ success: false, error: 'id is required' });
       }
-      await smartScanInboxService.approveItem(id);
+      await smartScanInboxService.approveItem(id, actorFrom(req));
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.status(200).json({ success: true });
     } catch (error) {

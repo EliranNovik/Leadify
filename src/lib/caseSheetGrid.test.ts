@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
   CASE_SHEET_ALIGNMENTS,
+  changedCellsBetween,
+  gridShapeChanged,
+  restoreCells,
+  restoreGridShape,
   hasNamedColumns,
   applyBorderPreset,
   CASE_SHEET_COLUMN_WIDTH_DEFAULT,
@@ -1357,4 +1361,91 @@ test('an imported width that equals the default is not stored as an override', (
   });
 
   assert.deepEqual(sizeMapToRecord(grid.columnWidths), {});
+});
+
+/* ------------------------------------------------------------------ undo history */
+
+test('only the cells that changed are reported, by text or by formatting', () => {
+  const before = setCell(createEmptyGrid(), 0, 0, 'one').grid;
+  const typed = setCell(before, 1, 1, 'two').grid;
+  const styled = applyFormat(typed, [{ rowIndex: 0, colIndex: 0 }], { bold: true }).grid;
+
+  assert.deepEqual(changedCellsBetween(before, typed), [{ rowIndex: 1, colIndex: 1 }]);
+  assert.deepEqual(changedCellsBetween(typed, styled), [{ rowIndex: 0, colIndex: 0 }]);
+  assert.deepEqual(changedCellsBetween(before, before), []);
+});
+
+test('undoing a cell puts its old text and formatting back', () => {
+  const before = setCell(createEmptyGrid(), 0, 0, 'original').grid;
+  const after = setCell(before, 0, 0, 'replaced').grid;
+
+  const undone = restoreCells(after, before, changedCellsBetween(before, after));
+
+  assert.equal(getCell(undone, 0, 0), 'original');
+});
+
+test('undoing leaves a cell a colleague changed in the meantime alone', () => {
+  const before = setCell(createEmptyGrid(), 0, 0, 'mine').grid;
+  const after = setCell(before, 0, 0, 'mine edited').grid;
+  // Their edit lands after my step was recorded, in a cell my step never touched.
+  const withTheirEdit = applyRemoteCell(after, 5, 2, 'theirs');
+
+  const undone = restoreCells(withTheirEdit, before, changedCellsBetween(before, after));
+
+  assert.equal(getCell(undone, 0, 0), 'mine');
+  assert.equal(getCell(undone, 5, 2), 'theirs');
+});
+
+test('undoing a cell that did not exist before clears it again', () => {
+  const before = createEmptyGrid();
+  const after = applyFormat(setCell(before, 2, 1, 'typed').grid, [{ rowIndex: 2, colIndex: 1 }], {
+    bold: true,
+  }).grid;
+
+  const undone = restoreCells(after, before, changedCellsBetween(before, after));
+
+  assert.equal(getCell(undone, 2, 1), '');
+  assert.equal(undone.formats.has(cellKey(2, 1)), false);
+});
+
+test('a shape change is noticed, and a cell-only change is not', () => {
+  const base = createEmptyGrid();
+
+  assert.equal(gridShapeChanged(base, appendRows(base, 5)), true);
+  assert.equal(gridShapeChanged(base, appendColumn(base)), true);
+  assert.equal(gridShapeChanged(base, setColumnWidth(base, 0, 240)), true);
+  assert.equal(gridShapeChanged(base, { ...base, rtl: !base.rtl }), true);
+  assert.equal(gridShapeChanged(base, setCell(base, 0, 0, 'x').grid), false);
+  assert.equal(gridShapeChanged(base, base), false);
+});
+
+test('restoring the shape puts the columns, sizes and direction back without touching cells', () => {
+  const before = createEmptyGrid();
+  const after = setColumnWidth(appendColumn(appendRows(before, 10)), 0, 240);
+  const withText = setCell(after, 0, 0, 'kept').grid;
+
+  const restored = restoreGridShape(withText, before);
+
+  assert.equal(restored.rowCount, before.rowCount);
+  assert.deepEqual(restored.columns, before.columns);
+  assert.deepEqual(sizeMapToRecord(restored.columnWidths), {});
+  assert.equal(getCell(restored, 0, 0), 'kept');
+});
+
+test('undoing a deleted row brings back the rows that shifted up', () => {
+  let grid = createEmptyGrid();
+  grid = setCell(grid, 0, 0, 'first').grid;
+  grid = setCell(grid, 1, 0, 'second').grid;
+  grid = setCell(grid, 2, 0, 'third').grid;
+
+  const after = deleteRow(grid, 1).grid;
+  assert.equal(getCell(after, 1, 0), 'third');
+
+  let undone = restoreCells(after, grid, changedCellsBetween(grid, after));
+  if (gridShapeChanged(grid, after)) undone = restoreGridShape(undone, grid);
+
+  assert.equal(getCell(undone, 0, 0), 'first');
+  assert.equal(getCell(undone, 1, 0), 'second');
+  assert.equal(getCell(undone, 2, 0), 'third');
+  assert.equal(undone.rowCount, grid.rowCount);
 });

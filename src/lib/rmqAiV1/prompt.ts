@@ -38,6 +38,40 @@ function messageText(content: unknown): string {
   return '';
 }
 
+/**
+ * Today, in the firm's timezone.
+ *
+ * Without this the model has no idea what day it is, so "tomorrow" or "Monday" became an invented
+ * date — usually one from its training data. Every relative day the user says is resolved against
+ * this line.
+ */
+export function describeNowForPrompt(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    weekday: 'long',
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  }).format(now);
+  const iso = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  const clock = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now);
+  return [
+    `RIGHT NOW: ${parts} (${iso}), ${clock} in Asia/Jerusalem, which is the office timezone and the one every date and time means.`,
+    'Work out tomorrow, a weekday, next week, and any other relative day from that date — never from your own idea of today.',
+    'When a tool takes a date you may also pass the words today or tomorrow and it resolves them itself.',
+  ].join(' ');
+}
+
 export async function buildRmqAiSystemPrompt(
   basePrompt: string,
   opts?: {
@@ -47,7 +81,12 @@ export async function buildRmqAiSystemPrompt(
   },
 ): Promise<string> {
   const open = getRmqAiCurrentLead();
-  const parts = [basePrompt, RMQ_AI_MEMORY_ROUTING_PROMPT, describeCurrentLeadForPrompt()];
+  const parts = [
+    basePrompt,
+    RMQ_AI_MEMORY_ROUTING_PROMPT,
+    describeNowForPrompt(),
+    describeCurrentLeadForPrompt(),
+  ];
   const blob = [
     opts?.userText || '',
     ...(opts?.conversationMessages || []).slice(-8).map((message) => messageText(message.content)),

@@ -30,9 +30,33 @@ const ALLOWED_TYPES = [
   'Naturalization Certificate',
   'Military Records',
   'Dissolution Hearing Summons',
+  'Application',
   'Other',
   'Unknown',
 ];
+
+/**
+ * Citizenship application forms, in the languages they actually arrive in.
+ *
+ * German: Antrag(sformular) auf Einbürgerung / Feststellung der deutschen Staatsangehörigkeit.
+ * Austrian: Antrag auf Verleihung / Erstreckung der Staatsbürgerschaft, plus the §58c Anzeige form.
+ * Matched against the title the model reads off the page as well as any raw text we hold, since a
+ * scan of a filled-in form is otherwise easy to read as a plain letter.
+ */
+const APPLICATION_FORM_PATTERNS = [
+  /antragsformular/i,
+  /\bantrag\b[\s\S]{0,80}(einb[üu]rgerung|staatsangeh[öo]rigkeit|staatsb[üu]rgerschaft)/i,
+  /(einb[üu]rgerungsantrag|einb[üu]rgerungsbegehren)/i,
+  /(anzeige|stbg)[\s\S]{0,40}\b58c\b|\b58c\b[\s\S]{0,60}(anzeige|stbg|staatsb[üu]rgerschaft)/i,
+  /application\s+(form\s+)?for[\s\S]{0,60}(citizenship|naturalisation|naturalization|nationality)/i,
+  /(citizenship|naturalisation|naturalization|nationality)\s+application(\s+form)?/i,
+];
+
+function isApplicationFormText(raw) {
+  const text = String(raw || '');
+  if (!text.trim()) return false;
+  return APPLICATION_FORM_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 function getOpenAiKey() {
   return (process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '').trim();
@@ -107,9 +131,15 @@ function matchHebrewDocumentType(raw) {
   return null;
 }
 
+function matchApplicationDocumentType(raw) {
+  return isApplicationFormText(raw) ? 'Application' : null;
+}
+
 function normalizeType(value) {
   const raw = String(value || '').trim();
   if (!raw) return 'Unknown';
+  const application = matchApplicationDocumentType(raw);
+  if (application) return application;
   const hebrew = matchHebrewDocumentType(raw);
   if (hebrew) return hebrew;
   const exact = ALLOWED_TYPES.find((type) => type.toLowerCase() === raw.toLowerCase());
@@ -146,6 +176,14 @@ function normalizeType(value) {
     translation: 'Translation',
     naturalization: 'Naturalization Certificate',
     military: 'Military Records',
+    application: 'Application',
+    applicationform: 'Application',
+    citizenshipapplication: 'Application',
+    naturalizationapplication: 'Application',
+    naturalisationapplication: 'Application',
+    antrag: 'Application',
+    antragsformular: 'Application',
+    einburgerungsantrag: 'Application',
     dissolutionhearingsummons: 'Dissolution Hearing Summons',
     dissolutionsummons: 'Dissolution Hearing Summons',
     windingupsummons: 'Dissolution Hearing Summons',
@@ -153,6 +191,18 @@ function normalizeType(value) {
     other: 'Other',
   };
   return aliases[compact] || 'Other';
+}
+
+/**
+ * A filled-in application form is easy to read as a plain letter, so the model sometimes returns
+ * Other, Unknown or Contract for one. When its own title, summary or suggested filename names the
+ * form, that wins over the type it picked. Anything it recognised as a specific document is left
+ * alone — in particular Naturalization Certificate, which is the grant, not the request for it.
+ */
+function applicationFormOverride(documentType, ...texts) {
+  const current = normalizeType(documentType);
+  if (current !== 'Other' && current !== 'Unknown' && current !== 'Contract') return documentType;
+  return texts.some(isApplicationFormText) ? 'Application' : documentType;
 }
 
 function isoDate(value) {
@@ -193,17 +243,25 @@ function parseModelJson(text) {
   return {
     documents: docs.map((row) => {
       const item = row && typeof row === 'object' ? row : {};
+      const title = String(item.title || item.documentType || 'Document');
+      const suggestedFilename = String(item.suggestedFilename || '');
+      const summary = String(item.summary || '').trim();
       return {
         pageStart: Number(item.pageStart) || 1,
         pageEnd: Number(item.pageEnd) || Number(item.pageStart) || 1,
-        documentType: String(item.documentType || 'Unknown'),
-        title: String(item.title || item.documentType || 'Document'),
-        suggestedFilename: String(item.suggestedFilename || ''),
+        documentType: applicationFormOverride(
+          String(item.documentType || 'Unknown'),
+          title,
+          summary,
+          suggestedFilename,
+        ),
+        title,
+        suggestedFilename,
         detectedPersonName: item.detectedPersonName ? String(item.detectedPersonName) : null,
         detectedCountry: item.detectedCountry ? String(item.detectedCountry) : null,
         documentDate: isoDate(item.documentDate),
         expiryDate: isoDate(item.expiryDate),
-        summary: String(item.summary || '').trim(),
+        summary,
         confidence: clampConfidence(item.confidence),
       };
     }),
@@ -258,6 +316,7 @@ function classifyPrompt(fileName, pageCount) {
     'תמצית רישום / תמצית רישום ממרשם האוכלוסין / Ministry of Interior population extract = Population Registry Extract (not Unknown, not Other).',
     'תעודת זהות = ID Card Copy. תעודת לידה = Birth Certificate. תעודת נישואין = Marriage Certificate. תעודת פטירה = Death Certificate. תעודת גירושין = Divorce Certificate. דרכון = Passport. ייפוי כוח = Power of Attorney.',
     'רשות התאגידים / Israeli Corporations Authority / יחידת אכיפה ובקרה letter titled זימון לדיון or בקשת פירוק (association or company winding-up hearing summons) = Dissolution Hearing Summons (not Other, not Contract, not Unknown). Use the letter date as documentDate. Put hearing date, court, case number, and association/company name in summary.',
+    'A citizenship application form = Application (not Contract, not Other, not Unknown), whether blank, filled in, or signed. German: Antragsformular, Antrag auf Einbürgerung, Einbürgerungsantrag, Antrag auf Feststellung der deutschen Staatsangehörigkeit (StAG forms). Austrian: Antrag auf Verleihung/Erstreckung der Staatsbürgerschaft and the §58c StbG Anzeige form. Also any English "Application for citizenship / naturalization" form. Put the applicant name and the authority it is addressed to in summary; use Naturalization Certificate only for an already-granted certificate, never for the form that requests it.',
     'suggestedFilename: PersonName_DocumentType_YYYY-MM-DD.pdf using underscores. Use undated if no date.',
     'confidence is 0 to 1. Set splitUncertain true if boundaries are unclear.',
     'Return JSON only, no markdown:',

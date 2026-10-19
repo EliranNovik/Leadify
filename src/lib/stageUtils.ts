@@ -102,13 +102,38 @@ export function listLeadStages(): Array<{ id: string; name: string }> {
 }
 
 /**
- * Gets the display name for a stage ID
- * @param stageId - The stage ID to get the name for
- * @returns The stage name or formatted stage ID as fallback
+ * Record a stage the user just set on a local lead row.
+ *
+ * The stamp is the point of this: `preferNewerLeadStage` decides who wins by `stage_changed_at`, so
+ * a patch that moves `stage` and leaves the old timestamp behind looks *older* than every refetch,
+ * including one that was already in flight with the previous stage in it. That snapshot then lands
+ * and quietly rolls the header back, where it stays until the page is reloaded.
+ *
+ * The display columns are dropped rather than guessed at: they are a join of the stage that was
+ * just replaced, and a stale label is worse than no label (the badge falls back to the stage id).
  */
+export function applyLocalLeadStage<T extends Record<string, any>>(
+  lead: T,
+  stage: string | number,
+  changedAt: string = new Date().toISOString(),
+  changedBy?: string | null,
+): T {
+  return {
+    ...lead,
+    stage,
+    stage_changed_at: changedAt,
+    ...(changedBy ? { stage_changed_by: changedBy } : {}),
+    stage_name: null,
+    stage_colour: null,
+  };
+}
+
 /**
  * When a live stage patch lands before an in-flight lead refetch, keep the newer stage
  * (by stage_changed_at) instead of rolling the UI back to the stale snapshot.
+ *
+ * Callers that set a stage locally must stamp it with `applyLocalLeadStage`, or the comparison here
+ * has nothing to go on and the older snapshot wins.
  */
 export function preferNewerLeadStage<T extends Record<string, any>>(
   prev: T | null | undefined,
@@ -118,15 +143,23 @@ export function preferNewerLeadStage<T extends Record<string, any>>(
   const prevTs = Date.parse(String(prev.stage_changed_at || '')) || 0;
   const nextTs = Date.parse(String(incoming.stage_changed_at || '')) || 0;
   if (prevTs <= nextTs) return incoming;
+  const sameStage = String(prev.stage) === String(incoming.stage);
   return {
     ...incoming,
     stage: prev.stage,
     stage_changed_at: prev.stage_changed_at,
-    stage_name: prev.stage_name ?? incoming.stage_name,
-    stage_colour: prev.stage_colour ?? incoming.stage_colour,
+    // The incoming labels describe the incoming stage, so they only carry over when it is the same
+    // stage we are keeping. Otherwise drop them; the badge reads the name off the stage id.
+    stage_name: prev.stage_name ?? (sameStage ? incoming.stage_name : null),
+    stage_colour: prev.stage_colour ?? (sameStage ? incoming.stage_colour : null),
   };
 }
 
+/**
+ * Gets the display name for a stage ID
+ * @param stageId - The stage ID to get the name for
+ * @returns The stage name or formatted stage ID as fallback
+ */
 export const getStageName = (stageId: string): string => {
   // Convert to string if it's a number
   const stageIdStr = String(stageId);
@@ -259,6 +292,25 @@ export function shouldPreserveLeadStageOnMeeting(stage: unknown): boolean {
     areStagesEquivalent(name, 'Payment request sent') ||
     areStagesEquivalent(name, 'payment_request_sent')
   );
+}
+
+/** Stage 91 — the dead end for spam / irrelevant leads. */
+const DROPPED_STAGE_ID = 91;
+
+/**
+ * True from "Client signed agreement" (60) onwards, where a case can need any number of meetings —
+ * handler catch-ups, document reviews, hearings — so booking another one has to stay available even
+ * when the case already has meetings on the calendar.
+ *
+ * Earlier stages are deliberately excluded: there the pipeline drives one meeting at a time through
+ * the stage buttons (schedule → another meeting → reschedule), and a second booking would leave the
+ * stage describing something that is no longer true. Dropped leads are excluded as well.
+ */
+export function allowsAdditionalLeadMeetings(stage: unknown): boolean {
+  if (Number(stage) === DROPPED_STAGE_ID) return false;
+  // Same boundary as the rule that stops a meeting moving the stage, which is what makes extra
+  // meetings safe here: they add a booking without rewriting where the case has got to.
+  return shouldPreserveLeadStageOnMeeting(stage);
 }
 
 /** Stage 40 — Waiting for Mtng sum / Waiting for sum & price offer. */

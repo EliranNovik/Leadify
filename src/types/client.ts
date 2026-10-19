@@ -53,6 +53,8 @@ export interface Client extends Lead {
   /** Marketing officer (employee id) */
   marketing_officer_id?: string | number | null;
   retainer_handler_id?: string | number | null;
+  /** Client support (employee id); one per lead */
+  client_support_id?: string | number | null;
   user_internal_id?: string | number | null;
   // Follow-up from join (follow_ups for current user) – when parent loads with join, InfoTab uses this
   next_followup?: string | null;

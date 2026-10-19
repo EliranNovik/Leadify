@@ -703,7 +703,7 @@ const HistoryPage: React.FC = () => {
         newRecordKeys: Object.keys(newRecord || {})
       });
 
-      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id'];
+      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id', 'client_support_id'];
       const noteFields = ['special_notes', 'general_notes', 'notes', 'facts'];
       const numericFields = ['balance', 'proposal_total', 'total', 'total_base', 'vat_value', 'meeting_amount', 'stage', 'status'];
 
@@ -3402,6 +3402,7 @@ const HistoryPage: React.FC = () => {
       'helper': 'Helper',
       'meeting_lawyer_id': 'Helper',
       'retainer_handler_id': 'Retainer handler',
+      'client_support_id': 'Client support',
       'meeting_date': 'Meeting date',
       'meeting_time': 'Meeting time',
       'meeting_location': 'Meeting location',

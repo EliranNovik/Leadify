@@ -42,15 +42,28 @@ export function sortMeetingsForRescheduleCancel<T extends DatedMeeting>(
   });
 }
 
-/** Select all upcoming meetings, or the most recent past meeting when none are upcoming. */
+/**
+ * Which meetings the reschedule drawer ticks when it opens: all the upcoming ones, or the most
+ * recent past meeting when none are upcoming.
+ *
+ * `onlySoonest` ticks just the next meeting instead. Cases that are allowed several bookings at
+ * once must not lose the rest of them because someone opened the drawer to move one, so there the
+ * others are left for the user to tick.
+ */
 export function defaultMeetingIdsToCancel<T extends DatedMeeting>(
   meetings: T[],
   today = localTodayYmd(),
+  options?: { onlySoonest?: boolean },
 ): number[] {
   const upcoming = meetings.filter((m) => String(m.meeting_date || '') >= today);
   const source = upcoming.length > 0 ? upcoming : meetings.slice(0, 1);
-  return source
-    .map((m) => Number(m.id))
+  // Sorted here rather than trusting the caller's order, since "soonest" has to be exactly that.
+  const picked = options?.onlySoonest
+    ? sortMeetingsForRescheduleCancel(source, today).slice(0, 1)
+    : source;
+  return picked
+    // Number(null) is 0, which would tick a meeting id of 0 and defeat the filter below.
+    .map((m) => (m.id == null || m.id === '' ? Number.NaN : Number(m.id)))
     .filter((id) => Number.isFinite(id));
 }
 

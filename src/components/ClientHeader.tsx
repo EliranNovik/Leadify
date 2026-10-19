@@ -50,7 +50,7 @@ import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { isNonSelfLinkedMasterLead } from '../lib/masterLeadApi';
 import toast from 'react-hot-toast';
-import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField, isWaitingForMtngSumStage } from '../lib/stageUtils';
+import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField, isWaitingForMtngSumStage, allowsAdditionalLeadMeetings } from '../lib/stageUtils';
 import { HEADER_ROLE_ASSIGN_WIDTH_CLASS } from './HeaderRoleAssignField';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
@@ -1121,6 +1121,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // Refresh "Remaining Lead Value" immediately when payment plans change.
     useEffect(() => {
+        // The lead can change while these totals are being fetched, so a late answer is dropped
+        // rather than written over the lead now on screen.
+        let cancelled = false;
         const handler = (e: Event) => {
             const evt = e as CustomEvent<{ leadId?: string }>;
             const leadId = evt?.detail?.leadId;
@@ -1129,9 +1132,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             void (async () => {
                 try {
                     const { contract, expense } = await fetchUnpaidTotalsByCurrency(selectedClient.id, selectedClient?.lead_type);
+                    if (cancelled) return;
                     setUnpaidByCurrency(contract);
                     setUnpaidExpenseByCurrency(expense);
                 } catch {
+                    if (cancelled) return;
                     setUnpaidByCurrency(null);
                     setUnpaidExpenseByCurrency(null);
                 }
@@ -1139,6 +1144,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 if (identity) {
                     try {
                         const total = await fetchFirmPaidExpenseReductionTotal(identity);
+                        if (cancelled) return;
                         setFirmPaidExpenseTotal(total);
                         patchHeaderCostCache(clientsTabCacheLeadKey(selectedClient), {
                             firmPaidExpenseTotal: total,
@@ -1150,7 +1156,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             })();
         };
         window.addEventListener('paymentPlan:changed', handler as EventListener);
-        return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
+        return () => {
+            cancelled = true;
+            window.removeEventListener('paymentPlan:changed', handler as EventListener);
+        };
     }, [selectedClient?.id, selectedClient?.lead_type]);
 
     const { user, userFullName } = useAuthContext();
@@ -1414,6 +1423,41 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                   : undefined;
         return shouldShowAssignSchedulerField(currentStageName, selectedClient, numeric);
     }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
+
+    // The catch-all Schedule Meeting + Communication Started pair, for stages that none of the
+    // specific branches in the stage row handle.
+    const showsGeneralStageActions = Boolean(
+        selectedClient &&
+        !showAssignSchedulerInHeader &&
+        !areStagesEquivalent(currentStageName, 'Handler Set') &&
+        !areStagesEquivalent(currentStageName, 'Handler Started') &&
+        !areStagesEquivalent(currentStageName, 'Application submitted') &&
+        !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+        !areStagesEquivalent(currentStageName, 'another_meeting') &&
+        !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+        !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) &&
+        !areStagesEquivalent(currentStageName, 'Communication started') &&
+        !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+        !areStagesEquivalent(currentStageName, 'Success') &&
+        !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+        !areStagesEquivalent(currentStageName, 'client_signed') &&
+        !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+        !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+        !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)),
+    );
+
+    // From "Client signed agreement" (60) onwards a case can need more meetings — handler
+    // catch-ups, document reviews, hearings — so the same Schedule Meeting action the earlier
+    // stages use stays on offer, even though those stages otherwise have no stage buttons.
+    // Skipped when the pair above already renders it, so a late unmapped stage cannot show it twice.
+    const showsSignedCaseScheduleAction = Boolean(
+        selectedClient &&
+        !showAssignSchedulerInHeader &&
+        !showsGeneralStageActions &&
+        allowsAdditionalLeadMeetings((selectedClient as any)?.stage),
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -4049,7 +4093,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         </>
                                                     )}
 
-                                                    {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
+                                                    {/* Signed cases (60+): keep the schedule action available for extra meetings */}
+                                                    {showsSignedCaseScheduleAction && handleScheduleMenuClick && scheduleMenuLabel && (
+                                                        <button
+                                                            onClick={handleScheduleMenuClick}
+                                                            className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                        >
+                                                            <CalendarDaysIcon className="w-5 h-5" />
+                                                            {scheduleMenuLabel}
+                                                        </button>
+                                                    )}
 
                                                     {/* Created / Precommunication — assign scheduler instead of stage buttons */}
                                                     {showAssignSchedulerInHeader && assignSchedulerContent ? (
@@ -4059,25 +4112,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     ) : null}
 
                                                     {/* General stages - Schedule Meeting and Communication Started */}
-                                                    {selectedClient &&
-                                                        !showAssignSchedulerInHeader &&
-                                                        !areStagesEquivalent(currentStageName, 'Handler Set') &&
-                                                        !areStagesEquivalent(currentStageName, 'Handler Started') &&
-                                                        !areStagesEquivalent(currentStageName, 'Application submitted') &&
-                                                        !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
-                                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                        !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                                        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                                        !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) &&
-                                                        !areStagesEquivalent(currentStageName, 'Communication started') &&
-                                                        !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
-                                                        !areStagesEquivalent(currentStageName, 'Success') &&
-                                                        !areStagesEquivalent(currentStageName, 'handler_assigned') &&
-                                                        !areStagesEquivalent(currentStageName, 'client_signed') &&
-                                                        !areStagesEquivalent(currentStageName, 'client signed agreement') &&
-                                                        !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
-                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                                        !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                                    {showsGeneralStageActions && (
                                                             <>
                                                                 {handleScheduleMenuClick && scheduleMenuLabel && (
                                                                     <button
@@ -5780,7 +5815,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </>
                                 )}
 
-                                {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
+                                {/* Signed cases (60+): keep the schedule action available for extra meetings */}
+                                {showsSignedCaseScheduleAction && handleScheduleMenuClick && scheduleMenuLabel && (
+                                    <button
+                                        onClick={handleScheduleMenuClick}
+                                        className={STAGE_ACTION_BTN_CLASS}
+                                    >
+                                        <CalendarDaysIcon className="w-5 h-5" />
+                                        {scheduleMenuLabel}
+                                    </button>
+                                )}
 
                                 {/* Created / Precommunication — assign scheduler instead of stage buttons */}
                                 {showAssignSchedulerInHeader && assignSchedulerContent ? (
@@ -5789,25 +5833,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                 {/* General stages - Schedule Meeting and Communication Started */}
                                 {/* Only show for stages that haven't been handled by specific sections above */}
-                                {selectedClient &&
-                                    !showAssignSchedulerInHeader &&
-                                    !areStagesEquivalent(currentStageName, 'Handler Set') &&
-                                    !areStagesEquivalent(currentStageName, 'Handler Started') &&
-                                    !areStagesEquivalent(currentStageName, 'Application submitted') &&
-                                    !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
-                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                    !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                    !isWaitingForMtngSumStage(currentStageName, isStageNumeric ? stageNumeric : null) &&
-                                    !areStagesEquivalent(currentStageName, 'Communication started') &&
-                                    !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
-                                    !areStagesEquivalent(currentStageName, 'Success') &&
-                                    !areStagesEquivalent(currentStageName, 'handler_assigned') &&
-                                    !areStagesEquivalent(currentStageName, 'client_signed') &&
-                                    !areStagesEquivalent(currentStageName, 'client signed agreement') &&
-                                    !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
-                                    !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                    !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                {showsGeneralStageActions && (
                                         <>
                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                 <button

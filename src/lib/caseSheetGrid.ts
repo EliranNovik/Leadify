@@ -1292,3 +1292,96 @@ export function isColumnFullySelected(
     colIndex >= colFrom && colIndex <= colTo && rowFrom === 0 && rowTo >= grid.rowCount - 1
   );
 }
+
+/* ------------------------------------------------------------------ undo history */
+
+/**
+ * Undoing works by putting back only what a step actually changed, rather than by swapping in a
+ * whole saved copy of the sheet. Two people edit the same sheet at once, and a wholesale restore
+ * would quietly revert a colleague's cell along with your own.
+ */
+
+/** Every cell that differs between two versions of a sheet, by its text or by its formatting. */
+export function changedCellsBetween(
+  before: CaseSheetGrid,
+  after: CaseSheetGrid,
+): CaseSheetCellRef[] {
+  const keys = new Set<string>([
+    ...before.cells.keys(),
+    ...after.cells.keys(),
+    ...before.formats.keys(),
+    ...after.formats.keys(),
+  ]);
+
+  const changed: CaseSheetCellRef[] = [];
+  for (const key of keys) {
+    const sameValue = (before.cells.get(key) ?? '') === (after.cells.get(key) ?? '');
+    const sameFormat =
+      JSON.stringify(before.formats.get(key) ?? {}) === JSON.stringify(after.formats.get(key) ?? {});
+    if (sameValue && sameFormat) continue;
+    const ref = parseCellKey(key);
+    if (ref) changed.push(ref);
+  }
+  return changed;
+}
+
+/** Copies those cells across from `source`, leaving every other cell of `target` as it is. */
+export function restoreCells(
+  target: CaseSheetGrid,
+  source: CaseSheetGrid,
+  cells: CaseSheetCellRef[],
+): CaseSheetGrid {
+  if (cells.length === 0) return target;
+
+  const nextCells = new Map(target.cells);
+  const nextFormats = new Map(target.formats);
+
+  for (const { rowIndex, colIndex } of cells) {
+    const key = cellKey(rowIndex, colIndex);
+
+    const value = source.cells.get(key) ?? '';
+    if (value === '') nextCells.delete(key);
+    else nextCells.set(key, value);
+
+    const format = source.formats.get(key);
+    if (format) nextFormats.set(key, format);
+    else nextFormats.delete(key);
+  }
+
+  return { ...target, cells: nextCells, formats: nextFormats };
+}
+
+function sameMap<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) return false;
+  }
+  return true;
+}
+
+/** Whether anything outside the cells changed: the columns, the row count, banding or sizes. */
+export function gridShapeChanged(a: CaseSheetGrid, b: CaseSheetGrid): boolean {
+  return (
+    a.rowCount !== b.rowCount ||
+    a.rtl !== b.rtl ||
+    a.columns.length !== b.columns.length ||
+    a.columns.some((label, index) => label !== b.columns[index]) ||
+    !sameMap(a.rowColors, b.rowColors) ||
+    !sameMap(a.columnColors, b.columnColors) ||
+    !sameMap(a.rowHeights, b.rowHeights) ||
+    !sameMap(a.columnWidths, b.columnWidths)
+  );
+}
+
+export function restoreGridShape(target: CaseSheetGrid, source: CaseSheetGrid): CaseSheetGrid {
+  return {
+    ...target,
+    columns: [...source.columns],
+    rowCount: source.rowCount,
+    rtl: source.rtl,
+    rowColors: new Map(source.rowColors),
+    columnColors: new Map(source.columnColors),
+    rowHeights: new Map(source.rowHeights),
+    columnWidths: new Map(source.columnWidths),
+  };
+}

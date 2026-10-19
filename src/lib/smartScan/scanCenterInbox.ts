@@ -1,4 +1,5 @@
 import { buildBackendApiUrl, buildBackendApiUrlObject } from '../backendApiBase';
+import { fetchStageActorInfo } from '../leadStageManager';
 import {
   createStorageSignedUrlMap,
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
@@ -7,6 +8,24 @@ import type { SmartScanItem } from './smartScanTypes';
 
 export const SCAN_CENTER_EMAIL = 'scancenter@lawoffice.org.il';
 export const SCAN_CENTER_SCANNER_NAME = 'Scan Center';
+
+/**
+ * The signed-in reviewer's name, sent with the calls that file a scan under a lead so the document
+ * is credited to them and not to Smart Scan.
+ *
+ * Resolved here rather than taken from the page, so every caller sends it without having to
+ * remember to. Returns null when there is nobody to name, which leaves the backend's own fallback
+ * in place; a failed lookup must not stop a reviewer filing a document.
+ */
+async function actingUserName(): Promise<string | null> {
+  try {
+    const actor = await fetchStageActorInfo();
+    const name = String(actor?.fullName ?? '').trim();
+    return name && name.toLowerCase() !== 'unknown user' ? name : null;
+  } catch {
+    return null;
+  }
+}
 
 export type ScanCenterInboxResult = {
   items: SmartScanItem[];
@@ -104,7 +123,7 @@ export async function updateScanCenterItem(
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, patch }),
+    body: JSON.stringify({ id, patch, actorName: await actingUserName() }),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success === false) {
@@ -120,7 +139,7 @@ export async function assignScanCenterLead(id: string, lead: SmartScanItem['lead
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, lead }),
+    body: JSON.stringify({ id, lead, actorName: await actingUserName() }),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success === false) {
@@ -134,7 +153,7 @@ export async function splitScanCaseDocument(caseDocumentId: string): Promise<{ c
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ caseDocumentId }),
+    body: JSON.stringify({ caseDocumentId, actorName: await actingUserName() }),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success === false) {
@@ -149,7 +168,8 @@ export async function approveScanCenterItem(id: string): Promise<void> {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id }),
+    // Approving the AI's match files the document too, so it is credited the same way.
+    body: JSON.stringify({ id, actorName: await actingUserName() }),
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok || payload?.success === false) {

@@ -4,6 +4,7 @@ export function writeRiskForTool(toolName: string): WriteRiskLevel {
   if (toolName === 'draft_client_message') return 1;
   if (WRITE_TOOLS.has(toolName)) return 2;
   if (toolName === 'create_lead' || toolName === 'create_meeting') return 2;
+  if (toolName === 'reschedule_meeting') return 2;
   return 0;
 }
 

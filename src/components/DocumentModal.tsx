@@ -147,7 +147,11 @@ function mergeCachedCaseDocMeta(
 
 function canSeparateSmartScanPdf(doc: Document): boolean {
   if (doc.source !== 'case' || !doc.caseDocDbId) return false;
-  if (String(doc.uploadedByKey || '').trim() !== 'Smart Scan') return false;
+  /*
+   * The `smart-scan-combined:` item id is what marks a multi-document scan, and only the filing
+   * code writes it. The uploader is deliberately not checked: a scan is credited to the reviewer
+   * who filed it, so their name appears there rather than 'Smart Scan'.
+   */
   if (!String(doc.onedriveItemId || '').startsWith('smart-scan-combined:')) return false;
   const type = String(doc.fileType || '').toLowerCase();
   const name = String(doc.name || '').toLowerCase();
