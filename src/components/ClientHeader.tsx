@@ -6314,6 +6314,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
                     modalTitle="Case documents"
                     requireCaseDocumentClassification
+                    enableFolders
                     onDocumentCountChange={setHeaderSupabaseDocumentsCount}
                 />
 

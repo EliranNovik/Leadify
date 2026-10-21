@@ -6227,6 +6227,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
         modalTitle="Case documents"
         requireCaseDocumentClassification
+        enableFolders
         initialClassificationSlug="contract"
       />
     </Fragment>

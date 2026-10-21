@@ -73,6 +73,7 @@ import {
   LazyDebugTestPage,
   LazyBoiExchangeRatesTestPage,
   LazyDocumentsPage,
+  LazyDocumentsDrivePage,
   LazyDoubleLeadsPage,
   LazyEditContractsPage,
   LazyEmailThreadLeadPage,
@@ -222,8 +223,10 @@ const AppContentInner: React.FC = () => {
   );
   const isDashboardPage = useMemo(() => location.pathname === '/', [location.pathname]);
   const isClientsPage = useMemo(() => location.pathname.startsWith('/clients'), [location.pathname]);
+  // The documents drive runs its own full-width shell, so the app sidebar steps aside.
+  const isDrivePage = useMemo(() => location.pathname.startsWith('/drive'), [location.pathname]);
   // Pages that should use a grey app background (incl. behind the sidebar) instead of white
-  const useGreyAppBackground = isDashboardPage || isClientsPage;
+  const useGreyAppBackground = isDashboardPage || isClientsPage || isDrivePage;
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
   // Get auth state from context
@@ -266,6 +269,7 @@ const AppContentInner: React.FC = () => {
       !isPipelinePage &&
       !isHandlerManagementPage &&
       !isFullBleedEditorPage &&
+      !isDrivePage &&
       !(isExternalUser && !isLoadingExternal),
     [
       isAdminPage,
@@ -275,6 +279,7 @@ const AppContentInner: React.FC = () => {
       isPipelinePage,
       isHandlerManagementPage,
       isFullBleedEditorPage,
+      isDrivePage,
       isExternalUser,
       isLoadingExternal,
     ],
@@ -1051,7 +1056,13 @@ const AppContentInner: React.FC = () => {
               className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}
             >
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
-              <div className={isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage ? 'hidden' : undefined}>
+              <div
+                className={
+                  isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage || isDrivePage
+                    ? 'hidden'
+                    : undefined
+                }
+              >
                 <Sidebar
                   userName={sidebarUserName}
                   userInitials={userInitials}
@@ -1174,6 +1185,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/duplicates" element={<RouteSuspense><LazyDuplicateContactsPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} clientsAppNavOpen={clientsAppNavOpen} onToggleClientsAppNav={handleToggleClientsAppNav} /></RouteSuspense>} />
+                    <Route path="/drive" element={<RouteSuspense><LazyDocumentsDrivePage /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
                     <Route path="/calendar/internal-meeting-documents" element={<RouteSuspense><LazyInternalMeetingDocumentsPage /></RouteSuspense>} />
                     <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />

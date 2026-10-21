@@ -3473,6 +3473,7 @@ ${combinedText}`;
         onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
         modalTitle="Case documents"
         requireCaseDocumentClassification
+        enableFolders
       />
 
       {/* Expert Notes Modal */}

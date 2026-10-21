@@ -103,7 +103,7 @@ export type DocumentFileGlyphProps = {
 const DEFAULT_GLYPH_CLASS = 'h-11 w-11 shrink-0 sm:h-12 sm:w-12';
 
 /** Microsoft Word brand-style file icon */
-function WordLogoIcon({ className }: { className?: string }) {
+export function WordLogoIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 48 48"
@@ -129,7 +129,7 @@ function WordLogoIcon({ className }: { className?: string }) {
 }
 
 /** Microsoft Excel brand-style file icon */
-function ExcelLogoIcon({ className }: { className?: string }) {
+export function ExcelLogoIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 48 48"

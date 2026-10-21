@@ -2399,6 +2399,7 @@ const MasterLeadPage: React.FC = () => {
         includeRootFolderDocuments
         modalTitle="Case documents"
         requireCaseDocumentClassification
+        enableFolders
         onDocumentCountChange={(count) => {
           if (!documentsLead) return;
           setDocumentCounts((prev) => ({ ...prev, [documentsLead.id]: count }));

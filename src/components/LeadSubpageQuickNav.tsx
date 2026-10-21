@@ -366,6 +366,7 @@ export default function LeadSubpageQuickNav({
         onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
         modalTitle="Case documents"
         requireCaseDocumentClassification
+        enableFolders
       />
 
       <SubEffortsLogModal

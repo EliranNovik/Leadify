@@ -14,6 +14,7 @@ const CASE_DOCUMENT_MIME_BY_EXT: Record<string, string> = {
   webp: 'image/webp',
   heic: 'image/heic',
   heif: 'image/heif',
+  svg: 'image/svg+xml',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xls: 'application/vnd.ms-excel',
@@ -23,6 +24,9 @@ const CASE_DOCUMENT_MIME_BY_EXT: Record<string, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   txt: 'text/plain',
   rtf: 'application/rtf',
+  // Saved Outlook items. Browsers often report nothing for these, so the extension decides.
+  msg: 'application/vnd.ms-outlook',
+  eml: 'message/rfc822',
   zip: 'application/zip',
   rar: 'application/vnd.rar',
   '7z': 'application/x-7z-compressed',

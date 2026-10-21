@@ -128,6 +128,15 @@ const filterSectionsRowClass = 'grid grid-cols-1 lg:grid-cols-2 gap-4 items-star
 const filterCellClass = 'min-w-0 [&>div]:!col-span-1';
 /** Cap list/card fetch — avoids pulling 10k+ oversized rows on every search */
 const LEAD_SEARCH_PAGE_LIMIT = 1200;
+
+/**
+ * What a search found, as opposed to what it kept.
+ *
+ * `matching` counts the rows the database matched; `truncated` says a source filled its page, so
+ * leads were left behind; `approximate` says tags, country or flags are narrowed in the browser
+ * afterwards, which can only make the real number smaller than `matching`.
+ */
+type LeadSearchTotals = { matching: number; truncated: boolean; approximate: boolean };
 /** Full row + joins so all filters/displays match prior behavior (new vs legacy schemas differ) */
 const NEW_LEADS_SEARCH_SELECT = `
   *,
@@ -1886,6 +1895,15 @@ const LeadSearchPage: React.FC = () => {
   const [results, setResults] = usePersistedState<Lead[]>('leadSearchPage_results', [], {
     storage: 'sessionStorage',
   });
+  /*
+   * How many leads the filters really match. A search brings back at most a thousand rows per
+   * source, so without this the heading would report that cap as if it were the whole result.
+   */
+  const [resultTotals, setResultTotals] = usePersistedState<LeadSearchTotals>(
+    'leadSearchPage_resultTotals',
+    { matching: 0, truncated: false, approximate: false },
+    { storage: 'sessionStorage' },
+  );
   const [isSearching, setIsSearching] = useState(false);
   const [searchPerformed, setSearchPerformed] = usePersistedState('leadSearchPage_performed', false, {
     storage: 'sessionStorage',
@@ -2134,6 +2152,14 @@ const LeadSearchPage: React.FC = () => {
     if (!q) return sortedResults;
     return sortedResults.filter((lead) => leadMatchesQuickQuery(lead, q));
   }, [sortedResults, resultsQuery]);
+
+  /*
+   * What the heading counts. A capped search knows the real figure from the database; anything else
+   * is simply what is on screen. The max guards a session restored from an older search.
+   */
+  const totalMatchingLeads = resultTotals.truncated
+    ? Math.max(resultTotals.matching, results.length)
+    : results.length;
 
   const followupScoreOf = useCallback(
     (lead: Lead): number | null => {
@@ -3740,9 +3766,13 @@ const LeadSearchPage: React.FC = () => {
       }
 
       // Search new leads table with joins for category, source, language (no client-side mapping)
+      /*
+       * `count: 'exact'` comes back with every row the filters match, not just the page we keep, so
+       * the heading can say how many leads are really out there while the list stays capped.
+       */
       let newLeadsQuery = supabase
         .from('leads')
-        .select(NEW_LEADS_SEARCH_SELECT);
+        .select(NEW_LEADS_SEARCH_SELECT, { count: 'exact' });
 
 
       console.log('📋 New leads query base ready');
@@ -4194,7 +4224,7 @@ const LeadSearchPage: React.FC = () => {
       // Search legacy leads table with joins for language, category, source, employees
       let legacyLeadsQuery = supabase
         .from('leads_lead')
-        .select(LEGACY_LEADS_SEARCH_SELECT);
+        .select(LEGACY_LEADS_SEARCH_SELECT, { count: 'exact' });
 
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
 
@@ -5687,12 +5717,42 @@ const LeadSearchPage: React.FC = () => {
         results: allResults
       });
 
+      /*
+       * How many leads really match, as opposed to how many came back.
+       *
+       * A page is cut short whenever the database counted more rows than it handed over, which
+       * happens well before our own limit because PostgREST caps a response at 1000 rows. Tags,
+       * country and flags are narrowed in the browser afterwards and only ever downwards, so with
+       * one of those on, the count is a ceiling rather than a figure.
+       */
+      const newRowsKept = newLeadsResult.data?.length || 0;
+      const legacyRowsKept = legacyLeadsResult.data?.length || 0;
+      const newMatching = newLeadsResult.count ?? newRowsKept;
+      const legacyMatching = legacyLeadsResult.count ?? legacyRowsKept;
+      const pageWasCutShort = newMatching > newRowsKept || legacyMatching > legacyRowsKept;
+      const narrowedInBrowser =
+        (filters.tags?.length ?? 0) > 0 || (filters.country?.length ?? 0) > 0 || flagFilterActive;
+      console.log('🧮 [Query Results] Leads matching in the database:', {
+        newMatching,
+        newRowsKept,
+        legacyMatching,
+        legacyRowsKept,
+        shown: allResults.length,
+        cutShort: pageWasCutShort,
+      });
+      setResultTotals({
+        matching: pageWasCutShort ? newMatching + legacyMatching : allResults.length,
+        truncated: pageWasCutShort,
+        approximate: pageWasCutShort && narrowedInBrowser,
+      });
+
       scrollToResultsAfterSearchRef.current = true;
       setResults(allResults);
     } catch (error) {
       console.error('Error searching leads:', error);
       alert('Failed to search for leads.');
       setResults([]);
+      setResultTotals({ matching: 0, truncated: false, approximate: false });
     } finally {
       setIsSearching(false);
     }
@@ -6748,14 +6808,24 @@ const LeadSearchPage: React.FC = () => {
                 ref={resultsToolbarRef}
                 className="mb-4 flex flex-wrap items-center justify-between gap-3 md:px-0"
               >
-                <h2
-                  ref={resultsCountRef}
-                  className="text-2xl font-bold scroll-mt-28 md:scroll-mt-24"
-                >
-                  {resultsQuery.trim()
-                    ? `${displayedResults.length} of ${results.length} lead${results.length !== 1 ? 's' : ''}`
-                    : `Found ${results.length} lead${results.length !== 1 ? 's' : ''}`}
-                </h2>
+                <div className="min-w-0">
+                  <h2
+                    ref={resultsCountRef}
+                    className="text-2xl font-bold scroll-mt-28 md:scroll-mt-24"
+                  >
+                    {resultsQuery.trim()
+                      ? `${displayedResults.length} of ${results.length} lead${results.length !== 1 ? 's' : ''}`
+                      : `Found ${resultTotals.approximate ? 'about ' : ''}${totalMatchingLeads.toLocaleString()} lead${totalMatchingLeads !== 1 ? 's' : ''}`}
+                  </h2>
+                  {resultTotals.truncated ? (
+                    <p className="mt-0.5 text-sm text-base-content/60">
+                      {`Showing the newest ${results.length.toLocaleString()}. `}
+                      {resultTotals.approximate
+                        ? 'The total is counted before the tag, country and flag filters, so the real number can be lower. Narrow the search to see them all.'
+                        : 'Narrow the search to reach the rest.'}
+                    </p>
+                  ) : null}
+                </div>
                 <div
                   className={`flex min-w-0 flex-wrap items-center justify-end gap-2 ${
                     pinResultTools ? 'invisible pointer-events-none' : ''
@@ -6887,13 +6957,14 @@ const LeadSearchPage: React.FC = () => {
         onClose={closeAiFollowup}
         onResult={handleFollowupResult}
         onSchedulerAssigned={(lead, patch) => {
-          const withRoles = (row: Lead) => {
+          const withRoles = (row: Lead): Lead => {
             const prevRoles = (row as unknown as { roles?: Record<string, unknown> }).roles;
+            // New leads carry a numeric stage, which the Lead type still spells as a name.
             return {
               ...row,
               ...patch,
               roles: prevRoles ? { ...prevRoles, scheduler: patch.scheduler } : prevRoles,
-            };
+            } as unknown as Lead;
           };
           setFollowupLead((prev) => (prev && prev.id === lead.id ? withRoles(prev) : prev));
           setResults((prev) => prev.map((row) => (row.id === lead.id ? withRoles(row) : row)));

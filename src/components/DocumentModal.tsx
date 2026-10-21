@@ -15,7 +15,12 @@ import {
   TrashIcon,
   PencilSquareIcon,
   ScissorsIcon,
+  FolderIcon,
+  FolderPlusIcon,
+  ChevronRightIcon,
+  ArrowTopRightOnSquareIcon,
 } from '@heroicons/react/24/outline';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import {
   CASE_DOCUMENTS_STORAGE_BUCKET,
@@ -46,6 +51,25 @@ import {
   isEmailAttachmentsBucket,
   isLeadEmailAttachmentId,
 } from '../lib/leadEmailAttachments';
+import {
+  childFolders,
+  createDocumentFolder,
+  deleteDocumentFolder,
+  ensureFolderPath,
+  folderTrail,
+  listDocumentFolders,
+  moveCaseDocumentsToFolder,
+  renameDocumentFolder,
+  type DocumentFolder,
+  type DocumentFolderScope,
+} from '../lib/documentFolders';
+import {
+  entriesFromDirectoryInput,
+  expandDroppedItems,
+  planFolderUpload,
+  readDroppedItems,
+  type FolderUploadEntry,
+} from '../lib/browserFolderUpload';
 
 type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
@@ -68,6 +92,8 @@ interface Document {
   subEffortRowId?: number | null;
   caseClassificationId?: string | null;
   caseClassificationLabel?: string | null;
+  /** Folder in `document_folders`, null for files sitting at the root of their category. */
+  folderId?: string | null;
   /** Resolved from `lead_case_documents.uploaded_by` + `users` / employee photo. */
   uploadedByName?: string | null;
   uploadedByPhotoUrl?: string | null;
@@ -108,6 +134,74 @@ function mimeFromFileName(fileName: string, mimeType: string | null | undefined)
   );
 }
 
+const LEAD_CASE_DOC_BASE_SELECT =
+  'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error';
+
+/**
+ * Flipped off for the session the first time Postgres says there is no `folder_id`, i.e. the app
+ * is running ahead of sql/2026-10-21_document_folders.sql. Reads then go back to the old column
+ * list rather than failing, and the folder UI hides itself.
+ */
+let leadCaseDocHasFolderColumn = true;
+
+const leadCaseDocSelect = () =>
+  leadCaseDocHasFolderColumn ? `${LEAD_CASE_DOC_BASE_SELECT}, folder_id` : LEAD_CASE_DOC_BASE_SELECT;
+
+/**
+ * Storage's own wording for a rejected upload ("mime type x is not supported") does not say which
+ * file or what to do, and these land in a row that only shows a tooltip.
+ */
+function friendlyUploadError(error: unknown, fileName: string): string {
+  const e = (error || {}) as {
+    statusCode?: string | number;
+    status?: number;
+    error?: string;
+    message?: string;
+  };
+  const text = String(e.message || e.error || '');
+  const status = String(e.statusCode ?? e.status ?? '');
+  const ext = fileName.includes('.') ? fileName.split('.').pop()?.toLowerCase() : '';
+
+  if (status === '415' || /mime type/i.test(text)) {
+    return ext
+      ? `.${ext} files are not accepted yet. Ask an admin to allow the type.`
+      : 'That file type is not accepted yet.';
+  }
+  if (status === '413' || /maximum allowed size|too large|payload too large/i.test(text)) {
+    return 'That file is over the size limit for case documents.';
+  }
+  return error instanceof Error ? error.message : text || 'An unknown error occurred';
+}
+
+/** Storage says 409 / "already exists" when an object path is taken. */
+function isDuplicateStorageObject(error: unknown): boolean {
+  const e = (error || {}) as { statusCode?: string | number; status?: number; message?: string; error?: string };
+  if (String(e.statusCode ?? e.status ?? '') === '409') return true;
+  return /already exists|duplicate/i.test(String(e.message || e.error || ''));
+}
+
+function isMissingFolderColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  const code = String(error.code || '');
+  if (code !== '42703' && code !== 'PGRST204') return false;
+  return String(error.message || '').includes('folder_id');
+}
+
+/**
+ * Above this many files in one go the summaries are left for later: a dropped folder of a few
+ * hundred scans would otherwise fire one edge function call per file.
+ */
+const BULK_SUMMARY_FILE_LIMIT = 25;
+
+const BULK_SUMMARY_SKIPPED_NOTE =
+  'Skipped automatically because this arrived in a large upload. Generate it whenever you need it.';
+
+/** Beyond this, one progress bar for the batch beats a row per file. */
+const CONDENSED_PROGRESS_FILE_LIMIT = 8;
+
+/** Parallel storage uploads for a bulk batch. */
+const BULK_UPLOAD_CONCURRENCY = 4;
+
 type LeadCaseDocRow = {
   id: string;
   storage_path: string;
@@ -115,6 +209,7 @@ type LeadCaseDocRow = {
   file_size: number | null;
   mime_type: string | null;
   classification_id?: string | null;
+  folder_id?: string | null;
   uploaded_by: string | null;
   onedrive_item_id?: string | null;
   created_at: string;
@@ -137,6 +232,7 @@ function mergeCachedCaseDocMeta(
     lastModified: r.created_at || cached.lastModified,
     caseClassificationId: cid ?? cached.caseClassificationId ?? null,
     caseClassificationLabel: cid ? idToLabel.get(cid) ?? cached.caseClassificationLabel ?? null : cached.caseClassificationLabel ?? null,
+    folderId: r.folder_id ?? null,
     aiSummary: r.ai_summary ?? null,
     aiSummaryStatus: parseAiSummaryStatus(r.ai_summary_status),
     aiSummaryError: r.ai_summary_error ?? null,
@@ -200,6 +296,11 @@ interface DocumentModalProps {
   staffMeetingTitle?: string | null;
   /** Optional content above the title (e.g. lead switcher tabs). */
   headerExtra?: React.ReactNode;
+  /**
+   * Folders inside each category tab, with folder upload. Needs
+   * `requireCaseDocumentClassification`, since a folder belongs to a tab.
+   */
+  enableFolders?: boolean;
 }
 
 function copyTextToClipboardFallback(text: string): boolean {
@@ -757,8 +858,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   staffMeetingId = null,
   staffMeetingTitle = null,
   headerExtra = null,
+  enableFolders = false,
 }) => {
+  const navigate = useNavigate();
+  const location = useLocation();
   const fileInputId = useId();
+  const folderInputId = `${useId()}-folder`;
   const isStaffMeetingDocs = staffMeetingId != null && Number.isFinite(staffMeetingId);
   const caseLeadNumberKeys = useMemo(
     () => expandLeadCaseDocumentLeadNumbers(leadNumber, ...leadNumberLookupKeys),
@@ -865,6 +970,36 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const initialClassificationSlugToApplyRef = useRef<string | null>(null);
   const documentsCacheRef = useRef<Map<string, Document[]>>(new Map());
   const fetchGenRef = useRef(0);
+
+  /* Folders live inside a category tab, so they need one and a lead to hang off. */
+  const foldersEnabled =
+    enableFolders && requireCaseDocumentClassification && !isStaffMeetingDocs && !!leadNumber;
+  /*
+   * Turned off when the database has no folder tables yet, so a deployment that lands before
+   * sql/2026-10-21_document_folders.sql is run keeps uploading files instead of failing on an
+   * unknown column.
+   */
+  const [foldersAvailable, setFoldersAvailable] = useState(true);
+  const foldersReady = foldersEnabled && foldersAvailable;
+  const [folders, setFolders] = useState<DocumentFolder[]>([]);
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<'create' | 'rename'>('create');
+  const [folderModalTarget, setFolderModalTarget] = useState<DocumentFolder | null>(null);
+  const [folderModalName, setFolderModalName] = useState('');
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null>(null);
+  const [draggingDocId, setDraggingDocId] = useState<string | null>(null);
+
+  const folderScope = useMemo<DocumentFolderScope | null>(() => {
+    if (!foldersReady || !activeBrowseCategoryId) return null;
+    return {
+      scopeType: 'lead',
+      scopeKey: String(leadNumber || '').trim(),
+      classificationId: activeBrowseCategoryId,
+      area: onedriveSubFolder?.trim() || null,
+    };
+  }, [foldersReady, activeBrowseCategoryId, leadNumber, onedriveSubFolder]);
 
   const documentCacheKey = () => {
     if (isStaffMeetingDocs && staffMeetingId != null) return `staff:${staffMeetingId}`;
@@ -1248,6 +1383,170 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     return activeBrowseCategoryId;
   }, [requireCaseDocumentClassification, activeBrowseCategoryId]);
 
+  const reloadFolders = useCallback(async (): Promise<DocumentFolder[]> => {
+    if (!folderScope) {
+      setFolders([]);
+      return [];
+    }
+    try {
+      const rows = await listDocumentFolders(folderScope);
+      setFolders(rows);
+      return rows;
+    } catch (e: any) {
+      const code = String(e?.code || '');
+      const missing = code === '42P01' || code === '42703' || code === 'PGRST205';
+      if (missing) {
+        console.warn('document_folders is not installed yet; folders are hidden.');
+        setFoldersAvailable(false);
+      } else {
+        console.warn('document_folders fetch:', e?.message || e);
+      }
+      setFolders([]);
+      return [];
+    }
+  }, [folderScope]);
+
+  useEffect(() => {
+    if (!isOpen || !folderScope) {
+      setFolders([]);
+      return;
+    }
+    void reloadFolders();
+  }, [isOpen, folderScope, reloadFolders]);
+
+  /* Switching tab or lead starts at the root again, so the breadcrumb never lies. */
+  useEffect(() => {
+    setActiveFolderId(null);
+  }, [activeBrowseCategoryId, currentCacheKey]);
+
+  const activeFolderTrail = useMemo(
+    () => folderTrail(folders, activeFolderId),
+    [folders, activeFolderId],
+  );
+
+  const visibleFolders = useMemo(
+    () => (foldersReady ? childFolders(folders, activeFolderId) : []),
+    [foldersReady, folders, activeFolderId],
+  );
+
+  const knownFolderIds = useMemo(() => new Set(folders.map((f) => f.id)), [folders]);
+
+  /**
+   * A file's folder only counts when that folder is one of the ones on screen. A row filed under
+   * another tab or area (the master lead drawer merges those in) would otherwise belong to no
+   * visible folder and disappear from the list entirely, so it shows at the root instead.
+   */
+  const visibleFolderIdOf = useCallback(
+    (doc: Document): string | null => {
+      const folderId = doc.folderId ?? null;
+      return folderId && knownFolderIds.has(folderId) ? folderId : null;
+    },
+    [knownFolderIds],
+  );
+
+  /** Files in the open folder; sub-effort and email attachments have no folder, so they sit at the root. */
+  const documentsInActiveFolder = useMemo(() => {
+    if (!foldersReady) return documentsInActiveCategory;
+    return documentsInActiveCategory.filter((d) => visibleFolderIdOf(d) === activeFolderId);
+  }, [foldersReady, documentsInActiveCategory, activeFolderId, visibleFolderIdOf]);
+
+  /** Direct files plus everything in the folders below, for the count on a folder row. */
+  const folderContentCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!foldersReady) return counts;
+    const parentOf = new Map(folders.map((f) => [f.id, f.parent_id ?? null]));
+    for (const doc of documentsInActiveCategory) {
+      let cursor = visibleFolderIdOf(doc);
+      let guard = 0;
+      while (cursor && guard < 32) {
+        counts.set(cursor, (counts.get(cursor) || 0) + 1);
+        cursor = parentOf.get(cursor) ?? null;
+        guard += 1;
+      }
+    }
+    return counts;
+  }, [foldersReady, folders, documentsInActiveCategory, visibleFolderIdOf]);
+
+  const openCreateFolderModal = () => {
+    setFolderModalMode('create');
+    setFolderModalTarget(null);
+    setFolderModalName('');
+    setFolderModalOpen(true);
+  };
+
+  const openRenameFolderModal = (folder: DocumentFolder) => {
+    setFolderModalMode('rename');
+    setFolderModalTarget(folder);
+    setFolderModalName(folder.title);
+    setFolderModalOpen(true);
+  };
+
+  const saveFolderModal = async () => {
+    if (!folderScope || folderBusy) return;
+    const name = folderModalName.trim();
+    if (!name) {
+      toast.error('Folder name is required');
+      return;
+    }
+    setFolderBusy(true);
+    try {
+      if (folderModalMode === 'create') {
+        const actor = await fetchStageActorInfo();
+        await createDocumentFolder({
+          scope: folderScope,
+          title: name,
+          parentId: activeFolderId,
+          createdBy: actor.fullName,
+          createdByEmployeeId: actor.employeeId ?? null,
+        });
+      } else if (folderModalTarget) {
+        await renameDocumentFolder(folderModalTarget.id, name);
+      }
+      await reloadFolders();
+      setFolderModalOpen(false);
+    } catch (e: any) {
+      const duplicate = e?.code === '23505';
+      toast.error(duplicate ? 'A folder with that name is already here' : String(e?.message || 'Could not save the folder'));
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
+  const handleDeleteFolder = async (folder: DocumentFolder) => {
+    const inside = folderContentCounts.get(folder.id) || 0;
+    const message = inside
+      ? `Delete "${folder.title}"? The ${inside} file${inside === 1 ? '' : 's'} inside move back to the category root.`
+      : `Delete "${folder.title}"?`;
+    if (!window.confirm(message)) return;
+    try {
+      await deleteDocumentFolder(folder.id);
+      if (activeFolderId === folder.id) setActiveFolderId(folder.parent_id ?? null);
+      await reloadFolders();
+      await fetchDocuments();
+      toast.success('Folder deleted');
+    } catch (e: any) {
+      toast.error(String(e?.message || 'Could not delete the folder'));
+    }
+  };
+
+  const moveDocumentToFolder = async (doc: Document, folderId: string | null) => {
+    if (!doc.caseDocDbId) {
+      toast.error('Only case documents can be moved into folders.');
+      return;
+    }
+    if ((doc.folderId ?? null) === folderId) return;
+    try {
+      await moveCaseDocumentsToFolder([doc.caseDocDbId], folderId);
+      patchCurrentDocuments((prev) =>
+        prev.map((d) => (d.id === doc.id ? { ...d, folderId } : d)),
+      );
+      const target = folderId ? folders.find((f) => f.id === folderId)?.title : null;
+      toast.success(target ? `Moved to ${target}` : 'Moved out of the folder');
+    } catch (e: any) {
+      toast.error(String(e?.message || 'Could not move the file'));
+    }
+  };
+
   const fetchDocuments = async () => {
     const key = documentCacheKey();
     const gen = ++fetchGenRef.current;
@@ -1353,7 +1652,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       let query = supabase
         .from('lead_case_documents')
         .select(
-          'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
+          leadCaseDocSelect(),
         )
         .in('lead_number', numberKeys)
         .not('storage_path', 'is', null);
@@ -1367,6 +1666,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       const { data: rows, error: qErr } = await query.order('created_at', { ascending: false });
 
       if (qErr) {
+        if (leadCaseDocHasFolderColumn && isMissingFolderColumn(qErr)) {
+          leadCaseDocHasFolderColumn = false;
+          setFoldersAvailable(false);
+          await fetchDocuments();
+          return;
+        }
         console.error('lead_case_documents fetch:', qErr);
         fail(`Failed to fetch documents: ${qErr.message}`);
         return;
@@ -1392,7 +1697,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         const { data: rootRows, error: rootErr } = await supabase
           .from('lead_case_documents')
           .select(
-            'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
+            leadCaseDocSelect(),
           )
           .in('lead_number', numberKeys)
           .is('onedrive_subfolder', null)
@@ -1431,7 +1736,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           const { data: portalRows, error: portalErr } = await supabase
             .from('lead_case_documents')
             .select(
-              'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, onedrive_item_id, created_at, ai_summary, ai_summary_status, ai_summary_error',
+              leadCaseDocSelect(),
             )
             .in('lead_number', numberKeys)
             .is('onedrive_subfolder', null)
@@ -1504,6 +1809,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             subEffortRowId: null,
             caseClassificationId: cid ?? null,
             caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
+            folderId: r.folder_id ?? null,
             uploadedByName: resolved?.name ?? rawUploader ?? null,
             uploadedByPhotoUrl: resolved?.photoUrl ?? null,
             uploadedByKey: rawUploader,
@@ -1798,7 +2104,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   };
 
   const handleDownloadAll = async () => {
-    const toDownload = requireCaseDocumentClassification ? documentsInActiveCategory : documents;
+    const toDownload = requireCaseDocumentClassification ? documentsInActiveFolder : documents;
     if (toDownload.length === 0 || downloading.includes('all')) return;
 
     setDownloading((prev) => [...prev, 'all']);
@@ -2033,55 +2339,127 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     }
   };
 
-  // Handle file drop
-  const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!isOpen || isUploading || caseUploadBlocked) return;
+  const uploadBlockedNow = () => {
+    if (!isOpen || isUploading || caseUploadBlocked) return true;
     if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
       toast.error('Select a document category below to upload.');
-      return;
+      return true;
     }
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      await uploadFiles(Array.from(files));
-    }
+    return false;
+  };
+
+  // Handle file drop
+  const handleFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    /*
+     * The entries have to come out of DataTransfer before this handler yields: the browser
+     * empties it the moment we await, and `dataTransfer.files` cannot see inside a folder at all.
+     */
+    const dropped = readDroppedItems(e.dataTransfer);
+    if (uploadBlockedNow() || dropped.length === 0) return;
+
+    void (async () => {
+      const entries = await expandDroppedItems(dropped);
+      if (entries.length === 0) {
+        toast.error('There were no files to upload in what you dropped.');
+        return;
+      }
+      await uploadFiles(entries);
+    })();
   };
 
   // Handle file input change
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isOpen || isUploading || caseUploadBlocked) {
-      e.target.value = '';
-      return;
-    }
-    if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
-      toast.error('Select a document category below to upload.');
-      e.target.value = '';
-      return;
-    }
     const files = e.target.files;
+    if (uploadBlockedNow()) {
+      e.target.value = '';
+      return;
+    }
     if (files?.length) {
-      await uploadFiles(Array.from(files));
+      await uploadFiles(Array.from(files).map((file) => ({ file, segments: [] })));
     }
     // Allow selecting the same file again after upload.
     e.target.value = '';
   };
 
+  /** Input carrying `webkitdirectory`: the folder names come from each file's relative path. */
+  const handleFolderInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (uploadBlockedNow()) {
+      e.target.value = '';
+      return;
+    }
+    if (files?.length) {
+      const entries = entriesFromDirectoryInput(files);
+      if (entries.length === 0) {
+        toast.error('That folder had no files to upload.');
+      } else {
+        await uploadFiles(entries);
+      }
+    }
+    e.target.value = '';
+  };
+
   // The main upload function
-  const uploadFiles = async (files: File[]) => {
-    if (!files.length || isUploading) return;
+  const uploadFiles = async (incoming: FolderUploadEntry[]) => {
+    if (!incoming.length || isUploading) return;
     const classificationIdForBatch = uploadClassificationId;
     if (!isStaffMeetingDocs && requireCaseDocumentClassification && !classificationIdForBatch) {
       toast.error('Select a document category below to upload.');
       return;
     }
+
+    const plan = planFolderUpload(incoming);
+    const entries = plan.entries;
+    if (entries.length === 0) return;
+    if (plan.droppedForLimit > 0) {
+      toast.error(
+        `Uploading the first ${entries.length} files. ${plan.droppedForLimit} more were left out \u2014 send those in a second batch.`,
+      );
+    }
+
     setIsUploading(true);
-    const newUploads: UploadedFile[] = files.map((file, index) => ({
-      id: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 9)}`,
-      name: file.name,
-      status: 'uploading',
-      progress: 5,
-    }));
+
+    /* Folders go in first, so every file knows where it belongs before any bytes move. */
+    const folderIdByPath = new Map<string, string | null>();
+    if (folderScope && plan.folderPaths.length > 0) {
+      try {
+        const known = await listDocumentFolders(folderScope);
+        for (const segments of plan.folderPaths) {
+          const folderId = await ensureFolderPath(folderScope, segments, known, {
+            parentId: activeFolderId,
+          });
+          folderIdByPath.set(segments.join('/').toLowerCase(), folderId);
+        }
+        setFolders(known);
+      } catch (e: any) {
+        setIsUploading(false);
+        toast.error(`Could not create the folders: ${String(e?.message || 'unknown error')}`);
+        return;
+      }
+    }
+
+    const folderForEntry = (entry: FolderUploadEntry): string | null => {
+      if (!foldersReady) return null;
+      if (entry.segments.length === 0) return activeFolderId;
+      return folderIdByPath.get(entry.segments.join('/').toLowerCase()) ?? activeFolderId;
+    };
+
+    /* A row each for a handful of files; one bar for a folder full of them. */
+    const condensed = entries.length > CONDENSED_PROGRESS_FILE_LIMIT;
+    const summarise = entries.length <= BULK_SUMMARY_FILE_LIMIT;
+    const batchStamp = Date.now();
+    const batchRowId = `upload-batch-${batchStamp}`;
+
+    const newUploads: UploadedFile[] = condensed
+      ? [{ id: batchRowId, name: `${entries.length} files`, status: 'uploading', progress: 0 }]
+      : entries.map((entry, index) => ({
+          id: `upload-${batchStamp}-${index}-${Math.random().toString(36).slice(2, 9)}`,
+          name: entry.file.name,
+          status: 'uploading',
+          progress: 5,
+        }));
     setUploadedFiles((prev) => [...prev, ...newUploads]);
 
     const progressIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
@@ -2129,10 +2507,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       }
     };
 
-    const markUpload = (
-      uploadId: string,
-      patch: Partial<UploadedFile>,
-    ) => {
+    const markUpload = (uploadId: string, patch: Partial<UploadedFile>) => {
       setUploadedFiles((prev) =>
         prev.map((f) => (f.id === uploadId ? { ...f, ...patch } : f)),
       );
@@ -2140,12 +2515,13 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
     const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
     const uploadedBy = await getCurrentUserName();
-    let anySucceeded = false;
+    let succeeded = 0;
+    let failed = 0;
+    let lastError = '';
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const uploadId = newUploads[i].id;
-      startProgressSimulation(uploadId, file.size);
+    const uploadEntry = async (entry: FolderUploadEntry, uploadId: string | null) => {
+      const file = entry.file;
+      if (uploadId) startProgressSimulation(uploadId, file.size);
 
       try {
         if (isStaffMeetingDocs && staffMeetingId != null) {
@@ -2159,7 +2535,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               upsert: false,
             });
 
-          stopProgressSimulation(uploadId);
+          if (uploadId) stopProgressSimulation(uploadId);
 
           if (storageErr) throw storageErr;
 
@@ -2179,22 +2555,35 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             throw new Error(insErr.message);
           }
 
-          markUpload(uploadId, { status: 'success', progress: 100 });
-          anySucceeded = true;
-          continue;
+          if (uploadId) markUpload(uploadId, { status: 'success', progress: 100 });
+          succeeded += 1;
+          return;
         }
 
-        const storagePath = buildCaseDocumentStoragePath(leadNumber, subKey ?? undefined, file.name);
         const contentType = resolveCaseDocumentUploadContentType(file);
+        let storagePath = buildCaseDocumentStoragePath(leadNumber, subKey ?? undefined, file.name);
 
-        const { error: storageErr } = await supabase.storage
+        let { error: storageErr } = await supabase.storage
           .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-          .upload(storagePath, file, {
-            contentType,
-            upsert: false,
-          });
+          .upload(storagePath, file, { contentType, upsert: false });
 
-        stopProgressSimulation(uploadId);
+        if (storageErr && isDuplicateStorageObject(storageErr)) {
+          /*
+           * The object path is the millisecond plus the file name, so two files of the same name
+           * uploaded in the same millisecond collide. A folder upload sends several at once and
+           * can easily hold the same name in two subfolders, so the second one gets a new path.
+           */
+          storagePath = buildCaseDocumentStoragePath(
+            leadNumber,
+            subKey ?? undefined,
+            `${Math.random().toString(36).slice(2, 8)}-${file.name}`,
+          );
+          ({ error: storageErr } = await supabase.storage
+            .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+            .upload(storagePath, file, { contentType, upsert: false }));
+        }
+
+        if (uploadId) stopProgressSimulation(uploadId);
 
         if (storageErr) throw storageErr;
 
@@ -2212,8 +2601,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               requireCaseDocumentClassification && classificationIdForBatch
                 ? classificationIdForBatch
                 : null,
+            ...(leadCaseDocHasFolderColumn ? { folder_id: folderForEntry(entry) } : {}),
             uploaded_by: uploadedBy,
-            ai_summary_status: 'pending',
+            ai_summary_status: summarise ? 'pending' : 'skipped',
+            ai_summary_error: summarise ? null : BULK_SUMMARY_SKIPPED_NOTE,
           })
           .select('id')
           .single();
@@ -2224,17 +2615,59 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           throw new Error(insErr.message);
         }
 
-        if (insertedRow?.id) {
+        if (summarise && insertedRow?.id) {
           void requestCaseDocumentSummarize(insertedRow.id as string);
         }
 
-        markUpload(uploadId, { status: 'success', progress: 100 });
-        anySucceeded = true;
+        if (uploadId) markUpload(uploadId, { status: 'success', progress: 100 });
+        succeeded += 1;
       } catch (err) {
-        stopProgressSimulation(uploadId);
-        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
-        markUpload(uploadId, { status: 'error', error: errorMessage, progress: 0 });
+        if (uploadId) stopProgressSimulation(uploadId);
+        const errorMessage = friendlyUploadError(err, file.name);
+        lastError = errorMessage;
+        failed += 1;
+        if (uploadId) markUpload(uploadId, { status: 'error', error: errorMessage, progress: 0 });
         console.error(`Error uploading ${file.name}:`, err);
+      } finally {
+        if (condensed) {
+          const done = succeeded + failed;
+          setUploadedFiles((prev) =>
+            prev.map((f) =>
+              f.id === batchRowId
+                ? { ...f, progress: Math.round((done / entries.length) * 100) }
+                : f,
+            ),
+          );
+        }
+      }
+    };
+
+    if (condensed) {
+      let cursor = 0;
+      const lanes = Array.from(
+        { length: Math.min(BULK_UPLOAD_CONCURRENCY, entries.length) },
+        async () => {
+          while (cursor < entries.length) {
+            const index = cursor;
+            cursor += 1;
+            await uploadEntry(entries[index], null);
+          }
+        },
+      );
+      await Promise.all(lanes);
+
+      markUpload(batchRowId, {
+        status: failed === 0 ? 'success' : 'error',
+        progress: 100,
+        name:
+          failed === 0
+            ? `${succeeded} files uploaded`
+            : `${succeeded} of ${entries.length} files uploaded`,
+        error: failed > 0 ? lastError : undefined,
+      });
+    } else {
+      for (let i = 0; i < entries.length; i += 1) {
+        await uploadEntry(entries[i], newUploads[i].id);
       }
     }
 
@@ -2242,8 +2675,13 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     progressIntervals.clear();
     setIsUploading(false);
 
-    if (anySucceeded) {
+    if (succeeded > 0) {
       await fetchDocuments();
+      if (!summarise) {
+        toast.success(
+          `${succeeded} files uploaded. Summaries were skipped for a batch this size \u2014 open a file to generate one.`,
+        );
+      }
     }
 
     // Clear uploaded files after a delay
@@ -2293,6 +2731,20 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             />
           ) : null}
 
+          {showUploadZone && foldersReady ? (
+            // `webkitdirectory` is what makes the picker offer folders; each File then carries
+            // webkitRelativePath, which is where the folder names come from.
+            <input
+              type="file"
+              className="hidden"
+              id={folderInputId}
+              multiple
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+              onChange={handleFolderInput}
+              disabled={uploadDisabled}
+            />
+          ) : null}
+
           {headerExtra ? <div className="mb-3 min-w-0 w-full">{headerExtra}</div> : null}
 
           <div className="flex min-w-0 items-start justify-between gap-2 md:gap-6">
@@ -2311,6 +2763,27 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             </div>
 
             <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+              {!isStaffMeetingDocs && String(leadNumber || '').trim() ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content"
+                  onClick={() => {
+                    onClose();
+                    // The drive shows a back button for this, so the lead page is one click away.
+                    const from = `${location.pathname}${location.search}`;
+                    navigate(
+                      `/drive?case=${encodeURIComponent(String(leadNumber).trim())}&from=${encodeURIComponent(from)}`,
+                    );
+                  }}
+                  title="Open this case in the documents drive"
+                  aria-label="Open this case in the documents drive"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-5 w-5 shrink-0" aria-hidden />
+                  <span className="md:hidden">Drive</span>
+                  <span className="hidden md:inline">Open in Drive</span>
+                </button>
+              ) : null}
+
               <button
                 type="button"
                 className="btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content disabled:bg-transparent disabled:opacity-40"
@@ -2318,7 +2791,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 disabled={
                   loading ||
                   (requireCaseDocumentClassification
-                    ? documentsInActiveCategory.length === 0
+                    ? documentsInActiveFolder.length === 0
                     : documents.length === 0)
                 }
                 title="Download all as zip"
@@ -2407,18 +2880,35 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                       ? 'Processing files...'
                       : caseUploadBlocked
                         ? 'Unable to upload while classifications are loading.'
-                        : 'Drag and drop files here, or click Upload Files'}
+                        : foldersReady
+                          ? 'Drag and drop files or whole folders here, or use the buttons below'
+                          : 'Drag and drop files here, or click Upload Files'}
                   </div>
-                  <label
-                    htmlFor={uploadDisabled ? undefined : fileInputId}
-                    className={`btn btn-outline btn-primary ${
-                      uploadDisabled ? 'pointer-events-none opacity-50' : 'cursor-pointer'
-                    }`}
-                    aria-disabled={uploadDisabled}
-                  >
-                    <PaperClipIcon className="h-5 w-5" />
-                    Upload Files
-                  </label>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <label
+                      htmlFor={uploadDisabled ? undefined : fileInputId}
+                      className={`btn btn-outline btn-primary ${
+                        uploadDisabled ? 'pointer-events-none opacity-50' : 'cursor-pointer'
+                      }`}
+                      aria-disabled={uploadDisabled}
+                    >
+                      <PaperClipIcon className="h-5 w-5" />
+                      Upload Files
+                    </label>
+                    {foldersReady ? (
+                      <label
+                        htmlFor={uploadDisabled ? undefined : folderInputId}
+                        className={`btn btn-outline btn-primary ${
+                          uploadDisabled ? 'pointer-events-none opacity-50' : 'cursor-pointer'
+                        }`}
+                        aria-disabled={uploadDisabled}
+                        title="Upload a folder and everything inside it"
+                      >
+                        <FolderPlusIcon className="h-5 w-5" />
+                        Upload Folder
+                      </label>
+                    ) : null}
+                  </div>
                 </div>
               </>
             );
@@ -2508,6 +2998,68 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                       );
                     })}
                   </nav>
+
+                  {foldersReady ? (
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                      <nav
+                        className="flex min-w-0 flex-1 flex-wrap items-center gap-1 text-sm"
+                        aria-label="Folder path"
+                      >
+                        <button
+                          type="button"
+                          className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                            activeFolderId
+                              ? 'text-base-content/70 hover:bg-base-200/70'
+                              : 'text-base-content'
+                          } ${dropTargetFolderId === '__root__' ? 'bg-primary/10 text-primary' : ''}`}
+                          onClick={() => setActiveFolderId(null)}
+                          onDragOver={(e) => {
+                            if (!draggingDocId) return;
+                            e.preventDefault();
+                            setDropTargetFolderId('__root__');
+                          }}
+                          onDragLeave={() => setDropTargetFolderId(null)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setDropTargetFolderId(null);
+                            const doc = documents.find((d) => d.id === draggingDocId);
+                            if (doc) void moveDocumentToFolder(doc, null);
+                            setDraggingDocId(null);
+                          }}
+                        >
+                          <FolderIcon className="h-4 w-4 shrink-0" aria-hidden />
+                          All files
+                        </button>
+                        {activeFolderTrail.map((folder, index) => (
+                          <span key={folder.id} className="inline-flex min-w-0 items-center gap-1">
+                            <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-base-content/40" aria-hidden />
+                            <button
+                              type="button"
+                              className={`max-w-[10rem] truncate rounded-md px-2 py-1 font-medium transition-colors ${
+                                index === activeFolderTrail.length - 1
+                                  ? 'text-base-content'
+                                  : 'text-base-content/70 hover:bg-base-200/70'
+                              }`}
+                              onClick={() => setActiveFolderId(folder.id)}
+                            >
+                              {folder.title}
+                            </button>
+                          </span>
+                        ))}
+                      </nav>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-primary shadow-none hover:bg-primary/10"
+                        onClick={openCreateFolderModal}
+                        disabled={!folderScope}
+                        title="Create a folder here"
+                      >
+                        <FolderPlusIcon className="h-5 w-5 shrink-0" aria-hidden />
+                        New folder
+                      </button>
+                    </div>
+                  ) : null}
+
                   <div className="min-w-0 w-full">
                     {loading ? (
                       <div className="flex items-center justify-center py-10">
@@ -2519,18 +3071,90 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                         <ExclamationTriangleIcon className="mr-3 h-8 w-8 shrink-0" />
                         <span>{error}</span>
                       </div>
-                    ) : documents.length === 0 ? (
+                    ) : documents.length === 0 && visibleFolders.length === 0 ? (
                       <div className="py-12 text-center text-base-content/70">
                         <DocumentIcon className="mx-auto mb-4 h-16 w-16 opacity-50" />
                         <p>No documents found for this lead.</p>
                       </div>
-                    ) : documentsInActiveCategory.length === 0 ? (
+                    ) : documentsInActiveFolder.length === 0 && visibleFolders.length === 0 ? (
                       <div className="py-10 text-center text-base-content/70">
-                        <p>No documents in this category.</p>
+                        <p>{activeFolderId ? 'This folder is empty.' : 'No documents in this category.'}</p>
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {documentsInActiveCategory.map((doc) => {
+                        {visibleFolders.map((folder) => {
+                          const inside = folderContentCounts.get(folder.id) || 0;
+                          const isDropTarget = dropTargetFolderId === folder.id;
+                          return (
+                            <div
+                              key={folder.id}
+                              className={`flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-4 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:gap-3 sm:p-5 ${
+                                isDropTarget
+                                  ? 'border-primary bg-primary/10'
+                                  : 'border-base-200 bg-transparent hover:bg-base-200/60'
+                              }`}
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`Open folder ${folder.title}`}
+                              onClick={() => setActiveFolderId(folder.id)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setActiveFolderId(folder.id);
+                                }
+                              }}
+                              onDragOver={(e) => {
+                                if (!draggingDocId) return;
+                                e.preventDefault();
+                                setDropTargetFolderId(folder.id);
+                              }}
+                              onDragLeave={() => setDropTargetFolderId((prev) => (prev === folder.id ? null : prev))}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                setDropTargetFolderId(null);
+                                const doc = documents.find((d) => d.id === draggingDocId);
+                                if (doc) void moveDocumentToFolder(doc, folder.id);
+                                setDraggingDocId(null);
+                              }}
+                            >
+                              <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
+                                <FolderIcon className="h-9 w-9 shrink-0 text-primary" aria-hidden />
+                                <div className="min-w-0 flex-1 overflow-hidden">
+                                  <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
+                                    {folder.title}
+                                  </p>
+                                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/70">
+                                    <span className="tabular-nums">
+                                      {inside === 0 ? 'Empty' : `${inside} file${inside === 1 ? '' : 's'}`}
+                                    </span>
+                                    {folder.created_by ? <span className="truncate">by {folder.created_by}</span> : null}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm h-9 w-9 min-h-9 min-w-9 border-0 bg-transparent p-0 text-base-content/70 shadow-none hover:bg-base-200"
+                                  onClick={() => openRenameFolderModal(folder)}
+                                  title="Rename folder"
+                                  aria-label={`Rename ${folder.title}`}
+                                >
+                                  <PencilSquareIcon className="h-5 w-5" aria-hidden />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm h-9 w-9 min-h-9 min-w-9 border-0 bg-transparent p-0 text-error shadow-none hover:bg-error/10"
+                                  onClick={() => void handleDeleteFolder(folder)}
+                                  title="Delete folder"
+                                  aria-label={`Delete ${folder.title}`}
+                                >
+                                  <TrashIcon className="h-5 w-5" aria-hidden />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {documentsInActiveFolder.map((doc) => {
                           const isDownloading = downloading.includes(doc.id);
 
                           return (
@@ -2540,6 +3164,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                               role="button"
                               tabIndex={0}
                               aria-label={`Open AI summary for ${doc.name}`}
+                              draggable={foldersReady && !!doc.caseDocDbId}
+                              onDragStart={() => setDraggingDocId(doc.id)}
+                              onDragEnd={() => {
+                                setDraggingDocId(null);
+                                setDropTargetFolderId(null);
+                              }}
                               onClick={() => setSummaryModalDoc(doc)}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' || e.key === ' ') {
@@ -2816,10 +3446,21 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                   {summaryModalDoc.aiSummary.trim()}
                 </p>
               ) : summaryModalDoc.aiSummaryStatus === 'skipped' ? (
-                <p className="text-sm text-base-content/70">
-                  {summaryModalDoc.aiSummaryError?.trim() ||
-                    'This file type is not supported for automatic summary.'}
-                </p>
+                <div className="space-y-3">
+                  <p className="text-sm text-base-content/70">
+                    {summaryModalDoc.aiSummaryError?.trim() ||
+                      'This file type is not supported for automatic summary.'}
+                  </p>
+                  {canEditSummary ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => void handleRetryDocumentSummary()}
+                    >
+                      Generate summary
+                    </button>
+                  ) : null}
+                </div>
               ) : summaryModalDoc.aiSummaryStatus === 'failed' ? (
                 <div className="space-y-3">
                   <p className="text-sm text-error">
@@ -2859,12 +3500,70 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
     </div>
 
+      {folderModalOpen ? (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => (folderBusy ? undefined : setFolderModalOpen(false))}
+          />
+          <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-1 text-lg font-semibold">
+              {folderModalMode === 'create' ? 'New folder' : 'Rename folder'}
+            </h3>
+            <p className="mb-4 text-sm text-base-content/60">
+              {folderModalMode === 'create'
+                ? activeFolderTrail.length > 0
+                  ? `Inside ${activeFolderTrail.map((f) => f.title).join(' / ')}`
+                  : 'At the top of this category'
+                : 'Files inside keep their place.'}
+            </p>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              placeholder="Folder name"
+              value={folderModalName}
+              autoFocus
+              maxLength={80}
+              onChange={(e) => setFolderModalName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void saveFolderModal();
+                }
+              }}
+            />
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setFolderModalOpen(false)}
+                disabled={folderBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm gap-2"
+                onClick={() => void saveFolderModal()}
+                disabled={folderBusy || !folderModalName.trim()}
+              >
+                {folderBusy ? <span className="loading loading-spinner loading-xs" /> : null}
+                {folderModalMode === 'create' ? 'Create' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <DocumentViewerModal
         isOpen={previewIndex !== null && documents.length > 0}
         onClose={() => setPreviewIndex(null)}
         documents={viewerDocuments}
         initialIndex={previewIndex ?? 0}
         onRename={handleRenamePreviewDocument}
+        onOfficeSaved={() => {
+          void fetchDocuments();
+        }}
       />
     </>,
     window.document.body

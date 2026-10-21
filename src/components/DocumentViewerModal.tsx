@@ -4,6 +4,7 @@ import {
   ArrowDownTrayIcon,
   ArrowsPointingInIcon,
   ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
@@ -22,7 +23,25 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
+import { useMsal } from '@azure/msal-react';
 import { supabase } from '../lib/supabase';
+import { officeEditRequest } from '../msalConfig';
+import { getAccessTokenWithFallback, isPopupUnreliable } from '../lib/graph';
+import {
+  blobsAreIdentical,
+  downloadOfficeEditResult,
+  endOfficeEditSession,
+  fetchOfficeEditState,
+  isOfficeEditableFile,
+  OFFICE_EDIT_FOLDER,
+  startOfficeEditSession,
+  type OfficeEditSession,
+} from '../lib/officeOnlineEdit';
+import {
+  fetchStoredObjectBytes,
+  fetchStoredObjectSize,
+  syncStoredDocumentSize,
+} from '../lib/documentStoredSize';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
 import {
@@ -91,6 +110,15 @@ interface DocumentViewerModalProps {
   onAttached?: (attachedPaths: string[], target?: { id: string; name: string }) => void;
   /** Called after removing selected files from a sub effort. */
   onDetached?: (detachedPaths: string[], target?: { id: string; name: string }) => void;
+  /**
+   * Word / Excel editing in place. Needs the item's `storagePath` and `storageBucket` so the
+   * edited file can go back exactly where it came from; pass false to keep a list read-only.
+   */
+  allowOfficeEditing?: boolean;
+  /** Go straight into the editor on opening, for a document that was just created to be filled in. */
+  autoStartOfficeEdit?: boolean;
+  /** After a save, so the caller's list can show the new size and refresh previews. */
+  onOfficeSaved?: (doc: DocumentViewerItem, info: { size: number }) => void | Promise<void>;
 }
 
 function isDirectPreviewUrl(url: string): boolean {
@@ -205,40 +233,61 @@ function formatDateTimeVerbose(dateString?: string): string {
   });
 }
 
+/** The object key inside `bucketName`, whichever shape of URL or path a caller handed us. */
+function extractStoragePath(documentUrl: string, bucketName: string): string {
+  if (documentUrl.includes('/storage/v1/object/')) {
+    const urlParts = documentUrl.split('/storage/v1/object/');
+    if (urlParts.length > 1) {
+      const pathParts = urlParts[1].split('/');
+      if (pathParts.length > 1) return pathParts.slice(2).join('/');
+    }
+    return documentUrl;
+  }
+
+  if (documentUrl.startsWith('http://') || documentUrl.startsWith('https://')) {
+    try {
+      const url = new URL(documentUrl);
+      let pathname = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
+      if (pathname.startsWith(bucketName + '/')) {
+        pathname = pathname.substring(bucketName.length + 1);
+      }
+      return pathname;
+    } catch {
+      return documentUrl;
+    }
+  }
+
+  return documentUrl;
+}
+
 async function resolveSignedUrl(
   documentUrl: string,
   bucketName: string,
 ): Promise<string | null> {
   try {
-    let filePath = documentUrl;
-
-    if (documentUrl.includes('/storage/v1/object/')) {
-      const urlParts = documentUrl.split('/storage/v1/object/');
-      if (urlParts.length > 1) {
-        const pathParts = urlParts[1].split('/');
-        if (pathParts.length > 1) {
-          filePath = pathParts.slice(2).join('/');
-        }
-      }
-    } else if (documentUrl.startsWith('http://') || documentUrl.startsWith('https://')) {
-      try {
-        const url = new URL(documentUrl);
-        let pathname = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
-        if (pathname.startsWith(bucketName + '/')) {
-          pathname = pathname.substring(bucketName.length + 1);
-        }
-        filePath = pathname;
-      } catch {
-        filePath = documentUrl;
-      }
-    }
+    const filePath = extractStoragePath(documentUrl, bucketName);
 
     const { data, error } = await supabase.storage.from(bucketName).createSignedUrl(filePath, 3600);
     if (error) {
       console.error('Error generating signed URL:', error);
       return null;
     }
-    return data.signedUrl;
+    return data?.signedUrl ?? null;
+  } catch (error) {
+    console.error('Error generating signed URL:', error);
+    return null;
+  }
+}
+
+/** A brand new link to a known bucket and path, so nothing can serve what the file used to be. */
+async function createFreshSignedUrl(bucket: string, path: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 3600);
+    if (error) {
+      console.error('Error generating signed URL:', error);
+      return null;
+    }
+    return data?.signedUrl ?? null;
   } catch (error) {
     console.error('Error generating signed URL:', error);
     return null;
@@ -264,7 +313,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   activeFolderId = null,
   onAttached,
   onDetached,
+  allowOfficeEditing = true,
+  autoStartOfficeEdit = false,
+  onOfficeSaved,
 }) => {
+  const { instance, accounts } = useMsal();
   const galleryItems = useMemo<DocumentViewerItem[]>(() => {
     if (documentsProp && documentsProp.length > 0) return documentsProp;
     if (documentUrl || documentName) {
@@ -299,6 +352,26 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const [imageRotation, setImageRotation] = useState(0);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [signedDocId, setSignedDocId] = useState<string | null>(null);
+  /** Bumped after a save so the preview is signed again and shows the edited file. */
+  const [signNonce, setSignNonce] = useState(0);
+  const [editSession, setEditSession] = useState<(OfficeEditSession & { docId: string }) | null>(
+    null,
+  );
+  const [editStarting, setEditStarting] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  /** Read by the retry loop, which must not start a second save over the top of the first. */
+  const editSavingRef = useRef(false);
+  editSavingRef.current = editSaving;
+  /** True once OneDrive reports the editor has saved something into the staging copy. */
+  const [editChanged, setEditChanged] = useState(false);
+  /** The editor's tab, so "Back to the editor" reuses it instead of opening another. */
+  const editTabRef = useRef<Window | null>(null);
+  /** Whether the editor tab ever opened, which decides what the panel asks for next. */
+  const [editorOpened, setEditorOpened] = useState(false);
+  /** Save was asked for, but the editor has not written its changes to OneDrive yet. */
+  const [awaitingFlush, setAwaitingFlush] = useState(false);
+  /** Escape and the close button both go through the latest close handler, editor open or not. */
+  const requestCloseRef = useRef<() => void>(onClose);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -919,7 +992,16 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       return;
     }
 
-    if (isDirectPreviewUrl(activeUrl)) {
+    /**
+     * After a save the URL this modal was handed still points at the bytes from before it, and
+     * the Office viewer caches by URL, so the file has to be signed again from its own address
+     * rather than reused. Only after a save: otherwise the caller's URL is the cheaper route.
+     */
+    const ownBucket = (activeDoc?.storageBucket || '').trim();
+    const ownPath = (activeDoc?.storagePath || '').trim();
+    const signAgain = signNonce > 0 && !!ownBucket && !!ownPath;
+
+    if (!signAgain && isDirectPreviewUrl(activeUrl)) {
       setSignedUrl(activeUrl);
       setSignedDocId(docId);
       setLoadingUrl(false);
@@ -936,7 +1018,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     setOfficeError(false);
 
     void (async () => {
-      const url = await resolveSignedUrl(activeUrl, bucketName);
+      const url = signAgain
+        ? await createFreshSignedUrl(ownBucket, ownPath)
+        : await resolveSignedUrl(activeUrl, bucketName);
       if (cancelled) return;
       if (!url) {
         setImageError(true);
@@ -953,7 +1037,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, activeUrl, bucketName, activeDoc?.id]);
+  }, [
+    isOpen,
+    activeUrl,
+    bucketName,
+    activeDoc?.id,
+    activeDoc?.storageBucket,
+    activeDoc?.storagePath,
+    signNonce,
+  ]);
 
   const displayUrl =
     signedDocId === (activeDoc?.id ?? null)
@@ -973,6 +1065,28 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   const isOffice = !isImage && !isPdf && isOfficeDocument(activeName, activeFileType, activeUrl);
   const officeEmbedUrl =
     isOffice && displayUrl && !officeError ? buildOfficeOnlineEmbedUrl(displayUrl) : null;
+
+  // Saving writes the edited file back over the original, so both halves of its address are
+  // needed. Items that do not say where they live stay read-only.
+  const activeEditBucket = (activeDoc?.storageBucket || '').trim() || null;
+  const activeEditPath =
+    activeStoragePath ||
+    (activeEditBucket && activeUrl.includes('/storage/v1/object/')
+      ? extractStoragePath(activeUrl, activeEditBucket)
+      : null);
+  const canEditOffice =
+    allowOfficeEditing &&
+    isOffice &&
+    !!activeEditBucket &&
+    !!activeEditPath &&
+    isOfficeEditableFile(activeName);
+  const editingThisDoc = !!editSession && editSession.docId === (activeDoc?.id ?? null);
+  const editorAppName = (() => {
+    const ext = activeName.toLowerCase().split('.').pop() || '';
+    if (ext === 'xlsx') return 'Excel';
+    if (ext === 'pptx') return 'PowerPoint';
+    return 'Word';
+  })();
 
   const goPrev = useCallback(() => {
     setPreviewIndex((i) => {
@@ -1090,7 +1204,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           setCommentsOpen(false);
           return;
         }
-        onClose();
+        requestCloseRef.current();
         return;
       }
       if (galleryItems.length <= 1) return;
@@ -1133,6 +1247,335 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       setDownloading(false);
     }
   };
+
+  /**
+   * A Graph token that may write to the person's own files.
+   *
+   * Being signed in to the CRM says nothing about Microsoft: the mailbox connection is held by
+   * the server, so the browser often has no MSAL account at all. In that case editing asks for
+   * its own sign-in rather than refusing.
+   */
+  const acquireFilesToken = useCallback(async () => {
+    const account = accounts[0] || instance.getActiveAccount();
+    if (account) {
+      const token = await getAccessTokenWithFallback(instance, officeEditRequest, account);
+      // Null means a redirect is under way and this page is about to be replaced.
+      if (!token) throw new Error('Microsoft sign-in is needed to edit this document');
+      return token;
+    }
+
+    if (isPopupUnreliable()) {
+      await instance.loginRedirect(officeEditRequest);
+      throw new Error('Taking you to Microsoft sign-in…');
+    }
+
+    const result = await instance.loginPopup(officeEditRequest);
+    if (result?.account) instance.setActiveAccount(result.account);
+    if (!result?.accessToken) throw new Error('Microsoft sign-in did not complete');
+    return result.accessToken;
+  }, [accounts, instance]);
+
+  /**
+   * Open the real Word or Excel on the file: it is copied into the person's own OneDrive, edited
+   * in its own tab, and copied back by handleSaveOfficeEdit.
+   *
+   * Nothing is opened before the Microsoft token is in hand: a browser allows one window per
+   * click, and spending it here is what blocks the sign-in window. Opening the editor afterwards
+   * may well be blocked for the same reason, which is why the panel offers a plain link too.
+   */
+  const handleStartOfficeEdit = async () => {
+    if (editStarting || editSaving) return;
+    // Say why rather than doing nothing: every one of these is invisible from the button.
+    if (!activeDoc || !canEditOffice || !activeEditBucket || !activeEditPath) {
+      console.warn('Office edit unavailable', {
+        hasDoc: !!activeDoc,
+        isOffice,
+        allowOfficeEditing,
+        editableName: isOfficeEditableFile(activeName),
+        bucket: activeEditBucket,
+        path: activeEditPath,
+      });
+      toast.error('This file cannot be edited here');
+      return;
+    }
+    setEditStarting(true);
+    try {
+      const token = await acquireFilesToken();
+      // Read storage directly rather than through the preview's URL: that one can still be
+      // serving the bytes from before the last save, which would stage a stale copy to edit.
+      const blob = await fetchStoredObjectBytes(activeEditBucket, activeEditPath);
+      if (!blob) throw new Error('Could not read this file from storage');
+      const session = await startOfficeEditSession(token, { fileName: activeName, blob });
+      setEditChanged(false);
+      setEditSession({ ...session, docId: activeDoc.id });
+      openEditorTab(session);
+    } catch (err: unknown) {
+      console.error('Start Office edit:', err);
+      toast.error(err instanceof Error ? err.message : 'Could not open the editor');
+    } finally {
+      setEditStarting(false);
+    }
+  };
+
+  /** A name, so going back to the editor reuses its tab instead of opening a second one. */
+  const editorTabName = editSession ? `rmq-office-edit-${editSession.itemId}` : '';
+
+  /** Show the editor. Returns false when the browser refused to open the tab. */
+  const openEditorTab = (session: OfficeEditSession) => {
+    const tab = window.open(session.editUrl, `rmq-office-edit-${session.itemId}`);
+    if (!tab) {
+      setEditorOpened(false);
+      return false;
+    }
+    editTabRef.current = tab;
+    setEditorOpened(true);
+    tab.focus();
+    return true;
+  };
+
+  /**
+   * Shut the editor. Closing is also what makes Office for the web write its changes back, so
+   * this runs before reading them rather than only as cleanup.
+   */
+  const closeEditorTab = () => {
+    let tab = editTabRef.current;
+    // The panel's link hands back no window, but a named one can be reached again, and an empty
+    // URL means it is not navigated anywhere on the way.
+    if ((!tab || tab.closed) && editorOpened && editorTabName) {
+      tab = window.open('', editorTabName);
+    }
+    editTabRef.current = null;
+    setEditorOpened(false);
+    if (tab && !tab.closed) tab.close();
+  };
+
+  /** Everything a finished or abandoned editing session leaves behind. */
+  const clearEditSession = () => {
+    closeEditorTab();
+    setAwaitingFlush(false);
+    setEditChanged(false);
+    setEditSession(null);
+  };
+
+  /** Bring the edited file back into the CRM, over the original. */
+  const handleSaveOfficeEdit = async (
+    options: {
+      /** Triggered by closing the viewer or changing file, not by pressing Save. */
+      silent?: boolean;
+      /** One of the repeated tries while waiting for the editor: stays quiet, keeps the session. */
+      attempt?: boolean;
+    } = {},
+  ) => {
+    if (!editSession || editSaving) return;
+    const target = galleryItems.find((item) => item.id === editSession.docId) ?? activeDoc;
+    const bucket = (target?.storageBucket || activeEditBucket || '').trim();
+    const path = (target?.storagePath || activeEditPath || '').trim();
+    if (!target || !bucket || !path) {
+      toast.error('Could not work out where to save this file');
+      return;
+    }
+
+    setEditSaving(true);
+    const progress =
+      options.silent || options.attempt ? null : toast.loading('Saving your changes…');
+    try {
+      const token = await acquireFilesToken();
+      const blob = await downloadOfficeEditResult(token, editSession.itemId);
+      const current = await fetchStoredObjectBytes(bucket, path);
+
+      /**
+       * Office for the web writes back when it sees fit, so the staged copy can still be the one
+       * we uploaded even after someone has typed into it. Saving then would put the bytes the CRM
+       * already has back on top of themselves, which is exactly what losing the changes looks
+       * like, so an edit is only recognised once the two differ.
+       */
+      if (current && (await blobsAreIdentical(current, blob))) {
+        // Nothing has arrived yet; the loop that asked for this will ask again shortly.
+        if (options.attempt) return;
+        if (options.silent) {
+          // Either nothing was typed or the editor never wrote: indistinguishable from here, so
+          // the OneDrive copy stays. Deleting it is the one move that could throw away work.
+          console.warn(
+            `${editSession.stagingPath} is unchanged — leaving the OneDrive copy in place`,
+          );
+          clearEditSession();
+          toast(
+            `${editorAppName} had not saved yet, so your copy is still in OneDrive under “${OFFICE_EDIT_FOLDER}”`,
+          );
+          return;
+        }
+        throw new Error(`${editorAppName} has not written your changes to OneDrive yet`);
+      }
+
+      const { error } = await supabase.storage.from(bucket).upload(path, blob, {
+        upsert: true,
+        contentType: blob.type || activeFileType,
+        // Previews and downloads go through a CDN, which must not keep serving the old bytes.
+        cacheControl: '0',
+      });
+      if (error) throw error;
+
+      // Proof the overwrite landed: a refused write or a path nobody reads would otherwise look
+      // exactly like a save, which is how an edit goes missing without a word.
+      const stored = await fetchStoredObjectSize(bucket, path);
+      console.info(
+        `Saved an Office edit: ${path} was ${current?.size ?? '?'} bytes, wrote ${blob.size}, ` +
+          `storage now reports ${stored ?? '?'}`,
+      );
+      if (stored !== null && stored !== blob.size) {
+        throw new Error('Storage still holds the old file — your changes were not saved');
+      }
+
+      await syncStoredDocumentSize(bucket, path, blob.size);
+      await endOfficeEditSession(token, editSession.itemId);
+      clearEditSession();
+      // The old preview URL still points at the old bytes, so sign it again.
+      setSignNonce((n) => n + 1);
+      await onOfficeSaved?.(target, { size: blob.size });
+      if (progress) toast.success('Saved', { id: progress });
+      else toast.success(`Saved “${target.name}”`);
+    } catch (err: unknown) {
+      console.error('Save Office edit:', err);
+      const message = err instanceof Error ? err.message : 'Could not save your changes';
+      if (progress) toast.error(message, { id: progress });
+      // A failed try says nothing yet; the loop reports it if they all fail.
+      else if (!options.attempt) toast.error(message);
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  /**
+   * Pressing Save hands over to the loop below, which brings the file home as soon as the editor
+   * has written it. The editor's tab is deliberately left alone: Office flushes what it is
+   * holding as part of its own shutdown, and closing the tab out from under it can cut that
+   * short. It is closed once the file is safely back instead.
+   */
+  const handleRequestOfficeSave = () => {
+    if (!editSession || editSaving || awaitingFlush) return;
+    setAwaitingFlush(true);
+  };
+
+  /** Throw the OneDrive copy away: whatever was typed since opening the editor goes with it. */
+  const handleDiscardOfficeEdit = async () => {
+    if (!editSession || editSaving) return;
+    const session = editSession;
+    clearEditSession();
+    try {
+      const token = await acquireFilesToken();
+      await endOfficeEditSession(token, session.itemId);
+    } catch (err) {
+      console.warn('Discard Office edit:', err);
+    }
+  };
+
+  /**
+   * Leaving the viewer with the editor open keeps the changes: Word and Excel have already saved
+   * them into the OneDrive copy, so the only thing left is to bring that copy home.
+   */
+  const handleRequestClose = () => {
+    // One try only: the retry loop lives in this component, which is about to go away.
+    if (editSession && !editSaving) void handleSaveOfficeEdit({ silent: true });
+    onClose();
+  };
+  requestCloseRef.current = handleRequestClose;
+
+  /**
+   * Watch for the editor writing back, so the panel can say there is something to save.
+   *
+   * Office for the web announces nothing and writes when it sees fit, so asking OneDrive is the
+   * only way to find out. Checking only when the window regains focus misses the common case of
+   * coming back before the editor has got round to saving, hence the repeat while a session is
+   * open. It stops as soon as something is seen, and never runs on a hidden tab.
+   */
+  useEffect(() => {
+    if (!editSession || editChanged) return;
+    let cancelled = false;
+    const check = () => {
+      if (document.visibilityState === 'hidden') return;
+      void acquireFilesToken()
+        .then((token) => fetchOfficeEditState(token, editSession.itemId))
+        .then((state) => {
+          if (cancelled) return;
+          if (!editSession.lastModified || state.lastModified !== editSession.lastModified) {
+            setEditChanged(true);
+          }
+        })
+        .catch((err) => console.warn('Could not check the editing copy:', err));
+    };
+
+    check();
+    // Closer attention while a save is waiting on it, since that is someone watching a spinner.
+    const timer = window.setInterval(check, awaitingFlush ? 1500 : 5000);
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', check);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', check);
+    };
+  }, [editSession, editChanged, awaitingFlush, acquireFilesToken]);
+
+  /**
+   * Bring the changes home, trying again until they show up.
+   *
+   * Office for the web offers nothing to wait on — no event, and a timestamp that says more about
+   * the editor's mood than about whether anybody typed — so the only honest test is whether the
+   * staged file differs from the one in the CRM. Each try is that test, and the first one that
+   * passes saves. Excel in particular can sit on a change for a minute or more, hence the
+   * patience, but it does give up rather than spin forever.
+   */
+  useEffect(() => {
+    if (!awaitingFlush || !editSession) return;
+    let tries = 0;
+    const attempt = () => {
+      if (editSavingRef.current) return;
+      tries += 1;
+      if (tries > 40) {
+        setAwaitingFlush(false);
+        toast.error(
+          `${editorAppName} has not written your changes to OneDrive. Close its tab — that makes ` +
+            'it save — then press Save again.',
+          { duration: 8000 },
+        );
+        return;
+      }
+      void handleSaveOfficeEdit({ attempt: true });
+    };
+
+    attempt();
+    const timer = window.setInterval(attempt, 3000);
+    return () => window.clearInterval(timer);
+    // The save handler is new on every render; keying off it would restart the loop each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [awaitingFlush, editSession, editorAppName]);
+
+  /**
+   * A document created to be written in opens its editor by itself. Once only: after that it is
+   * an ordinary file, and reopening the editor over a finished save would be a surprise.
+   */
+  const autoEditStartedRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      autoEditStartedRef.current = false;
+      return;
+    }
+    if (!autoStartOfficeEdit || autoEditStartedRef.current) return;
+    if (!canEditOffice || editSession || editStarting) return;
+    autoEditStartedRef.current = true;
+    void handleStartOfficeEdit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, autoStartOfficeEdit, canEditOffice, editSession, editStarting]);
+
+  // Moving to another file with the editor open saves first, for the same reason closing does.
+  useEffect(() => {
+    if (!editSession || editSaving) return;
+    if (editSession.docId === (activeDoc?.id ?? null)) return;
+    void handleSaveOfficeEdit({ silent: true });
+    // handleSaveOfficeEdit reads the session it was given; re-running on its identity would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editSession, editSaving, activeDoc?.id]);
 
   const handleShare = async () => {
     if (sharing) return;
@@ -1537,6 +1980,54 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               </button>
             </>
           ) : null}
+          {canEditOffice ? (
+            editingThisDoc ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm h-9 shrink-0 gap-1.5 rounded-full px-3"
+                  onClick={handleRequestOfficeSave}
+                  disabled={editSaving || awaitingFlush}
+                  title={`Save what you changed in ${editorAppName} back to the CRM`}
+                >
+                  {editSaving || awaitingFlush ? (
+                    <span className="loading loading-spinner loading-xs" />
+                  ) : (
+                    <CheckCircleIcon className="h-5 w-5" />
+                  )}
+                  <span className="text-sm font-medium">Save</span>
+                  {editChanged ? (
+                    <span className="h-2 w-2 rounded-full bg-white/80" aria-hidden />
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm h-9 shrink-0 gap-1.5 rounded-full px-2.5"
+                  onClick={() => void handleDiscardOfficeEdit()}
+                  disabled={editSaving}
+                  title="Throw away the changes made since you clicked Edit"
+                >
+                  <XCircleIcon className="h-5 w-5" />
+                  <span className="hidden text-sm font-medium sm:inline">Discard</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm h-9 shrink-0 gap-1.5 rounded-full px-2.5"
+                onClick={() => void handleStartOfficeEdit()}
+                disabled={editStarting || editSaving}
+                title={`Edit in ${editorAppName} and save back here`}
+              >
+                {editStarting ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  <PencilSquareIcon className="h-5 w-5" />
+                )}
+                <span className="hidden text-sm font-medium sm:inline">Edit</span>
+              </button>
+            )
+          ) : null}
           <button
             type="button"
             className="btn btn-ghost btn-circle btn-sm shrink-0"
@@ -1564,7 +2055,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           <button
             type="button"
             className="btn btn-ghost btn-circle btn-sm shrink-0"
-            onClick={onClose}
+            onClick={handleRequestClose}
             title="Close"
             aria-label="Close"
           >
@@ -1862,6 +2353,69 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   onError={() => setPdfError(true)}
                 />
               )
+            ) : editingThisDoc && editSession ? (
+              <div className="flex min-h-0 w-full flex-1 items-center justify-center p-6">
+                <div className="max-w-md rounded-2xl bg-white p-6 text-center shadow-lg">
+                  <PencilSquareIcon className="mx-auto h-10 w-10 text-primary" />
+                  <p className="mt-3 text-lg font-semibold text-base-content">
+                    Editing in {editorAppName}
+                  </p>
+                  <p className="mt-2 text-sm text-base-content/70">
+                    {activeName} is open in another tab. Press Save when you are done.
+                  </p>
+                  {awaitingFlush ? (
+                    <>
+                      <p className="mt-3 inline-flex items-center gap-2 text-sm font-medium text-base-content/70">
+                        <span className="loading loading-spinner loading-xs" />
+                        Getting your changes from {editorAppName}…
+                      </p>
+                      <p className="mt-1 text-xs text-base-content/50">
+                        Close the {editorAppName} tab to speed this up.
+                      </p>
+                    </>
+                  ) : editChanged ? (
+                    <p className="mt-3 text-sm font-medium text-success">Ready to save.</p>
+                  ) : null}
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    {awaitingFlush ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setAwaitingFlush(false)}
+                      >
+                        Stop waiting
+                      </button>
+                    ) : (
+                      <>
+                        {/* A link: a tab opened from script can be blocked, this cannot. */}
+                        <a
+                          href={editSession.editUrl}
+                          target={editorTabName}
+                          rel="noopener noreferrer"
+                          className={`btn btn-sm gap-1.5 ${editorOpened ? 'btn-outline' : 'btn-primary'}`}
+                          onClick={() => setEditorOpened(true)}
+                        >
+                          <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+                          {editorOpened ? `Back to ${editorAppName}` : `Open in ${editorAppName}`}
+                        </a>
+                        <button
+                          type="button"
+                          className={`btn btn-sm gap-1.5 ${editorOpened ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={handleRequestOfficeSave}
+                          disabled={editSaving}
+                        >
+                          {editSaving ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : (
+                            <CheckCircleIcon className="h-4 w-4" />
+                          )}
+                          Save to the CRM
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
             ) : officeEmbedUrl ? (
               <iframe
                 key={officeEmbedUrl}
@@ -1881,10 +2435,20 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     ? 'Word and Excel previews need a public HTTPS link. You can still download the file.'
                     : null}
                 </p>
-                <div className="mt-4 flex justify-center gap-3">
+                <div className="mt-4 flex flex-wrap justify-center gap-3">
                   <button type="button" className="btn btn-primary btn-sm" onClick={() => void handleDownload()}>
                     Download
                   </button>
+                  {canEditOffice ? (
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm border-neutral-500 text-neutral-100"
+                      onClick={() => void handleStartOfficeEdit()}
+                      disabled={editStarting || editSaving}
+                    >
+                      {editStarting ? 'Opening…' : 'Edit and save back'}
+                    </button>
+                  ) : null}
                   {displayUrl ? (
                     <a
                       href={displayUrl}

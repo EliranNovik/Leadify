@@ -1549,8 +1549,11 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Local loading state for client data.
   // Start false when we can show content immediately (cached client or redirect to last-opened) to avoid overlay flash.
+  // Arriving from another page the client is always null here: the cache is only read in the
+  // effect below, so waiting is what keeps "Please select a client" from flashing first.
   const [localLoading, setLocalLoading] = useState(() => {
     if (typeof window === 'undefined') return true;
+    if (!selectedClient) return true;
     const path = window.location.pathname;
     if (path === '/clients' || path === '/clients/') {
       const last = sessionStorage.getItem('clientsPage_lastLeadRoute');

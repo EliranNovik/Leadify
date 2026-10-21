@@ -161,7 +161,8 @@ const OfficeDocumentsTab: React.FC = () => {
   const loadFiles = useCallback(async () => {
     setFilesLoading(true);
     try {
-      setFiles(await fetchOfficeDocuments());
+      // This tab is the admin space; department spaces live on the documents drive.
+      setFiles(await fetchOfficeDocuments(null));
     } catch (error) {
       console.error('OfficeDocumentsTab files:', error);
       toast.error('Failed to load office documents');
@@ -173,7 +174,7 @@ const OfficeDocumentsTab: React.FC = () => {
   const loadFolders = useCallback(async () => {
     setFoldersLoading(true);
     try {
-      setFolders(await fetchOfficeDocumentFolders());
+      setFolders(await fetchOfficeDocumentFolders(null));
     } catch (error) {
       console.error('OfficeDocumentsTab folders:', error);
       toast.error('Failed to load folders');

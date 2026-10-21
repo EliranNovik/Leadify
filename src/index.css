@@ -148,6 +148,27 @@
   animation: checkmarkPop 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
+/* A folder row that just swallowed a dragged file, so the move is visible where it landed. */
+@keyframes driveDropLand {
+  0% {
+    background-color: hsl(var(--p) / 0.3);
+    transform: scale(1);
+  }
+
+  35% {
+    transform: scale(1.012);
+  }
+
+  100% {
+    background-color: transparent;
+    transform: scale(1);
+  }
+}
+
+.drive-drop-land {
+  animation: driveDropLand 0.65s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
 body,
 html,
 #root {

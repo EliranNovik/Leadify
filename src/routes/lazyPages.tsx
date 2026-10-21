@@ -107,6 +107,7 @@ export const LazyRMQMessagesPage = lazy(() => import('../pages/RMQMessagesPage')
 export const LazyProformaCreatePage = lazy(() => import('../pages/ProformaCreatePage'));
 export const LazyAboutPage = lazy(() => import('../pages/AboutPage'));
 export const LazyDocumentsPage = lazy(() => import('../pages/DocumentsPage'));
+export const LazyDocumentsDrivePage = lazy(() => import('../pages/DocumentsDrivePage'));
 export const LazyContactPage = lazy(() => import('../pages/ContactPage'));
 export const LazyContactBridgePage = lazy(() => import('../pages/ContactBridgePage'));
 export const LazyDuplicateContactsPage = lazy(() => import('../pages/DuplicateContactsPage'));

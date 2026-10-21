@@ -52,7 +52,8 @@ export const APP_PAGES: AppPage[] = [
   { path: '/case-manager', label: 'Case Manager', group: 'Cases', keywords: ['family tree', 'german', 'austrian'] },
   { path: '/retainer-handler-cases', label: 'Retention Cases', group: 'Cases', keywords: ['retainer'] },
   { path: '/handler-management', label: 'Handler Management', group: 'Cases' },
-  { path: '/documents', label: 'Documents', group: 'Cases', keywords: ['files', 'uploads'] },
+  { path: '/drive', label: 'All Documents', group: 'Cases', keywords: ['files', 'drive', 'folders'] },
+  { path: '/documents', label: 'Documents (OneDrive)', group: 'Cases', keywords: ['files', 'uploads'] },
   { path: '/smart-scan', label: 'Smart Scan', group: 'Cases', keywords: ['ocr', 'document scan'] },
 
   { path: '/collection', label: 'Collection', group: 'Finance', keywords: ['debt', 'payments'] },

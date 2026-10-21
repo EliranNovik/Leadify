@@ -57,6 +57,7 @@ export const loginRequest = {
     "Mail.Read",
     "Mail.Read.Shared",
     "Files.Read",
+    "Files.ReadWrite",
     "OnlineMeetings.ReadWrite",
     "Mail.ReadWrite",
     "Chat.Read",
@@ -64,6 +65,15 @@ export const loginRequest = {
     "ChatMessage.Read",
     "ChatMessage.Send"
   ],
+};
+
+/**
+ * Editing a Word or Excel file in the document viewer stages it in the signed-in person's own
+ * OneDrive, so it needs write access to their files. Asked for on its own the first time someone
+ * clicks Edit, so nobody is re-prompted just for signing in.
+ */
+export const officeEditRequest = {
+  scopes: ["Files.ReadWrite"],
 };
 
 // Fallback scopes for when calling permissions aren't available
@@ -81,6 +91,7 @@ export const basicLoginRequest = {
     "Mail.Read",
     "Mail.Read.Shared",
     "Files.Read",
+    "Files.ReadWrite",
     "OnlineMeetings.ReadWrite",
     "Mail.ReadWrite",
     "Chat.Read",
