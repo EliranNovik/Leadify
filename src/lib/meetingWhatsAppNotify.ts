@@ -96,6 +96,36 @@ export function hasValidLeadId(client: {
   return UUID_REGEX.test(idStr);
 }
 
+export type NotifyLead = {
+  id?: string | number;
+  /** 'legacy' for a leads_lead row; null when the column is simply unset. */
+  lead_type?: string | null;
+  isStaffMeeting?: boolean;
+};
+
+export function isLegacyNotifyLead(client: NotifyLead): boolean {
+  return client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_');
+}
+
+/** fetchLeadContacts() wants the bare numeric id for legacy leads. */
+export function normalizeLeadIdForContacts(client: NotifyLead): string | number {
+  if (!isLegacyNotifyLead(client)) return client.id as string | number;
+  return typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id);
+}
+
+/** The WhatsApp backend wants legacy ids prefixed so it can tell the two lead tables apart. */
+export function normalizeLeadIdForWhatsAppBackend(client: NotifyLead): string | number {
+  if (!isLegacyNotifyLead(client)) return client.id as string | number;
+  return typeof client.id === 'string' ? client.id : `legacy_${client.id}`;
+}
+
+/** Templates expect dd/mm/yyyy, while meetings.meeting_date is yyyy-mm-dd. */
+export function formatMeetingDateForMessage(dateStr: string): string {
+  const [year, month, day] = (dateStr || '').split('-');
+  if (!year || !month || !day) return dateStr;
+  return `${day}/${month}/${year}`;
+}
+
 /** Staff calendar row on Calendar with no linked lead — use meeting-scoped template params only. */
 export function isLeadlessStaffCalendarNotify(
   meeting: { calendar_type?: string },

@@ -364,3 +364,43 @@ export function formatDocumentSize(bytes: number | null): string {
 export function isMovableDocument(row: DocumentIndexRow): boolean {
   return row.source === 'lead';
 }
+
+/**
+ * The table each source is read from. The view reports every `row_id` as that table's own id, so
+ * this is all a row needs to be deleted.
+ */
+const DOCUMENT_SOURCE_TABLES: Record<DocumentIndexSource, string> = {
+  lead: 'lead_case_documents',
+  staff_meeting: 'staff_meeting_documents',
+  office: 'office_documents',
+  personal: 'employee_personal_files',
+  hr: 'employee_hr_documents',
+};
+
+export function documentIndexSourceTable(source: DocumentIndexSource): string {
+  return DOCUMENT_SOURCE_TABLES[source];
+}
+
+/**
+ * Removes a document for good. The row goes first and the stored file after: a stranded file is
+ * invisible and only costs space, while a row left pointing at a deleted file keeps listing and
+ * fails to open. Each table's own delete policy still decides whether this is allowed.
+ */
+export async function deleteDocumentIndexRow(row: DocumentIndexRow): Promise<void> {
+  const table = documentIndexSourceTable(row.source);
+  if (!table) throw new Error('This document cannot be deleted from here');
+
+  // RLS turns a forbidden delete into nought rows rather than an error, so without reading back
+  // what went the page would report a file as deleted while it is still there.
+  const { data, error } = await supabase.from(table).delete().eq('id', row.row_id).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error('This document is not yours to delete');
+  }
+
+  const path = (row.storage_path || '').trim();
+  if (path && path !== 'pending' && row.storage_bucket) {
+    const { error: storageError } = await supabase.storage.from(row.storage_bucket).remove([path]);
+    if (storageError) console.warn('documentIndex storage remove:', storageError);
+  }
+}

@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { findSpaceFolderChild, spaceFolderSegmentsToCreate } from './spaceFolders';
 
 export const OFFICE_DOCUMENTS_BUCKET = 'office-documents' as const;
 
@@ -20,11 +21,13 @@ export type OfficeDocumentFolder = {
   created_at: string;
   sort_order: number;
   department_id: number | null;
+  /** Folders nest since sql/2026-10-25_nested_space_folders.sql; null is the space's top level. */
+  parent_id: string | null;
 };
 
 const FILE_SELECT =
   'id, storage_path, file_name, mime_type, size_bytes, document_type, folder_id, department_id, created_at';
-const FOLDER_SELECT = 'id, title, created_at, sort_order, department_id';
+const FOLDER_SELECT = 'id, title, created_at, sort_order, department_id, parent_id';
 
 function guessMimeType(fileName: string, fallback?: string | null): string {
   if (fallback?.trim()) return fallback.trim();
@@ -218,9 +221,11 @@ export async function fetchOfficeDocumentFolders(
   return (data || []) as OfficeDocumentFolder[];
 }
 
+/** `parentId` nests the new folder inside an existing one of the same space. */
 export async function createOfficeDocumentFolder(
   title: string,
   departmentId: number | null = null,
+  parentId: string | null = null,
 ): Promise<OfficeDocumentFolder> {
   const nextTitle = title.trim();
   if (!nextTitle) throw new Error('Folder title is required');
@@ -239,12 +244,62 @@ export async function createOfficeDocumentFolder(
       title: nextTitle.slice(0, 80),
       sort_order: maxSort + 1,
       department_id: departmentId,
+      parent_id: parentId,
     })
     .select(FOLDER_SELECT)
     .single();
 
   if (error) throw error;
   return data as OfficeDocumentFolder;
+}
+
+/**
+ * Creates any missing folders along `['Reports', '2026']` in one space and returns the id of the
+ * deepest one, reusing whatever is already there. This is what a dropped folder tree needs, so
+ * the structure it was dropped with survives. `options.parentId` drops it inside an open folder.
+ */
+export async function ensureOfficeFolderPath(
+  departmentId: number | null,
+  segments: string[],
+  options?: { parentId?: string | null; known?: OfficeDocumentFolder[] },
+): Promise<string | null> {
+  const base = options?.parentId ?? null;
+  const cache = options?.known ?? (await fetchOfficeDocumentFolders(departmentId));
+  const titles = spaceFolderSegmentsToCreate(cache, segments, base);
+  if (titles.length === 0) return base;
+
+  let parentId: string | null = base;
+  for (const title of titles) {
+    const existing = findSpaceFolderChild(cache, parentId, title);
+    if (existing) {
+      parentId = existing.id;
+      continue;
+    }
+    const created = await createOfficeDocumentFolder(title, departmentId, parentId);
+    cache.push(created);
+    parentId = created.id;
+  }
+
+  return parentId;
+}
+
+/**
+ * Files one or more office documents into a folder of the same space, or back to the space's top
+ * level with null. The folder's own department is not changed, so a file cannot cross spaces.
+ */
+export async function moveOfficeDocumentsToFolder(
+  documentIds: string[],
+  folderId: string | null,
+): Promise<void> {
+  const ids = Array.from(new Set(documentIds.filter((id) => String(id ?? '').trim() !== '')));
+  if (ids.length === 0) return;
+
+  const { error } = await supabase
+    .from('office_documents')
+    .update({ folder_id: folderId })
+    .in('id', ids);
+
+  if (error) throw error;
 }
 
 export async function renameOfficeDocumentFolder(

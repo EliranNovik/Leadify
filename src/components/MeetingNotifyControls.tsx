@@ -11,6 +11,7 @@ import {
   fetchMiscEmailTemplatesByIds,
   inferInvitationEmailTypeFromLocationName,
   isStaffOrInternalMeeting,
+  parseStoredEmailTemplateContent,
   resolveMeetingEmailTemplateIdsForNotify,
   resolveMeetingLocationId,
   type EmailAutomationCache,
@@ -32,9 +33,13 @@ import {
 import {
   fetchInternalMeetingWhatsAppTemplateNames,
   fillWhatsAppTemplateContent,
+  formatMeetingDateForMessage,
   generateMeetingWhatsAppTemplateParameters,
   hasValidLeadId,
   isLeadlessStaffCalendarNotify,
+  isLegacyNotifyLead,
+  normalizeLeadIdForContacts,
+  normalizeLeadIdForWhatsAppBackend,
   selectReminderWhatsAppTemplate,
 } from '../lib/meetingWhatsAppNotify';
 import {
@@ -44,6 +49,7 @@ import {
   preferEnglishMeetingTemplateLanguage,
   shouldIncludeMeetingJoinLink,
 } from '../lib/meetingLocationUtils';
+import { recordMeetingReminderSend } from '../lib/meetingReminderSends';
 import { loginRequest } from '../msalConfig';
 import { saveOutgoingEmailRecord } from '../lib/saveOutgoingEmailRecord';
 import { meetingInvitationEmailTemplate } from './Meetings';
@@ -123,8 +129,7 @@ export function OutlookIcon({ className = 'w-5 h-5' }: { className?: string }) {
   );
 }
 
-const isLegacyLead = (client: MeetingNotifyControlsClient): boolean =>
-  client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+const isLegacyLead = (client: MeetingNotifyControlsClient): boolean => isLegacyNotifyLead(client);
 
 const resolveMeetingLocationTextForTemplate = (
   meeting: MeetingNotifyControlsMeeting,
@@ -142,16 +147,6 @@ const resolveMeetingLocationTextForTemplate = (
   }
   return name;
 };
-
-const normalizeLeadIdForContacts = (client: MeetingNotifyControlsClient): string | number =>
-  isLegacyLead(client)
-    ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
-    : client.id;
-
-const normalizeLeadIdForWhatsAppBackend = (client: MeetingNotifyControlsClient): string | number =>
-  isLegacyLead(client)
-    ? (typeof client.id === 'string' ? client.id : `legacy_${client.id}`)
-    : client.id;
 
 const getInitials = (name: string | null | undefined): string => {
   if (!name) return '--';
@@ -174,75 +169,6 @@ const sortNotifyRecipients = (items: NotifyRecipient[]) => {
     if (orderDiff !== 0) return orderDiff;
     return a.name.localeCompare(b.name);
   });
-};
-
-const parseTemplateContent = (rawContent: string | null | undefined): string => {
-  if (!rawContent) return '';
-
-  const sanitizeTemplateText = (text: string) =>
-    text
-      .split('\n')
-      .map((line) => line.replace(/\s+$/g, ''))
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/[ \t]+\n/g, '\n')
-      .trim();
-
-  const tryParseDelta = (input: string) => {
-    try {
-      const parsed = JSON.parse(input);
-      const ops = parsed?.delta?.ops || parsed?.ops;
-      if (Array.isArray(ops)) {
-        return sanitizeTemplateText(ops.map((op: any) => (typeof op?.insert === 'string' ? op.insert : '')).join(''));
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  };
-
-  const cleanHtml = (input: string) => {
-    let text = input;
-    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
-    if (htmlMatch) text = htmlMatch[1];
-    text = text
-      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
-      .replace(/^{|}$/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-      .replace(/\r/g, '')
-      .replace(/\\/g, '\\');
-    return sanitizeTemplateText(text);
-  };
-
-  let text = tryParseDelta(rawContent);
-  if (text !== null) return text;
-
-  text = tryParseDelta(rawContent.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
-  if (text !== null) return text;
-
-  const normalised = rawContent.replace(/\\"/g, '"').replace(/\r/g, '').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
-  const inserts: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = insertRegex.exec(normalised))) {
-    inserts.push(match[1]);
-  }
-  if (inserts.length > 0) {
-    return sanitizeTemplateText(inserts.join('').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
-  }
-
-  return sanitizeTemplateText(cleanHtml(rawContent));
-};
-
-const formatDateForMessage = (dateStr: string): string => {
-  const [year, month, day] = dateStr.split('-');
-  if (!year || !month || !day) return dateStr;
-  return `${day}/${month}/${year}`;
 };
 
 const normalizeLanguageCode = (lang: string | null | undefined): string => {
@@ -566,7 +492,7 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
             if (!templateId) return;
             const row = templatesById.get(templateId);
             if (row?.content) {
-              nextTemplates[lang] = { content: parseTemplateContent(row.content), name: row.name || null };
+              nextTemplates[lang] = { content: parseStoredEmailTemplateContent(row.content), name: row.name || null };
             }
           });
           setEmailTemplates(nextTemplates);
@@ -667,7 +593,7 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       const senderName = account?.name || 'Your Team';
       const now = new Date();
       const formattedTime = meeting.time ? meeting.time.substring(0, 5) : meeting.time;
-      const formattedDate = formatDateForMessage(meeting.date);
+      const formattedDate = formatMeetingDateForMessage(meeting.date);
       const currentEmailType = explicitEmailType || emailType;
 
       const locationName = getMeetingLocationName(meeting.location);
@@ -806,6 +732,15 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       };
       toast.success(emailTypeMessages[currentEmailType]);
 
+      if (currentEmailType === 'reminder') {
+        void recordMeetingReminderSend({
+          rowKey: String(dbMeetingId ?? meeting.id),
+          channel: 'email',
+          language: languageToUse,
+          recipientCount: recipientEmailArray.length,
+        });
+      }
+
       const contactByEmail = contacts.find((c) => c.email === recipientEmailArray[0]);
       const contactId = contactByEmail && contactByEmail.id > 0 ? contactByEmail.id : null;
       const senderEmail = account.username || account.name || 'noreply@lawoffice.org.il';
@@ -874,7 +809,7 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
         }
       }
 
-      const formattedDate = formatDateForMessage(meeting.date);
+      const formattedDate = formatMeetingDateForMessage(meeting.date);
       const formattedTime = meeting.time ? meeting.time.substring(0, 5) : '';
       const locationName = getMeetingLocationName(meeting.location);
       const leadlessStaff = isLeadlessStaffCalendarNotify(meeting, client);
@@ -1015,7 +950,7 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
             whatsapp_status: 'sent',
             message_type: 'text',
             whatsapp_timestamp: now.toISOString(),
-            ...(staffMeeting
+            ...(leadlessStaff
               ? {}
               : {
                   lead_id: legacyLead ? null : client.id,
@@ -1063,6 +998,15 @@ export const MeetingNotifyControls: React.FC<MeetingNotifyControlsProps> = ({
       if (successCount > 0) {
         const typeLabel = type === 'missed_appointment' ? 'missed appointment' : 'reminder';
         toast.success(`WhatsApp ${typeLabel} sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
+
+        if (type === 'reminder') {
+          void recordMeetingReminderSend({
+            rowKey: String(dbMeetingId ?? meeting.id),
+            channel: 'whatsapp',
+            language: selectedLanguage,
+            recipientCount: successCount,
+          });
+        }
       }
       if (failureCount > 0) {
         const errors = results

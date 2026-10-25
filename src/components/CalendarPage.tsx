@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase, tryRefreshThenExpire } from '../lib/supabase';
 import { upsertEmailsKeepExistingLeadLinks } from '../lib/graphEmailSync';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -31,7 +31,7 @@ import { isMeetingBookedViaClientPortal } from '../lib/clientBookingApi';
 import { buildCalendarClientRoute as buildClientRoute } from '../lib/calendarClientRoute';
 import ClientPortalBookingBadge from './client-booking/ClientPortalBookingBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
-import { EnvelopeIcon } from '@heroicons/react/24/outline';
+import { BellAlertIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -53,6 +53,13 @@ import { fetchStageNames, getStageName, refreshStageNames, getStageColour, getSo
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
 import MeetingNotifyControls from './MeetingNotifyControls';
+import BulkMeetingRemindersDrawer from './calendar/BulkMeetingRemindersDrawer';
+import { isBulkReminderEligibleMeeting } from '../lib/bulkMeetingReminders';
+import {
+  describeMeetingReminderMark,
+  fetchMeetingReminderMarks,
+  type MeetingReminderMark,
+} from '../lib/meetingReminderSends';
 import DepartmentList from './DepartmentList';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
@@ -501,6 +508,11 @@ const CalendarPage: React.FC = () => {
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'cards'>('list');
+
+  // Bulk meeting reminders: a checkbox per lead row, then one send for all of them
+  const [reminderSelectionMode, setReminderSelectionMode] = useState(false);
+  const [selectedReminderRowIds, setSelectedReminderRowIds] = useState<Set<string>>(new Set());
+  const [showBulkRemindersDrawer, setShowBulkRemindersDrawer] = useState(false);
   const [selectedClientForWhatsApp, setSelectedClientForWhatsApp] = useState<{
     id: string;
     name: string;
@@ -1302,6 +1314,53 @@ const CalendarPage: React.FC = () => {
       staffMeetingCount: staff,
     };
   }, [filteredMeetings]);
+
+  /** Meetings already reminded, keyed by calendar row id — drives the hook on the row / card. */
+  const [reminderMarks, setReminderMarks] = useState<Map<string, MeetingReminderMark>>(new Map());
+
+  const reminderMarkRowKeys = useMemo(
+    () => filteredMeetings.map((m) => String(m.id)).sort().join(','),
+    [filteredMeetings],
+  );
+
+  const refreshReminderMarks = useCallback(async () => {
+    const rowKeys = reminderMarkRowKeys ? reminderMarkRowKeys.split(',') : [];
+    if (rowKeys.length === 0) {
+      setReminderMarks(new Map());
+      return;
+    }
+    setReminderMarks(await fetchMeetingReminderMarks(rowKeys));
+  }, [reminderMarkRowKeys]);
+
+  useEffect(() => {
+    void refreshReminderMarks();
+  }, [refreshReminderMarks]);
+
+  /** Rows that can actually be reminded — internal meetings and rows without a lead are left out. */
+  const remindableMeetings = useMemo(
+    () => filteredMeetings.filter((m) => isBulkReminderEligibleMeeting(m)),
+    [filteredMeetings],
+  );
+
+  const selectedReminderMeetings = useMemo(
+    () => remindableMeetings.filter((m) => selectedReminderRowIds.has(String(m.id))),
+    [remindableMeetings, selectedReminderRowIds],
+  );
+
+  const toggleReminderRow = (meetingId: string | number) => {
+    const key = String(meetingId);
+    setSelectedReminderRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const exitReminderSelectionMode = () => {
+    setReminderSelectionMode(false);
+    setSelectedReminderRowIds(new Set());
+  };
 
   const staffParticipantAggregatedNotes = useMemo(() => {
     const lines: string[] = [];
@@ -5985,6 +6044,18 @@ const CalendarPage: React.FC = () => {
         id={`calendar-meeting-${meeting.id}`}
         className={`rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-base-300/45 group flex flex-col justify-between h-full min-h-[360px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
       >
+        {/* Top-left corner with white hook when a reminder has already been sent */}
+        {reminderMarks.get(String(meeting.id)) && (
+          <div
+            className="absolute left-0 top-0 w-14 h-14 z-10"
+            style={{ background: 'linear-gradient(315deg, transparent 50%, #4418C4 50%)' }}
+            title={describeMeetingReminderMark(reminderMarks.get(String(meeting.id))!)}
+            aria-label={describeMeetingReminderMark(reminderMarks.get(String(meeting.id))!)}
+          >
+            <CheckIcon className="w-6 h-6 text-white drop-shadow-sm absolute left-1 top-1" strokeWidth={3} />
+          </div>
+        )}
+
         {/* Bottom-right green corner with white check when meeting ended */}
         {hasPassedStage && (
           <div
@@ -6590,6 +6661,9 @@ const CalendarPage: React.FC = () => {
   // Desktop table row component (for department tables)
   const renderMeetingRow = (meeting: any) => {
     const lead = meeting.lead || {};
+    const isRemindable = reminderSelectionMode && isBulkReminderEligibleMeeting(meeting);
+    const isSelectedForReminder = isRemindable && selectedReminderRowIds.has(String(meeting.id));
+    const reminderMark = reminderMarks.get(String(meeting.id));
     const isBoxExpanded = isMeetingBoxExpanded(meeting.id);
     const participantEntries = getMeetingParticipantEntries(meeting, lead);
     const hasCollapsibleBoxContent = meeting.calendar_type !== 'staff' && meeting.calendar_type !== 'recruitment';
@@ -6636,18 +6710,48 @@ const CalendarPage: React.FC = () => {
       <React.Fragment key={meeting.id}>
         <tr
           id={`calendar-meeting-${meeting.id}`}
-          className={`calendar-page-meeting-row relative z-0 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
+          className={`calendar-page-meeting-row relative z-0 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''} ${isSelectedForReminder ? 'bg-purple-50' : ''}`}
           onClick={() => {
+            // While picking reminder rows, a click selects instead of opening the meeting.
+            if (reminderSelectionMode) {
+              if (isRemindable) toggleReminderRow(meeting.id);
+              return;
+            }
             if (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment') {
               openStaffParticipantsModal(meeting);
               return;
             }
             if (meeting.lead) handleRowSelect(meeting.id);
           }}
-          style={{ cursor: meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment' || meeting.lead ? 'pointer' : 'default' }}
+          style={{ cursor: reminderSelectionMode ? (isRemindable ? 'pointer' : 'default') : (meeting.calendar_type === 'staff' || meeting.calendar_type === 'recruitment' || meeting.lead ? 'pointer' : 'default') }}
         >
+          {reminderSelectionMode && (
+            <td className="w-10">
+              <input
+                type="checkbox"
+                className="checkbox checkbox-primary checkbox-sm"
+                aria-label={`Select ${lead.name || 'lead'} for a meeting reminder`}
+                checked={isSelectedForReminder}
+                disabled={!isRemindable}
+                title={isRemindable ? undefined : 'Only client meetings with a lead can be reminded'}
+                onClick={(e) => e.stopPropagation()}
+                onChange={() => toggleReminderRow(meeting.id)}
+              />
+            </td>
+          )}
+
           {/* TYPE Column - fixed-width icon slot so badge is always aligned */}
-          <td className="w-10">
+          <td className="w-10 relative">
+            {/* Reminder already sent — hook in the row's top-left corner */}
+            {reminderMark && (
+              <span
+                className="absolute left-0 top-0 w-4 h-4 rounded-full bg-[#4418C4] text-white flex items-center justify-center shadow-sm"
+                title={describeMeetingReminderMark(reminderMark)}
+                aria-label={describeMeetingReminderMark(reminderMark)}
+              >
+                <CheckIcon className="w-3 h-3" strokeWidth={3} />
+              </span>
+            )}
             <div className="flex items-center gap-1 sm:gap-2">
               <span className="w-5 h-5 flex-shrink-0 flex items-center justify-center">
                 {hasPassedStage ? <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500" /> : null}
@@ -7837,6 +7941,24 @@ const CalendarPage: React.FC = () => {
               <span className="text-sm font-semibold text-gray-700">Create Internal Meeting</span>
             </button>
             <button
+              className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 ${reminderSelectionMode ? 'bg-[#4418C4]/10' : ''}`}
+              onClick={() => {
+                if (reminderSelectionMode) {
+                  exitReminderSelectionMode();
+                } else {
+                  // Checkboxes only exist in the list view.
+                  setViewMode('list');
+                  setReminderSelectionMode(true);
+                }
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <BellAlertIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">
+                {reminderSelectionMode ? 'Cancel reminder selection' : 'Select leads for reminders'}
+              </span>
+            </button>
+            <button
               className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
               onClick={() => {
                 setViewMode(viewMode === 'cards' ? 'list' : 'cards');
@@ -7877,11 +7999,68 @@ const CalendarPage: React.FC = () => {
             : 'max-md:mt-0 md:mt-0 max-md:mx-4 max-md:rounded-t-xl bg-base-200/60 rounded-xl calendar-page-meetings-wrap hide-scrollbar px-2 pt-0 pb-3 sm:px-3'
         }
       >
+        {/* Bulk reminders: selection summary + send, shown while picking rows */}
+        {reminderSelectionMode && viewMode === 'list' && (
+          <div className="sticky top-0 z-30 flex flex-wrap items-center gap-3 px-3 py-2 mb-1 bg-white border border-[#4418C4]/20 rounded-lg shadow-sm">
+            <span className="text-sm font-semibold text-gray-700">
+              {selectedReminderRowIds.size} of {remindableMeetings.length} lead
+              {remindableMeetings.length === 1 ? '' : 's'} selected
+            </span>
+            <button
+              type="button"
+              className="text-sm text-primary hover:underline"
+              onClick={() => setSelectedReminderRowIds(new Set(remindableMeetings.map((m) => String(m.id))))}
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              className="text-sm text-gray-500 hover:underline"
+              onClick={() => setSelectedReminderRowIds(new Set())}
+            >
+              Clear
+            </button>
+            <div className="flex-1" />
+            <button type="button" className="btn btn-sm btn-ghost" onClick={exitReminderSelectionMode}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary gap-2"
+              disabled={selectedReminderRowIds.size === 0}
+              onClick={() => setShowBulkRemindersDrawer(true)}
+            >
+              <BellAlertIcon className="w-4 h-4" />
+              Send reminders{selectedReminderRowIds.size > 0 ? ` (${selectedReminderRowIds.size})` : ''}
+            </button>
+          </div>
+        )}
+
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
           <table className="calendar-page-meetings-table table w-full md:-mt-3 text-sm sm:text-base md:text-lg">
             <thead className="calendar-page-meetings-thead md:sticky md:top-0 md:z-20">
               <tr className="bg-gray-100 text-sm sm:text-base calendar-page-meetings-head-row md:shadow-sm">
+                {reminderSelectionMode && (
+                  <th className="w-10">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-primary checkbox-sm"
+                      aria-label="Select all leads for reminders"
+                      checked={
+                        remindableMeetings.length > 0 &&
+                        selectedReminderRowIds.size === remindableMeetings.length
+                      }
+                      onChange={(e) =>
+                        setSelectedReminderRowIds(
+                          e.target.checked
+                            ? new Set(remindableMeetings.map((m) => String(m.id)))
+                            : new Set(),
+                        )
+                      }
+                    />
+                  </th>
+                )}
                 <th className="text-gray-500">Type</th>
                 <th className="text-gray-500">Time</th>
                 <th className="text-gray-500">Lead</th>
@@ -9886,6 +10065,17 @@ const CalendarPage: React.FC = () => {
             })()}
           </div>
       </MobileBottomSheet>
+
+      <BulkMeetingRemindersDrawer
+        open={showBulkRemindersDrawer}
+        meetings={selectedReminderMeetings}
+        onClose={() => setShowBulkRemindersDrawer(false)}
+        onSent={() => {
+          setShowBulkRemindersDrawer(false);
+          exitReminderSelectionMode();
+          void refreshReminderMarks();
+        }}
+      />
     </div>
   );
 };

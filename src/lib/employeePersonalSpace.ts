@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { findSpaceFolderChild, spaceFolderSegmentsToCreate } from './spaceFolders';
 
 export const EMPLOYEE_PERSONAL_FILES_BUCKET = 'employee-personal-files' as const;
 
@@ -29,12 +30,14 @@ export type EmployeePersonalFolder = {
   title: string;
   created_at: string;
   sort_order: number;
+  /** Folders nest since sql/2026-10-25_nested_space_folders.sql; null is the space's top level. */
+  parent_id: string | null;
 };
 
 const NOTE_SELECT = 'id, employee_id, title, body, created_at, updated_at';
 const FILE_SELECT =
   'id, employee_id, storage_path, file_name, mime_type, size_bytes, document_type, folder_id, created_at';
-const FOLDER_SELECT = 'id, employee_id, title, created_at, sort_order';
+const FOLDER_SELECT = 'id, employee_id, title, created_at, sort_order, parent_id';
 
 function guessMimeType(fileName: string, fallback?: string | null): string {
   if (fallback?.trim()) return fallback.trim();
@@ -273,9 +276,11 @@ export async function fetchEmployeePersonalFolders(
   return (data || []) as EmployeePersonalFolder[];
 }
 
+/** `parentId` nests the new folder inside an existing one of the same space. */
 export async function createEmployeePersonalFolder(
   employeeId: number,
   title: string,
+  parentId: string | null = null,
 ): Promise<EmployeePersonalFolder> {
   const nextTitle = title.trim();
   if (!nextTitle) throw new Error('Folder title is required');
@@ -295,12 +300,59 @@ export async function createEmployeePersonalFolder(
       employee_id: employeeId,
       title: nextTitle.slice(0, 80),
       sort_order: maxSort + 1,
+      parent_id: parentId,
     })
     .select(FOLDER_SELECT)
     .single();
 
   if (error) throw error;
   return data as EmployeePersonalFolder;
+}
+
+/**
+ * Creates any missing folders along `['Reports', '2026']` in the employee's own space and returns
+ * the id of the deepest one, reusing whatever is already there — what a dropped folder tree needs
+ * for its structure to survive. `options.parentId` drops it inside an open folder.
+ */
+export async function ensureEmployeePersonalFolderPath(
+  employeeId: number,
+  segments: string[],
+  options?: { parentId?: string | null; known?: EmployeePersonalFolder[] },
+): Promise<string | null> {
+  const base = options?.parentId ?? null;
+  const cache = options?.known ?? (await fetchEmployeePersonalFolders(employeeId));
+  const titles = spaceFolderSegmentsToCreate(cache, segments, base);
+  if (titles.length === 0) return base;
+
+  let parentId: string | null = base;
+  for (const title of titles) {
+    const existing = findSpaceFolderChild(cache, parentId, title);
+    if (existing) {
+      parentId = existing.id;
+      continue;
+    }
+    const created = await createEmployeePersonalFolder(employeeId, title, parentId);
+    cache.push(created);
+    parentId = created.id;
+  }
+
+  return parentId;
+}
+
+/** Files one or more of the employee's own files into a folder, or back out of one with null. */
+export async function moveEmployeePersonalFilesToFolder(
+  fileIds: string[],
+  folderId: string | null,
+): Promise<void> {
+  const ids = Array.from(new Set(fileIds.filter((id) => String(id ?? '').trim() !== '')));
+  if (ids.length === 0) return;
+
+  const { error } = await supabase
+    .from('employee_personal_files')
+    .update({ folder_id: folderId })
+    .in('id', ids);
+
+  if (error) throw error;
 }
 
 export async function renameEmployeePersonalFolder(

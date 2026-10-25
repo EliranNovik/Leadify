@@ -6,9 +6,16 @@ import {
   resolveCaseDocumentUploadContentType,
 } from './caseDocumentsStorage';
 import { ensureFolderPath, type DocumentFolderScope } from './documentFolders';
-import { OFFICE_DOCUMENTS_BUCKET, uploadOfficeDocument } from './officeDocuments';
+import {
+  ensureOfficeFolderPath,
+  fetchOfficeDocumentFolders,
+  OFFICE_DOCUMENTS_BUCKET,
+  uploadOfficeDocument,
+} from './officeDocuments';
 import {
   EMPLOYEE_PERSONAL_FILES_BUCKET,
+  ensureEmployeePersonalFolderPath,
+  fetchEmployeePersonalFolders,
   uploadEmployeePersonalFile,
 } from './employeePersonalSpace';
 import type { FolderUploadEntry } from './browserFolderUpload';
@@ -30,11 +37,14 @@ export type DriveDestination =
     }
   | { kind: 'staff_meeting'; meetingId: number; meetingTitle?: string | null }
   | { kind: 'office'; folderId: string | null; departmentId: number | null; spaceLabel?: string }
-  | { kind: 'personal'; employeeId: number };
+  | { kind: 'personal'; employeeId: number; folderId: string | null };
 
-/** Only case documents sit in the nestable tree, so only they accept a folder upload. */
+/**
+ * Whether a dropped folder tree can be kept as it is. Meetings are the one destination that
+ * stores no folders at all, so their files land in the meeting itself.
+ */
 export function destinationSupportsFolders(destination: DriveDestination): boolean {
-  return destination.kind === 'lead';
+  return destination.kind !== 'staff_meeting';
 }
 
 export function describeDestination(destination: DriveDestination): string {
@@ -216,7 +226,8 @@ export type DriveUploadResult = {
 export async function uploadEntriesToDestination(params: {
   destination: DriveDestination;
   entries: FolderUploadEntry[];
-  folderPaths?: string[];
+  /** Folder paths as segments, parents before children — what planFolderUpload() reports. */
+  folderPaths?: string[][];
   uploadedBy?: string | null;
   onProgress?: (done: number, total: number) => void;
 }): Promise<DriveUploadResult> {
@@ -231,35 +242,65 @@ export async function uploadEntriesToDestination(params: {
   };
   if (entries.length === 0) return result;
 
-  // Folders first, so every file already has somewhere to land.
+  // Folders first, so every file already has somewhere to land. Each store keeps its own folders,
+  // so the tree is rebuilt through whichever one the destination belongs to.
+  const baseFolderId = destination.kind === 'staff_meeting' ? null : destination.folderId;
+
+  // Read once per upload: the ensure helpers add what they create to this, so a tree of any width
+  // costs one read rather than one per path.
+  const officeFolderCache =
+    destination.kind === 'office'
+      ? await fetchOfficeDocumentFolders(destination.departmentId).catch(() => [])
+      : undefined;
+  const personalFolderCache =
+    destination.kind === 'personal'
+      ? await fetchEmployeePersonalFolders(destination.employeeId).catch(() => [])
+      : undefined;
+
+  const ensurePath = async (segments: string[]): Promise<string | null> => {
+    switch (destination.kind) {
+      case 'lead': {
+        const scope: DocumentFolderScope = {
+          scopeType: 'lead',
+          scopeKey: destination.leadNumber,
+          classificationId: destination.classificationId,
+          area: null,
+        };
+        return ensureFolderPath(scope, segments, undefined, { parentId: destination.folderId });
+      }
+      case 'office':
+        return ensureOfficeFolderPath(destination.departmentId, segments, {
+          parentId: destination.folderId,
+          known: officeFolderCache,
+        });
+      case 'personal':
+        return ensureEmployeePersonalFolderPath(destination.employeeId, segments, {
+          parentId: destination.folderId,
+          known: personalFolderCache,
+        });
+      default:
+        return null;
+    }
+  };
+
   const folderIdByPath = new Map<string, string | null>();
-  if (destination.kind === 'lead') {
-    const scope: DocumentFolderScope = {
-      scopeType: 'lead',
-      scopeKey: destination.leadNumber,
-      classificationId: destination.classificationId,
-      area: null,
-    };
+  if (destinationSupportsFolders(destination)) {
     for (const path of params.folderPaths || []) {
-      const segments = path.split('/').filter(Boolean);
+      const segments = path.filter(Boolean);
       if (segments.length === 0) continue;
       try {
-        const folderId = await ensureFolderPath(scope, segments, undefined, {
-          parentId: destination.folderId,
-        });
-        folderIdByPath.set(path, folderId);
+        folderIdByPath.set(segments.join('/'), await ensurePath(segments));
         result.foldersCreated += 1;
       } catch (err) {
-        console.warn('[documentDriveUpload] folder create failed for', path, err);
+        console.warn('[documentDriveUpload] folder create failed for', segments.join('/'), err);
       }
     }
   }
 
   const folderForEntry = (entry: FolderUploadEntry): string | null => {
-    if (destination.kind !== 'lead') return null;
-    if (entry.segments.length === 0) return destination.folderId;
+    if (entry.segments.length === 0) return baseFolderId;
     const key = entry.segments.join('/');
-    return folderIdByPath.get(key) ?? destination.folderId;
+    return folderIdByPath.get(key) ?? baseFolderId;
   };
 
   for (let index = 0; index < entries.length; index += 1) {
@@ -285,7 +326,7 @@ export async function uploadEntriesToDestination(params: {
       } else if (destination.kind === 'office') {
         const row = await uploadOfficeDocument({
           file: entry.file,
-          folderId: destination.folderId,
+          folderId: folderForEntry(entry),
           departmentId: destination.departmentId,
         });
         result.created.push({
@@ -298,6 +339,7 @@ export async function uploadEntriesToDestination(params: {
         const row = await uploadEmployeePersonalFile({
           employeeId: destination.employeeId,
           file: entry.file,
+          folderId: folderForEntry(entry),
         });
         result.created.push({
           bucket: EMPLOYEE_PERSONAL_FILES_BUCKET,

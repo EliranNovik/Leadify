@@ -25,6 +25,7 @@ import {
   PlusIcon,
   ShieldCheckIcon,
   Squares2X2Icon,
+  TrashIcon,
   UserIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
@@ -53,8 +54,20 @@ import {
 } from '../lib/browserFolderUpload';
 import { fetchOfficeSpaces, OFFICE_ADMIN_SPACE, type OfficeSpace } from '../lib/officeSpaces';
 import {
+  deleteOfficeDocumentFolder,
+  fetchOfficeDocumentFolders,
+  moveOfficeDocumentsToFolder,
+} from '../lib/officeDocuments';
+import {
+  deleteEmployeePersonalFolder,
+  fetchEmployeePersonalFolders,
+  moveEmployeePersonalFilesToFolder,
+} from '../lib/employeePersonalSpace';
+import { spaceFolderDepth, spaceFolderPath, type SpaceFolderNode } from '../lib/spaceFolders';
+import {
   createDocumentIndexSignedUrl,
   createDocumentIndexSignedUrls,
+  deleteDocumentIndexRow,
   DOCUMENT_INDEX_SOURCES,
   DOCUMENT_SOURCE_LABELS,
   fetchDocumentIndex,
@@ -73,11 +86,13 @@ import {
 } from '../lib/documentIndex';
 import {
   childFolders,
+  deleteDocumentFolder,
   listDocumentFolders,
   listFolderChildrenAcrossScopes,
   moveCaseDocumentsToFolder,
   type DocumentFolder,
   type DocumentFolderScope,
+  type DocumentFolderScopeType,
 } from '../lib/documentFolders';
 import {
   addFolderGrant,
@@ -137,6 +152,8 @@ type RowAction = {
   /** A Heroicon or any of the brand file logos, which take the same className. */
   icon: React.ComponentType<{ className?: string }>;
   onSelect: () => void;
+  /** Marks an action that destroys something, so the menu can colour it as a warning. */
+  danger?: boolean;
 };
 
 const ROW_MENU_WIDTH = 248;
@@ -225,13 +242,21 @@ const RowActionsMenu: React.FC<{
                 key={action.id}
                 type="button"
                 role="menuitem"
-                className="group flex w-full items-center gap-3 px-4 py-3 text-left text-base text-base-content/70 transition-colors hover:bg-base-300 hover:text-base-content"
+                className={`group flex w-full items-center gap-3 px-4 py-3 text-left text-base transition-colors ${
+                  action.danger
+                    ? 'text-error hover:bg-error/10'
+                    : 'text-base-content/70 hover:bg-base-300 hover:text-base-content'
+                }`}
                 onClick={() => {
                   close();
                   action.onSelect();
                 }}
               >
-                <action.icon className="h-6 w-6 shrink-0 text-base-content/60 group-hover:text-base-content" />
+                <action.icon
+                  className={`h-6 w-6 shrink-0 ${
+                    action.danger ? 'text-error' : 'text-base-content/60 group-hover:text-base-content'
+                  }`}
+                />
                 <span className="truncate">{action.label}</span>
               </button>
             ))}
@@ -254,6 +279,11 @@ function appendUnique<T>(previous: T[], next: T[], keyOf: (item: T) => string): 
 
 /** One click picks a row out; the action bar then works on whatever is picked. */
 type DriveSelection = { kind: 'doc'; key: string } | { kind: 'folder'; id: string } | null;
+
+type DriveDeleteTarget =
+  | { kind: 'doc'; row: DocumentIndexRow }
+  | { kind: 'folder'; folder: DocumentFolder }
+  | null;
 
 type DriveEmptyState = {
   icon: typeof FolderIcon;
@@ -289,6 +319,48 @@ const DriveEmptyPlaceholder: React.FC<DriveEmptyState> = ({
   </div>
 );
 
+/** A folder of a department space or of someone's own space, as those two tables report it. */
+type SpaceFolderRow = SpaceFolderNode & { created_at: string; sort_order: number };
+
+/**
+ * Department spaces and personal spaces keep their folders in their own tables, while the drive
+ * renders every folder through the case-tree shape — so one is adapted into the other rather than
+ * teaching the rows, breadcrumbs and drop targets about three kinds of folder. The tree the folder
+ * came from is passed in, since that is where its depth and path come from.
+ */
+function spaceFolderAsDocumentFolder(
+  folder: SpaceFolderRow,
+  scopeType: DocumentFolderScopeType,
+  scopeKey: string,
+  tree: SpaceFolderRow[],
+): DocumentFolder {
+  return {
+    id: folder.id,
+    parent_id: folder.parent_id,
+    scope_type: scopeType,
+    scope_key: scopeKey,
+    classification_id: null,
+    area: null,
+    title: folder.title,
+    note: null,
+    path: spaceFolderPath(tree, folder.id),
+    depth: spaceFolderDepth(tree, folder.id),
+    sort_order: folder.sort_order,
+    created_by: null,
+    created_at: folder.created_at,
+  };
+}
+
+/**
+ * The line under a folder's name on a card: a case folder says which case it belongs to, while a
+ * space folder says where in the space it sits. The scope key itself ('dept-12', an employee id)
+ * is of no use to anyone reading it.
+ */
+function folderSubtitle(folder: DocumentFolder): string {
+  if (folder.scope_type === 'lead') return folder.scope_key;
+  return (folder.path || '').split(' / ').slice(0, -1).join(' / ');
+}
+
 function scopeOf(row: DocumentIndexRow): DocumentFolderScope | null {
   if (row.source !== 'lead' || !row.scope_key) return null;
   return {
@@ -302,7 +374,7 @@ function scopeOf(row: DocumentIndexRow): DocumentFolderScope | null {
 const DocumentsDrivePage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isAdmin } = useAdminRole();
+  const { isAdmin, isSuperUser } = useAdminRole();
 
   // /drive?case=L123 opens that case straight away, which is how the case documents drawer
   // hands over to the drive.
@@ -345,6 +417,8 @@ const DocumentsDrivePage: React.FC = () => {
   const [caseRows, setCaseRows] = useState<DocumentIndexCase[]>([]);
   const [folderTrail, setFolderTrail] = useState<DocumentFolder[]>([]);
   const [folders, setFolders] = useState<DocumentFolder[]>([]);
+  /** Why the folder list is empty, when it is empty because the read failed. */
+  const [foldersError, setFoldersError] = useState<string | null>(null);
   const [createMode, setCreateMode] = useState<DriveCreateMode | null>(null);
   const [droppedEntries, setDroppedEntries] = useState<FolderUploadEntry[] | null>(null);
   const [fileDragOver, setFileDragOver] = useState(false);
@@ -355,6 +429,11 @@ const DocumentsDrivePage: React.FC = () => {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [moveRow, setMoveRow] = useState<DocumentIndexRow | null>(null);
   const [accessRow, setAccessRow] = useState<DocumentIndexRow | null>(null);
+  /** What the delete confirmation is asking about — superusers only. */
+  const [deleteTarget, setDeleteTarget] = useState<DriveDeleteTarget>(null);
+  const [deleting, setDeleting] = useState(false);
+  /** Who is signed in, which is whose folders the My space section browses. */
+  const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [selection, setSelection] = useState<DriveSelection>(null);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
@@ -375,7 +454,6 @@ const DocumentsDrivePage: React.FC = () => {
   // Every other section is a flat list.
   const inCasesTree = source === 'lead';
   const showCaseList = inCasesTree && !caseKey;
-  const showFolderRows = inCasesTree && !!caseKey;
   const activeFolder = folderTrail.length > 0 ? folderTrail[folderTrail.length - 1] : null;
 
   // Office is split per department, and the sidebar sub-item narrows the list to one space.
@@ -383,6 +461,15 @@ const DocumentsDrivePage: React.FC = () => {
     source === 'office' && officeSpaceKey
       ? officeSpaces.find((space) => space.scopeKey === officeSpaceKey) ?? null
       : null;
+  /** Every section but meetings browses into folders, since meetings store none. */
+  const inPersonalSpace = source === 'personal';
+  const showFolderRows = (inCasesTree && !!caseKey) || !!activeOfficeSpace || inPersonalSpace;
+  /** The open folder, when it is one of a department space's own folders. */
+  const activeOfficeFolder = activeFolder?.scope_type === 'office' ? activeFolder : null;
+  /** The open folder, when it is one in the signed-in employee's own space. */
+  const activePersonalFolder = activeFolder?.scope_type === 'employee' ? activeFolder : null;
+  /** The open folder, when it belongs to a case tree. */
+  const activeCaseFolder = activeFolder?.scope_type === 'lead' ? activeFolder : null;
   const scopeKey: string | string[] | null = inCasesTree
     ? caseKey
     : activeOfficeSpace?.matchScopeKeys ?? null;
@@ -427,7 +514,7 @@ const DocumentsDrivePage: React.FC = () => {
         // Narrowing inside a case looks through the whole case, not just the open folder.
         folder: activeFolder
           ? { id: activeFolder.id }
-          : inCasesTree && !filtersActive
+          : (inCasesTree || !!activeOfficeSpace || inPersonalSpace) && !filtersActive
             ? 'root'
             : 'any',
         sort,
@@ -499,6 +586,12 @@ const DocumentsDrivePage: React.FC = () => {
   }, [inCasesTree]);
 
   useEffect(() => {
+    void fetchStageActorInfo()
+      .then((actor) => setEmployeeId(actor.employeeId))
+      .catch(() => setEmployeeId(null));
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     fetchOfficeSpaces()
       .then((spaces) => {
@@ -536,23 +629,57 @@ const DocumentsDrivePage: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!showFolderRows || !caseKey) {
+    if (!showFolderRows) {
       setFolders([]);
       return;
     }
     let cancelled = false;
-    listFolderChildrenAcrossScopes(activeFolder?.id ?? null, { scopeKey: caseKey })
+
+    const loadFolders = async (): Promise<DocumentFolder[]> => {
+      // These two stores keep a whole space's folders in one small table, so the tree is read in
+      // one go and the open folder's children picked out of it.
+      if (activeOfficeSpace) {
+        const rows = await fetchOfficeDocumentFolders(activeOfficeSpace.departmentId);
+        const tree = rows.map((row) =>
+          spaceFolderAsDocumentFolder(row, 'office', activeOfficeSpace.scopeKey, rows),
+        );
+        return childFolders(tree, activeFolder?.id ?? null);
+      }
+      if (inPersonalSpace) {
+        if (employeeId == null) return [];
+        const rows = await fetchEmployeePersonalFolders(employeeId);
+        const tree = rows.map((row) =>
+          spaceFolderAsDocumentFolder(row, 'employee', String(employeeId), rows),
+        );
+        return childFolders(tree, activeFolder?.id ?? null);
+      }
+      if (!caseKey) return [];
+      return listFolderChildrenAcrossScopes(activeFolder?.id ?? null, { scopeKey: caseKey });
+    };
+
+    loadFolders()
       .then((next) => {
-        if (!cancelled) setFolders(next);
+        if (cancelled) return;
+        setFolders(next);
+        setFoldersError(null);
       })
-      .catch(() => {
-        // No folder table yet (migration not run) — the page still lists documents.
-        if (!cancelled) setFolders([]);
+      .catch((err: any) => {
+        // An empty folder list is indistinguishable from the folders having been deleted, so the
+        // reason is kept and shown rather than swallowed.
+        if (cancelled) return;
+        setFolders([]);
+        setFoldersError(String(err?.message || err || 'Folders could not be loaded'));
       });
     return () => {
       cancelled = true;
     };
-  }, [showFolderRows, caseKey, activeFolder, createdNonce]);
+  }, [showFolderRows, activeOfficeSpace, inPersonalSpace, employeeId, caseKey, activeFolder, createdNonce]);
+
+  // A folder is only open while you are standing where it lives, so moving to another section,
+  // case or department space closes it.
+  useEffect(() => {
+    setFolderTrail((trail) => (trail.length === 0 ? trail : []));
+  }, [source, officeSpaceKey, caseKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -732,13 +859,15 @@ const DocumentsDrivePage: React.FC = () => {
     }
   };
 
-  /** Standing in a case or a folder means the destination for new things is already known. */
+  /** Standing in a case, a department space or a folder means the destination is already known. */
   const createContext: DriveCreateContext = {
-    leadNumber: activeFolder?.scope_key ?? caseKey,
-    classificationId: activeFolder?.classification_id ?? null,
-    area: activeFolder?.area ?? null,
-    folderId: activeFolder?.id ?? null,
+    leadNumber: activeCaseFolder?.scope_key ?? caseKey,
+    classificationId: activeCaseFolder?.classification_id ?? null,
+    area: activeCaseFolder?.area ?? null,
+    folderId: activeCaseFolder?.id ?? null,
     officeSpaceKey: activeOfficeSpace?.scopeKey ?? null,
+    officeFolderId: activeOfficeFolder?.id ?? null,
+    personalFolderId: activePersonalFolder?.id ?? null,
     section: source === 'all' || source === 'hr' ? 'lead' : source,
   };
 
@@ -787,7 +916,48 @@ const DocumentsDrivePage: React.FC = () => {
 
   const openFolder = (folder: DocumentFolder) => {
     setFolderTrail((trail) => [...trail, folder]);
+    // The folder was picked out to open it, not to act on it, and what the action bar offers has
+    // to follow what is on screen.
+    setSelection(null);
     setPage(0);
+  };
+
+  /**
+   * Deleting is kept to superusers, and always goes through the confirmation. Folders only ever
+   * take the folder itself with them — the files inside are put back where they were filed from.
+   */
+  const confirmDelete = async () => {
+    if (!deleteTarget || !isSuperUser) return;
+    setDeleting(true);
+    try {
+      if (deleteTarget.kind === 'doc') {
+        await deleteDocumentIndexRow(deleteTarget.row);
+        toast.success(`Deleted “${deleteTarget.row.file_name}”`);
+      } else {
+        const folder = deleteTarget.folder;
+        if (folder.scope_type === 'office') {
+          await deleteOfficeDocumentFolder(folder.id);
+        } else if (folder.scope_type === 'employee') {
+          await deleteEmployeePersonalFolder(folder.id);
+        } else {
+          await deleteDocumentFolder(folder.id);
+        }
+        // Standing inside the folder that just went, step back out of it.
+        setFolderTrail((trail) => {
+          const at = trail.findIndex((item) => item.id === folder.id);
+          return at === -1 ? trail : trail.slice(0, at);
+        });
+        toast.success(`Deleted folder “${folder.title}”`);
+      }
+      setSelection(null);
+      setDeleteTarget(null);
+      setCreatedNonce((nonce) => nonce + 1);
+      reload();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not delete this');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const emptyState: DriveEmptyState = useMemo(() => {
@@ -843,13 +1013,27 @@ const DocumentsDrivePage: React.FC = () => {
     setDropFolderId(null);
     setDragKey(null);
     if (!row) return;
-    if (!isMovableDocument(row)) {
-      toast.error('Only case documents can be filed into folders');
+    // A folder only takes files from its own store, so the move goes through that store's own
+    // helper and nothing can be filed across two spaces.
+    const expectedSource: DocumentIndexSource =
+      folder.scope_type === 'office' ? 'office' : folder.scope_type === 'employee' ? 'personal' : 'lead';
+    if (row.source !== expectedSource || (expectedSource === 'lead' && !isMovableDocument(row))) {
+      toast.error(
+        expectedSource === 'lead'
+          ? 'Only case documents can be filed into folders'
+          : 'Only files from this space can be filed into its folders',
+      );
       return;
     }
     if (row.folder_id === folder.id) return;
     try {
-      await moveCaseDocumentsToFolder([row.row_id], folder.id);
+      if (folder.scope_type === 'office') {
+        await moveOfficeDocumentsToFolder([row.row_id], folder.id);
+      } else if (folder.scope_type === 'employee') {
+        await moveEmployeePersonalFilesToFolder([row.row_id], folder.id);
+      } else {
+        await moveCaseDocumentsToFolder([row.row_id], folder.id);
+      }
       setLandedFolderId(folder.id);
       toast.success(`Moved to “${folder.title}”`);
       reload();
@@ -885,7 +1069,10 @@ const DocumentsDrivePage: React.FC = () => {
         const entries = await expandDroppedItems(items);
         if (entries.length === 0) return;
         setDroppedEntries(entries);
-        setCreateMode('files');
+        // A dropped folder arrives as its files, each carrying the folders it sat in, so whether
+        // this was a folder or a loose pile of files is read off those.
+        const droppedAFolder = entries.some((entry) => entry.segments.length > 0);
+        setCreateMode(droppedAFolder ? 'folder' : 'files');
       })();
     },
   };
@@ -905,26 +1092,38 @@ const DocumentsDrivePage: React.FC = () => {
     onAnimationEnd: () => setLandedFolderId((prev) => (prev === folder.id ? null : prev)),
   });
 
-  const folderActions = (folder: DocumentFolder): RowAction[] => [
-    {
-      id: 'open',
-      label: 'Open folder',
-      icon: FolderOpenIcon,
-      onSelect: () => openFolder(folder),
-    },
-    {
-      id: 'view-all',
-      label: 'View all files',
-      icon: EyeIcon,
-      onSelect: () => void openFolderInViewer(folder),
-    },
-    {
-      id: 'zip',
-      label: 'Download as zip',
-      icon: ArchiveBoxArrowDownIcon,
-      onSelect: () => void downloadFolderZip(folder),
-    },
-  ];
+  const folderActions = (folder: DocumentFolder): RowAction[] => {
+    const actions: RowAction[] = [
+      {
+        id: 'open',
+        label: 'Open folder',
+        icon: FolderOpenIcon,
+        onSelect: () => openFolder(folder),
+      },
+      {
+        id: 'view-all',
+        label: 'View all files',
+        icon: EyeIcon,
+        onSelect: () => void openFolderInViewer(folder),
+      },
+      {
+        id: 'zip',
+        label: 'Download as zip',
+        icon: ArchiveBoxArrowDownIcon,
+        onSelect: () => void downloadFolderZip(folder),
+      },
+    ];
+    if (isSuperUser) {
+      actions.push({
+        id: 'delete-folder',
+        label: 'Delete folder',
+        icon: TrashIcon,
+        danger: true,
+        onSelect: () => setDeleteTarget({ kind: 'folder', folder }),
+      });
+    }
+    return actions;
+  };
 
   const rowActions = (row: DocumentIndexRow): RowAction[] => {
     const actions: RowAction[] = [
@@ -953,6 +1152,15 @@ const DocumentsDrivePage: React.FC = () => {
         label: 'Manage access',
         icon: ShieldCheckIcon,
         onSelect: () => setAccessRow(row),
+      });
+    }
+    if (isSuperUser) {
+      actions.push({
+        id: 'delete',
+        label: 'Delete document',
+        icon: TrashIcon,
+        danger: true,
+        onSelect: () => setDeleteTarget({ kind: 'doc', row }),
       });
     }
     return actions;
@@ -1286,6 +1494,12 @@ const DocumentsDrivePage: React.FC = () => {
             </div>
           )}
 
+          {foldersError && showFolderRows && (
+            <div className="alert alert-warning mb-3 shrink-0">
+              <span>Folders could not be loaded, so none are listed: {foldersError}</span>
+            </div>
+          )}
+
           {/* Only the rows scroll: the card title and the pager stay put. */}
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-base-200 bg-white shadow-sm dark:border-base-content/10 dark:bg-base-100">
             {/* A fixed height, so the selection bar appearing cannot push the rows down. */}
@@ -1345,18 +1559,37 @@ const DocumentsDrivePage: React.FC = () => {
                     1 selected
                   </span>
                   <span className="mx-1 h-5 w-px shrink-0 bg-base-300" />
-                  {selectionActions.map((action) => (
-                    <button
-                      key={action.id}
-                      type="button"
-                      className="btn btn-ghost btn-sm btn-circle text-base-content/60 hover:bg-base-300 hover:text-base-content"
-                      title={action.label}
-                      aria-label={action.label}
-                      onClick={() => action.onSelect()}
-                    >
-                      <action.icon className="h-5 w-5" />
-                    </button>
-                  ))}
+                  {selectionActions
+                    .filter((action) => !action.danger)
+                    .map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        className="btn btn-ghost btn-sm btn-circle text-base-content/60 hover:bg-base-300 hover:text-base-content"
+                        title={action.label}
+                        aria-label={action.label}
+                        onClick={() => action.onSelect()}
+                      >
+                        <action.icon className="h-5 w-5" />
+                      </button>
+                    ))}
+                  {/* Spelled out rather than left as a bare icon: a document and the folder it
+                      sits in both delete through a trash can, and one click apart they are
+                      impossible to tell from each other. */}
+                  {selectionActions
+                    .filter((action) => action.danger)
+                    .map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        className="btn btn-ghost btn-sm gap-1 whitespace-nowrap text-error hover:bg-error/10"
+                        title={action.label}
+                        onClick={() => action.onSelect()}
+                      >
+                        <action.icon className="h-5 w-5" />
+                        <span className="hidden sm:inline">{action.label}</span>
+                      </button>
+                    ))}
                   <RowActionsMenu
                     actions={selectionActions}
                     align="start"
@@ -1464,7 +1697,7 @@ const DocumentsDrivePage: React.FC = () => {
                             {folder.title}
                           </span>
                           <span className="block truncate text-xs text-base-content/50">
-                            {folder.scope_key}
+                            {folderSubtitle(folder)}
                           </span>
                         </span>
                       </button>
@@ -1815,6 +2048,52 @@ const DocumentsDrivePage: React.FC = () => {
           folderPath={accessRow.folder_path || 'Folder'}
           onClose={() => setAccessRow(null)}
         />
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-base-100 shadow-2xl">
+            <div className="flex items-start gap-3 px-5 py-5">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-error/10">
+                <TrashIcon className="h-5 w-5 text-error" />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold">
+                  {deleteTarget.kind === 'doc' ? 'Delete this document?' : 'Delete this folder?'}
+                </h2>
+                <p className="mt-1 break-words text-sm text-base-content/70">
+                  {deleteTarget.kind === 'doc'
+                    ? deleteTarget.row.file_name
+                    : deleteTarget.folder.title}
+                </p>
+                <p className="mt-3 text-sm text-base-content/60">
+                  {deleteTarget.kind === 'doc'
+                    ? 'The file and its record go for good. This cannot be undone.'
+                    : 'Any folders inside go with it. The files are kept, and move back out to the list around it.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-base-300 px-5 py-4">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                disabled={deleting}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-error btn-sm"
+                disabled={deleting}
+                onClick={() => void confirmDelete()}
+              >
+                {deleting && <span className="loading loading-spinner loading-xs" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

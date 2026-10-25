@@ -31,6 +31,7 @@ import {
   type OfficeDocument,
   type OfficeDocumentFolder,
 } from '../../lib/officeDocuments';
+import { spaceFolderLabel } from '../../lib/spaceFolders';
 import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
 
 function formatUploadedAt(iso: string): string {
@@ -611,7 +612,9 @@ const OfficeDocumentsTab: React.FC = () => {
                         <FolderIcon className="h-7 w-7" />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="truncate block text-base font-semibold text-gray-800">{folder.title}</span>
+                        <span className="truncate block text-base font-semibold text-gray-800">
+                          {spaceFolderLabel(folders, folder)}
+                        </span>
                         <span className="mt-0.5 block text-sm text-gray-500">
                           {formatUploadedAt(folder.created_at)}
                         </span>
@@ -789,7 +792,9 @@ const OfficeDocumentsTab: React.FC = () => {
                                         onClick={() => void handleMoveFile(file, folder.id)}
                                       >
                                         <FolderIcon className="h-4 w-4 shrink-0 text-amber-500" />
-                                        <span className="min-w-0 truncate">{folder.title}</span>
+                                        <span className="min-w-0 truncate">
+                                          {spaceFolderLabel(folders, folder)}
+                                        </span>
                                       </button>
                                     ))}
                                 </div>

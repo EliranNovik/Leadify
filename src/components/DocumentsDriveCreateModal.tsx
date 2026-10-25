@@ -24,7 +24,6 @@ import {
 } from '../lib/documentFolders';
 import {
   describeDestination,
-  destinationSupportsFolders,
   fetchDriveClassifications,
   searchDriveMeetings,
   uploadEntriesToDestination,
@@ -43,6 +42,7 @@ import {
   type FolderUploadEntry,
 } from '../lib/browserFolderUpload';
 import { createOfficeDocumentFolder, fetchOfficeDocumentFolders, type OfficeDocumentFolder } from '../lib/officeDocuments';
+import { orderSpaceFolders } from '../lib/spaceFolders';
 import { fetchOfficeSpaces, OFFICE_ADMIN_SPACE, type OfficeSpace } from '../lib/officeSpaces';
 import {
   createEmployeePersonalFolder,
@@ -67,6 +67,10 @@ export type DriveCreateContext = {
   area?: string | null;
   folderId?: string | null;
   officeSpaceKey?: string | null;
+  /** The open folder inside a department space, so new files land in it rather than at the top. */
+  officeFolderId?: string | null;
+  /** The same, for a folder open in the employee's own space. */
+  personalFolderId?: string | null;
   /** The section the drive is showing, so the dialog opens on the same one. */
   section?: 'lead' | 'staff_meeting' | 'office' | 'personal' | null;
 };
@@ -107,9 +111,10 @@ const DocumentsDriveCreateModal: React.FC<{
   onDone: (created?: DriveCreatedFile[]) => void;
 }> = ({ mode, context, initialEntries, onClose, onDone }) => {
   const blankKind = blankKindForMode(mode);
-  // A folder upload only makes sense where folders nest, which today is cases.
+  // A meeting keeps no folders of its own, so there is nothing to create one in. A folder can
+  // still be dropped on it: the files land in the meeting itself, which the dialog says below.
   const sections = useMemo(
-    () => (mode === 'folder' ? SECTIONS.filter((s) => s.id === 'lead') : mode === 'new-folder' ? SECTIONS.filter((s) => s.id !== 'staff_meeting') : SECTIONS),
+    () => (mode === 'new-folder' ? SECTIONS.filter((s) => s.id !== 'staff_meeting') : SECTIONS),
     [mode],
   );
 
@@ -144,10 +149,13 @@ const DocumentsDriveCreateModal: React.FC<{
     context?.officeSpaceKey || OFFICE_ADMIN_SPACE.scopeKey,
   );
   const [officeFolders, setOfficeFolders] = useState<OfficeDocumentFolder[]>([]);
-  const [officeFolderId, setOfficeFolderId] = useState<string | null>(null);
+  const [officeFolderId, setOfficeFolderId] = useState<string | null>(context?.officeFolderId ?? null);
 
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [personalFolders, setPersonalFolders] = useState<EmployeePersonalFolder[]>([]);
+  const [personalFolderId, setPersonalFolderId] = useState<string | null>(
+    context?.personalFolderId ?? null,
+  );
 
   const [folderName, setFolderName] = useState('');
   const [documentName, setDocumentName] = useState('');
@@ -275,9 +283,19 @@ const DocumentsDriveCreateModal: React.FC<{
   useEffect(() => {
     if (section !== 'personal' || employeeId == null) return;
     fetchEmployeePersonalFolders(employeeId)
-      .then(setPersonalFolders)
+      .then((rows) => {
+        setPersonalFolders(rows);
+        setPersonalFolderId((prev) => (rows.some((row) => row.id === prev) ? prev : null));
+      })
       .catch(() => setPersonalFolders([]));
   }, [section, employeeId]);
+
+  // Both of these stores keep their folders as a tree now, so the pickers show the nesting.
+  const orderedOfficeFolders = useMemo(() => orderSpaceFolders(officeFolders), [officeFolders]);
+  const orderedPersonalFolders = useMemo(
+    () => orderSpaceFolders(personalFolders),
+    [personalFolders],
+  );
 
   const orderedCaseFolders = useMemo(() => {
     const out: Array<{ folder: DocumentFolder; depth: number }> = [];
@@ -316,7 +334,7 @@ const DocumentsDriveCreateModal: React.FC<{
       };
     }
     if (employeeId == null) return null;
-    return { kind: 'personal', employeeId };
+    return { kind: 'personal', employeeId, folderId: personalFolderId };
   }, [
     section,
     lead,
@@ -327,10 +345,11 @@ const DocumentsDriveCreateModal: React.FC<{
     officeFolderId,
     officeSpace,
     employeeId,
+    personalFolderId,
   ]);
 
   const runUpload = useCallback(
-    async (entries: FolderUploadEntry[], folderPaths: string[]) => {
+    async (entries: FolderUploadEntry[], folderPaths: string[][]) => {
       if (!destination || entries.length === 0) return;
       setBusy(true);
       setProgress({ done: 0, total: entries.length });
@@ -413,10 +432,10 @@ const DocumentsDriveCreateModal: React.FC<{
           createdByEmployeeId: actor?.employeeId ?? null,
         });
       } else if (section === 'office') {
-        await createOfficeDocumentFolder(title, officeSpace.departmentId);
+        await createOfficeDocumentFolder(title, officeSpace.departmentId, officeFolderId);
       } else {
         if (employeeId == null) throw new Error('Could not tell which employee you are');
-        await createEmployeePersonalFolder(employeeId, title);
+        await createEmployeePersonalFolder(employeeId, title, personalFolderId);
       }
       toast.success(`Created “${title}”`);
       onDone();
@@ -704,18 +723,22 @@ const DocumentsDriveCreateModal: React.FC<{
             </div>
           )}
 
-          {section === 'office' && mode !== 'new-folder' && (
+          {section === 'office' && (
             <div>
-              <h3 className="mb-2 text-sm font-semibold text-base-content/70">Which folder</h3>
+              <h3 className="mb-2 text-sm font-semibold text-base-content/70">
+                {mode === 'new-folder' ? 'Inside' : 'Which folder'}
+              </h3>
               <select
                 className="select select-bordered w-full"
                 value={officeFolderId ?? ''}
                 onChange={(e) => setOfficeFolderId(e.target.value || null)}
               >
-                <option value="">All files (no folder)</option>
-                {officeFolders.map((folder) => (
+                <option value="">
+                  {mode === 'new-folder' ? 'Top level' : 'All files (no folder)'}
+                </option>
+                {orderedOfficeFolders.map(({ folder, depth }) => (
                   <option key={folder.id} value={folder.id}>
-                    {folder.title}
+                    {`${'— '.repeat(depth)}${folder.title}`}
                   </option>
                 ))}
               </select>
@@ -723,13 +746,36 @@ const DocumentsDriveCreateModal: React.FC<{
           )}
 
           {section === 'personal' && (
-            <p className="rounded-xl bg-base-200 px-4 py-3 text-sm text-base-content/70">
-              {employeeId == null
-                ? 'Could not tell which employee you are, so this destination is unavailable.'
-                : mode === 'new-folder'
-                  ? 'The folder is created in your own space.'
-                  : `Files go to your own space${personalFolders.length > 0 ? ' at the top level' : ''}.`}
-            </p>
+            <>
+              <p className="rounded-xl bg-base-200 px-4 py-3 text-sm text-base-content/70">
+                {employeeId == null
+                  ? 'Could not tell which employee you are, so this destination is unavailable.'
+                  : mode === 'new-folder'
+                    ? 'The folder is created in your own space.'
+                    : 'Files go to your own space.'}
+              </p>
+              {employeeId != null && (
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-base-content/70">
+                    {mode === 'new-folder' ? 'Inside' : 'Which folder'}
+                  </h3>
+                  <select
+                    className="select select-bordered w-full"
+                    value={personalFolderId ?? ''}
+                    onChange={(e) => setPersonalFolderId(e.target.value || null)}
+                  >
+                    <option value="">
+                      {mode === 'new-folder' ? 'Top level' : 'All files (no folder)'}
+                    </option>
+                    {orderedPersonalFolders.map(({ folder, depth }) => (
+                      <option key={folder.id} value={folder.id}>
+                        {`${'— '.repeat(depth)}${folder.title}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </>
           )}
 
           {mode === 'new-folder' ? (
@@ -870,13 +916,12 @@ const DocumentsDriveCreateModal: React.FC<{
                   </button>
                 </div>
               )}
-              {!destinationSupportsFolders(destination ?? { kind: 'office', folderId: null }) &&
-                mode === 'files' &&
-                section !== 'lead' && (
-                  <p className="mt-2 text-xs text-base-content/50">
-                    This destination keeps files in a single list rather than folders.
-                  </p>
-                )}
+              {(mode === 'files' || mode === 'folder') && section === 'staff_meeting' && (
+                <p className="mt-2 text-xs text-base-content/50">
+                  A meeting keeps its files in a single list, so a dropped folder's files all land
+                  in the meeting itself.
+                </p>
+              )}
             </div>
           )}
         </div>

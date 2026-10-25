@@ -291,6 +291,73 @@ export function resolveMeetingEmailTemplateIdsForNotify(
   });
 }
 
+/**
+ * misc_emailtemplate.content is stored as a Quill delta, an escaped delta, or raw HTML
+ * depending on which editor wrote it. Returns plain text with the markup peeled off.
+ */
+export function parseStoredEmailTemplateContent(rawContent: string | null | undefined): string {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) =>
+    text
+      .split('\n')
+      .map((line) => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        return sanitizeTemplateText(ops.map((op: any) => (typeof op?.insert === 'string' ? op.insert : '')).join(''));
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) text = htmlMatch[1];
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) return text;
+
+  text = tryParseDelta(rawContent.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
+  if (text !== null) return text;
+
+  const normalised = rawContent.replace(/\\"/g, '"').replace(/\r/g, '').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    return sanitizeTemplateText(inserts.join('').replace(/\\n/g, '\n').replace(/\\t/g, '\t'));
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+}
+
 export async function fetchMiscEmailTemplatesByIds(
   templateIds: number[]
 ): Promise<Map<number, { content: string | null; name: string | null }>> {

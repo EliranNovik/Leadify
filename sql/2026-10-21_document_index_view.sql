@@ -7,16 +7,58 @@
 -- documents follow the folder permissions in sql/2026-10-21_document_folders.sql. Without that
 -- setting a view runs as its owner and would hand everyone everything.
 --
--- Run sql/2026-10-21_document_folders.sql first (this reads lead_case_documents.folder_id).
--- Safe to re-run.
+-- Run sql/2026-10-21_document_folders.sql first (this reads lead_case_documents.folder_id), and
+-- sql/2026-10-25_nested_space_folders.sql before re-running this (it reads the folder parents).
+--
+-- Safe to re-run. Re-run it after 2026-10-25: office and personal rows now report their
+-- folder_id, without which the drive could not open a folder in those spaces, and their folder
+-- path is built from the nested folders rather than being a single title.
+
+-- Said plainly, because the error Postgres raises on its own ('column parent_id does not exist')
+-- does not point at the file that adds it.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name IN ('office_document_folders', 'employee_personal_folders')
+      AND column_name = 'parent_id'
+  ) THEN
+    RAISE EXCEPTION 'Run sql/2026-10-25_nested_space_folders.sql first — this view reads the folder parents it adds.';
+  END IF;
+END $$;
 
 -- The page orders by date across every store, and this is by far the biggest one.
 CREATE INDEX IF NOT EXISTS idx_lead_case_documents_created_at
   ON public.lead_case_documents (created_at DESC);
 
+-- document_index_cases reads this view, and Postgres will not drop a view out from under a
+-- dependent one. It is dropped here and created again at the bottom of this file.
+DROP VIEW IF EXISTS public.document_index_cases;
 DROP VIEW IF EXISTS public.document_index;
 
 CREATE VIEW public.document_index AS
+
+-- Office and personal folders nest (sql/2026-10-25_nested_space_folders.sql) but keep no path of
+-- their own, so one is built here. Case folders already carry theirs.
+WITH RECURSIVE office_folder_paths AS (
+  SELECT id, title AS path
+  FROM public.office_document_folders
+  WHERE parent_id IS NULL
+  UNION ALL
+  SELECT child.id, parent.path || ' / ' || child.title
+  FROM public.office_document_folders child
+  JOIN office_folder_paths parent ON parent.id = child.parent_id
+),
+personal_folder_paths AS (
+  SELECT id, title AS path
+  FROM public.employee_personal_folders
+  WHERE parent_id IS NULL
+  UNION ALL
+  SELECT child.id, parent.path || ' / ' || child.title
+  FROM public.employee_personal_folders child
+  JOIN personal_folder_paths parent ON parent.id = child.parent_id
+)
 
 -- Case documents on a lead.
 SELECT
@@ -80,8 +122,10 @@ SELECT
   o.size_bytes,
   o.created_by::text,
   o.created_at,
-  NULL::uuid,
-  ofo.title,
+  -- The drive lists office folders and filters files to the open one, so the id has to come
+  -- through here; reporting only the title left department spaces unable to open a folder.
+  o.folder_id,
+  ofp.path,
   COALESCE('dept-' || o.department_id::text, 'admins'),
   COALESCE(NULLIF(btrim(od.name), ''), 'Admins'),
   COALESCE(o.document_type, 'Office document'),
@@ -89,7 +133,7 @@ SELECT
   NULL::uuid,
   NULL::text
 FROM public.office_documents o
-LEFT JOIN public.office_document_folders ofo ON ofo.id = o.folder_id
+LEFT JOIN office_folder_paths ofp ON ofp.id = o.folder_id
 LEFT JOIN public.tenant_departement od ON od.id = o.department_id
 
 UNION ALL
@@ -105,8 +149,9 @@ SELECT
   p.size_bytes,
   NULL::text,
   p.created_at,
-  NULL::uuid,
-  pfo.title,
+  -- Same as office above: the drive needs the id to open a folder in someone's own space.
+  p.folder_id,
+  pfp.path,
   p.employee_id::text,
   COALESCE(NULLIF(btrim(pe.display_name), ''), 'Employee ' || p.employee_id::text),
   COALESCE(p.document_type, 'Personal file'),
@@ -114,7 +159,7 @@ SELECT
   NULL::uuid,
   NULL::text
 FROM public.employee_personal_files p
-LEFT JOIN public.employee_personal_folders pfo ON pfo.id = p.folder_id
+LEFT JOIN personal_folder_paths pfp ON pfp.id = p.folder_id
 LEFT JOIN public.tenants_employee pe ON pe.id = p.employee_id
 
 UNION ALL

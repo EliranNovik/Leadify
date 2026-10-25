@@ -133,6 +133,7 @@ import {
   generateMeetingWhatsAppTemplateParameters,
   selectReminderWhatsAppTemplate,
 } from '../../lib/meetingWhatsAppNotify';
+import { recordMeetingReminderSend } from '../../lib/meetingReminderSends';
 import WheelTimePicker from '../WheelTimePicker';
 import MeetingDurationField, {
   DEFAULT_MEETING_DURATION_MINUTES,
@@ -3266,6 +3267,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         const typeLabel = type === 'missed_appointment' ? 'missed appointment' : 'reminder';
         toast.success(`WhatsApp ${typeLabel} sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
         // Stage evaluation is handled automatically by database triggers
+
+        if (type === 'reminder') {
+          void recordMeetingReminderSend({
+            rowKey: String(meeting.id),
+            channel: 'whatsapp',
+            language: selectedLanguage,
+            recipientCount: successCount,
+          });
+        }
       }
       if (failureCount > 0) {
         const errors = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).map(r => r.error || 'Unknown error').join(', ');
@@ -3482,6 +3492,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         rescheduled: `Meeting rescheduled notice sent for meeting on ${meeting.date}`
       };
       toast.success(emailTypeMessages[currentEmailType]);
+
+      if (currentEmailType === 'reminder') {
+        void recordMeetingReminderSend({
+          rowKey: String(meeting.id),
+          channel: 'email',
+          language: languageToUse,
+          recipientCount: Array.isArray(recipientEmail) ? recipientEmail.length : 1,
+        });
+      }
 
       const recipientEmailArrayForContact = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
       const contactByEmail =
