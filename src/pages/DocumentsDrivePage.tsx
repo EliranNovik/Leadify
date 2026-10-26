@@ -25,6 +25,7 @@ import {
   ListBulletIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
+  PencilSquareIcon,
   PlusIcon,
   ShareIcon,
   ShieldCheckIcon,
@@ -76,12 +77,14 @@ import {
   fetchOfficeDocumentFolders,
   moveOfficeDocumentFolder,
   moveOfficeDocumentsToFolder,
+  renameOfficeDocumentFolder,
 } from '../lib/officeDocuments';
 import {
   deleteEmployeePersonalFolder,
   fetchEmployeePersonalFolders,
   moveEmployeePersonalFilesToFolder,
   moveEmployeePersonalFolder,
+  renameEmployeePersonalFolder,
 } from '../lib/employeePersonalSpace';
 import {
   MAX_SPACE_FOLDER_DEPTH,
@@ -108,6 +111,7 @@ import {
   hasStoredFile,
   isMovableDocument,
   nextDocumentIndexPage,
+  renameDocumentIndexRow,
   stableRowKey,
   type DocumentIndexCase,
   type DocumentIndexFilters,
@@ -123,6 +127,7 @@ import {
   MAX_DOCUMENT_FOLDER_DEPTH,
   moveCaseDocumentsToFolder,
   moveDocumentFolder,
+  renameDocumentFolder,
   type DocumentFolder,
   type DocumentFolderScope,
   type DocumentFolderScopeType,
@@ -183,6 +188,19 @@ function formatModified(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
   return date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+/**
+ * Where a file sits inside its case or space, written the same way for both. A case folder joins
+ * its path with a bare slash and a space's folder joins its with a spaced one, which is a
+ * difference in the stores rather than anything a reader should have to see.
+ */
+function folderPathLabel(path: string): string {
+  return path
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' / ');
 }
 
 /** Office and HR rows store an auth user id rather than a name, which is not worth showing raw. */
@@ -329,6 +347,7 @@ type DriveSelection = { kind: 'doc'; key: string } | { kind: 'folder'; id: strin
 
 type DriveDeleteTarget =
   | { kind: 'doc'; row: DocumentIndexRow }
+  | { kind: 'docs'; rows: DocumentIndexRow[] }
   | { kind: 'folder'; folder: DocumentFolder }
   | null;
 
@@ -499,6 +518,20 @@ function scopeOf(row: DocumentIndexRow): DocumentFolderScope | null {
   };
 }
 
+/** Whether two documents share one folder tree: the same case, the same tab and the same area. */
+function sameFolderScope(
+  a: DocumentFolderScope | null,
+  b: DocumentFolderScope | null,
+): boolean {
+  return (
+    !!a &&
+    !!b &&
+    a.scopeKey === b.scopeKey &&
+    a.classificationId === b.classificationId &&
+    a.area === b.area
+  );
+}
+
 const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenAppNav }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -563,13 +596,22 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   const [fileDragOver, setFileDragOver] = useState(false);
   const [createdNonce, setCreatedNonce] = useState(0);
   const [viewerDocs, setViewerDocs] = useState<DocumentViewerItem[] | null>(null);
+  /** Which of them the viewer opens on, since it opens on the file that was asked for. */
+  const [viewerIndex, setViewerIndex] = useState(0);
+  /** The listed rows behind the viewer's files, so a rename in there knows what to write to. */
+  const [viewerRows, setViewerRows] = useState<DocumentIndexRow[]>([]);
   /** Set only for a document created a moment ago, which opens straight into its editor. */
   const [viewerAutoEdit, setViewerAutoEdit] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [moveRow, setMoveRow] = useState<DocumentIndexRow | null>(null);
-  const [transfer, setTransfer] = useState<{ mode: 'copy' | 'move'; row: DocumentIndexRow } | null>(
-    null,
-  );
+  const [moveRows, setMoveRows] = useState<DocumentIndexRow[] | null>(null);
+  /** The document being renamed from the row menu, and the name being typed for it. */
+  const [renameRow, setRenameRow] = useState<DocumentIndexRow | null>(null);
+  /** The folder being renamed, which is one somebody made rather than a case's own folder. */
+  const [renameFolder, setRenameFolder] = useState<DocumentFolder | null>(null);
+  const [transfer, setTransfer] = useState<{
+    mode: 'copy' | 'move';
+    rows: DocumentIndexRow[];
+  } | null>(null);
   /** The document whose share options are open, from the row menu. */
   const [shareRow, setShareRow] = useState<DocumentIndexRow | null>(null);
   const [accessRow, setAccessRow] = useState<DocumentIndexRow | null>(null);
@@ -579,6 +621,12 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   /** Who is signed in, which is whose folders the My space section browses. */
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [selection, setSelection] = useState<DriveSelection>(null);
+  /**
+   * The several documents picked out together, by their stable key, which fills up as rows are
+   * clicked with Command or Control held. It is empty whenever a single row is the selection, so
+   * the list is either on one row or on a group of them and never on both.
+   */
+  const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set());
   /** The row being dragged within the list, which is a document or a folder of its own. */
   const [dragging, setDragging] = useState<DriveSelection>(null);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
@@ -987,27 +1035,76 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     setPage(0);
   };
 
-  const openPreview = async (row: DocumentIndexRow) => {
+  /**
+   * A renamed file under its new name everywhere it is on screen — the list, and the viewer's own
+   * panel — rather than by reloading the page under whoever is reading it.
+   */
+  const applyRename = (row: DocumentIndexRow, fileName: string) => {
     const key = stableRowKey(row);
+    const renamed = (item: DocumentIndexRow) =>
+      stableRowKey(item) === key ? { ...item, file_name: fileName } : item;
+    setRows((prev) => prev.map(renamed));
+    setViewerRows((prev) => prev.map(renamed));
+    setViewerDocs((prev) =>
+      prev ? prev.map((doc) => (doc.id === key ? { ...doc, name: fileName } : doc)) : prev,
+    );
+  };
+
+  /** One listed row as the viewer wants it, given a URL it can already display. */
+  const viewerItem = (row: DocumentIndexRow, url: string): DocumentViewerItem => ({
+    id: stableRowKey(row),
+    name: row.file_name,
+    url,
+    fileType: row.mime_type || '',
+    lastModified: row.created_at,
+    storagePath: row.storage_path,
+    storageBucket: row.storage_bucket,
+  });
+
+  /**
+   * Opens a set of files in the viewer, on the one that was asked for. The panel down the
+   * viewer's left is how you move between them, so it is given the whole set — whichever kind of
+   * file each one is — and the URLs for the lot are signed in one request per bucket.
+   */
+  const openRowsInViewer = async (listed: DocumentIndexRow[], focus: DocumentIndexRow) => {
+    const key = stableRowKey(focus);
     setBusyKey(key);
     try {
-      const url = await createDocumentIndexSignedUrl(row);
-      setViewerDocs([
-        {
-          id: key,
-          name: row.file_name,
-          url,
-          fileType: row.mime_type || '',
-          lastModified: row.created_at,
-          storagePath: row.storage_path,
-          storageBucket: row.storage_bucket,
-        },
-      ]);
+      const urls = await createDocumentIndexSignedUrls(listed);
+      const openable = listed.filter((item) => urls.has(item.storage_path));
+      const index = openable.findIndex((item) => stableRowKey(item) === key);
+      if (index < 0) {
+        // The file asked for was not among those signed, so it opens by itself rather than not
+        // at all — it is the one the click was about.
+        const url = await createDocumentIndexSignedUrl(focus);
+        setViewerRows([focus]);
+        setViewerDocs([viewerItem(focus, url)]);
+        setViewerIndex(0);
+        return;
+      }
+      setViewerRows(openable);
+      setViewerDocs(openable.map((item) => viewerItem(item, urls.get(item.storage_path) as string)));
+      setViewerIndex(index);
     } catch (err: any) {
       toast.error(err?.message || 'Could not open this file');
     } finally {
       setBusyKey(null);
     }
+  };
+
+  /** Opening one file opens the list it sits in, so the panel beside it is the list. */
+  const openPreview = (row: DocumentIndexRow) => openRowsInViewer(rows.filter(hasStoredFile), row);
+
+  /** The listed row a file in the viewer came from, which is what anything written goes to. */
+  const viewerRowOf = (doc: DocumentViewerItem) =>
+    viewerRows.find((item) => stableRowKey(item) === doc.id) ?? null;
+
+  /** A file's new name, written to the row the viewer is showing. */
+  const renameViewerDoc = async (doc: DocumentViewerItem, newName: string) => {
+    const row = viewerRowOf(doc);
+    if (!row) throw new Error('Could not work out which file to rename');
+    const fileName = await renameDocumentIndexRow(row, newName);
+    applyRename(row, fileName);
   };
 
   /** Show a just-created document in the viewer, already on its way into Word or Excel. */
@@ -1018,6 +1115,9 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         .createSignedUrl(made.storagePath, 3600);
       if (error || !data?.signedUrl) throw error || new Error('Could not open the new document');
       setViewerAutoEdit(true);
+      // Created this moment and not in any list yet, so there is no row behind it to rename.
+      setViewerRows([]);
+      setViewerIndex(0);
       setViewerDocs([
         {
           id: made.storagePath,
@@ -1053,6 +1153,34 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     }
   };
 
+  /** Several files at once leave as one zip, since a browser only downloads one file at a time. */
+  const downloadRowsZip = async (picked: DocumentIndexRow[]) => {
+    const progress = toast.loading(`Preparing ${picked.length} files…`);
+    try {
+      const urls = await createDocumentIndexSignedUrls(picked);
+      const { successCount, errorCount } = await downloadFilesAsZip({
+        files: picked
+          .filter((row) => urls.has(row.storage_path))
+          .map((row) => ({ name: row.file_name, url: urls.get(row.storage_path) as string })),
+        zipFileName: 'documents.zip',
+        onProgress: (done, totalFiles) =>
+          toast.loading(`Zipping ${done} of ${totalFiles}…`, { id: progress }),
+      });
+      if (successCount === 0) {
+        toast.error('None of the files could be downloaded', { id: progress });
+      } else {
+        toast.success(
+          errorCount > 0
+            ? `Downloaded ${successCount} files, ${errorCount} failed`
+            : `Downloaded ${successCount} files`,
+          { id: progress },
+        );
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not build the zip', { id: progress });
+    }
+  };
+
   /** Shared by the folder menu's zip and viewer entries. */
   const folderContents = async (folder: DocumentFolder) => {
     const docs = await fetchDocumentsInFolder(folder.id);
@@ -1069,18 +1197,11 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     try {
       const contents = await folderContents(folder);
       if (!contents) return;
+      const openable = contents.docs.filter((doc) => contents.urls.has(doc.storage_path));
+      setViewerRows(openable);
+      setViewerIndex(0);
       setViewerDocs(
-        contents.docs
-          .filter((doc) => contents.urls.has(doc.storage_path))
-          .map((doc) => ({
-            id: stableRowKey(doc),
-            name: doc.file_name,
-            url: contents.urls.get(doc.storage_path) as string,
-            fileType: doc.mime_type || '',
-            lastModified: doc.created_at,
-            storagePath: doc.storage_path,
-            storageBucket: doc.storage_bucket,
-          })),
+        openable.map((doc) => viewerItem(doc, contents.urls.get(doc.storage_path) as string)),
       );
     } catch (err: any) {
       toast.error(err?.message || 'Could not open this folder');
@@ -1222,6 +1343,25 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       if (deleteTarget.kind === 'doc') {
         await deleteDocumentIndexRow(deleteTarget.row);
         toast.success(`Deleted “${deleteTarget.row.file_name}”`);
+      } else if (deleteTarget.kind === 'docs') {
+        // One at a time, so a file the delete policy refuses stops that file rather than the lot.
+        let done = 0;
+        let failed = 0;
+        for (const row of deleteTarget.rows) {
+          try {
+            await deleteDocumentIndexRow(row);
+            done += 1;
+          } catch {
+            failed += 1;
+          }
+        }
+        if (done === 0) {
+          throw new Error('None of these documents are yours to delete');
+        }
+        toast.success(
+          failed > 0 ? `Deleted ${done} documents, ${failed} refused` : `Deleted ${done} documents`,
+        );
+        clearChecked();
       } else {
         const folder = deleteTarget.folder;
         if (folder.scope_type === 'office') {
@@ -1378,11 +1518,17 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
 
     const row = rows.find((item) => stableRowKey(item) === dragged.key);
     if (!row) return;
+    // Dragging one of the rows picked out together carries the whole group; dragging any other
+    // row carries only itself.
+    const moving = checkedKeys.has(dragged.key) && checkedRows.length > 1 ? checkedRows : [row];
     // A folder only takes files from its own store, so the move goes through that store's own
     // helper and nothing can be filed across two spaces.
     const expectedSource: DocumentIndexSource =
       folder.scope_type === 'office' ? 'office' : folder.scope_type === 'employee' ? 'personal' : 'lead';
-    if (row.source !== expectedSource || !canFileDocumentInFolder(row)) {
+    const allowed = moving.filter(
+      (item) => item.source === expectedSource && canFileDocumentInFolder(item),
+    );
+    if (allowed.length === 0) {
       toast.error(
         expectedSource === 'lead'
           ? 'Only case documents can be filed into folders'
@@ -1390,20 +1536,32 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       );
       return;
     }
-    if (row.folder_id === folder.id) return;
+    const pending = allowed.filter((item) => item.folder_id !== folder.id);
+    if (pending.length === 0) return;
+    const ids = pending.map((item) => item.row_id);
     try {
       if (folder.scope_type === 'office') {
-        await moveOfficeDocumentsToFolder([row.row_id], folder.id);
+        await moveOfficeDocumentsToFolder(ids, folder.id);
       } else if (folder.scope_type === 'employee') {
-        await moveEmployeePersonalFilesToFolder([row.row_id], folder.id);
+        await moveEmployeePersonalFilesToFolder(ids, folder.id);
       } else {
-        await moveCaseDocumentsToFolder([row.row_id], folder.id);
+        await moveCaseDocumentsToFolder(ids, folder.id);
       }
       setLandedFolderId(folder.id);
-      toast.success(`Moved to “${folder.title}”`);
+      toast.success(
+        pending.length === 1
+          ? `Moved to “${folder.title}”`
+          : `Moved ${pending.length} files to “${folder.title}”`,
+      );
+      // Said once, rather than per file: the rest of the group belongs to another store.
+      const refused = moving.length - allowed.length;
+      if (refused > 0) {
+        toast(`${refused} ${refused === 1 ? 'file' : 'files'} could not be filed here`);
+      }
+      clearChecked();
       reload();
     } catch (err: any) {
-      toast.error(err?.message || 'Could not move this file');
+      toast.error(err?.message || 'Could not move these files');
     }
   };
 
@@ -1552,7 +1710,12 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       event.dataTransfer.effectAllowed = 'move';
       event.dataTransfer.setData('text/plain', row.file_name);
       setDragging({ kind: 'doc', key });
-      setSelection({ kind: 'doc', key });
+      // Picking up one of the rows held together keeps the group, so all of them travel. Any
+      // other row starts afresh from itself.
+      if (!checkedKeys.has(key)) {
+        clearChecked();
+        setSelection({ kind: 'doc', key });
+      }
     },
     onDragEnd: () => {
       setDragging(null);
@@ -1580,6 +1743,12 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         icon: ArchiveBoxArrowDownIcon,
         onSelect: () => void downloadFolderZip(folder),
       },
+      {
+        id: 'rename-folder',
+        label: 'Rename folder',
+        icon: PencilSquareIcon,
+        onSelect: () => setRenameFolder(folder),
+      },
     ];
     if (isSuperUser) {
       actions.push({
@@ -1588,6 +1757,107 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         icon: TrashIcon,
         danger: true,
         onSelect: () => setDeleteTarget({ kind: 'folder', folder }),
+      });
+    }
+    return actions;
+  };
+
+  /**
+   * A folder's new name, written to whichever store the folder belongs to. The breadcrumb keeps
+   * its own copy of each folder it stepped through, so it is corrected here rather than waiting
+   * for the list underneath to come back.
+   */
+  const saveFolderTitle = async (folder: DocumentFolder, title: string) => {
+    if (folder.scope_type === 'office') await renameOfficeDocumentFolder(folder.id, title);
+    else if (folder.scope_type === 'employee') await renameEmployeePersonalFolder(folder.id, title);
+    else await renameDocumentFolder(folder.id, title);
+    setFolderTrail((trail) =>
+      trail.map((item) => (item.id === folder.id ? { ...item, title } : item)),
+    );
+    setCreatedNonce((prev) => prev + 1);
+  };
+
+  /**
+   * A click with Command or Control held adds a row to the group, or takes it back out. The row
+   * that was already picked out on its own becomes the first of the group, and a group worn down
+   * to a single row turns back into that one pick, so one row and several are never both in play.
+   */
+  const toggleChecked = (key: string) => {
+    const anchor = selection?.kind === 'doc' ? selection.key : null;
+    const next = new Set(checkedKeys.size === 0 && anchor ? [anchor] : checkedKeys);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    if (next.size > 1) {
+      setCheckedKeys(next);
+      setSelection(null);
+      return;
+    }
+    const [only] = next;
+    setCheckedKeys(new Set());
+    setSelection(only ? { kind: 'doc', key: only } : null);
+  };
+
+  /** Lets go of the group, which is what finishing an action on it means. */
+  const clearChecked = () =>
+    setCheckedKeys((prev) => (prev.size === 0 ? prev : new Set<string>()));
+
+  /**
+   * What can be done to every document in the group at once. Deliberately shorter than one row's own
+   * menu: sharing, renaming and managing access are each about one file, and a case to open
+   * belongs to one document.
+   */
+  const bulkActions = (picked: DocumentIndexRow[]): RowAction[] => {
+    const actions: RowAction[] = [];
+    const stored = picked.filter(hasStoredFile);
+    if (stored.length > 0) {
+      actions.push(
+        {
+          id: 'preview',
+          label: `Preview ${stored.length} files`,
+          icon: EyeIcon,
+          onSelect: () => void openRowsInViewer(stored, stored[0]),
+        },
+        {
+          id: 'download',
+          label: `Download all ${stored.length} as a zip file`,
+          icon: ArrowDownTrayIcon,
+          onSelect: () => void downloadRowsZip(stored),
+        },
+      );
+    }
+    // Filing into a folder happens inside one case's own tree, so they all have to be in one.
+    const scope = scopeOf(picked[0]);
+    if (scope && picked.every((row) => sameFolderScope(scopeOf(row), scope))) {
+      actions.push({
+        id: 'move',
+        label: 'Move to folder',
+        icon: FolderArrowDownIcon,
+        onSelect: () => setMoveRows(picked),
+      });
+    }
+    if (stored.length > 0) {
+      actions.push(
+        {
+          id: 'copy-to',
+          label: 'Copy to another place',
+          icon: DocumentDuplicateIcon,
+          onSelect: () => setTransfer({ mode: 'copy', rows: stored }),
+        },
+        {
+          id: 'move-to',
+          label: 'Move to another place',
+          icon: ArrowRightCircleIcon,
+          onSelect: () => setTransfer({ mode: 'move', rows: stored }),
+        },
+      );
+    }
+    if (isSuperUser) {
+      actions.push({
+        id: 'delete',
+        label: `Delete ${picked.length} documents`,
+        icon: TrashIcon,
+        danger: true,
+        onSelect: () => setDeleteTarget({ kind: 'docs', rows: picked }),
       });
     }
     return actions;
@@ -1602,6 +1872,12 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     actions.push(
       { id: 'preview', label: 'Preview', icon: EyeIcon, onSelect: () => void openPreview(row) },
       { id: 'download', label: 'Download', icon: ArrowDownTrayIcon, onSelect: () => void download(row) },
+      {
+        id: 'rename',
+        label: 'Rename',
+        icon: PencilSquareIcon,
+        onSelect: () => setRenameRow(row),
+      },
     );
     if (row.source === 'lead' && row.scope_key) {
       actions.push({
@@ -1616,7 +1892,7 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         id: 'move',
         label: 'Move to folder',
         icon: FolderArrowDownIcon,
-        onSelect: () => setMoveRow(row),
+        onSelect: () => setMoveRows([row]),
       });
     }
     if (hasStoredFile(row)) {
@@ -1625,13 +1901,13 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
           id: 'copy-to',
           label: 'Copy to another place',
           icon: DocumentDuplicateIcon,
-          onSelect: () => setTransfer({ mode: 'copy', row }),
+          onSelect: () => setTransfer({ mode: 'copy', rows: [row] }),
         },
         {
           id: 'move-to',
           label: 'Move to another place',
           icon: ArrowRightCircleIcon,
-          onSelect: () => setTransfer({ mode: 'move', row }),
+          onSelect: () => setTransfer({ mode: 'move', rows: [row] }),
         },
       );
     }
@@ -1672,6 +1948,35 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       ? folderActions(selectedFolder)
       : [];
   const selectionLabel = selectedDoc?.file_name || selectedFolder?.title || '';
+
+  /** The documents picked out together, in the order they are listed. */
+  const checkedRows = useMemo(
+    () => rows.filter((row) => checkedKeys.has(stableRowKey(row))),
+    [rows, checkedKeys],
+  );
+  /** Whether a row is one of the rows being acted on, alone or as part of a group. */
+  const isPicked = (key: string) =>
+    (selection?.kind === 'doc' && selection.key === key) || checkedKeys.has(key);
+
+  // A group only means anything while its rows are on screen: navigating, filtering or reloading
+  // leaves keys behind that nothing can be done to.
+  useEffect(() => {
+    setCheckedKeys((prev) => {
+      if (prev.size === 0) return prev;
+      const listed = new Set(rows.map(stableRowKey));
+      const next = new Set([...prev].filter((key) => listed.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
+
+  /**
+   * The grey pill works on the group when there is one, and on the single row that was clicked
+   * otherwise. Since a group is never fewer than two rows, the two cases cannot overlap.
+   */
+  const barActions = checkedRows.length > 0 ? bulkActions(checkedRows) : selectionActions;
+  const barCount = checkedRows.length > 0 ? checkedRows.length : selectionActions.length > 0 ? 1 : 0;
+  const barLabel =
+    checkedRows.length > 0 ? checkedRows.map((row) => row.file_name).join(', ') : selectionLabel;
 
   const loadingMore = loading && page > 0;
 
@@ -2138,24 +2443,31 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                   })
                 )}
               </nav>
-              {selectionActions.length > 0 && (
+              {barCount > 0 && (
                 <div
                   className="flex min-w-0 items-center gap-1 overflow-x-auto rounded-full bg-base-200 px-2 py-1"
-                  title={selectionLabel}
+                  title={barLabel}
                 >
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm btn-circle text-base-content/60 hover:bg-base-300 hover:text-base-content"
                     aria-label="Clear selection"
-                    onClick={() => setSelection(null)}
+                    onClick={() => {
+                      setSelection(null);
+                      clearChecked();
+                    }}
                   >
                     <XMarkIcon className="h-5 w-5" />
                   </button>
-                  <span className="hidden shrink-0 px-1 text-sm text-base-content/70 sm:inline">
-                    1 selected
+                  {/* Several rows are picked out by holding Command or Control while clicking
+                      them, so this only has to say how many are in hand. */}
+                  <span className="hidden shrink-0 px-2 text-sm text-base-content/70 sm:inline">
+                    {barCount} selected
                   </span>
-                  <span className="mx-1 h-5 w-px shrink-0 bg-base-300" />
-                  {selectionActions
+                  {barActions.length > 0 && (
+                    <span className="mx-1 h-5 w-px shrink-0 bg-base-300" />
+                  )}
+                  {barActions
                     .filter((action) => !action.danger)
                     .map((action) => (
                       <button
@@ -2169,28 +2481,29 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                         <action.icon className="h-5 w-5" />
                       </button>
                     ))}
-                  {/* Spelled out rather than left as a bare icon: a document and the folder it
-                      sits in both delete through a trash can, and one click apart they are
-                      impossible to tell from each other. */}
-                  {selectionActions
+                  {/* Red rather than grey, and what it deletes is named in the confirmation it
+                      opens, which is where the difference between a file and its folder matters. */}
+                  {barActions
                     .filter((action) => action.danger)
                     .map((action) => (
                       <button
                         key={action.id}
                         type="button"
-                        className="btn btn-ghost btn-sm gap-1 whitespace-nowrap text-error hover:bg-error/10"
+                        className="btn btn-ghost btn-sm btn-circle text-error hover:bg-error/10"
                         title={action.label}
+                        aria-label={action.label}
                         onClick={() => action.onSelect()}
                       >
                         <action.icon className="h-5 w-5" />
-                        <span className="hidden sm:inline">{action.label}</span>
                       </button>
                     ))}
-                  <RowActionsMenu
-                    actions={selectionActions}
-                    align="start"
-                    ariaLabel="Selection actions"
-                  />
+                  {barActions.length > 0 && (
+                    <RowActionsMenu
+                      actions={barActions}
+                      align="start"
+                      ariaLabel="Selection actions"
+                    />
+                  )}
                 </div>
               )}
               <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
@@ -2384,11 +2697,16 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                         <div
                           key={key}
                           className={`flex cursor-pointer select-none flex-col gap-3 rounded-xl p-3 transition-colors ${
-                            selection?.kind === 'doc' && selection.key === key
-                              ? 'bg-primary/15'
-                              : 'bg-base-200 hover:bg-base-300'
+                            isPicked(key) ? 'bg-primary/15' : 'bg-base-200 hover:bg-base-300'
                           } ${dragging?.kind === 'doc' && dragging.key === key ? 'opacity-40' : ''}`}
-                          onClick={() => setSelection({ kind: 'doc', key })}
+                          onClick={(event) => {
+                            if (event.metaKey || event.ctrlKey) {
+                              toggleChecked(key);
+                              return;
+                            }
+                            clearChecked();
+                            setSelection({ kind: 'doc', key });
+                          }}
                           onDoubleClick={() => void openPreview(row)}
                           {...documentDragProps(row, key)}
                         >
@@ -2451,11 +2769,10 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
               <table className="drive-table table table-fixed table-pin-rows [&_td]:py-2 [&_th]:py-2">
                 <thead>
                   <tr className="bg-white text-base-content/60 dark:bg-base-100">
-                    <th
-                      className="w-[26rem] cursor-pointer select-none font-medium"
-                      onClick={() => toggleSort('file_name')}
-                    >
-                      Name{sortIndicator('file_name')}
+                    <th className="w-[26rem] select-none font-medium">
+                      <span className="cursor-pointer" onClick={() => toggleSort('file_name')}>
+                        Name{sortIndicator('file_name')}
+                      </span>
                     </th>
                     <th
                       className="hidden w-[11rem] cursor-pointer select-none font-medium md:table-cell"
@@ -2605,11 +2922,19 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                       <tr
                         key={key}
                         className={`cursor-pointer select-none border-base-300 ${
-                          selection?.kind === 'doc' && selection.key === key
-                            ? 'bg-primary/10'
-                            : 'hover:bg-base-200/40'
+                          isPicked(key) ? 'bg-primary/10' : 'hover:bg-base-200/40'
                         } ${dragging?.kind === 'doc' && dragging.key === key ? 'opacity-40' : ''}`}
-                        onClick={() => setSelection({ kind: 'doc', key })}
+                        onClick={(event) => {
+                          // Command or Control held means "and this one too", the way any file
+                          // list adds to what is already picked. Plainly clicked, a row is the
+                          // only one picked and whatever was held before it is let go.
+                          if (event.metaKey || event.ctrlKey) {
+                            toggleChecked(key);
+                            return;
+                          }
+                          clearChecked();
+                          setSelection({ kind: 'doc', key });
+                        }}
                         onDoubleClick={() => void openPreview(row)}
                         {...documentDragProps(row, key)}
                       >
@@ -2629,28 +2954,44 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                           </span>
                         </td>
                         <td className="hidden overflow-hidden md:table-cell">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`badge badge-sm shrink-0 border-none font-medium ${SOURCE_BADGE[row.source]}`}
-                            >
-                              {DOCUMENT_SOURCE_LABELS[row.source]}
-                            </span>
-                            {row.source === 'lead' && row.scope_key ? (
-                              <button
-                                type="button"
-                                className="link link-hover min-w-0 truncate text-sm"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openLeadPage(row.scope_key as string);
-                                }}
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className={`badge badge-sm shrink-0 border-none font-medium ${SOURCE_BADGE[row.source]}`}
                               >
-                                {row.scope_label}
-                              </button>
-                            ) : (
-                              <span className="min-w-0 truncate text-sm text-base-content/70">
-                                {row.scope_label}
+                                {DOCUMENT_SOURCE_LABELS[row.source]}
                               </span>
-                            )}
+                              {row.source === 'lead' && row.scope_key ? (
+                                <button
+                                  type="button"
+                                  className="link link-hover min-w-0 truncate text-sm"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openLeadPage(row.scope_key as string);
+                                  }}
+                                >
+                                  {row.scope_label}
+                                </button>
+                              ) : (
+                                <span className="min-w-0 truncate text-sm text-base-content/70">
+                                  {row.scope_label}
+                                </span>
+                              )}
+                            </div>
+                            {/* One case can hold the same document in two different folders, so
+                                where the file is filed is spelled out under the case it belongs
+                                to. Files sitting loose in a case have no path and say nothing. */}
+                            {row.folder_path ? (
+                              <span
+                                className={`flex min-w-0 items-center gap-1 text-xs ${MUTED_CELL_CLASS}`}
+                                title={folderPathLabel(row.folder_path)}
+                              >
+                                <FolderIcon className="h-3 w-3 shrink-0" aria-hidden />
+                                <span className="min-w-0 truncate" dir="auto">
+                                  {folderPathLabel(row.folder_path)}
+                                </span>
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="hidden truncate text-sm text-base-content/70 lg:table-cell">
@@ -2720,10 +3061,11 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       {transfer && (
         <DocumentsDriveCreateModal
           mode={transfer.mode}
-          sourceRows={[transfer.row]}
+          sourceRows={transfer.rows}
           onClose={() => setTransfer(null)}
           onDone={() => {
             setTransfer(null);
+            clearChecked();
             setCreatedNonce((prev) => prev + 1);
             reload();
           }}
@@ -2735,13 +3077,27 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
           isOpen
           onClose={() => {
             setViewerDocs(null);
+            setViewerRows([]);
             setViewerAutoEdit(false);
           }}
           documents={viewerDocs}
-          initialIndex={0}
+          initialIndex={viewerIndex}
           bucketName={viewerDocs[0].storageBucket || undefined}
+          // Word and Excel files open in the editor and save back over themselves from here.
+          allowOfficeEditing
           autoStartOfficeEdit={viewerAutoEdit}
           onOfficeSaved={() => reload()}
+          // Only files that came from a listed row can be renamed or shared the drive's way; a
+          // brand new one has no row behind it yet.
+          onRename={viewerRows.length > 0 ? renameViewerDoc : undefined}
+          onShare={
+            viewerRows.length > 0
+              ? (doc) => {
+                  const row = viewerRowOf(doc);
+                  if (row) setShareRow(row);
+                }
+              : undefined
+          }
         />
       )}
 
@@ -2802,12 +3158,29 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
           document.body,
         )}
 
-      {moveRow && (
+      {renameRow && (
+        <RenameDocumentDialog
+          row={renameRow}
+          onClose={() => setRenameRow(null)}
+          onRenamed={(fileName) => applyRename(renameRow, fileName)}
+        />
+      )}
+
+      {renameFolder && (
+        <RenameFolderDialog
+          folder={renameFolder}
+          onClose={() => setRenameFolder(null)}
+          onSave={(title) => saveFolderTitle(renameFolder, title)}
+        />
+      )}
+
+      {moveRows && moveRows.length > 0 && (
         <MoveDocumentDialog
-          row={moveRow}
-          onClose={() => setMoveRow(null)}
+          rows={moveRows}
+          onClose={() => setMoveRows(null)}
           onMoved={() => {
-            setMoveRow(null);
+            setMoveRows(null);
+            clearChecked();
             reload();
           }}
         />
@@ -2830,17 +3203,25 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
               </span>
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold">
-                  {deleteTarget.kind === 'doc' ? 'Delete this document?' : 'Delete this folder?'}
+                  {deleteTarget.kind === 'doc'
+                    ? 'Delete this document?'
+                    : deleteTarget.kind === 'docs'
+                      ? `Delete ${deleteTarget.rows.length} documents?`
+                      : 'Delete this folder?'}
                 </h2>
                 <p className="mt-1 break-words text-sm text-base-content/70">
                   {deleteTarget.kind === 'doc'
                     ? deleteTarget.row.file_name
-                    : deleteTarget.folder.title}
+                    : deleteTarget.kind === 'docs'
+                      ? deleteTarget.rows.map((row) => row.file_name).join(', ')
+                      : deleteTarget.folder.title}
                 </p>
                 <p className="mt-3 text-sm text-base-content/60">
                   {deleteTarget.kind === 'doc'
                     ? 'The file and its record go for good. This cannot be undone.'
-                    : 'Any folders inside go with it. The files are kept, and move back out to the list around it.'}
+                    : deleteTarget.kind === 'docs'
+                      ? 'The files and their records go for good. This cannot be undone.'
+                      : 'Any folders inside go with it. The files are kept, and move back out to the list around it.'}
                 </p>
               </div>
             </div>
@@ -2855,7 +3236,7 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
               </button>
               <button
                 type="button"
-                className="btn btn-error btn-sm"
+                className="btn btn-error gap-2 rounded-full px-7"
                 disabled={deleting}
                 onClick={() => void confirmDelete()}
               >
@@ -2870,12 +3251,166 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   );
 };
 
-/** Moves one case document into another folder of the same lead, tab and area. */
-const MoveDocumentDialog: React.FC<{
+/**
+ * Renames one document from the row menu. Only the name it is listed under changes; the stored
+ * file stays exactly where it was uploaded.
+ */
+const RenameDocumentDialog: React.FC<{
   row: DocumentIndexRow;
   onClose: () => void;
+  onRenamed: (fileName: string) => void;
+}> = ({ row, onClose, onRenamed }) => {
+  const [value, setValue] = useState(row.file_name);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const next = value.trim();
+    if (!next || saving) return;
+    if (next === row.file_name) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      const fileName = await renameDocumentIndexRow(row, next);
+      onRenamed(fileName);
+      toast.success('Name updated');
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not rename this file');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-base-100 shadow-2xl">
+        <div className="px-5 py-5">
+          <h2 className="text-lg font-semibold">Rename document</h2>
+          <input
+            type="text"
+            className="input input-bordered mt-4 w-full"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void save();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                onClose();
+              }
+            }}
+            autoFocus
+            disabled={saving}
+            aria-label="File name"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-base-300 px-5 py-4">
+          <button type="button" className="btn btn-ghost btn-sm" disabled={saving} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary gap-2 rounded-full px-7"
+            disabled={saving || !value.trim()}
+            onClick={() => void save()}
+          >
+            {saving && <span className="loading loading-spinner loading-xs" />}
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Renames a folder somebody made, in a case tree or in one of the spaces. Only its name changes:
+ * everything filed inside it stays where it is.
+ */
+const RenameFolderDialog: React.FC<{
+  folder: DocumentFolder;
+  onSave: (title: string) => Promise<void>;
+  onClose: () => void;
+}> = ({ folder, onSave, onClose }) => {
+  const [value, setValue] = useState(folder.title);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const next = value.trim();
+    if (!next || saving) return;
+    if (next === folder.title) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(next);
+      toast.success('Folder renamed');
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not rename this folder');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-base-100 shadow-2xl">
+        <div className="px-5 py-5">
+          <h2 className="text-lg font-semibold">Rename folder</h2>
+          <input
+            type="text"
+            className="input input-bordered mt-4 w-full"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void save();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                onClose();
+              }
+            }}
+            autoFocus
+            disabled={saving}
+            aria-label="Folder name"
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-base-300 px-5 py-4">
+          <button type="button" className="btn btn-ghost btn-sm" disabled={saving} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary gap-2 rounded-full px-7"
+            disabled={saving || !value.trim()}
+            onClick={() => void save()}
+          >
+            {saving && <span className="loading loading-spinner loading-xs" />}
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Moves case documents into another folder of the same lead, tab and area. Several at once, which
+ * is one list of ids to write and one folder tree to choose from — the caller has already made
+ * sure they share it.
+ */
+const MoveDocumentDialog: React.FC<{
+  rows: DocumentIndexRow[];
+  onClose: () => void;
   onMoved: () => void;
-}> = ({ row, onClose, onMoved }) => {
+}> = ({ rows, onClose, onMoved }) => {
+  const row = rows[0];
   const scope = scopeOf(row);
   const [folders, setFolders] = useState<DocumentFolder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2916,11 +3451,14 @@ const MoveDocumentDialog: React.FC<{
   const save = async () => {
     setSaving(true);
     try {
-      await moveCaseDocumentsToFolder([row.row_id], target);
-      toast.success('Moved');
+      await moveCaseDocumentsToFolder(
+        rows.map((item) => item.row_id),
+        target,
+      );
+      toast.success(rows.length > 1 ? `Moved ${rows.length} files` : 'Moved');
       onMoved();
     } catch (err: any) {
-      toast.error(err?.message || 'Could not move this file');
+      toast.error(err?.message || 'Could not move these files');
     } finally {
       setSaving(false);
     }
@@ -2931,8 +3469,12 @@ const MoveDocumentDialog: React.FC<{
       <div className="w-full max-w-lg rounded-2xl bg-base-100 shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-base-300 px-5 py-4">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold">Move file</h2>
-            <p className="mt-0.5 truncate text-sm text-base-content/60">{row.file_name}</p>
+            <h2 className="text-lg font-semibold">
+              {rows.length > 1 ? `Move ${rows.length} files` : 'Move file'}
+            </h2>
+            <p className="mt-0.5 truncate text-sm text-base-content/60">
+              {rows.length > 1 ? rows.map((item) => item.file_name).join(', ') : row.file_name}
+            </p>
           </div>
           <button type="button" className="btn btn-ghost btn-sm btn-square" onClick={onClose}>
             <XMarkIcon className="h-5 w-5" />
@@ -2986,7 +3528,7 @@ const MoveDocumentDialog: React.FC<{
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary gap-2 rounded-full px-7"
             disabled={saving || loading || target === row.folder_id}
             onClick={() => void save()}
           >

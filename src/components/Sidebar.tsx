@@ -59,7 +59,7 @@ interface SidebarProps {
   dockedSurfaceClassName?: string;
   /** Light (white) docked rail — active/hover use gray fills instead of white chips. */
   dockedOnLight?: boolean;
-  /** Black icons and darker labels, for a docked panel that is the page's only navigation. */
+  /** Bigger black icons beside light grey labels, for a docked panel that is the page's only navigation. */
   dockedStrongContrast?: boolean;
   /**
    * Clicks inside anything matching this selector do not close the docked panel.
@@ -701,13 +701,13 @@ const Sidebar: React.FC<SidebarProps> = ({
     : 'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content';
   const dockedLinkIdle = dockedOnLight
     ? `font-medium hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content ${
-        dockedStrongContrast ? 'text-gray-700' : 'text-gray-600'
+        dockedStrongContrast ? 'text-gray-500' : 'text-gray-600'
       }`
     : 'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content';
-  // Bigger icons against grey labels, which is the drive's own contrast, and in its own purple —
-  // stated as the colour itself rather than as `primary`, which the alternative theme turns green.
+  // Bigger icons in plain black against light grey labels: the icon marks the row and the word
+  // sits back behind it, so a long list reads as shapes rather than as a wall of text.
   const dockedIconSize = dockedStrongContrast ? 'h-6 w-6 min-w-[1.5rem]' : 'h-5 w-5 min-w-[1.25rem]';
-  const dockedIconColour = dockedStrongContrast ? 'text-[#9c44ea]' : '';
+  const dockedIconColour = dockedStrongContrast ? 'text-gray-900 dark:text-base-content' : '';
   const dockedIconActive = `${dockedIconSize} shrink-0 ${
     dockedIconColour || 'text-gray-800 dark:text-base-content'
   }`;

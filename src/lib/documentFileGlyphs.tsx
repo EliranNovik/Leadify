@@ -3,6 +3,7 @@ import {
   CodeBracketIcon,
   DocumentIcon,
   DocumentTextIcon,
+  EnvelopeIcon,
   FilmIcon,
   MusicalNoteIcon,
   PresentationChartBarIcon,
@@ -17,6 +18,7 @@ export type DocumentFileKind =
   | 'video'
   | 'audio'
   | 'archive'
+  | 'email'
   | 'text'
   | 'code'
   | 'generic';
@@ -61,6 +63,10 @@ export function inferDocumentFileKind(fileType: string, fileName: string): Docum
     ['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz'].includes(ext)
   ) {
     return 'archive';
+  }
+  // A saved mail, which the viewer opens as the letter it is rather than as a file.
+  if (mime.includes('vnd.ms-outlook') || mime.includes('rfc822') || ['.msg', '.eml'].includes(ext)) {
+    return 'email';
   }
   if (mime.startsWith('text/') || ['.txt', '.md', '.rtf', '.log'].includes(ext)) return 'text';
   if (
@@ -175,6 +181,8 @@ export function DocumentFileGlyph({ fileType = '', fileName, className }: Docume
       return <MusicalNoteIcon className={`${cn} text-indigo-600 dark:text-indigo-400`} aria-hidden />;
     case 'archive':
       return <ArchiveBoxIcon className={`${cn} text-amber-800 dark:text-amber-500`} aria-hidden />;
+    case 'email':
+      return <EnvelopeIcon className={`${cn} text-[#0f6cbd]`} aria-hidden />;
     case 'text':
       return <DocumentTextIcon className={`${cn} text-slate-600 dark:text-slate-400`} aria-hidden />;
     case 'code':

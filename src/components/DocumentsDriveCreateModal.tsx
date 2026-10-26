@@ -606,13 +606,17 @@ const DocumentsDriveCreateModal: React.FC<{
           {showSections && (
           <div>
             <h3 className="mb-2 text-sm font-semibold text-base-content/70">Where</h3>
-            <div className="flex flex-wrap gap-2">
+            {/* One grey tray holding the four places, with the chosen one raised out of it in
+                white — the sections read as one choice rather than four buttons. */}
+            <div className="inline-flex flex-wrap items-center gap-1 rounded-2xl bg-base-200 p-1">
               {sections.map((item) => (
                 <button
                   key={item.id}
                   type="button"
-                  className={`btn btn-sm rounded-full ${
-                    section === item.id ? 'btn-primary' : 'btn-ghost bg-base-200'
+                  className={`btn btn-ghost btn-sm gap-1.5 rounded-full border-0 ${
+                    section === item.id
+                      ? 'bg-white text-base-content shadow-sm hover:bg-white dark:bg-base-100 dark:hover:bg-base-100'
+                      : 'text-base-content/70 hover:bg-base-300'
                   }`}
                   onClick={() => setSection(item.id)}
                 >
@@ -1051,7 +1055,7 @@ const DocumentsDriveCreateModal: React.FC<{
           {mode === 'new-folder' && (
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary gap-2 rounded-full px-7"
               disabled={!ready || busy}
               onClick={() => void createFolder()}
             >
@@ -1062,7 +1066,7 @@ const DocumentsDriveCreateModal: React.FC<{
           {transferMode && (
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary gap-2 rounded-full px-7"
               disabled={!ready || busy}
               onClick={() => void runTransfer()}
             >
@@ -1079,7 +1083,7 @@ const DocumentsDriveCreateModal: React.FC<{
           {blankKind && (
             <button
               type="button"
-              className="btn btn-primary"
+              className="btn btn-primary gap-2 rounded-full px-7"
               disabled={!ready || busy}
               onClick={() => void createBlankDocument()}
             >

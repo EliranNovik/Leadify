@@ -461,6 +461,47 @@ export function documentIndexSourceTable(source: DocumentIndexSource): string {
 }
 
 /**
+ * A new name for a file, keeping the old extension when the new name leaves it off. The type a
+ * file is treated as is read off its name, so a document renamed to "Contract" would stop opening
+ * in the viewer and download without a type.
+ */
+export function withDocumentExtension(oldName: string, newName: string): string {
+  const next = newName.trim();
+  const oldExtension = /\.([A-Za-z0-9]{1,8})$/.exec(oldName || '')?.[0] ?? '';
+  if (!oldExtension || next.toLowerCase().endsWith(oldExtension.toLowerCase())) return next;
+  // Renamed to a different extension on purpose, which is theirs to decide.
+  if (/\.[A-Za-z0-9]{1,8}$/.test(next)) return next;
+  return `${next}${oldExtension}`;
+}
+
+/**
+ * Renames a document. Only the name it is listed under changes: the stored file keeps the path it
+ * was uploaded to, so everything already pointing at it goes on working.
+ */
+export async function renameDocumentIndexRow(
+  row: DocumentIndexRow,
+  newName: string,
+): Promise<string> {
+  const table = documentIndexSourceTable(row.source);
+  if (!table) throw new Error('This document cannot be renamed from here');
+
+  const fileName = withDocumentExtension(row.file_name, newName);
+  if (!fileName) throw new Error('A file needs a name');
+  if (fileName === row.file_name) return fileName;
+
+  // RLS answers a forbidden update with nought rows rather than with an error, so without
+  // reading back what changed the page would report a rename that never happened.
+  const { data, error } = await supabase
+    .from(table)
+    .update({ file_name: fileName })
+    .eq('id', row.row_id)
+    .select('file_name');
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error('This document is not yours to rename');
+  return String(data[0]?.file_name ?? fileName);
+}
+
+/**
  * Removes a document for good. The row goes first and the stored file after: a stranded file is
  * invisible and only costs space, while a row left pointing at a deleted file keeps listing and
  * fails to open. Each table's own delete policy still decides whether this is allowed.

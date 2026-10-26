@@ -14,6 +14,7 @@ import {
   MinusIcon,
   PaperAirplaneIcon,
   PaperClipIcon,
+  PencilIcon,
   PencilSquareIcon,
   PlusIcon,
   RectangleGroupIcon,
@@ -55,6 +56,8 @@ import {
 } from '../lib/subEffortDocumentAttach';
 import { SubEffortAttachBadge } from './caseDocumentsModalUi';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
+import { isOutlookMsgFile } from '../lib/outlookMsgFile';
+import OutlookMsgView from './OutlookMsgView';
 import DocumentSidebarThumb from './DocumentSidebarThumb';
 import {
   DocumentAnnotatableView,
@@ -101,6 +104,12 @@ interface DocumentViewerModalProps {
   initialIndex?: number;
   /** When provided, shows edit-name in the header. */
   onRename?: (doc: DocumentViewerItem, newName: string) => Promise<void> | void;
+  /**
+   * Replaces the built-in share, which can only hand on the file's link. A caller that knows how
+   * a document is passed around in its own part of the CRM — an Outlook draft with the file
+   * attached, or a share to a colleague — puts that here instead.
+   */
+  onShare?: (doc: DocumentViewerItem) => void;
   /** Enable attach-to-sub-effort from the files side panel. */
   subEffortRows?: Array<{ id?: unknown; document_url?: unknown; sub_efforts?: unknown }> | null;
   targetSubEffortId?: string | number | null;
@@ -307,6 +316,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   documents: documentsProp,
   initialIndex = 0,
   onRename,
+  onShare,
   subEffortRows = null,
   targetSubEffortId = null,
   targetSubEffortName = null,
@@ -1066,7 +1076,10 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     activeFileType.includes('pdf') ||
     !!activeName.match(/\.pdf$/i) ||
     !!activeUrl.match(/\.pdf$/i);
-  const isOffice = !isImage && !isPdf && isOfficeDocument(activeName, activeFileType, activeUrl);
+  // Outlook's own saved messages, which the browser cannot show but this viewer reads itself.
+  const isMsg = !isImage && !isPdf && isOutlookMsgFile(activeName, activeFileType);
+  const isOffice =
+    !isImage && !isPdf && !isMsg && isOfficeDocument(activeName, activeFileType, activeUrl);
   const officeEmbedUrl =
     isOffice && displayUrl && !officeError ? buildOfficeOnlineEmbedUrl(displayUrl) : null;
 
@@ -1113,10 +1126,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     // While drawing/viewing highlights, keep normal scroll inside the annotate view.
     if (highlightMode || draftHighlight) return;
 
-    let accum = 0;
-    let lockedUntil = 0;
-    const THRESHOLD = 50;
-    const COOLDOWN_MS = 380;
+    // Only an image answers to the wheel, and only by zooming. Everything else scrolls as it
+    // reads: turning to the next file on a scroll took the page away mid-read.
+    if (!(isImage && !imageError && displayUrl)) return;
 
     const onWheel = (e: WheelEvent) => {
       const target = e.target as HTMLElement | null;
@@ -1129,47 +1141,19 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       // Ignore horizontal-dominant gestures.
       if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
 
-      // Images: wheel / trackpad scroll zooms (pinch often sends ctrlKey).
-      if (isImage && !imageError && displayUrl) {
-        e.preventDefault();
-        const direction = e.deltaY > 0 ? -1 : 1;
-        const step = e.ctrlKey || e.metaKey ? 0.08 : 0.12;
-        setImageZoom((z) => {
-          const next = Math.round((z + direction * step) * 100) / 100;
-          return Math.min(4, Math.max(0.5, next));
-        });
-        return;
-      }
-
-      // Other files: wheel goes to next/prev document.
-      if (galleryItems.length <= 1) return;
-
+      // Trackpad pinches arrive as a wheel with Control held, and zoom in finer steps.
       e.preventDefault();
-      const now = Date.now();
-      if (now < lockedUntil) return;
-
-      accum += e.deltaY;
-      if (Math.abs(accum) < THRESHOLD) return;
-
-      if (accum > 0) goNext();
-      else goPrev();
-      accum = 0;
-      lockedUntil = now + COOLDOWN_MS;
+      const direction = e.deltaY > 0 ? -1 : 1;
+      const step = e.ctrlKey || e.metaKey ? 0.08 : 0.12;
+      setImageZoom((z) => {
+        const next = Math.round((z + direction * step) * 100) / 100;
+        return Math.min(4, Math.max(0.5, next));
+      });
     };
 
     window.addEventListener('wheel', onWheel, { passive: false, capture: true });
     return () => window.removeEventListener('wheel', onWheel, { capture: true } as EventListenerOptions);
-  }, [
-    isOpen,
-    galleryItems.length,
-    goNext,
-    goPrev,
-    highlightMode,
-    draftHighlight,
-    isImage,
-    imageError,
-    displayUrl,
-  ]);
+  }, [isOpen, highlightMode, draftHighlight, isImage, imageError, displayUrl]);
 
   const activeThumbId = activeDoc ? `doc-viewer-thumb-${activeDoc.id}` : null;
   useEffect(() => {
@@ -1710,6 +1694,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Document viewer"
+      onClick={(event) => {
+        // A click on the dark space around the file closes the viewer, the way any lightbox
+        // does. Only the areas marked as backdrop answer to it, so the file itself, the rails
+        // and the header are all left alone. While a highlight is being drawn the drag ends on
+        // that same space, and ending a drag is not asking to leave.
+        if (highlightMode || draftHighlight) return;
+        const target = event.target as HTMLElement | null;
+        if (target?.dataset?.docViewerBackdrop !== undefined) void handleRequestClose();
+      }}
     >
       <header className="z-10 flex shrink-0 items-center justify-between gap-2 px-3 py-1.5 md:px-4 [&_.btn-ghost]:text-white [&_.btn-ghost:hover]:bg-white/15 [&_.btn-ghost:hover]:text-white [&_.btn-ghost:active]:bg-white/25 [&_.btn]:transition-colors">
         <div className="min-w-0 flex-1">
@@ -1717,7 +1710,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             <div className="flex min-w-0 items-center gap-2">
               <input
                 type="text"
-                className="h-10 min-w-0 flex-1 rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-white/40 focus:border-white/35 focus:bg-white/15 md:text-base"
+                // Capped rather than filling the header: a file name needs a line, not the room.
+                className="h-10 min-w-0 flex-1 max-w-sm rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-white/40 focus:border-white/35 focus:bg-white/15 md:text-base"
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
                 onKeyDown={(e) => {
@@ -1778,10 +1772,12 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     setRenameValue(activeName);
                     setRenaming(true);
                   }}
-                  aria-label="Edit document name"
-                  title="Edit name"
+                  aria-label="Rename this file"
+                  // A plain pencil, since the square one along the header opens the file in Word
+                  // or Excel and two of the same glyph read as the same button.
+                  title="Rename"
                 >
-                  <PencilSquareIcon className="h-6 w-6" />
+                  <PencilIcon className="h-5 w-5" />
                 </button>
               ) : null}
               {uploadedLabel ? (
@@ -2021,9 +2017,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </button>
               </>
             ) : (
+              // The one thing a Word or Excel file is opened for, so it says which app it opens
+              // and keeps its label at every width rather than thinning to a bare pencil.
               <button
                 type="button"
-                className="btn btn-ghost btn-sm h-9 shrink-0 gap-1.5 rounded-full px-2.5"
+                className="btn btn-sm h-9 shrink-0 gap-1.5 rounded-full border border-white/20 bg-white/10 px-3 text-white hover:bg-white/20"
                 onClick={() => void handleStartOfficeEdit()}
                 disabled={editStarting || editSaving}
                 title={`Edit in ${editorAppName} and save back here`}
@@ -2033,43 +2031,62 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 ) : (
                   <PencilSquareIcon className="h-5 w-5" />
                 )}
-                <span className="hidden text-sm font-medium sm:inline">Edit</span>
+                <span className="text-sm font-medium">Edit in {editorAppName}</span>
               </button>
             )
           ) : null}
+          {/* Passing the file on and keeping a copy of it are the same errand, so they share one
+              washed-out purple pill with a line between them. Flat: daisyUI's button shadow is
+              spelled out as important, since its rules share this layer with these. */}
+          <div className="flex h-9 shrink-0 items-center overflow-hidden rounded-full bg-[rgba(124,58,237,0.3)]">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm h-9 gap-1.5 rounded-none border-0 px-3.5 font-medium !shadow-none"
+              onClick={() => {
+                // The caller's own way of sharing, when it has one: it does not need the file to
+                // have finished signing, since it works from where the file is stored.
+                if (onShare && activeDoc) {
+                  onShare(activeDoc);
+                  return;
+                }
+                void handleShare();
+              }}
+              disabled={onShare ? false : sharing || !displayUrl}
+              title="Share"
+              aria-label={`Share ${activeName}`}
+            >
+              {sharing ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                <ShareIcon className="h-5 w-5" />
+              )}
+              <span className="text-sm">Share</span>
+            </button>
+            <span className="h-5 w-px shrink-0 bg-white/25" aria-hidden />
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm h-9 rounded-none border-0 px-3 !shadow-none"
+              onClick={() => void handleDownload()}
+              disabled={downloading || !displayUrl}
+              title="Download"
+              aria-label={`Download ${activeName}`}
+            >
+              {downloading ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                <ArrowDownTrayIcon className="h-5 w-5" />
+              )}
+            </button>
+          </div>
+          {/* The way out of the viewer, and the largest thing along the header for it. */}
           <button
             type="button"
-            className="btn btn-sm h-9 shrink-0 gap-1.5 rounded-full border-0 bg-primary px-3.5 font-medium text-white hover:bg-[#2f1fa6]"
-            onClick={() => void handleShare()}
-            disabled={sharing || !displayUrl}
-            title="Share"
-            aria-label={`Share ${activeName}`}
-          >
-            {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="h-5 w-5" />}
-            <span className="text-sm">Share</span>
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-circle btn-sm shrink-0"
-            onClick={() => void handleDownload()}
-            disabled={downloading || !displayUrl}
-            title="Download"
-            aria-label={`Download ${activeName}`}
-          >
-            {downloading ? (
-              <span className="loading loading-spinner loading-xs" />
-            ) : (
-              <ArrowDownTrayIcon className="h-5 w-5" />
-            )}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-circle btn-sm shrink-0"
+            className="btn btn-ghost btn-circle h-11 w-11 min-h-0 shrink-0"
             onClick={handleRequestClose}
             title="Close"
             aria-label="Close"
           >
-            <XMarkIcon className="h-5 w-5" />
+            <XMarkIcon className="h-7 w-7" />
           </button>
         </div>
       </header>
@@ -2150,12 +2167,14 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       className="flex w-full flex-col gap-1.5 text-left"
                     >
                       <div className="relative w-full">
+                        {/* A list can span stores — a case file beside an office one — so each
+                            thumbnail is read from the bucket its own file lives in. */}
                         <DocumentSidebarThumb
                           name={d.name}
                           url={isActive && displayUrl ? displayUrl : d.url}
                           fileType={ft}
                           storagePath={d.storagePath}
-                          bucketName={bucketName}
+                          bucketName={d.storageBucket?.trim() || bucketName}
                           isActive={isActive}
                         />
                         {isActive ? (
@@ -2228,6 +2247,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             </div>
           ) : null}
           <div
+            data-doc-viewer-backdrop
             className={`flex min-h-0 w-full flex-1 ${
               !loadingUrl && isImage && !imageError && displayUrl
                 ? 'min-h-0 flex-col overflow-hidden p-0'
@@ -2235,7 +2255,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     (isPdf || Boolean(officeEmbedUrl)) &&
                     !(highlightMode || highlightMarkers.length > 0 || draftHighlight)
                   ? 'flex-col overflow-hidden p-0'
-                  : !loadingUrl && (isPdf || highlightMarkers.length > 0 || draftHighlight)
+                  : !loadingUrl && (isPdf || isMsg || highlightMarkers.length > 0 || draftHighlight)
                     ? 'min-h-0 flex-col overflow-auto p-0'
                     : 'items-center justify-center overflow-auto p-3 md:p-6'
             }`}
@@ -2260,8 +2280,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   </button>
                 </div>
               )
+            ) : isMsg ? (
+              <OutlookMsgView
+                key={displayUrl}
+                url={displayUrl}
+                fileName={activeName}
+                onDownloadOriginal={() => void handleDownload()}
+              />
             ) : isImage && !imageError ? (
-              <div className="relative flex min-h-0 h-full w-full flex-1 flex-col">
+              <div data-doc-viewer-backdrop className="relative flex min-h-0 h-full w-full flex-1 flex-col">
                 <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/15 bg-black/55 px-1.5 py-1 shadow-lg backdrop-blur-md">
                   <button
                     type="button"
@@ -2313,6 +2340,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </div>
                 <div
                   ref={imageZoomPaneRef}
+                  data-doc-viewer-backdrop
                   className="min-h-0 h-full w-full flex-1 touch-none p-3 md:p-6"
                 >
                   <DocumentAnnotatableView
@@ -2518,7 +2546,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col bg-[rgba(11,12,15,0.5)] shadow-2xl backdrop-blur-xl md:static md:inset-auto md:z-0 md:w-[22rem] md:max-w-none md:shrink-0 lg:w-[26rem]"
             aria-label="Document comments"
           >
-            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 bg-white/[0.06] px-4 py-3.5">
+            <div className="flex shrink-0 items-start justify-between gap-3 bg-white/[0.06] px-4 py-3.5">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/15 text-white shadow-sm">
@@ -2552,7 +2580,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   Loading comments…
                 </div>
               ) : comments.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 px-4 py-10 text-center text-white/60">
+                <div className="rounded-2xl bg-white/5 px-4 py-10 text-center text-white/60">
                   <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-white/70">
                     <ChatBubbleLeftRightIcon className="h-6 w-6" />
                   </div>
@@ -2572,14 +2600,15 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     <article
                       key={c.id}
                       id={`doc-comment-${c.id}`}
-                      className={`cursor-pointer rounded-2xl border px-3.5 py-3 shadow-sm transition ${
+                      // Told apart by how light it sits on the backdrop rather than by an outline.
+                      className={`cursor-pointer rounded-2xl px-3.5 py-3 shadow-sm transition ${
                         focused
                           ? mine
-                            ? 'border-amber-300/60 bg-white/[0.16] text-white ring-2 ring-amber-300/50'
-                            : 'border-amber-300/60 bg-white/[0.08] text-white ring-2 ring-amber-300/50'
+                            ? 'bg-white/[0.16] text-white ring-2 ring-amber-300/50'
+                            : 'bg-white/[0.08] text-white ring-2 ring-amber-300/50'
                           : mine
-                            ? 'border-white/10 bg-white/[0.14] text-white'
-                            : 'border-white/10 bg-white/[0.07] text-white'
+                            ? 'bg-white/[0.14] text-white'
+                            : 'bg-white/[0.07] text-white'
                       }`}
                       onClick={() => {
                         if (c.highlight) focusComment(c.id);
@@ -2688,7 +2717,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               <div ref={commentsEndRef} />
             </div>
 
-            <div className="shrink-0 border-t border-white/10 bg-white/[0.04] p-3">
+            <div className="shrink-0 bg-white/[0.04] p-3">
               {draftHighlight ? (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-sky-300/30 bg-sky-400/15 px-3 py-2 text-xs text-sky-100">
                   <span className="font-medium">
@@ -2704,9 +2733,12 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   </button>
                 </div>
               ) : null}
-              <div className="rounded-2xl border border-white/15 bg-white/[0.07] p-2">
+              <div className="rounded-2xl bg-white/[0.07] p-2">
                 <textarea
-                  className="textarea textarea-ghost min-h-[4.5rem] w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-white placeholder:text-white/40 focus:bg-white/10 focus:outline-none"
+                  // No frame of its own: the panel behind it is the box you write in. daisyUI's
+                  // own focus ring and fill are spelled out as important, since its textarea
+                  // rules sit in the same layer as these and would otherwise win on order.
+                  className="textarea textarea-ghost min-h-[4.5rem] w-full resize-none !border-0 !bg-transparent px-2 py-1.5 text-sm leading-relaxed text-white !outline-none placeholder:text-white/40 focus:!bg-transparent focus:!outline-none"
                   placeholder={
                     draftHighlight
                       ? 'Write a comment about this section…'
@@ -2722,8 +2754,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     }
                   }}
                 />
-                <div className="mt-1 flex items-center justify-between gap-2 px-1">
-                  <span className="text-[11px] text-white/45">⌘/Ctrl + Enter to send</span>
+                {/* Command or Control with Enter still sends, without the panel saying so. */}
+                <div className="mt-1 flex items-center justify-end gap-2 px-1">
                   <button
                     type="button"
                     className="btn btn-sm h-9 gap-1.5 rounded-full border-0 bg-white px-4 font-medium text-[#111318] hover:bg-white/85"
