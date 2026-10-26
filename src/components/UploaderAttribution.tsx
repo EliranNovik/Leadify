@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { initialsFromUploaderName } from '../lib/uploaderDisplay';
+import { initialsFromUploaderName, uploaderAvatarGradient } from '../lib/uploaderDisplay';
 
 export type UploaderAttributionProps = {
   name?: string | null;
   photoUrl?: string | null;
   className?: string;
   imageClassName?: string;
+  /** Overrides how the name itself reads, for a table that wants it quieter than the file name. */
+  nameClassName?: string;
 };
 
 export function UploaderAttribution({
@@ -13,6 +15,7 @@ export function UploaderAttribution({
   photoUrl: photoUrlProp,
   className = '',
   imageClassName = 'h-6 w-6',
+  nameClassName = 'font-medium text-base-content/80',
 }: UploaderAttributionProps) {
   const name = nameProp?.trim();
   const [photoFailed, setPhotoFailed] = useState(false);
@@ -41,13 +44,17 @@ export function UploaderAttribution({
         />
       ) : (
         <span
-          className={`${imageClassName} flex shrink-0 items-center justify-center rounded-full bg-gray-200 text-xs font-semibold leading-none text-gray-700 outline-none dark:bg-gray-600 dark:text-gray-100`}
+          className={`${imageClassName} relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${uploaderAvatarGradient(
+            name,
+          )} text-xs font-semibold leading-none text-white shadow-sm outline-none`}
           aria-hidden
         >
-          {initials}
+          {/* The gloss: a highlight over the top half, the way a bead catches the light. */}
+          <span className="pointer-events-none absolute inset-x-0 top-0 h-1/2 rounded-t-full bg-gradient-to-b from-white/45 to-white/0" />
+          <span className="relative">{initials}</span>
         </span>
       )}
-      <span className="min-w-0 truncate font-medium text-base-content/80">{name}</span>
+      <span className={`min-w-0 truncate ${nameClassName}`}>{name}</span>
     </span>
   );
 }

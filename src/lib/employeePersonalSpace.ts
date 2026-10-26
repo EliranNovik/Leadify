@@ -355,6 +355,28 @@ export async function moveEmployeePersonalFilesToFolder(
   if (error) throw error;
 }
 
+/**
+ * Files a folder, and everything inside it, into another of the same employee's folders, or back
+ * to the top level with null. Another employee's folder is refused by the trigger in
+ * sql/2026-10-25_nested_space_folders.sql rather than checked here.
+ */
+export async function moveEmployeePersonalFolder(
+  folderId: string,
+  parentId: string | null,
+): Promise<EmployeePersonalFolder> {
+  if (parentId && parentId === folderId) throw new Error('A folder cannot be moved into itself');
+
+  const { data, error } = await supabase
+    .from('employee_personal_folders')
+    .update({ parent_id: parentId })
+    .eq('id', folderId)
+    .select(FOLDER_SELECT)
+    .single();
+
+  if (error) throw error;
+  return data as EmployeePersonalFolder;
+}
+
 export async function renameEmployeePersonalFolder(
   folderId: string,
   title: string,

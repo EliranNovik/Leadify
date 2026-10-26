@@ -54,6 +54,7 @@ import {
   type SubEffortAttachmentRef,
 } from '../lib/subEffortDocumentAttach';
 import { SubEffortAttachBadge } from './caseDocumentsModalUi';
+import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import DocumentSidebarThumb from './DocumentSidebarThumb';
 import {
   DocumentAnnotatableView,
@@ -1054,6 +1055,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         ? activeUrl
         : null;
 
+  /** Hides the built-in browser PDF toolbar so only the viewer's own chrome shows. */
+  const pdfEmbedUrl = displayUrl ? `${displayUrl.split('#')[0]}#toolbar=0&navpanes=0` : null;
+
   const isImage =
     activeFileType.includes('image/') ||
     !!activeName.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
@@ -1702,18 +1706,18 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
   const modal = (
     <div
-      className="fixed inset-0 z-[11000] flex flex-col overflow-hidden bg-base-100"
+      className="doc-viewer-glass fixed inset-0 z-[11000] flex flex-col overflow-hidden bg-[rgba(11,12,15,0.93)] text-white [&_.btn-ghost:hover]:bg-white/15"
       role="dialog"
       aria-modal="true"
       aria-label="Document viewer"
     >
-      <header className="z-10 flex shrink-0 items-center justify-between gap-2 bg-base-100 px-3 py-1.5 md:px-4">
+      <header className="z-10 flex shrink-0 items-center justify-between gap-2 px-3 py-1.5 md:px-4 [&_.btn-ghost]:text-white [&_.btn-ghost:hover]:bg-white/15 [&_.btn-ghost:hover]:text-white [&_.btn-ghost:active]:bg-white/25 [&_.btn]:transition-colors">
         <div className="min-w-0 flex-1">
           {renaming ? (
             <div className="flex min-w-0 items-center gap-2">
               <input
                 type="text"
-                className="input input-bordered input-sm h-10 min-w-0 flex-1 text-sm font-semibold md:text-base"
+                className="h-10 min-w-0 flex-1 rounded-xl border border-white/15 bg-white/10 px-3 text-sm font-semibold text-white outline-none transition-colors placeholder:text-white/40 focus:border-white/35 focus:bg-white/15 md:text-base"
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
                 onKeyDown={(e) => {
@@ -1760,6 +1764,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             </div>
           ) : (
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+              <DocumentFileGlyph
+                fileType={activeFileType}
+                fileName={activeName}
+                className="h-6 w-6 shrink-0"
+              />
               <h2 className="min-w-0 max-w-full truncate text-sm font-semibold md:text-base">{activeName}</h2>
               {canRename ? (
                 <button
@@ -1776,19 +1785,19 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </button>
               ) : null}
               {uploadedLabel ? (
-                <span className="shrink-0 text-[11px] text-base-content/55 tabular-nums">
+                <span className="shrink-0 text-[11px] text-white/55 tabular-nums">
                   Uploaded {uploadedLabel}
                 </span>
               ) : null}
               {isGalleryMode && galleryItems.length > 1 ? (
-                <span className="shrink-0 text-[11px] text-base-content/60 tabular-nums">
+                <span className="shrink-0 text-[11px] text-white/60 tabular-nums">
                   {previewIndex + 1}/{galleryItems.length}
                 </span>
               ) : null}
             </div>
           )}
           {!isGalleryMode && (employeeName || sickDaysReason) ? (
-            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0 text-[11px] text-base-content/65">
+            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0 text-[11px] text-white/65">
               {employeeName ? <span className="truncate">From: {employeeName}</span> : null}
               {sickDaysReason ? <span className="truncate">Reason: {sickDaysReason}</span> : null}
             </div>
@@ -1836,7 +1845,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 {attachMenuOpen && selectedAttachIds.size > 0 && attachOptions.length > 0 ? (
                   <div
                     role="menu"
-                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg"
+                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-white/10 bg-[rgba(22,23,28,0.92)] py-1 text-white shadow-2xl backdrop-blur-xl"
                   >
                     <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
                       Attach to sub effort
@@ -1846,7 +1855,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                         key={opt.id}
                         type="button"
                         role="menuitem"
-                        className={`flex w-full items-center px-3 py-2.5 text-left text-sm hover:bg-base-200/70 ${
+                        className={`flex w-full items-center px-3 py-2.5 text-left text-sm hover:bg-white/10 ${
                           String(opt.id) === String(targetSubEffortId ?? '')
                             ? 'font-semibold text-primary'
                             : 'text-base-content'
@@ -1862,7 +1871,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               <div className="relative" ref={removeMenuRef}>
                 <button
                   type="button"
-                  className="btn btn-sm h-9 gap-1.5 rounded-full border border-red-200 bg-white px-3 font-medium text-red-600 hover:bg-red-50"
+                  className="btn btn-sm h-9 gap-1.5 rounded-full border border-red-400/30 bg-red-500/15 px-3 font-medium text-red-300 hover:bg-red-500/25"
                   onClick={() => {
                     if (!railOpen) setRailOpen(true);
                     if (selectedAttachIds.size === 0) {
@@ -1898,7 +1907,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 {removeMenuOpen && selectedAttachIds.size > 0 && removeOptions.length > 0 ? (
                   <div
                     role="menu"
-                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-base-200 bg-white py-1 shadow-lg"
+                    className="absolute right-0 z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-white/10 bg-[rgba(22,23,28,0.92)] py-1 text-white shadow-2xl backdrop-blur-xl"
                   >
                     <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
                       Remove from sub effort
@@ -1923,7 +1932,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             <button
               type="button"
               className={`btn btn-ghost btn-sm h-9 gap-1.5 rounded-full px-2.5 ${
-                railOpen ? 'bg-base-200 text-base-content' : ''
+                railOpen ? 'bg-white/15 text-white' : ''
               }`}
               onClick={() => setRailOpen((v) => !v)}
               title={railOpen ? 'Hide documents panel' : 'Show documents panel'}
@@ -1939,7 +1948,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               <button
                 type="button"
                 className={`btn btn-ghost btn-sm h-9 gap-1.5 rounded-full px-2.5 ${
-                  highlightMode ? 'bg-amber-100 text-amber-900' : ''
+                  highlightMode ? 'bg-amber-400/25 text-amber-100 ring-1 ring-amber-300/40' : ''
                 }`}
                 onClick={() => {
                   if (!canAnnotateMedia || !displayUrl) {
@@ -1963,7 +1972,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               <button
                 type="button"
                 className={`btn btn-ghost btn-sm h-9 gap-1.5 rounded-full px-2.5 ${
-                  commentsOpen ? 'bg-base-200 text-base-content' : ''
+                  commentsOpen ? 'bg-white/15 text-white' : ''
                 }`}
                 onClick={() => setCommentsOpen((v) => !v)}
                 title="Document comments"
@@ -1973,7 +1982,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 <ChatBubbleLeftRightIcon className="h-5 w-5" />
                 <span className="hidden text-sm font-medium sm:inline">Comments</span>
                 {comments.length > 0 ? (
-                  <span className="badge badge-sm h-5 min-w-[1.25rem] border-0 bg-gray-700 px-1.5 font-semibold text-white">
+                  <span className="badge badge-sm h-5 min-w-[1.25rem] border-0 bg-white/20 px-1.5 font-semibold text-white">
                     {comments.length}
                   </span>
                 ) : null}
@@ -2030,13 +2039,14 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           ) : null}
           <button
             type="button"
-            className="btn btn-ghost btn-circle btn-sm shrink-0"
+            className="btn btn-sm h-9 shrink-0 gap-1.5 rounded-full border-0 bg-primary px-3.5 font-medium text-white hover:bg-[#2f1fa6]"
             onClick={() => void handleShare()}
             disabled={sharing || !displayUrl}
             title="Share"
             aria-label={`Share ${activeName}`}
           >
             {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="h-5 w-5" />}
+            <span className="text-sm">Share</span>
           </button>
           <button
             type="button"
@@ -2067,13 +2077,13 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       <div className="relative flex min-h-0 flex-1 items-stretch">
         {showRail && railOpen ? (
           <aside
-            className={`flex shrink-0 flex-col border-r border-base-300/80 bg-base-200/80 ${
+            className={`flex shrink-0 flex-col ${
               showAttachUi ? 'w-[10.5rem] md:w-48 lg:w-52' : 'w-[8.5rem] md:w-40 lg:w-44'
             }`}
             aria-label="Document thumbnails"
           >
-            <div className="flex shrink-0 items-center justify-between gap-1 border-b border-base-300/60 px-2 py-1.5">
-              <span className="truncate px-0.5 text-[11px] font-semibold text-base-content/60">
+            <div className="flex shrink-0 items-center justify-between gap-1 px-2 py-1.5">
+              <span className="truncate px-0.5 text-[11px] font-semibold text-white/60">
                 Files
                 {showAttachUi && selectedAttachIds.size > 0
                   ? ` · ${selectedAttachIds.size}`
@@ -2102,12 +2112,12 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     key={d.id}
                     className={`group flex w-full shrink-0 flex-col gap-1.5 rounded-xl p-1 text-left transition ${
                       isActive
-                        ? 'bg-base-100 shadow-md ring-2 ring-primary/50'
+                        ? 'bg-white/10 shadow-lg ring-2 ring-primary/60'
                         : checked
-                          ? 'bg-primary/5 ring-1 ring-primary/30'
+                          ? 'bg-primary/20 ring-1 ring-primary/40'
                           : attachedTo.length
-                            ? 'bg-emerald-50/70 ring-1 ring-emerald-200/80'
-                            : 'hover:bg-base-100/70'
+                            ? 'bg-emerald-400/15 ring-1 ring-emerald-400/40'
+                            : 'hover:bg-white/5'
                     }`}
                   >
                     {showAttachUi ? (
@@ -2176,7 +2186,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             </div>
           </aside>
         ) : showRail && !railOpen ? (
-          <div className="flex w-9 shrink-0 flex-col items-center border-r border-base-300/80 bg-base-200/60 py-2">
+          <div className="flex w-9 shrink-0 flex-col items-center py-2">
             <button
               type="button"
               className="btn btn-ghost btn-xs btn-square h-8 w-8 min-h-0"
@@ -2189,7 +2199,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           </div>
         ) : null}
 
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-900">
+        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {showRail && galleryItems.length > 1 ? (
             <>
               <button
@@ -2218,7 +2228,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             </div>
           ) : null}
           <div
-            className={`flex min-h-0 w-full flex-1 bg-neutral-900 ${
+            className={`flex min-h-0 w-full flex-1 ${
               !loadingUrl && isImage && !imageError && displayUrl
                 ? 'min-h-0 flex-col overflow-hidden p-0'
                 : !loadingUrl &&
@@ -2231,18 +2241,18 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             }`}
           >
             {loadingUrl ? (
-              <div className="text-center text-neutral-200">
+              <div className="text-center text-white/80">
                 <span className="loading loading-spinner loading-lg" />
                 <p className="mt-4 text-sm opacity-80">Loading document…</p>
               </div>
             ) : !displayUrl ? (
               !activeUrl ? (
-                <div className="text-center text-neutral-200">
+                <div className="text-center text-white/80">
                   <span className="loading loading-spinner loading-lg" />
                   <p className="mt-4 text-sm opacity-80">Loading document…</p>
                 </div>
               ) : (
-                <div className="max-w-md text-center text-neutral-200">
+                <div className="max-w-md text-center text-white/80">
                   <p className="text-lg font-semibold">Failed to load document</p>
                   <p className="mt-2 text-sm opacity-80">Unable to open this file in the viewer.</p>
                   <button type="button" className="btn btn-primary btn-sm mt-4" onClick={() => void handleDownload()}>
@@ -2347,40 +2357,40 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 />
               ) : (
                 <iframe
-                  src={displayUrl}
-                  className="min-h-0 w-full flex-1 border-0 bg-neutral-900"
+                  src={pdfEmbedUrl ?? displayUrl}
+                  className="min-h-0 w-full flex-1 border-0 bg-transparent"
                   title={activeName}
                   onError={() => setPdfError(true)}
                 />
               )
             ) : editingThisDoc && editSession ? (
               <div className="flex min-h-0 w-full flex-1 items-center justify-center p-6">
-                <div className="max-w-md rounded-2xl bg-white p-6 text-center shadow-lg">
+                <div className="max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl">
                   <PencilSquareIcon className="mx-auto h-10 w-10 text-primary" />
-                  <p className="mt-3 text-lg font-semibold text-base-content">
+                  <p className="mt-3 text-lg font-semibold text-slate-900">
                     Editing in {editorAppName}
                   </p>
-                  <p className="mt-2 text-sm text-base-content/70">
+                  <p className="mt-2 text-sm text-slate-600">
                     {activeName} is open in another tab. Press Save when you are done.
                   </p>
                   {awaitingFlush ? (
                     <>
-                      <p className="mt-3 inline-flex items-center gap-2 text-sm font-medium text-base-content/70">
+                      <p className="mt-3 inline-flex items-center gap-2 text-sm font-medium text-slate-600">
                         <span className="loading loading-spinner loading-xs" />
                         Getting your changes from {editorAppName}…
                       </p>
-                      <p className="mt-1 text-xs text-base-content/50">
+                      <p className="mt-1 text-xs text-slate-500">
                         Close the {editorAppName} tab to speed this up.
                       </p>
                     </>
                   ) : editChanged ? (
-                    <p className="mt-3 text-sm font-medium text-success">Ready to save.</p>
+                    <p className="mt-3 text-sm font-medium text-emerald-600">Ready to save.</p>
                   ) : null}
                   <div className="mt-5 flex flex-wrap justify-center gap-2">
                     {awaitingFlush ? (
                       <button
                         type="button"
-                        className="btn btn-ghost btn-sm"
+                        className="btn btn-ghost btn-sm text-slate-700 hover:bg-slate-100"
                         onClick={() => setAwaitingFlush(false)}
                       >
                         Stop waiting
@@ -2392,7 +2402,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                           href={editSession.editUrl}
                           target={editorTabName}
                           rel="noopener noreferrer"
-                          className={`btn btn-sm gap-1.5 ${editorOpened ? 'btn-outline' : 'btn-primary'}`}
+                          className={`btn btn-sm gap-1.5 ${
+                            editorOpened
+                              ? 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100'
+                              : 'btn-primary'
+                          }`}
                           onClick={() => setEditorOpened(true)}
                         >
                           <ArrowTopRightOnSquareIcon className="h-4 w-4" />
@@ -2400,7 +2414,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                         </a>
                         <button
                           type="button"
-                          className={`btn btn-sm gap-1.5 ${editorOpened ? 'btn-primary' : 'btn-outline'}`}
+                          className={`btn btn-sm gap-1.5 ${
+                            editorOpened
+                              ? 'btn-primary'
+                              : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-100'
+                          }`}
                           onClick={handleRequestOfficeSave}
                           disabled={editSaving}
                         >
@@ -2426,7 +2444,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 onError={() => setOfficeError(true)}
               />
             ) : imageError || pdfError || (isOffice && (officeError || !officeEmbedUrl)) ? (
-              <div className="max-w-md text-center text-neutral-200">
+              <div className="max-w-md text-center text-white/80">
                 <p className="text-lg font-semibold">
                   {isOffice ? 'Preview unavailable' : 'Failed to load document'}
                 </p>
@@ -2442,7 +2460,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   {canEditOffice ? (
                     <button
                       type="button"
-                      className="btn btn-outline btn-sm border-neutral-500 text-neutral-100"
+                      className="btn btn-outline btn-sm border-white/25 text-white hover:border-white/40 hover:bg-white/10"
                       onClick={() => void handleStartOfficeEdit()}
                       disabled={editStarting || editSaving}
                     >
@@ -2454,7 +2472,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       href={displayUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="btn btn-outline btn-sm border-neutral-500 text-neutral-100"
+                      className="btn btn-outline btn-sm border-white/25 text-white hover:border-white/40 hover:bg-white/10"
                     >
                       Open in new tab
                     </a>
@@ -2462,7 +2480,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="max-w-md text-center text-neutral-200">
+              <div className="max-w-md text-center text-white/80">
                 <p className="text-lg font-semibold">Preview not available</p>
                 <p className="mt-2 text-sm opacity-80">This file type cannot be previewed in the browser.</p>
                 <button type="button" className="btn btn-primary btn-sm mt-4" onClick={() => void handleDownload()}>
@@ -2497,18 +2515,18 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         {commentsOpen && canComment ? (
           <aside
             data-doc-comments-panel
-            className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col border-l border-base-300 bg-base-100 shadow-2xl md:static md:inset-auto md:z-0 md:w-[22rem] md:max-w-none md:shrink-0 lg:w-[26rem]"
+            className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col bg-[rgba(11,12,15,0.5)] shadow-2xl backdrop-blur-xl md:static md:inset-auto md:z-0 md:w-[22rem] md:max-w-none md:shrink-0 lg:w-[26rem]"
             aria-label="Document comments"
           >
-            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-base-200 bg-gradient-to-b from-slate-50 to-base-100 px-4 py-3.5">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 bg-white/[0.06] px-4 py-3.5">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800 text-white shadow-sm">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/15 text-white shadow-sm">
                     <ChatBubbleLeftRightIcon className="h-5 w-5" />
                   </span>
                   <div className="min-w-0">
-                    <h3 className="text-base font-semibold text-slate-900">Comments</h3>
-                    <p className="truncate text-xs text-slate-500" title={activeName}>
+                    <h3 className="text-base font-semibold text-white">Comments</h3>
+                    <p className="truncate text-xs text-white/60" title={activeName}>
                       {activeName}
                     </p>
                   </div>
@@ -2526,20 +2544,20 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
             <div
               ref={commentsListRef}
-              className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_40%)] px-4 py-4"
+              className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-4 py-4"
             >
               {commentsLoading ? (
-                <div className="flex items-center justify-center gap-2 py-10 text-sm text-slate-500">
+                <div className="flex items-center justify-center gap-2 py-10 text-sm text-white/60">
                   <span className="loading loading-spinner loading-sm" />
                   Loading comments…
                 </div>
               ) : comments.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 px-4 py-10 text-center">
-                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+                <div className="rounded-2xl border border-dashed border-white/15 bg-white/5 px-4 py-10 text-center text-white/60">
+                  <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-white/70">
                     <ChatBubbleLeftRightIcon className="h-6 w-6" />
                   </div>
-                  <p className="text-sm font-medium text-slate-700">No comments yet</p>
-                  <p className="mt-1 text-xs text-slate-500">
+                  <p className="text-sm font-medium text-white/85">No comments yet</p>
+                  <p className="mt-1 text-xs text-white/50">
                     Share notes, or use Highlight to mark a section on the file.
                   </p>
                 </div>
@@ -2557,11 +2575,11 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                       className={`cursor-pointer rounded-2xl border px-3.5 py-3 shadow-sm transition ${
                         focused
                           ? mine
-                            ? 'border-amber-400 bg-slate-900 text-white ring-2 ring-amber-300/60'
-                            : 'border-amber-400 bg-white text-slate-800 ring-2 ring-amber-300/60'
+                            ? 'border-amber-300/60 bg-white/[0.16] text-white ring-2 ring-amber-300/50'
+                            : 'border-amber-300/60 bg-white/[0.08] text-white ring-2 ring-amber-300/50'
                           : mine
-                            ? 'border-slate-200 bg-slate-900 text-white'
-                            : 'border-slate-200/80 bg-white text-slate-800'
+                            ? 'border-white/10 bg-white/[0.14] text-white'
+                            : 'border-white/10 bg-white/[0.07] text-white'
                       }`}
                       onClick={() => {
                         if (c.highlight) focusComment(c.id);
@@ -2572,8 +2590,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                         <span
                           className={`flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full text-xs font-bold ${
                             mine
-                              ? 'bg-white/15 text-white'
-                              : 'bg-slate-100 text-slate-700'
+                              ? 'bg-white/20 text-white'
+                              : 'bg-white/15 text-white'
                           }`}
                           aria-hidden
                         >
@@ -2594,7 +2612,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <div
                                   className={`truncate text-sm font-semibold ${
-                                    mine ? 'text-white' : 'text-slate-900'
+                                    mine ? 'text-white' : 'text-white'
                                   }`}
                                 >
                                   {c.created_by}
@@ -2603,8 +2621,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                                   <span
                                     className={`badge badge-sm h-5 border-0 px-1.5 font-semibold ${
                                       mine
-                                        ? 'bg-amber-400 text-amber-950'
-                                        : 'bg-amber-500 text-white'
+                                        ? 'bg-amber-300 text-amber-950'
+                                        : 'bg-amber-300 text-amber-950'
                                     }`}
                                   >
                                     §{sectionLabel}
@@ -2614,7 +2632,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                               </div>
                               <div
                                 className={`text-[11px] tabular-nums ${
-                                  mine ? 'text-white/60' : 'text-slate-500'
+                                  mine ? 'text-white/60' : 'text-white/55'
                                 }`}
                               >
                                 {formatCommentTime(c.created_at)}
@@ -2642,7 +2660,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                           </div>
                           <p
                             className={`mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed ${
-                              mine ? 'text-white/90' : 'text-slate-700'
+                              mine ? 'text-white/90' : 'text-white/85'
                             }`}
                           >
                             {c.body}
@@ -2651,7 +2669,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                             <button
                               type="button"
                               className={`mt-2 text-xs font-medium underline-offset-2 hover:underline ${
-                                mine ? 'text-amber-200' : 'text-amber-700'
+                                mine ? 'text-amber-200' : 'text-amber-200'
                               }`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2670,9 +2688,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               <div ref={commentsEndRef} />
             </div>
 
-            <div className="shrink-0 border-t border-base-200 bg-base-100 p-3">
+            <div className="shrink-0 border-t border-white/10 bg-white/[0.04] p-3">
               {draftHighlight ? (
-                <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-sky-300/30 bg-sky-400/15 px-3 py-2 text-xs text-sky-100">
                   <span className="font-medium">
                     Commenting on highlighted section
                     {draftHighlight.page != null ? ` (page ${draftHighlight.page})` : ''}
@@ -2686,9 +2704,9 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   </button>
                 </div>
               ) : null}
-              <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-2 shadow-inner">
+              <div className="rounded-2xl border border-white/15 bg-white/[0.07] p-2">
                 <textarea
-                  className="textarea textarea-ghost min-h-[4.5rem] w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed focus:bg-white focus:outline-none"
+                  className="textarea textarea-ghost min-h-[4.5rem] w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-white placeholder:text-white/40 focus:bg-white/10 focus:outline-none"
                   placeholder={
                     draftHighlight
                       ? 'Write a comment about this section…'
@@ -2705,10 +2723,10 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   }}
                 />
                 <div className="mt-1 flex items-center justify-between gap-2 px-1">
-                  <span className="text-[11px] text-slate-400">⌘/Ctrl + Enter to send</span>
+                  <span className="text-[11px] text-white/45">⌘/Ctrl + Enter to send</span>
                   <button
                     type="button"
-                    className="btn btn-sm h-9 gap-1.5 rounded-full bg-slate-900 px-4 font-medium text-white hover:bg-slate-800"
+                    className="btn btn-sm h-9 gap-1.5 rounded-full border-0 bg-white px-4 font-medium text-[#111318] hover:bg-white/85"
                     onClick={() => void postComment()}
                     disabled={commentSaving || !commentDraft.trim()}
                   >

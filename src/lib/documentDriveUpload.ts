@@ -19,6 +19,7 @@ import {
   uploadEmployeePersonalFile,
 } from './employeePersonalSpace';
 import type { FolderUploadEntry } from './browserFolderUpload';
+import { deleteDocumentIndexRow, hasStoredFile, type DocumentIndexRow } from './documentIndex';
 
 /**
  * Uploading from the central documents page, where the destination is chosen rather than implied
@@ -355,6 +356,111 @@ export async function uploadEntriesToDestination(params: {
       console.error('[documentDriveUpload]', entry.file.name, err);
     }
     params.onProgress?.(index + 1, entries.length);
+  }
+
+  return result;
+}
+
+/** Copying leaves the original where it is; moving removes it once the copy is safely in place. */
+export type DriveTransferMode = 'copy' | 'move';
+
+export type DriveTransferResult = {
+  succeeded: number;
+  failed: number;
+  /** Copies that landed but whose original could not be removed, so the file is now in both. */
+  originalsKept: number;
+  lastError: string | null;
+};
+
+/** Whether a document already sits exactly where it is being sent. */
+export function isSameDrivePlace(row: DocumentIndexRow, destination: DriveDestination): boolean {
+  const folder = row.folder_id ?? null;
+  switch (destination.kind) {
+    case 'lead':
+      return (
+        row.source === 'lead' &&
+        row.scope_key === destination.leadNumber &&
+        (row.classification_id ?? null) === destination.classificationId &&
+        folder === destination.folderId
+      );
+    case 'staff_meeting':
+      return row.source === 'staff_meeting' && row.scope_key === String(destination.meetingId);
+    case 'office':
+      return (
+        row.source === 'office' &&
+        row.scope_key ===
+          (destination.departmentId != null ? `dept-${destination.departmentId}` : 'admins') &&
+        folder === destination.folderId
+      );
+    case 'personal':
+      return (
+        row.source === 'personal' &&
+        row.scope_key === String(destination.employeeId) &&
+        folder === destination.folderId
+      );
+  }
+}
+
+async function fileFromStoredDocument(row: DocumentIndexRow): Promise<File> {
+  if (!hasStoredFile(row)) throw new Error('This document has no stored file yet');
+  const path = row.storage_path.trim();
+
+  const { data, error } = await supabase.storage.from(row.storage_bucket).download(path);
+  if (error) throw error;
+  if (!data) throw new Error('Could not read the stored file');
+
+  return new File([data], row.file_name, {
+    type: row.mime_type || data.type || 'application/octet-stream',
+    lastModified: Date.parse(row.created_at) || Date.now(),
+  });
+}
+
+/**
+ * Puts documents that are already in the drive somewhere else in it. The file is read back out of
+ * its bucket and uploaded through the destination's own helper, so it lands in the right bucket,
+ * table and folder exactly as a fresh upload would. A move only deletes the original after the
+ * copy is in place, and says so when the delete is refused rather than losing the file.
+ */
+export async function transferDocumentsToDestination(params: {
+  rows: DocumentIndexRow[];
+  destination: DriveDestination;
+  mode: DriveTransferMode;
+  uploadedBy?: string | null;
+  onProgress?: (done: number, total: number) => void;
+}): Promise<DriveTransferResult> {
+  const result: DriveTransferResult = {
+    succeeded: 0,
+    failed: 0,
+    originalsKept: 0,
+    lastError: null,
+  };
+
+  for (let index = 0; index < params.rows.length; index += 1) {
+    const row = params.rows[index];
+    try {
+      const file = await fileFromStoredDocument(row);
+      const upload = await uploadEntriesToDestination({
+        destination: params.destination,
+        entries: [{ file, segments: [] }],
+        uploadedBy: params.uploadedBy ?? null,
+      });
+      if (upload.succeeded === 0) throw new Error(upload.lastError || 'Could not file the copy');
+
+      if (params.mode === 'move') {
+        try {
+          await deleteDocumentIndexRow(row);
+        } catch (err: any) {
+          result.originalsKept += 1;
+          result.lastError = String(err?.message || err || 'Could not remove the original');
+        }
+      }
+      result.succeeded += 1;
+    } catch (err: any) {
+      result.failed += 1;
+      result.lastError = String(err?.message || err || 'Could not copy this file');
+      console.error('[documentDriveUpload] transfer', row.file_name, err);
+    }
+    params.onProgress?.(index + 1, params.rows.length);
   }
 
   return result;

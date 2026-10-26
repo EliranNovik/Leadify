@@ -27,7 +27,6 @@ import {
   UserIcon,
   DocumentChartBarIcon,
   BuildingOffice2Icon,
-  FolderIcon,
   CalendarIcon,
   ArrowRightOnRectangleIcon,
   UserGroupIcon,
@@ -53,6 +52,7 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaWhatsapp } from 'react-icons/fa';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
+import { RmqDriveLogo } from './RmqDriveLogo';
 import WhatsAppDoubleCheckIcon from './whatsapp/WhatsAppDoubleCheckIcon';
 import AdminChangeUserModal from './AdminChangeUserModal';
 import EmployeeModal from './EmployeeModal';
@@ -4447,10 +4447,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         navigate('/drive');
                       }}
                     >
-                      <FolderIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <RmqDriveLogo className="h-7 w-7 shrink-0" />
                       <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
-                        <span className="text-base font-medium">Documents</span>
-                        <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
+                        <span className="text-base font-medium">
+                          <span className="text-[#3b28c7]">RMQ</span> Drive
+                        </span>
+                        <span className="badge badge-sm shrink-0 border-none bg-red-500 uppercase tracking-wide text-white">
                           New
                         </span>
                       </span>
@@ -4465,12 +4467,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       }}
                     >
                       <BuildingOffice2Icon className="h-6 w-6 shrink-0 text-base-content/60" />
-                      <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
-                        <span className="text-base font-medium">Organization</span>
-                        <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
-                          New
-                        </span>
-                      </span>
+                      <span className="text-base font-medium">Organization</span>
                     </button>
                     <button
                       type="button"
@@ -4685,10 +4682,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       navigate('/drive');
                     }}
                   >
-                    <FolderIcon className="w-5 h-5 text-base-content/70" />
+                    <RmqDriveLogo className="h-6 w-6" />
                     <span className="flex flex-1 items-center justify-between gap-2 min-w-0">
-                      <span>Documents</span>
-                      <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
+                      <span>
+                        <span className="text-[#3b28c7]">RMQ</span> Drive
+                      </span>
+                      <span className="badge badge-sm shrink-0 border-none bg-red-500 uppercase tracking-wide text-white">
                         New
                       </span>
                     </span>
@@ -4703,12 +4702,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     }}
                   >
                     <BuildingOffice2Icon className="w-5 h-5 text-base-content/70" />
-                    <span className="flex flex-1 items-center justify-between gap-2 min-w-0">
-                      <span>Organization</span>
-                      <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
-                        New
-                      </span>
-                    </span>
+                    <span>Organization</span>
                   </button>
                   <button
                     type="button"

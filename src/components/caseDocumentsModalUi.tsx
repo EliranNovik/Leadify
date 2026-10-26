@@ -83,11 +83,14 @@ export function DocumentUploaderCell({
   photoUrl,
   isClientPortalUpload,
   className = '',
+  nameClassName,
 }: {
   name?: string | null;
   photoUrl?: string | null;
   isClientPortalUpload?: boolean;
   className?: string;
+  /** Overrides how the name reads, for a table that wants the column quieter. */
+  nameClassName?: string;
 }) {
   const displayName = name?.trim() || null;
 
@@ -95,7 +98,9 @@ export function DocumentUploaderCell({
     return (
       <span className={`inline-flex max-w-full min-w-0 items-center justify-center gap-1.5 ${className}`}>
         {displayName ? (
-          <span className="min-w-0 truncate font-medium text-base-content/80">{displayName}</span>
+          <span className={`min-w-0 truncate ${nameClassName || 'font-medium text-base-content/80'}`}>
+            {displayName}
+          </span>
         ) : (
           <span className="text-base-content/50">—</span>
         )}
@@ -113,7 +118,8 @@ export function DocumentUploaderCell({
       name={displayName}
       photoUrl={photoUrl}
       className={`justify-center ${className}`}
-      imageClassName="h-9 w-9 text-[11px]"
+      imageClassName="h-7 w-7 text-[10px]"
+      nameClassName={nameClassName}
     />
   );
 }

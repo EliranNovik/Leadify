@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
+  ArrowRightCircleIcon,
   ArrowsRightLeftIcon,
   ArrowUpTrayIcon,
   BriefcaseIcon,
   BuildingOffice2Icon,
   CalendarDaysIcon,
+  DocumentDuplicateIcon,
   DocumentPlusIcon,
   FolderPlusIcon,
   MagnifyingGlassIcon,
@@ -25,15 +27,19 @@ import {
 import {
   describeDestination,
   fetchDriveClassifications,
+  isSameDrivePlace,
   searchDriveMeetings,
+  transferDocumentsToDestination,
   uploadEntriesToDestination,
   type DriveClassification,
   type DriveCreatedFile,
   type DriveDestination,
   type DriveMeetingOption,
+  type DriveTransferMode,
 } from '../lib/documentDriveUpload';
+import { formatDocumentSize, type DocumentIndexRow } from '../lib/documentIndex';
 import { blankOfficeSpec, type BlankOfficeKind } from '../lib/blankOfficeDocuments';
-import { ExcelLogoIcon, WordLogoIcon } from '../lib/documentFileGlyphs';
+import { DocumentFileGlyph, ExcelLogoIcon, WordLogoIcon } from '../lib/documentFileGlyphs';
 import {
   entriesFromDirectoryInput,
   expandDroppedItems,
@@ -57,7 +63,14 @@ import { fetchStageActorInfo } from '../lib/leadStageManager';
  * of them need the same destination.
  */
 
-export type DriveCreateMode = 'files' | 'folder' | 'new-folder' | 'new-word' | 'new-excel';
+export type DriveCreateMode =
+  | 'files'
+  | 'folder'
+  | 'new-folder'
+  | 'new-word'
+  | 'new-excel'
+  | 'copy'
+  | 'move';
 
 export type DriveCreateContext = {
   leadNumber?: string | null;
@@ -90,6 +103,8 @@ const MODE_TITLE: Record<DriveCreateMode, string> = {
   'new-folder': 'New folder',
   'new-word': 'New Word document',
   'new-excel': 'New Excel sheet',
+  copy: 'Copy to another place',
+  move: 'Move to another place',
 };
 
 /** Which editor a mode is for, and null for the modes that are not about a new document. */
@@ -106,11 +121,16 @@ const DocumentsDriveCreateModal: React.FC<{
   context?: DriveCreateContext;
   /** Already-dropped files, when the dialog is opened by dropping onto the table. */
   initialEntries?: FolderUploadEntry[];
+  /** The documents a copy or move is about, which are already in the drive. */
+  sourceRows?: DocumentIndexRow[];
   onClose: () => void;
   /** Told what was created, so a new document can be opened for editing straight away. */
   onDone: (created?: DriveCreatedFile[]) => void;
-}> = ({ mode, context, initialEntries, onClose, onDone }) => {
+}> = ({ mode, context, initialEntries, sourceRows, onClose, onDone }) => {
   const blankKind = blankKindForMode(mode);
+  const transferMode: DriveTransferMode | null =
+    mode === 'copy' || mode === 'move' ? mode : null;
+  const transferRows = useMemo(() => sourceRows ?? [], [sourceRows]);
   // A meeting keeps no folders of its own, so there is nothing to create one in. A folder can
   // still be dropped on it: the files land in the meeting itself, which the dialog says below.
   const sections = useMemo(
@@ -382,6 +402,53 @@ const DocumentsDriveCreateModal: React.FC<{
     [destination, onDone],
   );
 
+  /** Where the source documents sit now, so the dialog can refuse a pointless move. */
+  const alreadyThere = useMemo(
+    () =>
+      !!destination &&
+      transferRows.length > 0 &&
+      transferRows.every((row) => isSameDrivePlace(row, destination)),
+    [destination, transferRows],
+  );
+
+  const runTransfer = useCallback(async () => {
+    if (!destination || !transferMode || transferRows.length === 0) return;
+    setBusy(true);
+    setProgress({ done: 0, total: transferRows.length });
+    try {
+      const actor = await fetchStageActorInfo().catch(() => null);
+      const result = await transferDocumentsToDestination({
+        rows: transferRows,
+        destination,
+        mode: transferMode,
+        uploadedBy: actor?.fullName || null,
+        onProgress: (done, total) => setProgress({ done, total }),
+      });
+
+      if (result.succeeded === 0) {
+        toast.error(result.lastError || 'Nothing could be copied');
+        return;
+      }
+      const what = `${result.succeeded} ${result.succeeded === 1 ? 'file' : 'files'}`;
+      if (result.originalsKept > 0) {
+        toast.success(
+          `Copied ${what} to ${describeDestination(destination)}, but the original stayed where it was`,
+        );
+      } else {
+        toast.success(
+          `${transferMode === 'move' ? 'Moved' : 'Copied'} ${what} to ${describeDestination(destination)}`,
+        );
+      }
+      if (result.failed > 0) toast.error(`${result.failed} could not be handled`);
+      onDone();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not copy this file');
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }, [destination, transferMode, transferRows, onDone]);
+
   const startUpload = (raw: FolderUploadEntry[]) => {
     const plan = planFolderUpload(raw);
     if (plan.entries.length === 0) return;
@@ -479,7 +546,8 @@ const DocumentsDriveCreateModal: React.FC<{
   const ready =
     !!destination &&
     (mode !== 'new-folder' || !!folderName.trim()) &&
-    (!blankKind || !!documentName.trim());
+    (!blankKind || !!documentName.trim()) &&
+    (!transferMode || (transferRows.length > 0 && !alreadyThere));
 
   /**
    * Opened from inside a case, a folder or an office space, the destination is already decided,
@@ -816,6 +884,56 @@ const DocumentsDriveCreateModal: React.FC<{
                 An empty document is filed here and opens in {blankOfficeSpec(blankKind).appName}.
               </p>
             </div>
+          ) : transferMode ? (
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-base-content/70">
+                {transferRows.length === 1 ? 'This file' : `These ${transferRows.length} files`}
+              </h3>
+              <ul className="divide-y divide-base-200 rounded-xl border border-base-300">
+                {transferRows.map((row) => (
+                  <li key={`${row.source}-${row.row_id}`} className="flex items-center gap-3 px-4 py-3">
+                    <DocumentFileGlyph
+                      fileType={row.mime_type || ''}
+                      fileName={row.file_name}
+                      className="h-6 w-6 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{row.file_name}</p>
+                      <p className="truncate text-xs text-base-content/55">
+                        {[row.scope_label, row.folder_path, formatDocumentSize(row.file_size)]
+                          .filter((part) => part && part !== '—')
+                          .join(' · ')}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {progress && (
+                <div className="mt-3 rounded-xl bg-base-200 px-4 py-4">
+                  <p className="text-sm font-medium">
+                    {transferMode === 'move' ? 'Moving' : 'Copying'} {progress.done} of{' '}
+                    {progress.total}…
+                  </p>
+                  <progress
+                    className="progress progress-primary mt-2 w-full"
+                    value={progress.done}
+                    max={progress.total}
+                  />
+                </div>
+              )}
+              {alreadyThere ? (
+                <p className="mt-2 text-xs text-warning">
+                  {transferRows.length === 1 ? 'This file is' : 'These files are'} already there —
+                  pick somewhere else.
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-base-content/50">
+                  {transferMode === 'move'
+                    ? 'The file is filed in the new place first, and only then removed from this one.'
+                    : 'The original stays where it is, and a copy is filed in the new place.'}
+                </p>
+              )}
+            </div>
           ) : (
             <div>
               <input
@@ -939,6 +1057,23 @@ const DocumentsDriveCreateModal: React.FC<{
             >
               {busy ? <span className="loading loading-spinner loading-xs" /> : <FolderPlusIcon className="h-5 w-5" />}
               Create folder
+            </button>
+          )}
+          {transferMode && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!ready || busy}
+              onClick={() => void runTransfer()}
+            >
+              {busy ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : transferMode === 'move' ? (
+                <ArrowRightCircleIcon className="h-5 w-5" />
+              ) : (
+                <DocumentDuplicateIcon className="h-5 w-5" />
+              )}
+              {transferMode === 'move' ? 'Move here' : 'Copy here'}
             </button>
           )}
           {blankKind && (

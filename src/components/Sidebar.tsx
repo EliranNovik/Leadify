@@ -59,6 +59,8 @@ interface SidebarProps {
   dockedSurfaceClassName?: string;
   /** Light (white) docked rail — active/hover use gray fills instead of white chips. */
   dockedOnLight?: boolean;
+  /** Black icons and darker labels, for a docked panel that is the page's only navigation. */
+  dockedStrongContrast?: boolean;
   /**
    * Clicks inside anything matching this selector do not close the docked panel.
    *
@@ -199,10 +201,16 @@ const Sidebar: React.FC<SidebarProps> = ({
   dockedPositionClassName = 'fixed bottom-0 left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)]',
   dockedSurfaceClassName = 'bg-white dark:bg-base-100',
   dockedOnLight = false,
+  dockedStrongContrast = false,
   dockedCloseIgnoreSelector = '[data-clients-app-nav-toggle]',
 }) => {
   const isDockedPresentation = presentation === 'docked';
-  const showDockedDesktop = isDockedPresentation && dockedOpen;
+  /**
+   * A docked panel that slides rather than appears has to stay mounted while shut, since there is
+   * nothing to animate otherwise. It is parked off its own edge until it is opened.
+   */
+  const dockedAnimated = isDockedPresentation && dockedStrongContrast;
+  const showDockedDesktop = isDockedPresentation && (dockedOpen || dockedAnimated);
   const showFloatingDesktop = !isDockedPresentation;
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
@@ -664,7 +672,8 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   // Escape / click-away closes docked Clients app nav
   React.useEffect(() => {
-    if (!showDockedDesktop) return;
+    // An animated panel is mounted while shut, so this only listens while it is really open.
+    if (!showDockedDesktop || !dockedOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onDockedClose?.();
     };
@@ -681,7 +690,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [showDockedDesktop, onDockedClose, dockedCloseIgnoreSelector]);
+  }, [showDockedDesktop, dockedOpen, onDockedClose, dockedCloseIgnoreSelector]);
 
   const labelsAlwaysVisible = isDockedPresentation || isSidebarHovered;
 
@@ -691,10 +700,20 @@ const Sidebar: React.FC<SidebarProps> = ({
     ? 'bg-gray-100 font-semibold text-gray-900 dark:bg-base-200 dark:text-base-content'
     : 'bg-white font-semibold text-gray-900 shadow-sm dark:bg-base-100 dark:text-base-content';
   const dockedLinkIdle = dockedOnLight
-    ? 'font-medium text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content'
+    ? `font-medium hover:bg-gray-50 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-200/60 dark:hover:text-base-content ${
+        dockedStrongContrast ? 'text-gray-700' : 'text-gray-600'
+      }`
     : 'font-medium text-gray-600 hover:bg-white/55 hover:text-gray-900 dark:text-base-content/70 dark:hover:bg-base-100/50 dark:hover:text-base-content';
-  const dockedIconActive = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-800 dark:text-base-content';
-  const dockedIconIdle = 'h-5 w-5 min-w-[1.25rem] shrink-0 text-gray-500 dark:text-base-content/60';
+  // Bigger icons against grey labels, which is the drive's own contrast, and in its own purple —
+  // stated as the colour itself rather than as `primary`, which the alternative theme turns green.
+  const dockedIconSize = dockedStrongContrast ? 'h-6 w-6 min-w-[1.5rem]' : 'h-5 w-5 min-w-[1.25rem]';
+  const dockedIconColour = dockedStrongContrast ? 'text-[#9c44ea]' : '';
+  const dockedIconActive = `${dockedIconSize} shrink-0 ${
+    dockedIconColour || 'text-gray-800 dark:text-base-content'
+  }`;
+  const dockedIconIdle = `${dockedIconSize} shrink-0 ${
+    dockedIconColour || 'text-gray-500 dark:text-base-content/60'
+  }`;
 
   // Filter sidebar items based on superuser status and lead time reporting opt-in
   const canSeeLeadTimeReport = canAccessLeadTimeReport({
@@ -785,9 +804,16 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="hidden md:block">
           <div
             ref={sidebarRef}
+            aria-hidden={dockedAnimated && !dockedOpen}
             className={
               showDockedDesktop
-                ? `flex w-64 flex-col min-h-0 overflow-hidden ${dockedPositionClassName} ${dockedSurfaceClassName}`
+                ? `flex w-64 flex-col min-h-0 overflow-hidden ${dockedPositionClassName} ${dockedSurfaceClassName} ${
+                    dockedAnimated
+                      ? `transition-transform duration-300 ease-out ${
+                          dockedOpen ? 'translate-x-0' : '-translate-x-full'
+                        }`
+                      : ''
+                  }`
                 : `fixed top-20 bottom-6 left-4 z-40 flex min-h-[120px] min-h-0 flex-col overflow-hidden rounded-2xl border shadow-2xl transition-all duration-200 group/sidebar sidebar-frosted-glass ${
                     isSidebarHovered ? 'w-64' : 'w-20'
                   }`

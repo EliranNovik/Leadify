@@ -6,12 +6,15 @@ import {
   ArchiveBoxArrowDownIcon,
   ArrowDownTrayIcon,
   ArrowLeftIcon,
+  ArrowRightCircleIcon,
   ArrowUpTrayIcon,
+  Bars3Icon,
   BriefcaseIcon,
   BuildingOffice2Icon,
   CalendarDaysIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  DocumentDuplicateIcon,
   EllipsisVerticalIcon,
   EyeIcon,
   FolderArrowDownIcon,
@@ -23,6 +26,7 @@ import {
   LockClosedIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  ShareIcon,
   ShieldCheckIcon,
   Squares2X2Icon,
   TrashIcon,
@@ -36,6 +40,7 @@ import {
 import { supabase } from '../lib/supabase';
 import { DocumentFileGlyph, ExcelLogoIcon, WordLogoIcon } from '../lib/documentFileGlyphs';
 import DocumentSidebarThumb from '../components/DocumentSidebarThumb';
+import { RmqDriveLogo } from '../components/RmqDriveLogo';
 import DocumentsDriveCreateModal, {
   type DriveCreateContext,
   type DriveCreateMode,
@@ -44,6 +49,8 @@ import { isOfficeEditableFile } from '../lib/officeOnlineEdit';
 import type { DriveCreatedFile } from '../lib/documentDriveUpload';
 import DocumentViewerModal, { type DocumentViewerItem } from '../components/DocumentViewerModal';
 import { DocumentUploaderCell } from '../components/caseDocumentsModalUi';
+import { DocumentShareDialog } from '../components/share/DocumentShareMenu';
+import { documentIndexShareTarget } from '../lib/documentShareTargets';
 import { resolveUploaderDisplayByKey, type UploaderDisplay } from '../lib/uploaderDisplay';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
@@ -54,18 +61,39 @@ import {
 } from '../lib/browserFolderUpload';
 import { fetchOfficeSpaces, OFFICE_ADMIN_SPACE, type OfficeSpace } from '../lib/officeSpaces';
 import {
+  buildDepartmentColours,
+  CASE_DEPARTMENT_OTHER,
+  fetchCaseLeadInfo,
+  fetchCaseLeadRoute,
+  fetchDepartmentCaseLeadNumbers,
+  findLeadNumbersByPerson,
+  type CaseDepartmentKey,
+  type CaseLeadInfo,
+} from '../lib/caseDepartments';
+import { fetchMainDepartments, type MainDepartment } from '../lib/mainDepartments';
+import {
   deleteOfficeDocumentFolder,
   fetchOfficeDocumentFolders,
+  moveOfficeDocumentFolder,
   moveOfficeDocumentsToFolder,
 } from '../lib/officeDocuments';
 import {
   deleteEmployeePersonalFolder,
   fetchEmployeePersonalFolders,
   moveEmployeePersonalFilesToFolder,
+  moveEmployeePersonalFolder,
 } from '../lib/employeePersonalSpace';
-import { spaceFolderDepth, spaceFolderPath, type SpaceFolderNode } from '../lib/spaceFolders';
 import {
+  MAX_SPACE_FOLDER_DEPTH,
+  spaceFolderDepth,
+  spaceFolderPath,
+  type SpaceFolderNode,
+} from '../lib/spaceFolders';
+import {
+  canFileDocumentInFolder,
   createDocumentIndexSignedUrl,
+  DOCUMENT_INDEX_PAGE_SIZE,
+  fetchAllDocumentIndexCases,
   createDocumentIndexSignedUrls,
   deleteDocumentIndexRow,
   DOCUMENT_INDEX_SOURCES,
@@ -75,8 +103,11 @@ import {
   fetchDocumentIndexCategories,
   fetchDocumentIndexCounts,
   fetchDocumentsInFolder,
+  formatDocumentSize,
   hasDocumentIndexFilters,
+  hasStoredFile,
   isMovableDocument,
+  nextDocumentIndexPage,
   stableRowKey,
   type DocumentIndexCase,
   type DocumentIndexFilters,
@@ -89,7 +120,9 @@ import {
   deleteDocumentFolder,
   listDocumentFolders,
   listFolderChildrenAcrossScopes,
+  MAX_DOCUMENT_FOLDER_DEPTH,
   moveCaseDocumentsToFolder,
+  moveDocumentFolder,
   type DocumentFolder,
   type DocumentFolderScope,
   type DocumentFolderScopeType,
@@ -131,6 +164,20 @@ const SOURCE_ICON: Record<DocumentIndexSource | 'all', typeof FolderIcon> = {
   personal: UserIcon,
   hr: IdentificationIcon,
 };
+
+/** Who uploaded a file and when are context, not the thing you are reading, so both stay grey. */
+const MUTED_CELL_CLASS = 'text-gray-500 dark:text-base-content/60';
+const UPLOADER_NAME_CLASS = `font-normal ${MUTED_CELL_CLASS}`;
+
+/**
+ * Where you are in the sections list, in the turquoise of the drive's mark. Written as plain rgba
+ * rather than a themed colour so it stays the mark's turquoise under every theme, and spelled out
+ * in full because daisyUI's palette tokens drop the opacity modifier.
+ */
+const NAV_ACTIVE_BG = 'bg-[rgba(34,211,238,0.16)]';
+const NAV_ACTIVE_BADGE = 'bg-[rgba(34,211,238,0.28)]';
+/** Turquoise reads thin on white, so the text leans a few shades darker than the mark itself. */
+const NAV_ACTIVE_TEXT = 'text-[#0e8da6] dark:text-[#22d3ee]';
 
 function formatModified(value: string): string {
   const date = new Date(value);
@@ -301,10 +348,10 @@ const DriveEmptyPlaceholder: React.FC<DriveEmptyState> = ({
   onAction,
 }) => (
   <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-    <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-base-200">
-      <Icon className="h-9 w-9 text-slate-400" />
+    <span className="flex h-24 w-24 items-center justify-center rounded-3xl bg-base-200">
+      <Icon className="h-14 w-14 text-slate-400" />
     </span>
-    <p className="mt-4 text-base font-medium text-base-content/70">{title}</p>
+    <p className="mt-5 text-base font-medium text-base-content/70">{title}</p>
     <p className="mt-1 max-w-sm text-sm text-base-content/50">{hint}</p>
     {actionLabel && onAction && (
       <button
@@ -352,6 +399,87 @@ function spaceFolderAsDocumentFolder(
 }
 
 /**
+ * Loading rows shaped like the rows they are standing in for, so a list arrives rather than
+ * appearing out of a spinner.
+ */
+const SkeletonBar: React.FC<{ className?: string }> = ({ className = '' }) => (
+  <span className={`block animate-pulse rounded-full bg-base-200 ${className}`} aria-hidden />
+);
+
+const DriveSkeletonRows: React.FC<{ count?: number }> = ({ count = 10 }) => (
+  <>
+    {Array.from({ length: count }).map((_, index) => (
+      <tr key={`skeleton-row-${index}`} className="border-base-300 hover:!bg-transparent">
+        <td className="max-w-[26rem]">
+          <span className="flex items-center gap-3">
+            <SkeletonBar className="h-7 w-7 rounded-lg" />
+            {/* Uneven widths, since a column of identical bars reads as a pattern. */}
+            <SkeletonBar className={index % 3 === 0 ? 'h-3.5 w-56' : 'h-3.5 w-40'} />
+          </span>
+        </td>
+        <td className="hidden md:table-cell">
+          <SkeletonBar className="h-3 w-24" />
+        </td>
+        <td className="hidden lg:table-cell">
+          <SkeletonBar className="h-3 w-20" />
+        </td>
+        <td className="hidden lg:table-cell">
+          <SkeletonBar className="h-3 w-28" />
+        </td>
+        <td>
+          <SkeletonBar className="h-3 w-20" />
+        </td>
+        <td>
+          <span className="flex justify-end">
+            <SkeletonBar className="h-6 w-6" />
+          </span>
+        </td>
+      </tr>
+    ))}
+  </>
+);
+
+const DriveSkeletonCards: React.FC<{ count?: number }> = ({ count = 8 }) => (
+  <>
+    {Array.from({ length: count }).map((_, index) => (
+      <div
+        key={`skeleton-card-${index}`}
+        className="flex items-center gap-3 rounded-xl bg-base-200/50 px-3 py-4"
+      >
+        <SkeletonBar className="h-7 w-7 rounded-lg bg-base-300" />
+        <span className="flex min-w-0 flex-1 flex-col gap-2">
+          <SkeletonBar className="h-3 w-3/4 bg-base-300" />
+          <SkeletonBar className="h-2.5 w-1/3 bg-base-300" />
+        </span>
+      </div>
+    ))}
+  </>
+);
+
+/** What a hover preview lists: the folders inside first, then the files. */
+type FolderPeekItems = { folders: string[]; documents: string[]; more: number };
+
+/** What is being rested on: a folder, a whole case, or a single document. */
+type PeekTarget =
+  | { kind: 'folder'; id: string; title: string; folder: DocumentFolder }
+  | { kind: 'case'; id: string; title: string; leadNumber: string }
+  | { kind: 'doc'; id: string; title: string; row: DocumentIndexRow };
+
+/** The department a case belongs to, as a dot in front of its folder. */
+const CaseDepartmentDot: React.FC<{
+  info?: CaseLeadInfo;
+  colours: Map<CaseDepartmentKey, string>;
+}> = ({ info, colours }) => (
+  <span
+    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+      info ? colours.get(info.department) || 'bg-slate-400' : 'bg-base-300'
+    }`}
+    title={info?.departmentName || undefined}
+    aria-hidden
+  />
+);
+
+/**
  * The line under a folder's name on a card: a case folder says which case it belongs to, while a
  * space folder says where in the space it sits. The scope key itself ('dept-12', an employee id)
  * is of no use to anyone reading it.
@@ -371,7 +499,7 @@ function scopeOf(row: DocumentIndexRow): DocumentFolderScope | null {
   };
 }
 
-const DocumentsDrivePage: React.FC = () => {
+const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenAppNav }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { isAdmin, isSuperUser } = useAdminRole();
@@ -396,7 +524,8 @@ const DocumentsDrivePage: React.FC = () => {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
-  const [source, setSource] = useState<DocumentIndexSource | 'all'>(requestedCase ? 'lead' : 'all');
+  // Cases are what the drive is opened for nearly every time, so that is where it opens.
+  const [source, setSource] = useState<DocumentIndexSource | 'all'>('lead');
   const [view, setView] = useState<'table' | 'grid'>('table');
   const [sort, setSort] = useState<DocumentIndexSort>('created_at');
   const [ascending, setAscending] = useState(false);
@@ -415,6 +544,16 @@ const DocumentsDrivePage: React.FC = () => {
 
   const [caseKey, setCaseKey] = useState<string | null>(requestedCase);
   const [caseRows, setCaseRows] = useState<DocumentIndexCase[]>([]);
+  /** Which department's cases are listed, or null for every case. */
+  const [caseDepartment, setCaseDepartment] = useState<CaseDepartmentKey | null>(null);
+  const [departments, setDepartments] = useState<MainDepartment[]>([]);
+  /** Client name and department per listed case, which the case list itself does not carry. */
+  const [caseInfo, setCaseInfo] = useState<Map<string, CaseLeadInfo>>(new Map());
+  /**
+   * Cases whose lead has been looked for, found or not. Some case numbers answer to no lead at
+   * all, and without this they would be left waiting on a lookup that already came back empty.
+   */
+  const [caseInfoTried, setCaseInfoTried] = useState<Set<string>>(new Set());
   const [folderTrail, setFolderTrail] = useState<DocumentFolder[]>([]);
   const [folders, setFolders] = useState<DocumentFolder[]>([]);
   /** Why the folder list is empty, when it is empty because the read failed. */
@@ -428,6 +567,11 @@ const DocumentsDrivePage: React.FC = () => {
   const [viewerAutoEdit, setViewerAutoEdit] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [moveRow, setMoveRow] = useState<DocumentIndexRow | null>(null);
+  const [transfer, setTransfer] = useState<{ mode: 'copy' | 'move'; row: DocumentIndexRow } | null>(
+    null,
+  );
+  /** The document whose share options are open, from the row menu. */
+  const [shareRow, setShareRow] = useState<DocumentIndexRow | null>(null);
   const [accessRow, setAccessRow] = useState<DocumentIndexRow | null>(null);
   /** What the delete confirmation is asking about — superusers only. */
   const [deleteTarget, setDeleteTarget] = useState<DriveDeleteTarget>(null);
@@ -435,9 +579,15 @@ const DocumentsDrivePage: React.FC = () => {
   /** Who is signed in, which is whose folders the My space section browses. */
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [selection, setSelection] = useState<DriveSelection>(null);
-  const [dragKey, setDragKey] = useState<string | null>(null);
+  /** The row being dragged within the list, which is a document or a folder of its own. */
+  const [dragging, setDragging] = useState<DriveSelection>(null);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
   const [landedFolderId, setLandedFolderId] = useState<string | null>(null);
+  /** What is being rested on, and where its preview sits. */
+  const [peek, setPeek] = useState<{ target: PeekTarget; top: number; left: number } | null>(null);
+  const [peekItems, setPeekItems] = useState<FolderPeekItems | null>(null);
+  const peekCache = useRef(new Map<string, FolderPeekItems>());
+  const peekTimer = useRef<number | null>(null);
 
   const reloadToken = useRef(0);
 
@@ -449,10 +599,42 @@ const DocumentsDrivePage: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [searchInput]);
 
-  // Cases browse like a drive: cases, then their folders, then the files. A search here narrows
-  // the list of cases rather than flattening everything, so you still land on a case folder.
-  // Every other section is a flat list.
+  // Cases browse like a drive: cases, then their folders, then the files. Every other section is
+  // a flat list.
+  /**
+   * A search looks through the whole drive. The section, the open case, the open folder and the
+   * department all stop applying while there is a term — only the category and date filters on
+   * the side still narrow what comes back, so a file can be found without knowing where it is.
+   */
+  const searching = search.length > 0;
   const inCasesTree = source === 'lead';
+  // The view knows a case only by its number, so the people behind it — the client and the
+  // contacts, by name, email or phone — are looked up separately and their cases joined in.
+  const [searchCaseKeys, setSearchCaseKeys] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (search.length < 2) {
+      setSearchCaseKeys([]);
+      return;
+    }
+    let cancelled = false;
+    findLeadNumbersByPerson(search)
+      .then((keys) => {
+        if (!cancelled) setSearchCaseKeys(keys);
+      })
+      .catch(() => {
+        if (!cancelled) setSearchCaseKeys([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [search]);
+
+  /**
+   * A search in Cases answers with case folders, not with a flat list of files: what you are
+   * after there is the client's case, and the files are one click inside it. Every other section
+   * has nothing to group by, so a search there lists the documents themselves.
+   */
   const showCaseList = inCasesTree && !caseKey;
   const activeFolder = folderTrail.length > 0 ? folderTrail[folderTrail.length - 1] : null;
 
@@ -463,7 +645,8 @@ const DocumentsDrivePage: React.FC = () => {
       : null;
   /** Every section but meetings browses into folders, since meetings store none. */
   const inPersonalSpace = source === 'personal';
-  const showFolderRows = (inCasesTree && !!caseKey) || !!activeOfficeSpace || inPersonalSpace;
+  const showFolderRows =
+    !searching && ((inCasesTree && !!caseKey) || !!activeOfficeSpace || inPersonalSpace);
   /** The open folder, when it is one of a department space's own folders. */
   const activeOfficeFolder = activeFolder?.scope_type === 'office' ? activeFolder : null;
   /** The open folder, when it is one in the signed-in employee's own space. */
@@ -477,11 +660,12 @@ const DocumentsDrivePage: React.FC = () => {
   const filters = useMemo<DocumentIndexFilters>(
     () => ({
       search,
+      searchScopeKeys: searchCaseKeys,
       category: category || null,
       createdFrom: dateFrom || null,
       createdTo: dateTo || null,
     }),
-    [search, category, dateFrom, dateTo],
+    [search, searchCaseKeys, category, dateFrom, dateTo],
   );
   const filtersActive = hasDocumentIndexFilters(filters);
   const narrowed = !!category || !!dateFrom || !!dateTo;
@@ -495,6 +679,22 @@ const DocumentsDrivePage: React.FC = () => {
       const append = page > 0;
 
       if (showCaseList) {
+        // A department is not something the case list can be asked for: it comes from the lead's
+        // category, so the whole list is read once and narrowed here, then paged locally.
+        if (caseDepartment != null) {
+          const [all, leadNumbers] = await Promise.all([
+            fetchAllDocumentIndexCases(filters),
+            fetchDepartmentCaseLeadNumbers(caseDepartment, departments),
+          ]);
+          if (token !== reloadToken.current) return;
+          const matching = all.rows.filter((item) => leadNumbers.has(item.lead_number));
+          setCaseRows(matching.slice(0, (page + 1) * DOCUMENT_INDEX_PAGE_SIZE));
+          setRows([]);
+          setTotal(matching.length);
+          if (!append) setUploaders(new Map());
+          return;
+        }
+
         const cases = await fetchDocumentIndexCases({ ...filters, page });
         if (token !== reloadToken.current) return;
         setCaseRows((prev) =>
@@ -509,10 +709,12 @@ const DocumentsDrivePage: React.FC = () => {
 
       const { rows: nextRows, total: nextTotal } = await fetchDocumentIndex({
         ...filters,
-        sources: source === 'all' ? undefined : [source],
-        scopeKey,
+        sources: searching || source === 'all' ? undefined : [source],
+        scopeKey: searching ? null : scopeKey,
         // Narrowing inside a case looks through the whole case, not just the open folder.
-        folder: activeFolder
+        folder: searching
+          ? 'any'
+          : activeFolder
           ? { id: activeFolder.id }
           : (inCasesTree || !!activeOfficeSpace || inPersonalSpace) && !filtersActive
             ? 'root'
@@ -537,6 +739,14 @@ const DocumentsDrivePage: React.FC = () => {
     } catch (err: any) {
       if (token !== reloadToken.current) return;
       const message = String(err?.message || err || 'Could not load documents');
+      // Only a first page replaces the list. A failed 'load more' leaves what is already on
+      // screen alone: those rows are still correct, and emptying the list over them turns a
+      // page that merely stopped growing into a section that appears to hold nothing.
+      if (page > 0) {
+        // A range past the end is how the store says it has no more rows, which is not an error.
+        if (err?.code !== 'PGRST103') setError(message);
+        return;
+      }
       setError(
         /document_index/i.test(message)
           ? 'The documents view is missing. Run sql/2026-10-21_document_index_view.sql, then reload.'
@@ -551,8 +761,11 @@ const DocumentsDrivePage: React.FC = () => {
   }, [
     filters,
     filtersActive,
+    searching,
     source,
     showCaseList,
+    caseDepartment,
+    departments,
     inCasesTree,
     scopeKey,
     activeFolder,
@@ -593,6 +806,54 @@ const DocumentsDrivePage: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
+    fetchMainDepartments()
+      .then((next) => {
+        if (!cancelled) setDepartments(next);
+      })
+      .catch(() => {
+        if (!cancelled) setDepartments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Leaving Cases altogether drops the department. Opening a case does not: coming back up the
+  // breadcrumb has to land on the same filtered list you left.
+  useEffect(() => {
+    if (!inCasesTree && caseDepartment != null) setCaseDepartment(null);
+  }, [inCasesTree, caseDepartment]);
+
+  // The case list knows a lead number and a file count; the name and department come from the
+  // lead itself, looked up a page at a time.
+  useEffect(() => {
+    if (caseRows.length === 0 || departments.length === 0) return;
+    let cancelled = false;
+    const missing = caseRows
+      .map((item) => item.lead_number)
+      .filter((leadNumber) => !caseInfo.has(leadNumber) && !caseInfoTried.has(leadNumber));
+    if (missing.length === 0) return;
+
+    fetchCaseLeadInfo(missing, departments)
+      .then((next) => {
+        if (cancelled) return;
+        if (next.size > 0) setCaseInfo((prev) => new Map([...prev, ...next]));
+      })
+      .catch(() => {
+        // A missing name only costs the row its subtitle.
+      })
+      .finally(() => {
+        // Asked and answered, whatever the answer was: these rows stop waiting, and are not
+        // asked about again on the next page of cases.
+        if (!cancelled) setCaseInfoTried((prev) => new Set([...prev, ...missing]));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [caseRows, departments, caseInfo, caseInfoTried]);
+
+  useEffect(() => {
+    let cancelled = false;
     fetchOfficeSpaces()
       .then((spaces) => {
         if (!cancelled) setOfficeSpaces(spaces);
@@ -625,7 +886,7 @@ const DocumentsDrivePage: React.FC = () => {
     if (shown === 0 || shown >= total) return;
     const el = event.currentTarget;
     if (el.scrollTop + el.clientHeight < el.scrollHeight - 320) return;
-    setPage((prev) => prev + 1);
+    setPage((prev) => nextDocumentIndexPage(prev, total));
   };
 
   useEffect(() => {
@@ -914,6 +1175,34 @@ const DocumentsDrivePage: React.FC = () => {
     setSearch('');
   };
 
+  /**
+   * The case's own page, which is not `/clients/<case number>`: a legacy case opens by its row
+   * id, and a sub-case of either kind needs the number it is filed under in the query. The lead
+   * read for the case list already carries the route; anything else is resolved on the spot.
+   */
+  const openLeadPage = useCallback(
+    (leadNumber: string) => {
+      const known = caseInfo.get(leadNumber)?.route;
+      if (known) {
+        navigate(known);
+        return;
+      }
+      fetchCaseLeadRoute(leadNumber)
+        .then((route) => navigate(route))
+        .catch(() => navigate(`/clients/${encodeURIComponent(leadNumber)}`));
+    },
+    [caseInfo, navigate],
+  );
+
+  /**
+   * Whether a case is still waiting to hear who it is for. A case whose lead came back without a
+   * name, or answers to no lead at all, is not waiting for anything and shows its number alone.
+   */
+  const caseNamePending = useCallback(
+    (leadNumber: string) => !caseInfo.has(leadNumber) && !caseInfoTried.has(leadNumber),
+    [caseInfo, caseInfoTried],
+  );
+
   const openFolder = (folder: DocumentFolder) => {
     setFolderTrail((trail) => [...trail, folder]);
     // The folder was picked out to open it, not to act on it, and what the action bar offers has
@@ -965,7 +1254,7 @@ const DocumentsDrivePage: React.FC = () => {
       return {
         icon: MagnifyingGlassIcon,
         title: `Nothing matches “${search}”`,
-        hint: 'Try one word from the file name, or a case number on its own.',
+        hint: 'Try a case number, one word from the file name, or the client’s name, email or phone.',
       };
     }
     if (narrowed) {
@@ -1007,17 +1296,93 @@ const DocumentsDrivePage: React.FC = () => {
     };
   }, [search, narrowed, activeFolder, caseKey]);
 
+  const closePeek = useCallback(() => {
+    if (peekTimer.current != null) {
+      window.clearTimeout(peekTimer.current);
+      peekTimer.current = null;
+    }
+    setPeek(null);
+    setPeekItems(null);
+  }, []);
+
+  const loadPeek = async (target: PeekTarget) => {
+    // A document shows itself rather than a list, and the thumbnail fetches its own picture.
+    if (target.kind === 'doc') return;
+
+    const cached = peekCache.current.get(target.id);
+    if (cached) {
+      setPeekItems(cached);
+      return;
+    }
+
+    let folderNames: string[] = [];
+    let fileNames: string[] = [];
+
+    try {
+      if (target.kind === 'case') {
+        // A case is its own tree: the folders at its top, then the files sitting loose in it.
+        const [children, loose] = await Promise.all([
+          listFolderChildrenAcrossScopes(null, { scopeKey: target.leadNumber }),
+          fetchDocumentIndex({
+            sources: ['lead'],
+            scopeKey: target.leadNumber,
+            sort: 'created_at',
+            ascending: false,
+            pageSize: 8,
+          }),
+        ]);
+        folderNames = children.map((child) => child.title);
+        fileNames = loose.rows.map((row) => row.file_name);
+      } else {
+        const folder = target.folder;
+        const documents = await fetchDocumentsInFolder(folder.id, 8);
+        fileNames = documents.map((row) => row.file_name);
+        // Each store keeps its folders in its own table, so the children come from whichever one
+        // this folder lives in.
+        if (folder.scope_type === 'office' && activeOfficeSpace) {
+          const rows = await fetchOfficeDocumentFolders(activeOfficeSpace.departmentId);
+          folderNames = rows.filter((row) => row.parent_id === folder.id).map((row) => row.title);
+        } else if (folder.scope_type === 'employee' && employeeId != null) {
+          const rows = await fetchEmployeePersonalFolders(employeeId);
+          folderNames = rows.filter((row) => row.parent_id === folder.id).map((row) => row.title);
+        } else {
+          const children = await listFolderChildrenAcrossScopes(folder.id, {
+            scopeKey: folder.scope_key,
+          });
+          folderNames = children.map((child) => child.title);
+        }
+      }
+    } catch {
+      // A preview is worth nothing if it can raise an error over the page it is previewing.
+    }
+
+    const items = {
+      folders: folderNames.slice(0, 6),
+      documents: fileNames.slice(0, 8),
+      more: Math.max(0, folderNames.length - 6),
+    };
+    peekCache.current.set(target.id, items);
+    setPeekItems(items);
+  };
+
   /** Dragging a row onto a folder files it there, the same move the dialog makes. */
   const dropOnFolder = async (folder: DocumentFolder) => {
-    const row = rows.find((item) => stableRowKey(item) === dragKey);
+    const dragged = dragging;
     setDropFolderId(null);
-    setDragKey(null);
+    setDragging(null);
+    if (!dragged) return;
+    if (dragged.kind === 'folder') {
+      await dropFolderInFolder(dragged.id, folder);
+      return;
+    }
+
+    const row = rows.find((item) => stableRowKey(item) === dragged.key);
     if (!row) return;
     // A folder only takes files from its own store, so the move goes through that store's own
     // helper and nothing can be filed across two spaces.
     const expectedSource: DocumentIndexSource =
       folder.scope_type === 'office' ? 'office' : folder.scope_type === 'employee' ? 'personal' : 'lead';
-    if (row.source !== expectedSource || (expectedSource === 'lead' && !isMovableDocument(row))) {
+    if (row.source !== expectedSource || !canFileDocumentInFolder(row)) {
       toast.error(
         expectedSource === 'lead'
           ? 'Only case documents can be filed into folders'
@@ -1039,6 +1404,45 @@ const DocumentsDrivePage: React.FC = () => {
       reload();
     } catch (err: any) {
       toast.error(err?.message || 'Could not move this file');
+    }
+  };
+
+  /**
+   * Dragging a folder onto another one files it, and everything inside it, in there. Only folders
+   * standing side by side are ever both on screen, so a folder cannot be dropped into its own
+   * subfolder and no cycle is possible.
+   */
+  const dropFolderInFolder = async (folderId: string, target: DocumentFolder) => {
+    const moved = folders.find((folder) => folder.id === folderId);
+    if (!moved || moved.id === target.id) return;
+    if (moved.parent_id === target.id) return;
+    if (moved.scope_type !== target.scope_type || moved.scope_key !== target.scope_key) {
+      toast.error('A folder can only be moved within its own space');
+      return;
+    }
+    // Both caps count levels, while depth counts the folders above, so the deepest a folder may
+    // sit is one less than the cap.
+    const levels = target.scope_type === 'lead' ? MAX_DOCUMENT_FOLDER_DEPTH : MAX_SPACE_FOLDER_DEPTH;
+    if (target.depth + 1 > levels - 1) {
+      toast.error(`Folders can be nested ${levels} levels deep`);
+      return;
+    }
+    try {
+      if (target.scope_type === 'office') {
+        await moveOfficeDocumentFolder(folderId, target.id);
+      } else if (target.scope_type === 'employee') {
+        await moveEmployeePersonalFolder(folderId, target.id);
+      } else {
+        await moveDocumentFolder(folderId, target.id);
+      }
+      setLandedFolderId(target.id);
+      setSelection(null);
+      toast.success(`Moved “${moved.title}” into “${target.title}”`);
+      // The folder list is read by its own effect, which this nonce is what reruns.
+      setCreatedNonce((prev) => prev + 1);
+      reload();
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not move this folder');
     }
   };
 
@@ -1077,19 +1481,83 @@ const DocumentsDrivePage: React.FC = () => {
     },
   };
 
-  const folderDropProps = (folder: DocumentFolder) => ({
+  /** What a folder row needs to be both a drop target and a thing you can pick up and move. */
+  const folderDragDropProps = (folder: DocumentFolder) => ({
+    draggable: true,
+    onDragStart: (event: React.DragEvent) => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', folder.title);
+      setDragging({ kind: 'folder', id: folder.id });
+      setSelection({ kind: 'folder', id: folder.id });
+      closePeek();
+    },
+    onDragEnd: () => {
+      setDragging(null);
+      setDropFolderId(null);
+    },
     onDragOver: (event: React.DragEvent) => {
-      if (!dragKey) return;
+      // A folder cannot be dropped on itself, and nothing from the desktop lands here: a file
+      // dragged in from outside is an upload, which the list as a whole takes.
+      if (!dragging || (dragging.kind === 'folder' && dragging.id === folder.id)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       setDropFolderId(folder.id);
     },
     onDragLeave: () => setDropFolderId((prev) => (prev === folder.id ? null : prev)),
     onDrop: (event: React.DragEvent) => {
+      if (!dragging) return;
       event.preventDefault();
+      event.stopPropagation();
       void dropOnFolder(folder);
     },
     onAnimationEnd: () => setLandedFolderId((prev) => (prev === folder.id ? null : prev)),
+  });
+
+  /**
+   * Resting on a folder or a case shows what is inside it, so you can tell two similarly named
+   * ones apart without opening either. Contents are kept once read: the same row is hovered over
+   * and over while you are looking for something.
+   */
+  const peekProps = (target: PeekTarget) => ({
+    onMouseEnter: (event: React.MouseEvent<HTMLElement>) => {
+      const element = event.currentTarget;
+      if (peekTimer.current != null) window.clearTimeout(peekTimer.current);
+      peekTimer.current = window.setTimeout(() => {
+        const rect = element.getBoundingClientRect();
+        setPeek({
+          target,
+          // Below the row and inside the window, whichever edge it is near.
+          top: Math.min(rect.bottom + 6, window.innerHeight - 280),
+          left: Math.min(Math.max(rect.left + 24, 8), window.innerWidth - 304),
+        });
+        void loadPeek(target);
+      }, 450);
+    },
+    onMouseLeave: closePeek,
+  });
+
+  const folderPeekProps = (folder: DocumentFolder) =>
+    peekProps({ kind: 'folder', id: folder.id, title: folder.title, folder });
+
+  const casePeekProps = (leadNumber: string) =>
+    peekProps({ kind: 'case', id: `case:${leadNumber}`, title: leadNumber, leadNumber });
+
+  const documentPeekProps = (row: DocumentIndexRow) =>
+    peekProps({ kind: 'doc', id: `doc:${stableRowKey(row)}`, title: row.file_name, row });
+
+  /** What a document row needs to be dragged into one of the folders beside it. */
+  const documentDragProps = (row: DocumentIndexRow, key: string) => ({
+    draggable: canFileDocumentInFolder(row),
+    onDragStart: (event: React.DragEvent) => {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', row.file_name);
+      setDragging({ kind: 'doc', key });
+      setSelection({ kind: 'doc', key });
+    },
+    onDragEnd: () => {
+      setDragging(null);
+      setDropFolderId(null);
+    },
   });
 
   const folderActions = (folder: DocumentFolder): RowAction[] => {
@@ -1126,16 +1594,21 @@ const DocumentsDrivePage: React.FC = () => {
   };
 
   const rowActions = (row: DocumentIndexRow): RowAction[] => {
-    const actions: RowAction[] = [
+    const actions: RowAction[] = [];
+    // Passing a file on is the first thing asked of it, so it sits above opening it.
+    if (hasStoredFile(row)) {
+      actions.push({ id: 'share', label: 'Share', icon: ShareIcon, onSelect: () => setShareRow(row) });
+    }
+    actions.push(
       { id: 'preview', label: 'Preview', icon: EyeIcon, onSelect: () => void openPreview(row) },
       { id: 'download', label: 'Download', icon: ArrowDownTrayIcon, onSelect: () => void download(row) },
-    ];
+    );
     if (row.source === 'lead' && row.scope_key) {
       actions.push({
         id: 'open-case',
         label: `Open case ${row.scope_key}`,
         icon: BriefcaseIcon,
-        onSelect: () => navigate(`/clients/${row.scope_key}`),
+        onSelect: () => openLeadPage(row.scope_key as string),
       });
     }
     if (isMovableDocument(row)) {
@@ -1145,6 +1618,22 @@ const DocumentsDrivePage: React.FC = () => {
         icon: FolderArrowDownIcon,
         onSelect: () => setMoveRow(row),
       });
+    }
+    if (hasStoredFile(row)) {
+      actions.push(
+        {
+          id: 'copy-to',
+          label: 'Copy to another place',
+          icon: DocumentDuplicateIcon,
+          onSelect: () => setTransfer({ mode: 'copy', row }),
+        },
+        {
+          id: 'move-to',
+          label: 'Move to another place',
+          icon: ArrowRightCircleIcon,
+          onSelect: () => setTransfer({ mode: 'move', row }),
+        },
+      );
     }
     if (isAdmin && isMovableDocument(row) && row.folder_id) {
       actions.push({
@@ -1198,6 +1687,40 @@ const DocumentsDrivePage: React.FC = () => {
     [counts],
   );
 
+  const departmentColours = useMemo(() => buildDepartmentColours(departments), [departments]);
+
+  /** A department's dot, in the shape the row menus want their icons in. */
+  const departmentDotIcon = useCallback(
+    (key: CaseDepartmentKey) => {
+      const colour = departmentColours.get(key) || 'bg-slate-400';
+      const DepartmentDot: React.FC<{ className?: string }> = ({ className }) => (
+        <span className={`${className ?? ''} flex items-center justify-center`} aria-hidden>
+          <span className={`h-2.5 w-2.5 rounded-full ${colour}`} />
+        </span>
+      );
+      return DepartmentDot;
+    },
+    [departmentColours],
+  );
+
+  const caseDepartmentChips = useMemo(
+    () => [
+      { key: null as CaseDepartmentKey | null, label: 'All departments' },
+      ...departments.map((department) => ({
+        key: department.id as CaseDepartmentKey | null,
+        label: department.name,
+      })),
+      // The dashboard keeps the practice areas it sets no target for in one bucket, and so does this.
+      { key: CASE_DEPARTMENT_OTHER as CaseDepartmentKey | null, label: 'Other' },
+    ],
+    [departments],
+  );
+
+  const activeCaseDepartment =
+    caseDepartment == null
+      ? null
+      : caseDepartmentChips.find((chip) => chip.key === caseDepartment) ?? null;
+
   const sortIndicator = (column: DocumentIndexSort) =>
     sort === column ? <span className="ml-1 text-xs">{ascending ? '▲' : '▼'}</span> : null;
 
@@ -1205,7 +1728,21 @@ const DocumentsDrivePage: React.FC = () => {
 
   type Crumb = { id: string; label: string; onNavigate: () => void; actions: RowAction[] };
 
-  const crumbs: Crumb[] = [
+  // A flat search leaves the drive's structure behind, so it says so instead of pretending you
+  // are still somewhere. Cases keeps its own crumb, since its results are still case folders.
+  const crumbs: Crumb[] = searching && !showCaseList
+    ? [
+        {
+          id: 'search',
+          label: `Results for “${search}”`,
+          onNavigate: () => {
+            setSearchInput('');
+            setPage(0);
+          },
+          actions: createActions,
+        },
+      ]
+    : [
     {
       id: 'section',
       label: activeChip.label,
@@ -1222,7 +1759,12 @@ const DocumentsDrivePage: React.FC = () => {
           {
             id: `office-${activeOfficeSpace.scopeKey}`,
             label: activeOfficeSpace.label,
-            onNavigate: () => setPage(0),
+            // The space's own crumb is its top level, so it has to close any folder that is open
+            // under it. Leaving the trail alone made this crumb do nothing at all.
+            onNavigate: () => {
+              setFolderTrail([]);
+              setPage(0);
+            },
             actions: createActions,
           },
         ]
@@ -1242,7 +1784,7 @@ const DocumentsDrivePage: React.FC = () => {
                 id: 'open-case',
                 label: `Open case ${caseKey}`,
                 icon: BriefcaseIcon,
-                onSelect: () => navigate(`/clients/${caseKey}`),
+                onSelect: () => openLeadPage(caseKey),
               },
             ],
           },
@@ -1257,18 +1799,35 @@ const DocumentsDrivePage: React.FC = () => {
       },
       actions: [...createActions, ...folderActions(folder).filter((a) => a.id !== 'open')],
     })),
-  ];
+      ];
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-gray-100 dark:bg-base-300">
-      <div className="flex shrink-0 flex-wrap items-center gap-3 px-2 py-3 md:px-4 md:py-4">
+    <div className="flex h-full min-h-0 w-full flex-col bg-[#f8fafd] dark:bg-base-300">
+      <div className="flex shrink-0 flex-wrap items-center gap-3 px-2 pb-3 pt-2 md:px-4 md:pb-4">
         {/* Width matches the side panel plus its gutter, so the search lines up with the table. */}
         {/* Without the back button the width matches the side panel, so the search lines up. */}
         <div
-          className={`flex shrink-0 items-center gap-1.5 px-4 ${
+          className={`flex shrink-0 items-center gap-1.5 pr-4 pl-1 ${
             returnTo ? 'gap-3' : 'md:w-[14.75rem] lg:w-[15.75rem]'
           }`}
         >
+          {/* The drive hides the app header, so this is the way back to the rest of the CRM.
+              Under the pointer it lifts into the same white badge the Back button wears, which
+              stands out against the page's tinted background. The border is there unhovered as
+              well, in its own colour, so nothing shifts by a pixel when it appears. */}
+          {onOpenAppNav ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm btn-circle shrink-0 border border-transparent text-base-content/70 hover:border-base-300 hover:bg-white hover:shadow-sm dark:hover:bg-base-100"
+              onClick={onOpenAppNav}
+              aria-label="Open the main menu"
+              title="Menu"
+              // The panel closes on a click outside itself; this button owns that state instead.
+              data-drive-app-nav-toggle
+            >
+              <Bars3Icon className="h-6 w-6" />
+            </button>
+          ) : null}
           {returnTo ? (
             <button
               type="button"
@@ -1280,32 +1839,54 @@ const DocumentsDrivePage: React.FC = () => {
               <span className="max-w-[9rem] truncate">{requestedCase || 'Back'}</span>
             </button>
           ) : null}
-          <span className="text-2xl font-semibold tracking-tight text-primary">RMQ</span>
+          <RmqDriveLogo className="h-11 w-11" animated />
           <span className="text-2xl font-normal tracking-tight text-base-content/70">Drive</span>
         </div>
-        <label className="input flex h-11 flex-1 items-center gap-2 rounded-full border-none bg-base-200/70 md:max-w-2xl">
-          <MagnifyingGlassIcon className="h-5 w-5 text-base-content/40" />
+        {/* Grey against the page, white once you are typing in it. Styled without daisyUI's
+            `input` class, which paints itself base-100 and rings itself in base-content on focus:
+            an opacity-modified background like `bg-base-300/80` compiles to nothing against its
+            colours, so the white underneath was all that ever showed. */}
+        <label className="flex h-12 flex-1 cursor-text items-center gap-2 rounded-full bg-[#e9eef5] px-4 transition-colors focus-within:bg-white focus-within:shadow-md md:max-w-2xl dark:bg-base-100 dark:focus-within:bg-base-200">
+          <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-base-content/40" />
           <input
             type="search"
-            className="grow bg-transparent"
-            placeholder="Search in Documents"
+            className="grow border-none bg-transparent text-sm text-base-content outline-none placeholder:text-base-content/50 focus:outline-none"
+            placeholder="Search files, or a client by name, email or phone"
+            aria-label="Search in documents"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
           />
+          {searchInput ? (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm btn-circle shrink-0 text-base-content/50 hover:bg-base-200 hover:text-base-content"
+              title="Clear the search"
+              aria-label="Clear the search"
+              onClick={() => {
+                setSearchInput('');
+                setSearch('');
+                setPage(0);
+              }}
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          ) : null}
         </label>
         <RowActionsMenu
           actions={createActions}
           align="end"
           ariaLabel="Create or upload"
-          triggerClassName="btn h-11 shrink-0 gap-2 rounded-2xl border border-base-300 bg-white pl-3 pr-4 text-base font-medium text-base-content shadow-sm hover:bg-base-200 dark:bg-base-100"
+          triggerClassName="btn h-11 shrink-0 gap-2 rounded-2xl border border-base-300 bg-white pl-3 pr-4 text-sm font-medium text-base-content shadow-md transition-shadow hover:bg-base-200 hover:shadow-lg dark:bg-base-100"
           trigger={
             <>
-              <PlusIcon className="h-7 w-7" />
+              <PlusIcon className="h-6 w-6" />
               New
             </>
           }
         />
-        <div className="flex min-w-0 shrink-0 items-center gap-2">
+        {/* Pushed to the far edge: these narrow what the list already shows, so they sit away
+            from the search and the New button, which act on the drive as a whole. */}
+        <div className="flex min-w-0 shrink-0 items-center gap-2 md:ml-auto">
           <select
             className="select h-11 min-h-0 w-[11rem] rounded-2xl border-none bg-transparent text-sm font-medium text-base-content/70 shadow-none transition-colors hover:bg-base-200/70 focus:outline-none"
             value={category}
@@ -1376,11 +1957,14 @@ const DocumentsDrivePage: React.FC = () => {
             const active = source === chip.value;
             // Office holds one space per department, so it opens up rather than just filtering.
             const expandable = chip.value === 'office' && officeSpaces.length > 1;
+            // Office's own row steps back while one of its spaces is open, since the space is
+            // the thing you are standing in.
+            const marked = active && !activeOfficeSpace;
             return (
               <React.Fragment key={chip.value}>
                 <div
                   className={`group flex items-center gap-1 rounded-full pr-3 transition-colors hover:bg-base-300 ${
-                    active && !activeOfficeSpace ? 'bg-primary/10' : ''
+                    marked ? NAV_ACTIVE_BG : ''
                   }`}
                 >
                   <button
@@ -1397,10 +1981,16 @@ const DocumentsDrivePage: React.FC = () => {
                       setPage(0);
                     }}
                   >
-                    <Icon className="h-6 w-6 shrink-0 text-base-content" />
+                    <Icon
+                      className={`h-6 w-6 shrink-0 ${marked ? NAV_ACTIVE_TEXT : 'text-base-content'}`}
+                    />
                     <span
-                      className={`flex-1 truncate text-base-content/50 group-hover:text-base-content ${
-                        active ? 'font-semibold' : ''
+                      className={`flex-1 truncate ${
+                        marked
+                          ? `font-semibold ${NAV_ACTIVE_TEXT}`
+                          : `text-base-content/50 group-hover:text-base-content ${
+                              active ? 'font-semibold' : ''
+                            }`
                       }`}
                     >
                       {chip.label}
@@ -1422,7 +2012,9 @@ const DocumentsDrivePage: React.FC = () => {
                   {chip.count != null && (
                     <span
                       className={`badge badge-sm shrink-0 border-none tabular-nums ${
-                        active ? 'bg-primary/15 text-primary' : 'bg-base-300/80 text-base-content/50'
+                        active
+                          ? `${NAV_ACTIVE_BADGE} ${NAV_ACTIVE_TEXT}`
+                          : 'bg-base-300/80 text-base-content/50'
                       }`}
                     >
                       {chip.count.toLocaleString()}
@@ -1438,7 +2030,7 @@ const DocumentsDrivePage: React.FC = () => {
                         key={space.scopeKey}
                         type="button"
                         className={`group flex items-center gap-2 rounded-full py-2 pl-11 pr-4 text-left text-sm transition-colors hover:bg-base-300 ${
-                          spaceActive ? 'bg-primary/10' : ''
+                          spaceActive ? NAV_ACTIVE_BG : ''
                         }`}
                         onClick={() => {
                           setSource('office');
@@ -1448,12 +2040,14 @@ const DocumentsDrivePage: React.FC = () => {
                       >
                         <FolderSolidIcon
                           className={`h-5 w-5 shrink-0 ${
-                            spaceActive ? 'text-primary' : 'text-slate-500'
+                            spaceActive ? NAV_ACTIVE_TEXT : 'text-slate-500'
                           }`}
                         />
                         <span
-                          className={`flex-1 truncate text-base-content/50 group-hover:text-base-content ${
-                            spaceActive ? 'font-semibold' : ''
+                          className={`flex-1 truncate ${
+                            spaceActive
+                              ? `font-semibold ${NAV_ACTIVE_TEXT}`
+                              : 'text-base-content/50 group-hover:text-base-content'
                           }`}
                         >
                           {space.label}
@@ -1472,8 +2066,10 @@ const DocumentsDrivePage: React.FC = () => {
               <button
                 key={chip.value}
                 type="button"
-                className={`btn btn-sm shrink-0 rounded-full ${
-                  source === chip.value ? 'btn-primary' : 'btn-ghost bg-base-100'
+                className={`btn btn-sm shrink-0 rounded-full border-none ${
+                  source === chip.value
+                    ? `${NAV_ACTIVE_BG} ${NAV_ACTIVE_TEXT}`
+                    : 'btn-ghost bg-base-100'
                 }`}
                 onClick={() => {
                   setSource(chip.value);
@@ -1506,7 +2102,7 @@ const DocumentsDrivePage: React.FC = () => {
             <div className="flex h-[4.5rem] shrink-0 items-center gap-3 px-5">
               <nav className="flex min-w-0 items-center gap-1 text-lg font-semibold">
                 {crumbs.length === 1 ? (
-                  <h1 className="truncate text-base-content">{activeChip.label}</h1>
+                  <h1 className="truncate text-base-content">{crumbs[0].label}</h1>
                 ) : (
                   crumbs.map((crumb, index) => {
                     const last = index === crumbs.length - 1;
@@ -1598,8 +2194,66 @@ const DocumentsDrivePage: React.FC = () => {
                 </div>
               )}
               <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3">
+                {/* A case belongs to a department through its category, the same way the
+                    dashboard's scoreboard groups one. Only the chosen one is named here. */}
+                {showCaseList && departments.length > 0 && (
+                  <RowActionsMenu
+                    actions={caseDepartmentChips.map((chip) => ({
+                      id: String(chip.key),
+                      label: chip.label,
+                      icon: chip.key == null ? Squares2X2Icon : departmentDotIcon(chip.key),
+                      onSelect: () => {
+                        if (chip.key === caseDepartment) return;
+                        setCaseDepartment(chip.key);
+                        // Resolving a department reads the whole case list, which takes a moment.
+                        // Clearing the rows now puts the skeleton up instead of leaving the cases
+                        // of the department you just left on screen as though they still matched.
+                        setCaseRows([]);
+                        setTotal(0);
+                        setLoading(true);
+                        setPage(0);
+                      },
+                    }))}
+                    align="end"
+                    ariaLabel="Filter cases by department"
+                    triggerClassName="btn btn-sm max-w-[13rem] gap-1 rounded-full border-base-300 bg-white text-base-content/70 hover:bg-base-200 dark:bg-base-100"
+                    trigger={
+                      <>
+                        {activeCaseDepartment ? (
+                          <span
+                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                              departmentColours.get(activeCaseDepartment.key as CaseDepartmentKey) ||
+                              'bg-slate-400'
+                            }`}
+                            aria-hidden
+                          />
+                        ) : null}
+                        <span className="truncate">
+                          {activeCaseDepartment?.label || 'All departments'}
+                        </span>
+                        <ChevronDownIcon className="h-4 w-4 shrink-0 opacity-60" />
+                      </>
+                    }
+                  />
+                )}
+                {/* Inside a case, the case itself is one click away rather than buried in the
+                    breadcrumb's menu. */}
+                {inCasesTree && caseKey && !searching && (
+                  <button
+                    type="button"
+                    className="btn btn-sm rounded-full border-none bg-primary/10 font-medium text-primary hover:bg-primary/20"
+                    onClick={() => openLeadPage(caseKey)}
+                    title={`Open case ${caseKey}`}
+                  >
+                    Lead {caseKey}
+                  </button>
+                )}
                 <span className="hidden text-sm tabular-nums text-base-content/50 lg:inline">
-                  {total > 0 ? `${total.toLocaleString()} files` : ''}
+                  {total > 0
+                    ? `${total.toLocaleString()} ${
+                        showCaseList ? 'cases' : searching ? 'results' : 'files'
+                      }`
+                    : ''}
                 </span>
                 <RowActionsMenu
                   actions={createActions}
@@ -1654,8 +2308,8 @@ const DocumentsDrivePage: React.FC = () => {
             {view === 'grid' ? (
               <div className="min-h-0 flex-1 overflow-auto px-4 pb-4" onScroll={handleListScroll}>
                 {loading && rows.length === 0 ? (
-                  <div className="py-16 text-center text-base-content/50">
-                    <span className="loading loading-spinner loading-md" />
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                    <DriveSkeletonCards />
                   </div>
                 ) : rows.length === 0 && folders.length === 0 && caseRows.length === 0 && !error ? (
                   <DriveEmptyPlaceholder {...emptyState} />
@@ -1668,10 +2322,23 @@ const DocumentsDrivePage: React.FC = () => {
                         className="flex items-center gap-3 rounded-xl bg-base-200 px-3 py-4 text-left transition-colors hover:bg-base-300"
                         onClick={() => openCase(item.lead_number)}
                       >
-                        <FolderSolidIcon className="h-7 w-7 shrink-0 text-primary" />
+                        <CaseDepartmentDot
+                          info={caseInfo.get(item.lead_number)}
+                          colours={departmentColours}
+                        />
+                        <span className="shrink-0" {...casePeekProps(item.lead_number)}>
+                          <FolderSolidIcon className="h-7 w-7 text-primary" />
+                        </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium text-base-content">
                             {item.lead_number}
+                            {caseNamePending(item.lead_number) ? (
+                              <span className="ml-2 inline-block h-3 w-20 animate-pulse rounded bg-base-300 align-middle" />
+                            ) : caseInfo.get(item.lead_number)?.name ? (
+                              <span className="font-normal text-base-content/60">
+                                {` · ${caseInfo.get(item.lead_number)?.name}`}
+                              </span>
+                            ) : null}
                           </span>
                           <span className="block truncate text-xs text-base-content/50">
                             {item.file_count.toLocaleString()} files
@@ -1684,14 +2351,21 @@ const DocumentsDrivePage: React.FC = () => {
                         key={`folder-card-${folder.id}`}
                         type="button"
                         className={`flex select-none items-center gap-3 rounded-xl px-3 py-4 text-left transition-colors ${
-                          selectedFolder?.id === folder.id
-                            ? 'bg-primary/15'
-                            : 'bg-base-200 hover:bg-base-300'
+                          dropFolderId === folder.id
+                            ? 'bg-primary/15 ring-2 ring-inset ring-primary'
+                            : selectedFolder?.id === folder.id
+                              ? 'bg-primary/15'
+                              : 'bg-base-200 hover:bg-base-300'
+                        } ${dragging?.kind === 'folder' && dragging.id === folder.id ? 'opacity-40' : ''} ${
+                          landedFolderId === folder.id ? 'drive-drop-land' : ''
                         }`}
                         onClick={() => setSelection({ kind: 'folder', id: folder.id })}
                         onDoubleClick={() => openFolder(folder)}
+                        {...folderDragDropProps(folder)}
                       >
-                        <FolderSolidIcon className="h-7 w-7 shrink-0 text-slate-500" />
+                        <span className="shrink-0" {...folderPeekProps(folder)}>
+                          <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+                        </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium text-base-content">
                             {folder.title}
@@ -1713,16 +2387,19 @@ const DocumentsDrivePage: React.FC = () => {
                             selection?.kind === 'doc' && selection.key === key
                               ? 'bg-primary/15'
                               : 'bg-base-200 hover:bg-base-300'
-                          }`}
+                          } ${dragging?.kind === 'doc' && dragging.key === key ? 'opacity-40' : ''}`}
                           onClick={() => setSelection({ kind: 'doc', key })}
                           onDoubleClick={() => void openPreview(row)}
+                          {...documentDragProps(row, key)}
                         >
                           <div className="flex items-center gap-2">
-                            <DocumentFileGlyph
-                              fileType={row.mime_type || ''}
-                              fileName={row.file_name}
-                              className="h-6 w-6 shrink-0"
-                            />
+                            <span className="shrink-0" {...documentPeekProps(row)}>
+                              <DocumentFileGlyph
+                                fileType={row.mime_type || ''}
+                                fileName={row.file_name}
+                                className="h-6 w-6"
+                              />
+                            </span>
                             <span
                               className="min-w-0 flex-1 truncate text-left text-sm font-medium text-base-content"
                               title={row.file_name}
@@ -1759,31 +2436,42 @@ const DocumentsDrivePage: React.FC = () => {
                   </div>
                 )}
                 {loadingMore && (
-                  <div className="py-6 text-center">
-                    <span className="loading loading-spinner loading-sm text-base-content/40" />
+                  <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+                    <DriveSkeletonCards count={4} />
                   </div>
                 )}
               </div>
             ) : (
             <div className="min-h-0 flex-1 overflow-auto" onScroll={handleListScroll}>
-              <table className="table table-pin-rows">
+              {/* The columns are laid out from these widths alone, never from what is in them.
+                  Sized to their contents, every page of rows that scrolled in brought a longer
+                  category or name with it and shoved the columns sideways, and the client names
+                  arriving did the same. The widths read as ratios, so narrow screens scale them
+                  down together. */}
+              <table className="drive-table table table-fixed table-pin-rows [&_td]:py-2 [&_th]:py-2">
                 <thead>
-                  <tr className="border-b border-base-300 bg-white text-base-content/60 dark:bg-base-100">
-                    <th className="cursor-pointer select-none font-medium" onClick={() => toggleSort('file_name')}>
+                  <tr className="bg-white text-base-content/60 dark:bg-base-100">
+                    <th
+                      className="w-[26rem] cursor-pointer select-none font-medium"
+                      onClick={() => toggleSort('file_name')}
+                    >
                       Name{sortIndicator('file_name')}
                     </th>
                     <th
-                      className="hidden cursor-pointer select-none font-medium md:table-cell"
+                      className="hidden w-[11rem] cursor-pointer select-none font-medium md:table-cell"
                       onClick={() => toggleSort('scope_label')}
                     >
                       Location{sortIndicator('scope_label')}
                     </th>
-                    <th className="hidden font-medium lg:table-cell">Category</th>
-                    <th className="hidden font-medium lg:table-cell">Uploaded by</th>
-                    <th className="cursor-pointer select-none font-medium" onClick={() => toggleSort('created_at')}>
+                    <th className="hidden w-[9rem] font-medium lg:table-cell">Category</th>
+                    <th className="hidden w-[11rem] font-medium lg:table-cell">Uploaded by</th>
+                    <th
+                      className="w-[10rem] cursor-pointer select-none font-medium"
+                      onClick={() => toggleSort('created_at')}
+                    >
                       Date modified{sortIndicator('created_at')}
                     </th>
-                    <th className="text-right font-medium">Actions</th>
+                    <th className="w-[5.5rem] text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1795,9 +2483,26 @@ const DocumentsDrivePage: React.FC = () => {
                     >
                       <td className="max-w-[26rem]">
                         <span className="flex items-center gap-3">
-                          <FolderSolidIcon className="h-8 w-8 shrink-0 text-primary" />
-                          <span className="min-w-0 flex-1 truncate font-medium text-base-content">
-                            {item.lead_number}
+                          <CaseDepartmentDot
+                            info={caseInfo.get(item.lead_number)}
+                            colours={departmentColours}
+                          />
+                          {/* The preview hangs off the icon alone, so passing over a row on the
+                              way somewhere else does not open anything. */}
+                          <span className="shrink-0" {...casePeekProps(item.lead_number)}>
+                            <FolderSolidIcon className="h-7 w-7 text-primary" />
+                          </span>
+                          <span className="min-w-0 flex-1 truncate">
+                            <span className="font-medium text-base-content">{item.lead_number}</span>
+                            {/* Whose case it is comes from a second read of the leads. Until it
+                                lands its place is held, so the row fills in rather than jumps. */}
+                            {caseNamePending(item.lead_number) ? (
+                              <span className="ml-2 inline-block h-3 w-32 max-w-[40%] animate-pulse rounded bg-base-300 align-middle" />
+                            ) : caseInfo.get(item.lead_number)?.name ? (
+                              <span className="ml-2 text-base-content/60">
+                                {caseInfo.get(item.lead_number)?.name}
+                              </span>
+                            ) : null}
                           </span>
                         </span>
                       </td>
@@ -1810,7 +2515,7 @@ const DocumentsDrivePage: React.FC = () => {
                         {item.file_count.toLocaleString()} files
                       </td>
                       <td className="hidden lg:table-cell" />
-                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/70">
+                      <td className={`whitespace-nowrap text-sm tabular-nums ${MUTED_CELL_CLASS}`}>
                         {item.last_added ? formatModified(item.last_added) : '—'}
                       </td>
                       <td>
@@ -1827,7 +2532,7 @@ const DocumentsDrivePage: React.FC = () => {
                                 id: 'open-lead',
                                 label: 'Open case page',
                                 icon: BriefcaseIcon,
-                                onSelect: () => navigate(`/clients/${item.lead_number}`),
+                                onSelect: () => openLeadPage(item.lead_number),
                               },
                             ]}
                           />
@@ -1844,25 +2549,29 @@ const DocumentsDrivePage: React.FC = () => {
                           : selectedFolder?.id === folder.id
                             ? 'bg-primary/10'
                             : 'hover:bg-base-200/40'
-                      } ${landedFolderId === folder.id ? 'drive-drop-land' : ''}`}
+                      } ${landedFolderId === folder.id ? 'drive-drop-land' : ''} ${
+                        dragging?.kind === 'folder' && dragging.id === folder.id ? 'opacity-40' : ''
+                      }`}
                       onClick={() => setSelection({ kind: 'folder', id: folder.id })}
                       onDoubleClick={() => openFolder(folder)}
-                      {...folderDropProps(folder)}
+                      {...folderDragDropProps(folder)}
                     >
                       <td className="max-w-[26rem]">
                         <span className="flex items-center gap-3">
-                          <FolderSolidIcon className="h-8 w-8 shrink-0 text-slate-500" />
+                          <span className="shrink-0" {...folderPeekProps(folder)}>
+                            <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+                          </span>
                           <span className="min-w-0 flex-1 truncate font-medium text-base-content">
                             {folder.title}
                           </span>
                         </span>
                       </td>
-                      <td className="hidden md:table-cell">
-                        <span className="text-sm text-base-content/70">{folder.scope_key}</span>
+                      <td className="hidden truncate text-sm text-base-content/70 md:table-cell">
+                        {folder.scope_key}
                       </td>
                       <td className="hidden text-sm text-base-content/70 lg:table-cell">Folder</td>
                       <td className="hidden lg:table-cell" />
-                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/70">
+                      <td className={`whitespace-nowrap text-sm tabular-nums ${MUTED_CELL_CLASS}`}>
                         {formatModified(folder.created_at)}
                       </td>
                       <td onClick={(event) => event.stopPropagation()}>
@@ -1872,20 +2581,17 @@ const DocumentsDrivePage: React.FC = () => {
                       </td>
                     </tr>
                   ))}
-                  {loading && rows.length === 0 && (
-                    <tr className="hover:!bg-transparent">
-                      <td colSpan={6} className="py-16 text-center text-base-content/50">
-                        <span className="loading loading-spinner loading-md" />
-                      </td>
-                    </tr>
-                  )}
+                  {loading && rows.length === 0 && <DriveSkeletonRows />}
+                  {/* Nothing here to point at, so the empty row neither lights up under the
+                      pointer nor rules a line under itself. daisyUI paints the hover on the cells,
+                      which is why the cell carries the override too. */}
                   {!loading &&
                     rows.length === 0 &&
                     folders.length === 0 &&
                     caseRows.length === 0 &&
                     !error && (
-                      <tr className="hover:!bg-transparent">
-                        <td colSpan={6} className="p-0">
+                      <tr className="!bg-none !bg-transparent hover:!bg-transparent">
+                        <td colSpan={6} className="!bg-transparent p-0 hover:!bg-transparent">
                           <DriveEmptyPlaceholder {...emptyState} />
                         </td>
                       </tr>
@@ -1902,73 +2608,67 @@ const DocumentsDrivePage: React.FC = () => {
                           selection?.kind === 'doc' && selection.key === key
                             ? 'bg-primary/10'
                             : 'hover:bg-base-200/40'
-                        } ${dragKey === key ? 'opacity-40' : ''}`}
-                        draggable={isMovableDocument(row)}
+                        } ${dragging?.kind === 'doc' && dragging.key === key ? 'opacity-40' : ''}`}
                         onClick={() => setSelection({ kind: 'doc', key })}
                         onDoubleClick={() => void openPreview(row)}
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = 'move';
-                          event.dataTransfer.setData('text/plain', row.file_name);
-                          setDragKey(key);
-                          setSelection({ kind: 'doc', key });
-                        }}
-                        onDragEnd={() => {
-                          setDragKey(null);
-                          setDropFolderId(null);
-                        }}
+                        {...documentDragProps(row, key)}
                       >
                         <td className="max-w-[26rem]">
                           <span className="flex w-full items-center gap-3">
-                            <DocumentFileGlyph
-                              fileType={row.mime_type || ''}
-                              fileName={row.file_name}
-                              className="h-8 w-8 shrink-0"
-                            />
+                            {/* Resting on the icon shows the document itself. */}
+                            <span className="shrink-0" {...documentPeekProps(row)}>
+                              <DocumentFileGlyph
+                                fileType={row.mime_type || ''}
+                                fileName={row.file_name}
+                                className="h-7 w-7"
+                              />
+                            </span>
                             <span className="min-w-0 truncate font-medium text-base-content">
                               {row.file_name}
                             </span>
                           </span>
                         </td>
-                        <td className="hidden md:table-cell">
+                        <td className="hidden overflow-hidden md:table-cell">
                           <div className="flex items-center gap-2">
                             <span
-                              className={`badge badge-sm border-none font-medium ${SOURCE_BADGE[row.source]}`}
+                              className={`badge badge-sm shrink-0 border-none font-medium ${SOURCE_BADGE[row.source]}`}
                             >
                               {DOCUMENT_SOURCE_LABELS[row.source]}
                             </span>
                             {row.source === 'lead' && row.scope_key ? (
                               <button
                                 type="button"
-                                className="link link-hover text-sm"
+                                className="link link-hover min-w-0 truncate text-sm"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  navigate(`/clients/${row.scope_key}`);
+                                  openLeadPage(row.scope_key as string);
                                 }}
                               >
                                 {row.scope_label}
                               </button>
                             ) : (
-                              <span className="max-w-[12rem] truncate text-sm text-base-content/70">
+                              <span className="min-w-0 truncate text-sm text-base-content/70">
                                 {row.scope_label}
                               </span>
                             )}
                           </div>
                         </td>
-                        <td className="hidden text-sm text-base-content/70 lg:table-cell">
+                        <td className="hidden truncate text-sm text-base-content/70 lg:table-cell">
                           {row.category || '—'}
                         </td>
-                        <td className="hidden lg:table-cell">
+                        <td className="hidden overflow-hidden lg:table-cell">
                           {uploader || uploaderKey ? (
                             <DocumentUploaderCell
                               name={uploader?.name || uploaderKey}
                               photoUrl={uploader?.photoUrl}
                               isClientPortalUpload={uploaderKey === 'portal-client'}
+                              nameClassName={UPLOADER_NAME_CLASS}
                             />
                           ) : (
                             <span className="text-sm text-base-content/40">—</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap text-sm tabular-nums text-base-content/70">
+                        <td className={`whitespace-nowrap text-sm tabular-nums ${MUTED_CELL_CLASS}`}>
                           {formatModified(row.created_at)}
                         </td>
                         <td onClick={(event) => event.stopPropagation()}>
@@ -1979,13 +2679,7 @@ const DocumentsDrivePage: React.FC = () => {
                       </tr>
                     );
                   })}
-                  {loadingMore && (
-                    <tr className="hover:!bg-transparent">
-                      <td colSpan={6} className="py-6 text-center">
-                        <span className="loading loading-spinner loading-sm text-base-content/40" />
-                      </td>
-                    </tr>
-                  )}
+                  {loadingMore && <DriveSkeletonRows count={3} />}
                 </tbody>
               </table>
             </div>
@@ -2016,6 +2710,26 @@ const DocumentsDrivePage: React.FC = () => {
         />
       )}
 
+      {shareRow && (
+        <DocumentShareDialog
+          target={documentIndexShareTarget(shareRow)}
+          onClose={() => setShareRow(null)}
+        />
+      )}
+
+      {transfer && (
+        <DocumentsDriveCreateModal
+          mode={transfer.mode}
+          sourceRows={[transfer.row]}
+          onClose={() => setTransfer(null)}
+          onDone={() => {
+            setTransfer(null);
+            setCreatedNonce((prev) => prev + 1);
+            reload();
+          }}
+        />
+      )}
+
       {viewerDocs && viewerDocs.length > 0 && (
         <DocumentViewerModal
           isOpen
@@ -2030,6 +2744,63 @@ const DocumentsDrivePage: React.FC = () => {
           onOfficeSaved={() => reload()}
         />
       )}
+
+      {/* Follows the mouse rather than the layout, so it is drawn at the window's level. */}
+      {peek &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[70] w-72 overflow-hidden rounded-xl border border-base-300 bg-[#f8fafd] p-3 shadow-2xl dark:bg-base-200"
+            style={{ top: peek.top, left: peek.left }}
+          >
+            <p className="mb-2 truncate text-xs font-semibold uppercase tracking-wide text-base-content/40">
+              {peek.target.title}
+            </p>
+            {peek.target.kind === 'doc' ? (
+              <>
+                <DocumentSidebarThumb
+                  name={peek.target.row.file_name}
+                  url=""
+                  fileType={peek.target.row.mime_type || ''}
+                  storagePath={peek.target.row.storage_path}
+                  bucketName={peek.target.row.storage_bucket}
+                />
+                <p className="mt-2 flex items-center justify-between gap-2 text-xs text-base-content/50">
+                  <span className="truncate">{peek.target.row.category || '—'}</span>
+                  <span className="shrink-0 tabular-nums">
+                    {formatDocumentSize(peek.target.row.file_size)}
+                  </span>
+                </p>
+              </>
+            ) : !peekItems ? (
+              <span className="loading loading-spinner loading-xs text-base-content/40" />
+            ) : peekItems.folders.length === 0 && peekItems.documents.length === 0 ? (
+              <p className="text-sm text-base-content/50">
+                {peek.target.kind === 'case' ? 'This case holds no files' : 'This folder is empty'}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-1 text-sm">
+                {peekItems.folders.map((title) => (
+                  <li key={`peek-folder-${title}`} className="flex items-center gap-2">
+                    <FolderSolidIcon className="h-4 w-4 shrink-0 text-slate-400" />
+                    <span className="truncate text-base-content/80">{title}</span>
+                  </li>
+                ))}
+                {peekItems.documents.map((fileName) => (
+                  <li key={`peek-doc-${fileName}`} className="flex items-center gap-2">
+                    <DocumentFileGlyph fileType="" fileName={fileName} className="h-4 w-4 shrink-0" />
+                    <span className="truncate text-base-content/70">{fileName}</span>
+                  </li>
+                ))}
+                {peekItems.more > 0 && (
+                  <li className="pl-6 text-xs text-base-content/40">
+                    and {peekItems.more.toLocaleString()} more
+                  </li>
+                )}
+              </ul>
+            )}
+          </div>,
+          document.body,
+        )}
 
       {moveRow && (
         <MoveDocumentDialog

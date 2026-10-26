@@ -131,6 +131,39 @@ export async function resolveUploaderDisplayByKey(
   return out;
 }
 
+/**
+ * Gradients for an initials avatar, deep enough in the middle for white initials to read on them.
+ */
+const UPLOADER_AVATAR_GRADIENTS = [
+  'from-violet-400 to-indigo-700',
+  'from-sky-400 to-blue-700',
+  'from-emerald-400 to-teal-700',
+  'from-amber-400 to-orange-600',
+  'from-rose-400 to-pink-700',
+  'from-fuchsia-400 to-purple-700',
+  'from-cyan-400 to-sky-700',
+  'from-lime-400 to-green-700',
+  'from-orange-400 to-rose-600',
+  'from-indigo-400 to-violet-800',
+] as const;
+
+/**
+ * Which gradient an initials avatar wears. Picked from the name rather than at random, so one
+ * person keeps one colour everywhere and across reloads, while a list of people stays varied.
+ */
+export function uploaderAvatarGradient(name: string): string {
+  const key = name.trim().toLowerCase();
+  if (!key) return UPLOADER_AVATAR_GRADIENTS[0];
+  let hash = 0;
+  for (let index = 0; index < key.length; index += 1) {
+    // Shift and subtract, which is the usual string hash: cheap and spread out enough that
+    // 'Anna Cohen' and 'Anna Cohn' do not land on the same colour.
+    hash = (hash << 5) - hash + key.charCodeAt(index);
+    hash |= 0;
+  }
+  return UPLOADER_AVATAR_GRADIENTS[Math.abs(hash) % UPLOADER_AVATAR_GRADIENTS.length];
+}
+
 export function initialsFromUploaderName(name: string): string {
   const t = name.trim();
   if (!t) return '?';

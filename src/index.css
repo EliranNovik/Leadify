@@ -169,6 +169,115 @@
   animation: driveDropLand 0.65s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
+/* The drive's mark as the page opens: the arcs are drawn one after the next while the whole ring
+   turns twice around the folder, so they read as a single line travelling round. The turn lands on
+   0deg and the dashes end fully drawn, which is the mark exactly as it sits at rest. */
+@keyframes rmqDriveRingTurn {
+  /* The first round takes the longer half of the time, while the line is still being drawn, and
+     the second picks up speed before easing into place. */
+  0% {
+    transform: rotate(-720deg);
+    animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+  }
+
+  58% {
+    transform: rotate(-360deg);
+    animation-timing-function: cubic-bezier(0.25, 0, 0.3, 1);
+  }
+
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes rmqDriveArcDraw {
+  from {
+    stroke-dashoffset: 100;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes rmqDriveFolderIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.rmq-drive-animated .rmq-drive-arcs {
+  /* The ring turns about the middle of the drawing, not about the arcs' own bounding box. */
+  transform-box: view-box;
+  transform-origin: center;
+  /* Paced by the keyframes themselves, since the two rounds are not the same speed. */
+  animation: rmqDriveRingTurn 1.7s linear both;
+}
+
+.rmq-drive-animated .rmq-drive-arc {
+  stroke-dasharray: 100;
+  animation: rmqDriveArcDraw 0.62s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+/* Each arc starts as the one before it finishes, so the line never appears to break. */
+.rmq-drive-animated .rmq-drive-arc:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.rmq-drive-animated .rmq-drive-arc:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+.rmq-drive-animated .rmq-drive-folder {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: rmqDriveFolderIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.42s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rmq-drive-animated .rmq-drive-arcs,
+  .rmq-drive-animated .rmq-drive-arc,
+  .rmq-drive-animated .rmq-drive-folder {
+    animation: none;
+  }
+}
+
+/* The drive's row dividers stop short of the card's edges, so the list reads as one sheet with
+   lines ruled on it rather than as rows banded edge to edge. Drawn as a background rather than a
+   border, since a border on a row always runs its whole width. */
+.drive-table {
+  --drive-divider: rgba(15, 23, 42, 0.08);
+}
+
+html.dark .drive-table {
+  --drive-divider: rgba(255, 255, 255, 0.12);
+}
+
+.drive-table thead tr,
+.drive-table tbody tr {
+  border-bottom-width: 0;
+  background-image: linear-gradient(
+    to right,
+    transparent 0 1.25rem,
+    var(--drive-divider) 1.25rem calc(100% - 1.25rem),
+    transparent calc(100% - 1.25rem)
+  );
+  background-repeat: no-repeat;
+  background-position: bottom left;
+  background-size: 100% 1px;
+}
+
+/* Nothing follows the last row, so a line under it would only underline the card's own edge. */
+.drive-table tbody tr:last-child {
+  background-image: none;
+}
+
 body,
 html,
 #root {
@@ -417,6 +526,13 @@ html,
 /* Client detail: ClientHeader provides top inset (mobile APP_INSET / desktop TOP_BAND). */
 .app-main-scroll.clients-detail-scroll {
   padding-top: 0 !important;
+}
+
+/* Drive: runs without the app header, so it starts at the top of the window, not below a bar
+   that is not there. Only the notch is kept clear. */
+.app-main-scroll.drive-scroll {
+  padding-top: constant(safe-area-inset-top, 0px) !important;
+  padding-top: env(safe-area-inset-top, 0px) !important;
 }
 
 .client-actions-drawer-item {
@@ -2811,3 +2927,18 @@ table[data-contract-preview] a,
   color: #ffffff !important;
   text-decoration: none !important;
 }
+
+/* The document viewer is a dark glass sheet, so its fields must stay dark in every theme —
+   the theme rules above would otherwise force them white. */
+html .doc-viewer-glass input:not([type='checkbox']):not([type='radio']),
+html .doc-viewer-glass textarea {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  color: #ffffff !important;
+}
+
+html .doc-viewer-glass input:not([type='checkbox']):not([type='radio'])::placeholder,
+html .doc-viewer-glass textarea::placeholder {
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+

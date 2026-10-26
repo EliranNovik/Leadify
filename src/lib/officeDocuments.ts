@@ -302,6 +302,28 @@ export async function moveOfficeDocumentsToFolder(
   if (error) throw error;
 }
 
+/**
+ * Files a folder, and everything inside it, into another folder of the same space, or back to the
+ * space's top level with null. A folder from another department is refused by the trigger in
+ * sql/2026-10-25_nested_space_folders.sql rather than checked here.
+ */
+export async function moveOfficeDocumentFolder(
+  folderId: string,
+  parentId: string | null,
+): Promise<OfficeDocumentFolder> {
+  if (parentId && parentId === folderId) throw new Error('A folder cannot be moved into itself');
+
+  const { data, error } = await supabase
+    .from('office_document_folders')
+    .update({ parent_id: parentId })
+    .eq('id', folderId)
+    .select(FOLDER_SELECT)
+    .single();
+
+  if (error) throw error;
+  return data as OfficeDocumentFolder;
+}
+
 export async function renameOfficeDocumentFolder(
   folderId: string,
   title: string,

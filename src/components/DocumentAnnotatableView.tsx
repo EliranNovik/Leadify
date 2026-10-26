@@ -502,7 +502,7 @@ function PdfAnnotatable({
 
   if (loading) {
     return (
-      <div className="flex min-h-full flex-1 flex-col items-center justify-center bg-neutral-900 py-16 text-neutral-200">
+      <div className="flex min-h-full flex-1 flex-col items-center justify-center py-16 text-white/80">
         <span className="loading loading-spinner loading-lg" />
         <p className="mt-3 text-sm opacity-80">Preparing pages for highlights…</p>
       </div>
@@ -511,17 +511,21 @@ function PdfAnnotatable({
 
   if (failed || pages.length === 0) {
     return (
-      <div className="flex min-h-full w-full flex-1 flex-col bg-neutral-900">
+      <div className="flex min-h-full w-full flex-1 flex-col">
         <div className="shrink-0 bg-amber-400/90 px-3 py-2 text-center text-xs font-medium text-amber-950">
           Couldn’t prepare PDF pages for highlights — showing standard preview instead.
         </div>
-        <iframe src={src} className="min-h-0 w-full flex-1 border-0 bg-neutral-900" title="PDF preview" />
+        <iframe
+          src={`${src.split('#')[0]}#toolbar=0&navpanes=0`}
+          className="min-h-0 w-full flex-1 border-0 bg-transparent"
+          title="PDF preview"
+        />
       </div>
     );
   }
 
   return (
-    <div className="min-h-full w-full bg-neutral-900 px-2 pb-0 pt-4 md:px-4">
+    <div className="min-h-full w-full px-2 pb-0 pt-4 md:px-4">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 pb-4">
         {pages.map((p) => (
           <PdfPageSurface

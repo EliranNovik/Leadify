@@ -53,6 +53,11 @@ export type DocumentIndexFolderFilter = 'any' | 'root' | { id: string };
 /** What the top bar narrows the list by, in every section and on the case list alike. */
 export type DocumentIndexFilters = {
   search?: string;
+  /**
+   * Scopes the search should match as well as the searched columns, so a term can find files
+   * through something the view does not carry — a case through its client's name, say.
+   */
+  searchScopeKeys?: string[];
   /** A `category` label exactly as the view reports it, e.g. a case document type. */
   category?: string | null;
   /** Inclusive calendar days (yyyy-mm-dd) read in the browser's own timezone. */
@@ -72,6 +77,20 @@ export type DocumentIndexQuery = DocumentIndexFilters & {
 };
 
 export const DOCUMENT_INDEX_PAGE_SIZE = 50;
+
+/**
+ * The page to read after this one, never past the last page that exists. A range beyond the final
+ * row is answered with 'Requested range not satisfiable' instead of with an empty page, and one
+ * scroll gesture fires many events that all still see the page the list started on.
+ */
+export function nextDocumentIndexPage(
+  page: number,
+  total: number,
+  pageSize: number = DOCUMENT_INDEX_PAGE_SIZE,
+): number {
+  const lastPage = Math.max(0, Math.ceil(Math.max(0, total) / pageSize) - 1);
+  return Math.min(Math.max(0, page) + 1, lastPage);
+}
 
 const ROW_SELECT =
   'source, row_id, file_name, storage_bucket, storage_path, mime_type, file_size, uploaded_by, created_at, folder_id, folder_path, scope_key, scope_label, category, ai_summary, classification_id, area';
@@ -100,12 +119,29 @@ export function searchTokens(raw: string): string[] {
 
 const SEARCHED_COLUMNS = ['file_name', 'scope_label', 'folder_path', 'category'];
 
-/** Each token must appear somewhere, which chained `or` groups express as an AND of ORs. */
-function applySearch<T>(request: T, raw: string | undefined): T {
+/**
+ * A scope key as PostgREST reads it inside an `in` list. Case numbers carry slashes and could
+ * carry a comma, which would otherwise be read as the end of the value.
+ */
+function quotedScopeKey(key: string): string {
+  return `"${key.replace(/["\\]/g, '')}"`;
+}
+
+/**
+ * Each token must appear somewhere, which chained `or` groups express as an AND of ORs. Scopes
+ * matched elsewhere join every group, so their files answer the search whatever it says.
+ */
+function applySearch<T>(request: T, raw: string | undefined, scopeKeys?: string[]): T {
   const tokens = searchTokens(raw || '');
+  const scopes = [...new Set((scopeKeys || []).map((key) => String(key || '').trim()).filter(Boolean))];
+  const scopeTerm =
+    scopes.length > 0 ? `scope_key.in.(${scopes.map(quotedScopeKey).join(',')})` : null;
+
   let next = request as any;
   for (const token of tokens) {
-    next = next.or(SEARCHED_COLUMNS.map((column) => `${column}.ilike.%${token}%`).join(','));
+    const terms = SEARCHED_COLUMNS.map((column) => `${column}.ilike.%${token}%`);
+    if (scopeTerm) terms.push(scopeTerm);
+    next = next.or(terms.join(','));
   }
   return next as T;
 }
@@ -120,7 +156,7 @@ function dayBoundaryIso(day: string, addDays = 0): string | null {
 
 /** Search plus the top bar's category and date range, shared by every count and list query. */
 function applyFilters<T>(request: T, filters: DocumentIndexFilters): T {
-  let next = applySearch(request, filters.search) as any;
+  let next = applySearch(request, filters.search, filters.searchScopeKeys) as any;
   if (filters.category) next = next.eq('category', filters.category);
   const from = filters.createdFrom ? dayBoundaryIso(filters.createdFrom) : null;
   if (from) next = next.gte('created_at', from);
@@ -292,6 +328,31 @@ export async function fetchDocumentIndexCases(
   return { rows: (data || []) as DocumentIndexCase[], total: count ?? 0 };
 }
 
+/** How many cases the department filter will read before it stops. */
+export const CASE_DEPARTMENT_SCAN_LIMIT = 6000;
+
+/**
+ * The whole case list, for a filter the database cannot apply: which department a case belongs to
+ * is worked out from its lead's category, and listing one department's cases as a query would mean
+ * naming thousands of lead numbers in a URL. Read in pages, since a row cap on the API would
+ * otherwise cut the list short without saying so.
+ */
+export async function fetchAllDocumentIndexCases(
+  filters: DocumentIndexFilters = {},
+  limit = CASE_DEPARTMENT_SCAN_LIMIT,
+): Promise<{ rows: DocumentIndexCase[]; truncated: boolean }> {
+  const pageSize = 500;
+  const rows: DocumentIndexCase[] = [];
+
+  for (let page = 0; rows.length < limit; page += 1) {
+    const batch = await fetchDocumentIndexCases({ ...filters, page, pageSize });
+    rows.push(...batch.rows);
+    if (batch.rows.length < pageSize) return { rows, truncated: false };
+  }
+
+  return { rows: rows.slice(0, limit), truncated: true };
+}
+
 /** Every document filed directly in one folder, for bulk download and the viewer. */
 export async function fetchDocumentsInFolder(
   folderId: string,
@@ -363,6 +424,24 @@ export function formatDocumentSize(bytes: number | null): string {
 /** Only case documents live in the shared folder tree, so only those can be moved or restricted. */
 export function isMovableDocument(row: DocumentIndexRow): boolean {
   return row.source === 'lead';
+}
+
+/**
+ * Whether a document can be filed into a folder of its own store. Wider than
+ * `isMovableDocument`, which asks about the shared case tree: department spaces and an employee's
+ * own space keep folders of their own, while meetings and HR each hold one flat list.
+ */
+export function canFileDocumentInFolder(row: DocumentIndexRow): boolean {
+  return row.source === 'lead' || row.source === 'office' || row.source === 'personal';
+}
+
+/**
+ * Whether a listed document has a stored file behind it. A row can exist before its upload
+ * finishes, and such a row has nothing to copy, move or open.
+ */
+export function hasStoredFile(row: DocumentIndexRow): boolean {
+  const path = (row.storage_path || '').trim();
+  return !!path && path !== 'pending' && !!(row.storage_bucket || '').trim();
 }
 
 /**

@@ -236,6 +236,7 @@ const AppContentInner: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [clientsAppNavOpen, setClientsAppNavOpen] = useState(false);
   const [adminAppNavOpen, setAdminAppNavOpen] = useState(false);
+  const [driveAppNavOpen, setDriveAppNavOpen] = useState(false);
   const shortRailViewport = useShortRailViewport();
   const [pipelinePageMounted, setPipelinePageMounted] = useState(isPipelinePage);
   if (isPipelinePage && !pipelinePageMounted) {
@@ -296,19 +297,23 @@ const AppContentInner: React.FC = () => {
   const [rmqInitialScrollToMessageId, setRmqInitialScrollToMessageId] = useState<number | undefined>();
   const [selectedClient, setSelectedClient] = useState<any>(null);
 
-  const isClientDetailPage = useMemo(() => {
-    if (!isClientsPage || !selectedClient) return false;
-    // Client subpages (timeline / history / duplicates / …) render their own layout and need
-    // normal main padding so content isn't hidden under the fixed app Header.
-    if (
+  // Client subpages (timeline / history / duplicates / …) render their own layout and need
+  // normal main padding so content isn't hidden under the fixed app Header.
+  const isClientSubPage = useMemo(
+    () =>
       /^\/clients\/[^/]+\/(duplicates|timeline|history|master|contract|word-document|schedule-meeting|reschedule-meeting)(\/|$)/.test(
         location.pathname,
-      )
-    ) {
-      return false;
-    }
-    return true;
-  }, [isClientsPage, selectedClient, location.pathname]);
+      ),
+    [location.pathname],
+  );
+
+  // The path says a lead is being opened before its data arrives. The sidebar has to agree from
+  // the very first frame: told to float until the lead loads, it mounts its rail and then pulls it
+  // straight back, which reads as the nav opening and shutting by itself.
+  const isClientDetailRoute = useMemo(
+    () => isClientsPage && /^\/clients\/[^/]+/.test(location.pathname) && !isClientSubPage,
+    [isClientsPage, isClientSubPage, location.pathname],
+  );
 
   // Clear selectedClient when navigating away from Clients page to prevent flash of stale client data
   useEffect(() => {
@@ -663,12 +668,28 @@ const AppContentInner: React.FC = () => {
     setAdminAppNavOpen(false);
   }, []);
 
-  // Close docked Clients app nav when leaving client detail
-  useEffect(() => {
-    if (!isClientDetailPage && clientsAppNavOpen) {
+  // The drive runs without the app header, so its own hamburger is the only way back to the nav.
+  // Both flags move together: the docked panel is the desktop nav, the drawer the narrow-screen
+  // one, and one button opens whichever of the two the viewport is showing.
+  const handleToggleDriveAppNav = useCallback(() => {
+    const next = !driveAppNavOpen;
+    setDriveAppNavOpen(next);
+    setIsSidebarOpen(next);
+  }, [driveAppNavOpen]);
+
+  const handleCloseDriveAppNav = useCallback(() => {
+    setDriveAppNavOpen(false);
+    setIsSidebarOpen(false);
+  }, []);
+
+  // Close docked Clients app nav when leaving client detail. Closed before the next page paints,
+  // so the panel never shows there for a frame, and keyed off the route rather than the loaded
+  // lead so a reload of the same client doesn't shut it.
+  useLayoutEffect(() => {
+    if (!isClientDetailRoute && clientsAppNavOpen) {
       setClientsAppNavOpen(false);
     }
-  }, [isClientDetailPage, clientsAppNavOpen]);
+  }, [isClientDetailRoute, clientsAppNavOpen]);
 
   // Close docked Admin app nav when leaving admin
   useEffect(() => {
@@ -676,6 +697,17 @@ const AppContentInner: React.FC = () => {
       setAdminAppNavOpen(false);
     }
   }, [isAdminPage, adminAppNavOpen]);
+
+  // Same for the drive, which is the only other page whose nav opens on demand. Navigating from
+  // the panel leaves it open behind you otherwise, since its links are plain links. Closed before
+  // the next page is painted: left to a passive effect, the panel the drive had open is drawn
+  // once on the page you land on and then animates shut, which reads as a flash.
+  useLayoutEffect(() => {
+    if (!isDrivePage && driveAppNavOpen) {
+      setDriveAppNavOpen(false);
+      setIsSidebarOpen(false);
+    }
+  }, [isDrivePage, driveAppNavOpen]);
 
   const handleOpenEmailThread = useCallback(() => {
     setIsEmailThreadOpen(true);
@@ -1058,7 +1090,7 @@ const AppContentInner: React.FC = () => {
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div
                 className={
-                  isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage || isDrivePage
+                  isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage
                     ? 'hidden'
                     : undefined
                 }
@@ -1067,37 +1099,58 @@ const AppContentInner: React.FC = () => {
                   userName={sidebarUserName}
                   userInitials={userInitials}
                   isOpen={isSidebarOpen}
-                  onClose={handleCloseSidebar}
+                  onClose={isDrivePage ? handleCloseDriveAppNav : handleCloseSidebar}
                   onOpenAIChat={handleOpenAIChat}
                   mobileOnly={sidebarMobileOnly}
-                  presentation={isClientDetailPage || isAdminPage ? 'docked' : 'floating'}
+                  presentation={
+                    isClientDetailRoute || isAdminPage || isDrivePage ? 'docked' : 'floating'
+                  }
                   dockedOpen={
-                    (isClientDetailPage && clientsAppNavOpen) ||
-                    (isAdminPage && adminAppNavOpen)
+                    (isClientDetailRoute && clientsAppNavOpen) ||
+                    (isAdminPage && adminAppNavOpen) ||
+                    (isDrivePage && driveAppNavOpen)
                   }
                   onDockedClose={
-                    isAdminPage ? handleCloseAdminAppNav : handleCloseClientsAppNav
+                    isAdminPage
+                      ? handleCloseAdminAppNav
+                      : isDrivePage
+                        ? handleCloseDriveAppNav
+                        : handleCloseClientsAppNav
                   }
                   dockedPositionClassName={
                     isAdminPage
                       ? 'fixed bottom-0 left-56 top-12 z-40'
-                      : `fixed left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)] ${
-                          shortRailViewport
-                            ? CLIENT_DETAIL_NAV_ACTIONS_CLEARANCE_CLASS
-                            : 'bottom-0'
-                        }`
+                      : isDrivePage
+                        ? // The drive has no header above it, so its nav runs the full height.
+                          'fixed bottom-0 left-0 top-0 z-40 shadow-2xl'
+                        : `fixed left-[4.75rem] z-40 top-[var(--client-detail-nav-top,7.25rem)] ${
+                            shortRailViewport
+                              ? CLIENT_DETAIL_NAV_ACTIONS_CLEARANCE_CLASS
+                              : 'bottom-0'
+                          }`
                   }
                   dockedSurfaceClassName={
-                    isAdminPage
-                      ? 'border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
-                      : 'bg-white dark:bg-base-100'
+                    isDrivePage
+                      ? // Rounded down its outer edge, since it opens over a page with no header
+                        // above it to square off against.
+                        'rounded-r-[2rem] border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
+                      : isAdminPage
+                        ? 'border-r border-gray-200 bg-white dark:border-base-content/10 dark:bg-base-100'
+                        : 'bg-white dark:bg-base-100'
                   }
-                  dockedOnLight={isAdminPage || isClientDetailPage}
+                  dockedOnLight={isAdminPage || isClientDetailRoute || isDrivePage}
+                  dockedStrongContrast={isDrivePage}
+                  dockedCloseIgnoreSelector={
+                    isDrivePage ? '[data-drive-app-nav-toggle]' : undefined
+                  }
                 />
               </div>
               <div
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${useGreyAppBackground ? 'bg-transparent' : 'bg-base-100'} ${useStaffSidebarInset && !isClientDetailPage ? 'md:pl-24' : ''}`}
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${useGreyAppBackground ? 'bg-transparent' : 'bg-base-100'} ${useStaffSidebarInset && !isClientDetailRoute ? 'md:pl-24' : ''}`}
               >
+                {/* The drive runs full-bleed with its own top bar. Kept mounted rather than
+                    unmounted so its notifications and polling survive a trip to the drive. */}
+                <div className={isDrivePage ? 'hidden' : undefined}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
@@ -1109,11 +1162,12 @@ const AppContentInner: React.FC = () => {
                   onOpenWhatsApp={handleOpenWhatsApp}
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
-                  clearFloatingSidebar={isClientDetailPage}
+                  clearFloatingSidebar={isClientDetailRoute}
                   startInsetClassName={
                     isPipelinePage ? 'left-16' : isHandlerManagementPage ? 'md:left-16' : undefined
                   }
                 />
+                </div>
                 <main
                   className={`app-main-scroll relative min-h-0 w-full min-w-0 flex-1 ${
                     isPoaEditPage
@@ -1122,9 +1176,13 @@ const AppContentInner: React.FC = () => {
                         ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
                         : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
                   } ${
-                    isClientDetailPage
+                    isClientDetailRoute
                       ? 'clients-detail-scroll scrollbar-hide'
-                      : `pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
+                      : isDrivePage
+                        ? // No header to clear. The inset itself lives in index.css, since
+                          // `.app-main-scroll` sets a header-sized padding a utility cannot undo.
+                          'scrollbar-hide drive-scroll'
+                        : `pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
                   } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   {pipelinePageMounted ? (
@@ -1185,7 +1243,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/duplicates" element={<RouteSuspense><LazyDuplicateContactsPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} clientsAppNavOpen={clientsAppNavOpen} onToggleClientsAppNav={handleToggleClientsAppNav} /></RouteSuspense>} />
-                    <Route path="/drive" element={<RouteSuspense><LazyDocumentsDrivePage /></RouteSuspense>} />
+                    <Route path="/drive" element={<RouteSuspense><LazyDocumentsDrivePage onOpenAppNav={handleToggleDriveAppNav} /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
                     <Route path="/calendar/internal-meeting-documents" element={<RouteSuspense><LazyInternalMeetingDocumentsPage /></RouteSuspense>} />
                     <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />
