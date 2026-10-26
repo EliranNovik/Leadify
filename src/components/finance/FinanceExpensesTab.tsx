@@ -341,7 +341,8 @@ function CreatedByCell({ name, photoUrl }: { name: string | null; photoUrl: stri
       >
         {initialsFromName(label)}
       </span>
-      <span className="truncate">{label}</span>
+      {/* Who entered a row is a footnote beside the amount and the client, so it is said quietly. */}
+      <span className="truncate text-gray-500">{label}</span>
     </div>
   );
 }

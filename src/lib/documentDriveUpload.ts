@@ -7,19 +7,28 @@ import {
 } from './caseDocumentsStorage';
 import { ensureFolderPath, type DocumentFolderScope } from './documentFolders';
 import {
+  buildOfficeDocumentStoragePath,
   ensureOfficeFolderPath,
   fetchOfficeDocumentFolders,
   OFFICE_DOCUMENTS_BUCKET,
   uploadOfficeDocument,
 } from './officeDocuments';
 import {
+  buildEmployeePersonalFileStoragePath,
   EMPLOYEE_PERSONAL_FILES_BUCKET,
   ensureEmployeePersonalFolderPath,
   fetchEmployeePersonalFolders,
   uploadEmployeePersonalFile,
 } from './employeePersonalSpace';
 import type { FolderUploadEntry } from './browserFolderUpload';
-import { deleteDocumentIndexRow, hasStoredFile, type DocumentIndexRow } from './documentIndex';
+import {
+  deleteDocumentIndexRow,
+  documentIndexSourceTable,
+  hasStoredFile,
+  type DocumentIndexRow,
+  type DocumentIndexSource,
+} from './documentIndex';
+import { BULK_SUMMARY_FILE_LIMIT, caseDocumentSummaryFields } from './caseDocumentSummaryPolicy';
 
 /**
  * Uploading from the central documents page, where the destination is chosen rather than implied
@@ -114,27 +123,90 @@ function withUniqueBasename(path: string): string {
   return `${dir}${Math.random().toString(36).slice(2, 8)}-${base}`;
 }
 
+/**
+ * How many files are uploaded at once. One at a time, a batch spends nearly all of its time
+ * waiting on a round trip; six lanes keep the connection busy without flooding the browser's own
+ * request pool, which is what the case drawer settled on.
+ */
+const DRIVE_UPLOAD_CONCURRENCY = 6;
+
+const RETRY_PAUSE_MS = 600;
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Rate limits and gateway errors turn up only once requests overlap, and they clear on a retry. */
+function isTransientStorageError(error: unknown): boolean {
+  const err = error as { statusCode?: string | number; status?: number; message?: string } | null;
+  const status = Number(err?.statusCode ?? err?.status ?? 0);
+  if (status === 429 || (status >= 500 && status < 600)) return true;
+  const message = String(err?.message ?? '').toLowerCase();
+  return (
+    message.includes('too many requests') ||
+    message.includes('failed to fetch') ||
+    message.includes('load failed')
+  );
+}
+
+/**
+ * One more go at anything that failed for a reason that is nobody's fault. Safe for the office and
+ * personal upload helpers, which remove their file and throw before leaving a row behind.
+ */
+async function withTransientRetry<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientStorageError(error)) throw error;
+    await pause(RETRY_PAUSE_MS);
+    return run();
+  }
+}
+
+/**
+ * Puts the bytes in the bucket and says where they landed, which is not always where they were
+ * sent: a path already taken is retried under a suffixed one.
+ */
+async function putObject(
+  bucket: string,
+  path: string,
+  file: File,
+  contentType: string,
+): Promise<string> {
+  const attempt = (target: string) =>
+    supabase.storage.from(bucket).upload(target, file, { contentType, upsert: false });
+
+  let target = path;
+  let { error } = await attempt(target);
+
+  if (error && isDuplicateStorageObject(error)) {
+    target = withUniqueBasename(target);
+    ({ error } = await attempt(target));
+  }
+  if (error && isTransientStorageError(error)) {
+    await pause(RETRY_PAUSE_MS);
+    ({ error } = await attempt(target));
+  }
+  if (error) throw error;
+  return target;
+}
+
 async function uploadCaseDocument(params: {
   destination: Extract<DriveDestination, { kind: 'lead' }>;
   entry: FolderUploadEntry;
   folderId: string | null;
   uploadedBy: string | null;
+  /** False for a big batch, which leaves the summaries to be asked for later. */
+  summarise: boolean;
 }): Promise<DriveCreatedFile> {
   const { file } = params.entry;
   const contentType = resolveCaseDocumentUploadContentType(file);
-  let storagePath = buildCaseDocumentStoragePath(params.destination.leadNumber, null, file.name);
-
-  let { error: uploadError } = await supabase.storage
-    .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-    .upload(storagePath, file, { contentType, upsert: false });
-
-  if (uploadError && isDuplicateStorageObject(uploadError)) {
-    storagePath = withUniqueBasename(storagePath);
-    ({ error: uploadError } = await supabase.storage
-      .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-      .upload(storagePath, file, { contentType, upsert: false }));
-  }
-  if (uploadError) throw uploadError;
+  const storagePath = await putObject(
+    CASE_DOCUMENTS_STORAGE_BUCKET,
+    buildCaseDocumentStoragePath(params.destination.leadNumber, null, file.name),
+    file,
+    contentType,
+  );
 
   const { error: insertError } = await supabase.from('lead_case_documents').insert({
     lead_number: params.destination.leadNumber,
@@ -147,7 +219,7 @@ async function uploadCaseDocument(params: {
     classification_id: params.destination.classificationId,
     folder_id: params.folderId,
     uploaded_by: params.uploadedBy,
-    ai_summary_status: 'pending',
+    ...caseDocumentSummaryFields(params.summarise),
   });
 
   if (insertError) {
@@ -170,19 +242,12 @@ async function uploadStaffMeetingDocument(params: {
 }): Promise<DriveCreatedFile> {
   const { file } = params;
   const contentType = resolveCaseDocumentUploadContentType(file);
-  let storagePath = buildStaffMeetingDocumentStoragePath(params.meetingId, file.name);
-
-  let { error: uploadError } = await supabase.storage
-    .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-    .upload(storagePath, file, { contentType, upsert: false });
-
-  if (uploadError && isDuplicateStorageObject(uploadError)) {
-    storagePath = withUniqueBasename(storagePath);
-    ({ error: uploadError } = await supabase.storage
-      .from(CASE_DOCUMENTS_STORAGE_BUCKET)
-      .upload(storagePath, file, { contentType, upsert: false }));
-  }
-  if (uploadError) throw uploadError;
+  const storagePath = await putObject(
+    CASE_DOCUMENTS_STORAGE_BUCKET,
+    buildStaffMeetingDocumentStoragePath(params.meetingId, file.name),
+    file,
+    contentType,
+  );
 
   const { error: insertError } = await supabase.from('staff_meeting_documents').insert({
     meeting_id: params.meetingId,
@@ -218,11 +283,261 @@ export type DriveCreatedFile = {
 export type DriveUploadResult = {
   succeeded: number;
   failed: number;
+  /** How many of the successes took the place of a document already there, not a separate count. */
+  replaced: number;
+  /** Clashing files left alone on the uploader's say-so. */
+  skipped: number;
   lastError: string | null;
   foldersCreated: number;
   /** In the order they were uploaded, for the ones that worked. */
   created: DriveCreatedFile[];
 };
+
+/** What to do with a file whose name is already taken where it is going. */
+export type DriveClashChoice = 'replace' | 'skip';
+
+/** A file in the batch that would land on top of a name already in use. */
+export type DriveUploadClash = {
+  /** Its place in the entries that were handed in, which is how the answer comes back. */
+  index: number;
+  fileName: string;
+  /** The folder inside the drop it came from, empty when it was dropped at the top. */
+  folderLabel: string;
+  incomingSize: number;
+  existingSize: number | null;
+  existingCreatedAt: string;
+};
+
+/** A document already stored where something in the batch is about to land. */
+type ExistingDocument = {
+  rowId: string;
+  fileName: string;
+  bucket: string;
+  storagePath: string;
+  fileSize: number | null;
+  createdAt: string;
+};
+
+/** Which section of the drive a destination writes into, as `document_index` reports it. */
+function destinationSource(destination: DriveDestination): DocumentIndexSource {
+  switch (destination.kind) {
+    case 'lead':
+      return 'lead';
+    case 'staff_meeting':
+      return 'staff_meeting';
+    case 'office':
+      return 'office';
+    case 'personal':
+      return 'personal';
+  }
+}
+
+/** Case-insensitive, because two names differing only in case read as the same document. */
+function clashKey(folderId: string | null, fileName: string): string {
+  return `${folderId ?? 'root'}::${fileName.trim().toLowerCase()}`;
+}
+
+/** How many stored rows the name check reads. Past this a clash simply goes unnoticed. */
+const EXISTING_NAME_SCAN_LIMIT = 5000;
+
+/** Which bucket a destination's files are kept in, since its own table does not say. */
+function destinationBucket(destination: DriveDestination): string {
+  switch (destination.kind) {
+    case 'office':
+      return OFFICE_DOCUMENTS_BUCKET;
+    case 'personal':
+      return EMPLOYEE_PERSONAL_FILES_BUCKET;
+    default:
+      return CASE_DOCUMENTS_STORAGE_BUCKET;
+  }
+}
+
+/**
+ * The documents already filed in the folders this batch is about to write into, read once for the
+ * whole batch rather than once per file.
+ *
+ * Read from the store's own table rather than through the `document_index` view: the view unions
+ * five tables and builds every space's folder paths with a recursive query before any filter
+ * applies, which is seconds of waiting before the first byte goes up. Here one folder's names are
+ * wanted, off an indexed column.
+ */
+async function fetchExistingDocuments(
+  destination: DriveDestination,
+  folderIds: Array<string | null>,
+): Promise<Map<string, ExistingDocument>> {
+  const found = new Map<string, ExistingDocument>();
+  const bucket = destinationBucket(destination);
+  // Office and personal keep their own tables, which name the size column differently. Meetings
+  // hold one flat list, so they have no folder column at all.
+  const sizeColumn =
+    destination.kind === 'office' || destination.kind === 'personal' ? 'size_bytes' : 'file_size';
+  const keepsFolders = destination.kind !== 'staff_meeting';
+  const columns = [
+    'id',
+    'file_name',
+    'storage_path',
+    `${sizeColumn}`,
+    'created_at',
+    ...(keepsFolders ? ['folder_id'] : []),
+  ].join(', ');
+
+  const place = () => {
+    const request = supabase
+      .from(documentIndexSourceTable(destinationSource(destination)))
+      .select(columns)
+      .not('storage_path', 'is', null)
+      .limit(EXISTING_NAME_SCAN_LIMIT);
+
+    switch (destination.kind) {
+      case 'lead':
+        // A case keeps a separate tree per document type, so the same name under another type is
+        // another place entirely — exactly as `isSameDrivePlace` reads it.
+        return request
+          .eq('lead_number', destination.leadNumber)
+          .eq('classification_id', destination.classificationId);
+      case 'staff_meeting':
+        return request.eq('meeting_id', destination.meetingId);
+      case 'office':
+        return destination.departmentId == null
+          ? request.is('department_id', null)
+          : request.eq('department_id', destination.departmentId);
+      case 'personal':
+        return request.eq('employee_id', destination.employeeId);
+    }
+  };
+
+  const named = Array.from(new Set(folderIds.filter((id): id is string => !!id)));
+  const includeRoot = folderIds.some((id) => !id);
+
+  const reads: Array<PromiseLike<{ data: any[] | null; error: { message?: string } | null }>> = [];
+  if (!keepsFolders) {
+    reads.push(place());
+  } else {
+    if (named.length > 0) reads.push(place().in('folder_id', named));
+    if (includeRoot) reads.push(place().is('folder_id', null));
+  }
+
+  for (const { data, error } of await Promise.all(reads)) {
+    if (error) throw error;
+    for (const row of (data || []) as any[]) {
+      const fileName = String(row.file_name || '');
+      const storagePath = String(row.storage_path || '');
+      if (!fileName || !storagePath || storagePath === 'pending') continue;
+
+      const key = clashKey(row.folder_id != null ? String(row.folder_id) : null, fileName);
+      const createdAt = String(row.created_at || '');
+      // A folder can already hold the same name twice; replacing means replacing the newest.
+      const seen = found.get(key);
+      if (seen && Date.parse(seen.createdAt) >= Date.parse(createdAt)) continue;
+
+      found.set(key, {
+        rowId: String(row.id),
+        fileName,
+        bucket,
+        storagePath,
+        fileSize: row[sizeColumn] != null ? Number(row[sizeColumn]) : null,
+        createdAt,
+      });
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Swaps the file behind a document that is already listed, keeping the row it is listed as.
+ *
+ * The row's id is what shares, links, its folder and its type all hang off, so a replacement
+ * repoints it rather than adding a second document. The new bytes go up first and the old ones are
+ * removed last: a failure in between leaves the document readable, pointing at one of the two.
+ */
+async function replaceExistingDocument(params: {
+  destination: DriveDestination;
+  existing: ExistingDocument;
+  entry: FolderUploadEntry;
+  uploadedBy: string | null;
+  summarise: boolean;
+}): Promise<DriveCreatedFile> {
+  const { destination, existing } = params;
+  const { file } = params.entry;
+  // Named for the case drawer but general: the browser's own type, or the name when it has none.
+  const contentType = resolveCaseDocumentUploadContentType(file);
+
+  const target = (): { bucket: string; path: string } => {
+    switch (destination.kind) {
+      case 'lead':
+        return {
+          bucket: CASE_DOCUMENTS_STORAGE_BUCKET,
+          path: buildCaseDocumentStoragePath(destination.leadNumber, null, file.name),
+        };
+      case 'staff_meeting':
+        return {
+          bucket: CASE_DOCUMENTS_STORAGE_BUCKET,
+          path: buildStaffMeetingDocumentStoragePath(destination.meetingId, file.name),
+        };
+      case 'office':
+        return {
+          bucket: OFFICE_DOCUMENTS_BUCKET,
+          path: buildOfficeDocumentStoragePath(file.name, destination.departmentId),
+        };
+      case 'personal':
+        return {
+          bucket: EMPLOYEE_PERSONAL_FILES_BUCKET,
+          path: buildEmployeePersonalFileStoragePath(destination.employeeId, file.name),
+        };
+    }
+  };
+
+  const { bucket, path } = target();
+  const storagePath = await putObject(bucket, path, file, contentType);
+
+  // The two stores that keep their own tables name the size column differently, and only the two
+  // case-shaped ones record who uploaded a file.
+  const patch: Record<string, unknown> =
+    destination.kind === 'lead'
+      ? {
+          storage_path: storagePath,
+          file_size: file.size,
+          mime_type: contentType,
+          uploaded_by: params.uploadedBy,
+          // The summary on hand describes a file that is about to be gone.
+          ai_summary: null,
+          ai_summary_at: null,
+          ...caseDocumentSummaryFields(params.summarise),
+        }
+      : destination.kind === 'staff_meeting'
+        ? {
+            storage_path: storagePath,
+            file_size: file.size,
+            mime_type: contentType,
+            uploaded_by: params.uploadedBy,
+          }
+        : { storage_path: storagePath, size_bytes: file.size, mime_type: contentType };
+
+  // RLS answers a forbidden update with nought rows rather than an error, so without reading back
+  // what changed this would report a replacement that never happened.
+  const { data, error } = await supabase
+    .from(documentIndexSourceTable(destinationSource(destination)))
+    .update(patch)
+    .eq('id', existing.rowId)
+    .select('id');
+
+  if (error || !data || data.length === 0) {
+    await supabase.storage.from(bucket).remove([storagePath]);
+    throw new Error(error?.message || 'This document is not yours to replace');
+  }
+
+  if (existing.bucket && existing.storagePath !== storagePath) {
+    const { error: removeError } = await supabase.storage
+      .from(existing.bucket)
+      .remove([existing.storagePath]);
+    if (removeError) {
+      console.warn('[documentDriveUpload] replaced file kept', existing.storagePath, removeError);
+    }
+  }
+
+  return { bucket, storagePath, fileName: file.name, mimeType: contentType };
+}
 
 export async function uploadEntriesToDestination(params: {
   destination: DriveDestination;
@@ -231,17 +546,31 @@ export async function uploadEntriesToDestination(params: {
   folderPaths?: string[][];
   uploadedBy?: string | null;
   onProgress?: (done: number, total: number) => void;
+  /**
+   * The files being sent right now, which a bar cannot show: storage reports nothing about a file
+   * until it is done, so one large file in the batch looks like a stall unless it is named.
+   */
+  onActive?: (files: Array<{ name: string; size: number }>) => void;
+  /**
+   * Asked once, after everything whose name was free has landed, what to do about the names that
+   * were taken. Without it a clashing file simply lands beside the one already there, as before.
+   */
+  onClashes?: (clashes: DriveUploadClash[]) => Promise<Map<number, DriveClashChoice>>;
 }): Promise<DriveUploadResult> {
   const { destination, entries } = params;
   const uploadedBy = params.uploadedBy?.trim() || null;
   const result: DriveUploadResult = {
     succeeded: 0,
     failed: 0,
+    replaced: 0,
+    skipped: 0,
     lastError: null,
     foldersCreated: 0,
     created: [],
   };
   if (entries.length === 0) return result;
+
+  const summarise = entries.length <= BULK_SUMMARY_FILE_LIMIT;
 
   // Folders first, so every file already has somewhere to land. Each store keeps its own folders,
   // so the tree is rebuilt through whichever one the destination belongs to.
@@ -304,50 +633,84 @@ export async function uploadEntriesToDestination(params: {
     return folderIdByPath.get(key) ?? baseFolderId;
   };
 
-  for (let index = 0; index < entries.length; index += 1) {
+  // Worked out once up front: the folder each file is going into, and a slot for where it ended
+  // up. Kept in the order handed in, because the drive opens the document it just uploaded.
+  const targets = entries.map((entry) => folderForEntry(entry));
+  const created: Array<DriveCreatedFile | null> = entries.map(() => null);
+
+  let completed = 0;
+  const reportProgress = () => {
+    completed += 1;
+    params.onProgress?.(completed, entries.length);
+  };
+
+  const inFlight = new Set<number>();
+  const reportActive = () => {
+    params.onActive?.(
+      Array.from(inFlight).map((index) => ({
+        name: entries[index].file.name,
+        size: entries[index].file.size,
+      })),
+    );
+  };
+
+  /** Wraps the work on one file so it shows up as in flight for as long as it takes. */
+  const whileSending = async (index: number, send: () => Promise<void>): Promise<void> => {
+    inFlight.add(index);
+    reportActive();
+    try {
+      await send();
+    } finally {
+      inFlight.delete(index);
+      reportActive();
+    }
+  };
+
+  const sendOne = async (index: number): Promise<void> => {
     const entry = entries[index];
     try {
       if (destination.kind === 'lead') {
-        result.created.push(
-          await uploadCaseDocument({
-            destination,
-            entry,
-            folderId: folderForEntry(entry),
-            uploadedBy,
-          }),
-        );
-      } else if (destination.kind === 'staff_meeting') {
-        result.created.push(
-          await uploadStaffMeetingDocument({
-            meetingId: destination.meetingId,
-            file: entry.file,
-            uploadedBy,
-          }),
-        );
-      } else if (destination.kind === 'office') {
-        const row = await uploadOfficeDocument({
-          file: entry.file,
-          folderId: folderForEntry(entry),
-          departmentId: destination.departmentId,
+        created[index] = await uploadCaseDocument({
+          destination,
+          entry,
+          folderId: targets[index],
+          uploadedBy,
+          summarise,
         });
-        result.created.push({
+      } else if (destination.kind === 'staff_meeting') {
+        created[index] = await uploadStaffMeetingDocument({
+          meetingId: destination.meetingId,
+          file: entry.file,
+          uploadedBy,
+        });
+      } else if (destination.kind === 'office') {
+        const row = await withTransientRetry(() =>
+          uploadOfficeDocument({
+            file: entry.file,
+            folderId: targets[index],
+            departmentId: destination.departmentId,
+          }),
+        );
+        created[index] = {
           bucket: OFFICE_DOCUMENTS_BUCKET,
           storagePath: row.storage_path,
           fileName: row.file_name,
           mimeType: row.mime_type || entry.file.type,
-        });
+        };
       } else {
-        const row = await uploadEmployeePersonalFile({
-          employeeId: destination.employeeId,
-          file: entry.file,
-          folderId: folderForEntry(entry),
-        });
-        result.created.push({
+        const row = await withTransientRetry(() =>
+          uploadEmployeePersonalFile({
+            employeeId: destination.employeeId,
+            file: entry.file,
+            folderId: targets[index],
+          }),
+        );
+        created[index] = {
           bucket: EMPLOYEE_PERSONAL_FILES_BUCKET,
           storagePath: row.storage_path,
           fileName: row.file_name,
           mimeType: row.mime_type || entry.file.type,
-        });
+        };
       }
       result.succeeded += 1;
     } catch (err: any) {
@@ -355,9 +718,96 @@ export async function uploadEntriesToDestination(params: {
       result.lastError = String(err?.message || err || 'Upload failed');
       console.error('[documentDriveUpload]', entry.file.name, err);
     }
-    params.onProgress?.(index + 1, entries.length);
+    reportProgress();
+  };
+
+  const uploadOne = (index: number) => whileSending(index, () => sendOne(index));
+
+  const replaceOne = async (index: number, existing: ExistingDocument): Promise<void> => {
+    try {
+      created[index] = await replaceExistingDocument({
+        destination,
+        existing,
+        entry: entries[index],
+        uploadedBy,
+        summarise,
+      });
+      result.succeeded += 1;
+      result.replaced += 1;
+    } catch (err: any) {
+      result.failed += 1;
+      result.lastError = String(err?.message || err || 'Could not replace this file');
+      console.error('[documentDriveUpload] replace', entries[index].file.name, err);
+    }
+    reportProgress();
+  };
+
+  /** A few at a time, which is what turns a large batch from minutes into seconds. */
+  const runInLanes = async (indexes: number[], work: (index: number) => Promise<void>) => {
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DRIVE_UPLOAD_CONCURRENCY, indexes.length) }, async () => {
+        while (cursor < indexes.length) {
+          const next = indexes[cursor];
+          cursor += 1;
+          await work(next);
+        }
+      }),
+    );
+  };
+
+  // Names already taken are found before anything goes up, so nothing is sent twice, but the
+  // question is held back until the rest has landed. A check that fails is no reason to stop:
+  // without it this behaves as it always did and files land beside their namesakes.
+  const alreadyThere = params.onClashes
+    ? await fetchExistingDocuments(destination, targets).catch((err) => {
+        console.warn('[documentDriveUpload] duplicate name check skipped:', err);
+        return new Map<string, ExistingDocument>();
+      })
+    : new Map<string, ExistingDocument>();
+
+  const clashes: DriveUploadClash[] = [];
+  const clashingWith = new Map<number, ExistingDocument>();
+  const claimed = new Set<string>();
+  entries.forEach((entry, index) => {
+    const match = alreadyThere.get(clashKey(targets[index], entry.file.name));
+    // Two files of the same name inside one drop can only replace the one document between them,
+    // so the second goes up as a new document rather than undoing the first.
+    if (!match || claimed.has(match.rowId)) return;
+    claimed.add(match.rowId);
+    clashingWith.set(index, match);
+    clashes.push({
+      index,
+      fileName: entry.file.name,
+      folderLabel: entry.segments.join(' / '),
+      incomingSize: entry.file.size,
+      existingSize: match.fileSize,
+      existingCreatedAt: match.createdAt,
+    });
+  });
+
+  // Biggest first, so the one file that takes a minute runs alongside the hundred that take a
+  // second rather than on its own at the end. The order files were handed in is kept by index.
+  const queue = entries
+    .map((_, index) => index)
+    .filter((index) => !clashingWith.has(index))
+    .sort((left, right) => entries[right].file.size - entries[left].file.size);
+
+  await runInLanes(queue, uploadOne);
+
+  if (clashes.length > 0 && params.onClashes) {
+    const choices = await params.onClashes(clashes);
+    const replacing = clashes.filter((clash) => choices.get(clash.index) === 'replace');
+    result.skipped = clashes.length - replacing.length;
+    // The files left alone are finished with as far as the progress bar is concerned.
+    for (let left = 0; left < result.skipped; left += 1) reportProgress();
+    await runInLanes(
+      replacing.map((clash) => clash.index),
+      (index) => whileSending(index, () => replaceOne(index, clashingWith.get(index)!)),
+    );
   }
 
+  result.created = created.filter((file): file is DriveCreatedFile => file !== null);
   return result;
 }
 

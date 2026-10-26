@@ -6,6 +6,7 @@ import {
   ArrowUpCircleIcon,
   BanknotesIcon,
   EllipsisVerticalIcon,
+  FolderOpenIcon,
   PencilSquareIcon,
   PaperClipIcon,
   PlusIcon,
@@ -36,6 +37,7 @@ import {
   type CashBoxDocument,
 } from '../../lib/financeCashBoxDocuments';
 import { validateFinanceExpenseDocumentFile } from '../../lib/financeExpenseDocuments';
+import SavedDocumentPickerModal from './SavedDocumentPickerModal';
 
 function localDateIso(): string {
   const d = new Date();
@@ -99,6 +101,7 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
   const [date, setDate] = useState(localDateIso);
   const [saving, setSaving] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [savedPickerOpen, setSavedPickerOpen] = useState(false);
   const employeePickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -122,6 +125,7 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
     setNotes(edit?.notes || '');
     setDate(edit?.transaction_date || localDateIso());
     setPendingFiles([]);
+    setSavedPickerOpen(false);
   }, [edit, employees, initialDirection, open]);
 
   useEffect(() => {
@@ -151,6 +155,18 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
   }, [employeeId, employeeSearch, employees]);
 
   if (!open) return null;
+
+  /** Shared by the file field and by documents chosen out of a case or out of Smart Scan. */
+  const addFiles = (incoming: File[]) => {
+    const valid: File[] = [];
+    for (const file of incoming) {
+      const message = validateFinanceExpenseDocumentFile(file);
+      if (message) toast.error(message);
+      else valid.push(file);
+    }
+    if (!valid.length) return;
+    setPendingFiles((current) => [...current, ...valid].slice(0, CASH_BOX_DOCUMENT_MAX_FILES));
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -322,25 +338,32 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
               <span className="label-text mb-2 font-semibold text-gray-600">Notes</span>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="textarea textarea-bordered min-h-28 w-full rounded-xl" placeholder="Optional details..." />
             </label>
-            <label className="form-control">
-              <span className="label-text mb-2 font-semibold text-gray-600">Documents</span>
-              <input
-                type="file"
-                multiple
-                accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.doc,.docx,.xls,.xlsx"
-                className="file-input file-input-bordered w-full rounded-xl"
-                onChange={(event) => {
-                  const selected = Array.from(event.target.files || []);
-                  const valid: File[] = [];
-                  for (const file of selected) {
-                    const message = validateFinanceExpenseDocumentFile(file);
-                    if (message) toast.error(message);
-                    else valid.push(file);
-                  }
-                  setPendingFiles((current) => [...current, ...valid].slice(0, CASH_BOX_DOCUMENT_MAX_FILES));
-                  event.target.value = '';
-                }}
-              />
+            <div className="form-control">
+              <label className="form-control">
+                <span className="label-text mb-2 font-semibold text-gray-600">Documents</span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.doc,.docx,.xls,.xlsx"
+                  className="file-input file-input-bordered w-full rounded-xl"
+                  onChange={(event) => {
+                    addFiles(Array.from(event.target.files || []));
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+              {/* Outside the file field's own label, where a click would open the file dialog
+                  instead. A receipt is often already filed under a case or sitting in Smart Scan,
+                  and should not have to be found on a disk and uploaded a second time. */}
+              <button
+                type="button"
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50/60 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={saving || pendingFiles.length >= CASH_BOX_DOCUMENT_MAX_FILES}
+                onClick={() => setSavedPickerOpen(true)}
+              >
+                <FolderOpenIcon className="h-5 w-5 text-slate-500" />
+                Choose from case documents or Smart Scan
+              </button>
               {pendingFiles.length ? (
                 <div className="mt-2 space-y-1.5">
                   {pendingFiles.map((file, index) => (
@@ -353,7 +376,7 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
                   ))}
                 </div>
               ) : null}
-            </label>
+            </div>
           </div>
           <div className="flex items-center gap-3 p-5">
             <button type="button" className="btn btn-ghost rounded-full px-4 text-gray-500" onClick={onClose} disabled={saving}>
@@ -364,6 +387,13 @@ const CashBoxTransactionDrawer: React.FC<DrawerProps> = ({
             </button>
           </div>
         </form>
+
+        <SavedDocumentPickerModal
+          open={savedPickerOpen}
+          onClose={() => setSavedPickerOpen(false)}
+          roomLeft={Math.max(0, CASH_BOX_DOCUMENT_MAX_FILES - pendingFiles.length)}
+          onAttach={addFiles}
+        />
       </aside>
     </div>,
     document.body,

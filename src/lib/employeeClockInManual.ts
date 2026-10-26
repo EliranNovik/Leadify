@@ -26,6 +26,8 @@ export type ManualClockInPayload = {
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
   overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
+  /** Save overtime without its screenshot, which only the lead allocation page offers. */
+  approvalDeferred?: boolean;
   /** Used when replacing derived standard hours that remain within the overtime limit. */
   approveAutomatically?: boolean;
 };
@@ -77,6 +79,7 @@ export async function insertManualClockInRecord(
     clockInTime: payload.clockInTime,
     clockOutTime: payload.clockOutTime,
     overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
+    approvalDeferred: payload.approvalDeferred,
   });
 
   const employeeUserId = await resolveEmployeeAuthUserId(
@@ -393,6 +396,10 @@ export async function replaceDayWithPendingManualSession(params: {
   clockOutTime: string;
   locationId: number;
   notes?: string | null;
+  /** The screenshot for a session past the employee's base hours, new or carried over. */
+  overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
+  /** Write the overtime now and leave its screenshot for later. */
+  approvalDeferred?: boolean;
 }): Promise<void> {
   const clockIn = combineDateAndTime(params.date, params.clockInTime);
   const clockOut = combineDateAndTime(params.date, params.clockOutTime);
@@ -404,6 +411,15 @@ export async function replaceDayWithPendingManualSession(params: {
   }
 
   await assertDateEditableForEmployee(params.employeeId, params.date);
+  // Checked before the day's rows are archived and deleted: the insert checks it too, and failing
+  // there would leave the employee with no session at all for the day.
+  await assertManualDurationAllowed({
+    employeeId: params.employeeId,
+    clockInTime: params.clockInTime,
+    clockOutTime: params.clockOutTime,
+    overtimeApprovalStoragePath: params.overtimeApproval?.storagePath,
+    approvalDeferred: params.approvalDeferred,
+  });
 
   const { start, end } = dateRangeToIsoBounds(params.date, params.date);
   const { data: existingRows, error: fetchError } = await supabase
@@ -453,5 +469,7 @@ export async function replaceDayWithPendingManualSession(params: {
     notes: noteText,
     clockInLocationId: params.locationId,
     clockOutLocationId: params.locationId,
+    overtimeApproval: params.overtimeApproval ?? null,
+    approvalDeferred: params.approvalDeferred,
   });
 }

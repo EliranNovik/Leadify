@@ -3086,6 +3086,8 @@ const loadPayments = async ({
         open={Boolean(taxInvoiceDrawerTarget)}
         target={taxInvoiceDrawerTarget}
         subtitle={[taxInvoiceRow?.leadName, taxInvoiceRow?.clientName].filter(Boolean).join(' \u00b7 ')}
+        // The case column carries a leading hash for reading; the documents are filed without it.
+        leadNumber={taxInvoiceRow?.caseNumber ? taxInvoiceRow.caseNumber.replace(/^#/, '').trim() : null}
         onClose={() => setTaxInvoiceRowId(null)}
         onSaved={(state: PaymentPlanTaxInvoiceState) => {
           if (!taxInvoiceRowId) return;

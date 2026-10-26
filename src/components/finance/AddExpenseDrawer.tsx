@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import {
   CheckIcon,
   DocumentPlusIcon,
+  FolderOpenIcon,
   MagnifyingGlassIcon,
   PlusIcon,
   XMarkIcon,
@@ -10,6 +11,7 @@ import {
 import toast from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
 import ExpenseSplitTargetPicker from '../client-tabs/ExpenseSplitTargetPicker';
+import SavedDocumentPickerModal from './SavedDocumentPickerModal';
 import {
   fetchLeadExpenseContacts,
   fetchLeadExpenseTypes,
@@ -247,6 +249,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [paid, setPaid] = useState(false);
   const [paidAt, setPaidAt] = useState('');
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
+  const [savedPickerOpen, setSavedPickerOpen] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
 
   const isLeadSplit = kind === 'lead' && leadEntryMode === 'split' && !editRow;
@@ -318,6 +321,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
     setPaid(false);
     setPaidAt('');
     setPendingDocs([]);
+    setSavedPickerOpen(false);
   }, []);
 
   useEffect(() => {
@@ -404,6 +408,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
     let cancelled = false;
     setEditLoading(true);
     setPendingDocs([]);
+    setSavedPickerOpen(false);
     setKind(editRow.kind);
     setSelectedLead(null);
     setLeadQuery('');
@@ -1719,6 +1724,18 @@ const AddExpenseDrawer: React.FC<Props> = ({
                 }}
               />
             </label>
+            {/* Outside the drop zone, which is a label and would open the file dialog instead.
+                Most invoices are already in the office: scanned into a case or sitting in Smart
+                Scan's history, so they should not have to be found on a disk and uploaded twice. */}
+            <button
+              type="button"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:bg-blue-50/50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={saving || pendingDocs.length >= FINANCE_EXPENSE_DOC_MAX_FILES}
+              onClick={() => setSavedPickerOpen(true)}
+            >
+              <FolderOpenIcon className="h-5 w-5 text-slate-500" />
+              Choose from case documents or Smart Scan
+            </button>
             {pendingDocs.length > 0 ? (
               <ul className="mt-2 space-y-2">
                 {pendingDocs.map((doc) => (
@@ -1800,6 +1817,14 @@ const AddExpenseDrawer: React.FC<Props> = ({
             )}
           </button>
         </div>
+
+        <SavedDocumentPickerModal
+          open={savedPickerOpen}
+          onClose={() => setSavedPickerOpen(false)}
+          leadNumber={selectedLead?.leadNumber || editRow?.lead_number || null}
+          roomLeft={Math.max(0, FINANCE_EXPENSE_DOC_MAX_FILES - pendingDocs.length)}
+          onAttach={addFiles}
+        />
       </div>
     </div>,
     document.body,

@@ -44,6 +44,7 @@ import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 import { splitScanCaseDocument } from '../lib/smartScan/scanCenterInbox';
 import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
 import { subEffortDocUploadedAt } from '../lib/subEffortDocumentAttach';
+import { BULK_SUMMARY_FILE_LIMIT, BULK_SUMMARY_SKIPPED_NOTE } from '../lib/caseDocumentSummaryPolicy';
 import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
   emailAttachmentUploaderLabel,
@@ -186,15 +187,6 @@ function isMissingFolderColumn(error: { code?: string; message?: string } | null
   if (code !== '42703' && code !== 'PGRST204') return false;
   return String(error.message || '').includes('folder_id');
 }
-
-/**
- * Above this many files in one go the summaries are left for later: a dropped folder of a few
- * hundred scans would otherwise fire one edge function call per file.
- */
-const BULK_SUMMARY_FILE_LIMIT = 25;
-
-const BULK_SUMMARY_SKIPPED_NOTE =
-  'Skipped automatically because this arrived in a large upload. Generate it whenever you need it.';
 
 /** Beyond this, one progress bar for the batch beats a row per file. */
 const CONDENSED_PROGRESS_FILE_LIMIT = 8;

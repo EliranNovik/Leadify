@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { dateRangeToIsoBounds } from './employeeClockInFormat';
 import {
   DEFAULT_MIN_HOURS,
   fetchEmployeeMinHours,
@@ -159,11 +160,102 @@ export async function assertManualDurationAllowed(params: {
   clockInTime: string;
   clockOutTime: string;
   overtimeApprovalStoragePath?: string | null;
+  /**
+   * Let the session through without its screenshot, which only the daily lead allocation page asks
+   * for: there the hours are a precondition of the allocation, and blocking the save leaves the
+   * allocation unreported too. The session is still written as pending, so HR sees it as overtime
+   * waiting on an approval rather than as an approved day.
+   */
+  approvalDeferred?: boolean;
 }): Promise<void> {
   const baseHours = await fetchOvertimeApprovalBaseHours(params.employeeId);
   if (!clockSessionExceedsOvertimeBase(params.clockInTime, params.clockOutTime, baseHours)) return;
   if (params.overtimeApprovalStoragePath?.trim()) return;
+  if (params.approvalDeferred) return;
   throw overtimeApprovalRequiredError(baseHours);
+}
+
+/** What one stored session of a day already holds towards its overtime approval. */
+export type StoredOvertimeApproval = {
+  sessionId: number;
+  clockInTime: string;
+  clockOutTime: string;
+  locationId: number | null;
+  storagePath: string | null;
+  fileName: string | null;
+  mimeType: string | null;
+};
+
+function isoToHhMm(iso: string | null): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * The day's finished sessions together with the approval screenshot each one carries.
+ *
+ * A screen that is about to rewrite a day needs this to tell an approved overtime day from one
+ * still waiting: the hours themselves say nothing about whether Michael signed them off.
+ */
+export async function fetchDayOvertimeApprovals(
+  employeeId: number,
+  dateKey: string,
+): Promise<StoredOvertimeApproval[]> {
+  const { start, end } = dateRangeToIsoBounds(dateKey, dateKey);
+  const core = 'id, clock_in_time, clock_out_time, clock_in_location_id, declined';
+  const read = (columns: string) =>
+    supabase
+      .from('employee_clock_in')
+      .select(columns)
+      .eq('employee_id', employeeId)
+      .gte('clock_in_time', start)
+      .lte('clock_in_time', end)
+      .order('clock_in_time', { ascending: true });
+
+  let result = await read(
+    `${core}, overtime_approval_storage_path, overtime_approval_file_name, overtime_approval_mime_type`,
+  );
+  // The approval columns arrived in a later migration; a store without them still has the hours.
+  if (result.error && /overtime_approval/i.test(result.error.message || '')) {
+    result = await read(core);
+  }
+  if (result.error) throw result.error;
+
+  return ((result.data || []) as any[])
+    .filter((row) => row?.declined !== true && row?.clock_out_time)
+    .map((row) => ({
+      sessionId: Number(row.id),
+      clockInTime: isoToHhMm(row.clock_in_time),
+      clockOutTime: isoToHhMm(row.clock_out_time),
+      locationId: row.clock_in_location_id ?? null,
+      storagePath: row.overtime_approval_storage_path ?? null,
+      fileName: row.overtime_approval_file_name ?? null,
+      mimeType: row.overtime_approval_mime_type ?? null,
+    }));
+}
+
+/** Put the screenshot on a session that was saved without one. */
+export async function attachOvertimeApprovalToSession(
+  sessionId: number,
+  meta: ClockInOvertimeApprovalFileMeta,
+): Promise<void> {
+  const { error } = await supabase
+    .from('employee_clock_in')
+    .update({
+      overtime_approval_storage_path: meta.storagePath,
+      overtime_approval_file_name: meta.fileName || null,
+      overtime_approval_mime_type: meta.mimeType || null,
+    })
+    .eq('id', sessionId);
+
+  if (error && String(error.message || '').includes('overtime_approval')) {
+    throw new Error(
+      'Overtime approval screenshot could not be saved. Run sql/2026-09-24_employee_clock_in_overtime_approval.sql and try again.',
+    );
+  }
+  if (error) throw error;
 }
 
 export function isAllowedOvertimeApprovalFile(file: File): string | null {

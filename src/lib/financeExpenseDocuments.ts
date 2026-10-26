@@ -57,6 +57,25 @@ export function guessMimeTypeFromFileName(fileName: string): string {
   return map[ext] || 'application/octet-stream';
 }
 
+/**
+ * The content type to attach a document already in storage under, or null when it is not a type
+ * expenses accept.
+ *
+ * Needed because a file picked from a case or from Smart Scan is only a row until it is fetched,
+ * so there is no `File` to hand to the check above. A stored type that is not on the list is not
+ * trusted over the name: plenty of uploads are filed as `application/octet-stream`, and the
+ * extension says what they really are.
+ */
+export function financeExpenseDocumentMime(
+  fileName: string,
+  mimeType?: string | null,
+): string | null {
+  const stored = (mimeType || '').trim().toLowerCase();
+  if (stored && ALLOWED_MIME.has(stored)) return stored;
+  const guessed = guessMimeTypeFromFileName(fileName);
+  return ALLOWED_MIME.has(guessed) ? guessed : null;
+}
+
 export function validateFinanceExpenseDocumentFile(file: File): string | null {
   if (file.size > FINANCE_EXPENSE_DOC_MAX_BYTES) {
     return `${file.name} is larger than 15 MB`;

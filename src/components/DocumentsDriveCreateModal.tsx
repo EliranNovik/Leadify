@@ -7,6 +7,7 @@ import {
   BriefcaseIcon,
   BuildingOffice2Icon,
   CalendarDaysIcon,
+  ChevronDownIcon,
   DocumentDuplicateIcon,
   DocumentPlusIcon,
   FolderPlusIcon,
@@ -31,18 +32,23 @@ import {
   searchDriveMeetings,
   transferDocumentsToDestination,
   uploadEntriesToDestination,
+  type DriveClashChoice,
   type DriveClassification,
   type DriveCreatedFile,
   type DriveDestination,
   type DriveMeetingOption,
   type DriveTransferMode,
+  type DriveUploadClash,
 } from '../lib/documentDriveUpload';
+import DriveDuplicateUploadDialog from './DriveDuplicateUploadDialog';
+import { BULK_SUMMARY_FILE_LIMIT } from '../lib/caseDocumentSummaryPolicy';
 import { formatDocumentSize, type DocumentIndexRow } from '../lib/documentIndex';
 import { blankOfficeSpec, type BlankOfficeKind } from '../lib/blankOfficeDocuments';
 import { DocumentFileGlyph, ExcelLogoIcon, WordLogoIcon } from '../lib/documentFileGlyphs';
 import {
   entriesFromDirectoryInput,
   expandDroppedItems,
+  MAX_FOLDER_UPLOAD_FILES,
   planFolderUpload,
   readDroppedItems,
   type FolderUploadEntry,
@@ -185,8 +191,42 @@ const DocumentsDriveCreateModal: React.FC<{
     initialEntries && initialEntries.length > 0 ? planFolderUpload(initialEntries) : null,
   );
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  /** The files in the air right now, so a slow one is seen to be working rather than stuck. */
+  const [activeFiles, setActiveFiles] = useState<Array<{ name: string; size: number }>>([]);
+  /** Opened back up by hand while an upload runs, which otherwise folds the pickers away. */
+  const [showChoices, setShowChoices] = useState(false);
+  /** Files whose names were already taken, held until the uploader is told what to do with them. */
+  const [clashPrompt, setClashPrompt] = useState<{
+    clashes: DriveUploadClash[];
+    resolve: (choices: Map<number, DriveClashChoice>) => void;
+  } | null>(null);
+  const pendingClashAnswer = useRef<((choices: Map<number, DriveClashChoice>) => void) | null>(
+    null,
+  );
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Who is uploading, asked once and remembered. It is wanted by every path here, and a file
+   * dropped in should not wait on a lookup that could have been done while the modal opened.
+   */
+  const actorAnswer = useRef<Promise<Awaited<
+    ReturnType<typeof fetchStageActorInfo>
+  > | null> | null>(null);
+  const whoIsUploading = useCallback(() => {
+    if (!actorAnswer.current) actorAnswer.current = fetchStageActorInfo().catch(() => null);
+    return actorAnswer.current;
+  }, []);
+
+  // An unanswered question would leave the upload waiting for ever if this closed under it. An
+  // empty answer means no replacements, which is what closing a question amounts to.
+  useEffect(
+    () => () => {
+      pendingClashAnswer.current?.(new Map());
+      pendingClashAnswer.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     fetchDriveClassifications()
@@ -195,10 +235,8 @@ const DocumentsDriveCreateModal: React.FC<{
         setClassificationId((prev) => prev || rows[0]?.id || '');
       })
       .catch((err: any) => toast.error(err?.message || 'Could not load document tabs'));
-    void fetchStageActorInfo()
-      .then((actor) => setEmployeeId(actor.employeeId))
-      .catch(() => setEmployeeId(null));
-  }, []);
+    void whoIsUploading().then((actor) => setEmployeeId(actor?.employeeId ?? null));
+  }, [whoIsUploading]);
 
   useEffect(() => {
     const term = leadTerm.trim();
@@ -374,32 +412,54 @@ const DocumentsDriveCreateModal: React.FC<{
       setBusy(true);
       setProgress({ done: 0, total: entries.length });
       try {
-        const actor = await fetchStageActorInfo().catch(() => null);
+        const actor = await whoIsUploading();
         const result = await uploadEntriesToDestination({
           destination,
           entries,
           folderPaths,
           uploadedBy: actor?.fullName || null,
           onProgress: (done, total) => setProgress({ done, total }),
+          onActive: setActiveFiles,
+          // The uploader stops here and waits for the dialog below to answer.
+          onClashes: (clashes) =>
+            new Promise<Map<number, DriveClashChoice>>((resolve) => {
+              pendingClashAnswer.current = resolve;
+              setClashPrompt({ clashes, resolve });
+            }),
         });
+
+        const said: string[] = [];
         if (result.succeeded > 0) {
-          toast.success(
-            result.failed > 0
-              ? `Uploaded ${result.succeeded}, ${result.failed} failed`
+          said.push(
+            result.replaced > 0
+              ? `Uploaded ${result.succeeded} (${result.replaced} replaced)`
               : `Uploaded ${result.succeeded} ${result.succeeded === 1 ? 'file' : 'files'}`,
           );
+        }
+        if (result.skipped > 0) said.push(`${result.skipped} left as they were`);
+        if (result.failed > 0) said.push(`${result.failed} failed`);
+
+        if (result.succeeded > 0) {
+          toast.success(said.join(' · '));
           onDone();
+        } else if (result.skipped > 0 && result.failed === 0) {
+          toast.success(`Nothing changed · ${result.skipped} left as they were`);
+          onClose();
         } else {
           toast.error(result.lastError || 'Nothing could be uploaded');
         }
       } catch (err: any) {
         toast.error(err?.message || 'Upload failed');
       } finally {
+        pendingClashAnswer.current = null;
+        setClashPrompt(null);
         setBusy(false);
         setProgress(null);
+        setActiveFiles([]);
+        setShowChoices(false);
       }
     },
-    [destination, onDone],
+    [destination, onClose, onDone, whoIsUploading],
   );
 
   /** Where the source documents sit now, so the dialog can refuse a pointless move. */
@@ -416,7 +476,7 @@ const DocumentsDriveCreateModal: React.FC<{
     setBusy(true);
     setProgress({ done: 0, total: transferRows.length });
     try {
-      const actor = await fetchStageActorInfo().catch(() => null);
+      const actor = await whoIsUploading();
       const result = await transferDocumentsToDestination({
         rows: transferRows,
         destination,
@@ -446,14 +506,17 @@ const DocumentsDriveCreateModal: React.FC<{
     } finally {
       setBusy(false);
       setProgress(null);
+      setShowChoices(false);
     }
-  }, [destination, transferMode, transferRows, onDone]);
+  }, [destination, transferMode, transferRows, onDone, whoIsUploading]);
 
   const startUpload = (raw: FolderUploadEntry[]) => {
     const plan = planFolderUpload(raw);
     if (plan.entries.length === 0) return;
     if (plan.droppedForLimit > 0) {
-      toast.error(`${plan.droppedForLimit} files were skipped — too many at once`);
+      toast.error(
+        `${plan.droppedForLimit} files were skipped — ${MAX_FOLDER_UPLOAD_FILES} at a time is the most this takes`,
+      );
     }
     void runUpload(plan.entries, plan.folderPaths);
   };
@@ -490,7 +553,7 @@ const DocumentsDriveCreateModal: React.FC<{
     try {
       if (section === 'lead') {
         if (!caseScope) throw new Error('Pick a case and a tab first');
-        const actor = await fetchStageActorInfo().catch(() => null);
+        const actor = await whoIsUploading();
         await createDocumentFolder({
           scope: caseScope,
           title,
@@ -525,7 +588,7 @@ const DocumentsDriveCreateModal: React.FC<{
     try {
       const { createBlankOfficeFile } = await import('../lib/blankOfficeDocuments');
       const file = await createBlankOfficeFile(blankKind, documentName);
-      const actor = await fetchStageActorInfo().catch(() => null);
+      const actor = await whoIsUploading();
       const result = await uploadEntriesToDestination({
         destination,
         entries: [{ file, segments: [] }],
@@ -567,11 +630,17 @@ const DocumentsDriveCreateModal: React.FC<{
   const showLeadPicker = showAllSteps || !knownLead || section !== 'lead';
   const showTabPicker = showAllSteps || !knownTab || section !== 'lead';
   const showSpacePicker = showAllSteps || !knownSpace || section !== 'office';
+  /**
+   * Once the files are going up the destination is settled, so the pickers above fold away and
+   * leave the progress — and the duplicate question under it — in full view.
+   */
+  const foldedForUpload = !!progress && !showChoices;
 
   return (
-    <div className="fixed inset-0 z-[75] flex items-start justify-center overflow-y-auto bg-black/40 p-4">
-      <div className="mt-8 w-full max-w-2xl rounded-2xl bg-base-100 shadow-2xl">
-        <div className="flex items-start justify-between gap-3 border-b border-base-300 px-5 py-4">
+    // A column, so the duplicate question can be stacked under the upload rather than over it.
+    <div className="fixed inset-0 z-[75] flex flex-col items-center overflow-y-auto bg-black/40 p-4">
+      <div className="mt-8 w-full max-w-2xl shrink-0 rounded-2xl bg-base-100 shadow-2xl">
+        <div className="flex items-start justify-between gap-3 px-5 py-4">
           <div className="min-w-0">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
               {blankKind === 'word' ? (
@@ -585,7 +654,7 @@ const DocumentsDriveCreateModal: React.FC<{
               <span className="truncate">
                 {destination ? `Into ${describeDestination(destination)}` : 'Choose where it goes'}
               </span>
-              {destinationKnown && !showAllSteps && (
+              {destinationKnown && !showAllSteps && !progress && (
                 <button
                   type="button"
                   className="btn btn-xs shrink-0 gap-1 rounded-full border-base-300 bg-base-200"
@@ -593,6 +662,18 @@ const DocumentsDriveCreateModal: React.FC<{
                 >
                   <ArrowsRightLeftIcon className="h-3.5 w-3.5" />
                   Other place
+                </button>
+              )}
+              {progress && (
+                <button
+                  type="button"
+                  className="btn btn-xs shrink-0 gap-1 rounded-full border-base-300 bg-base-200"
+                  onClick={() => setShowChoices((open) => !open)}
+                >
+                  <ChevronDownIcon
+                    className={`h-3.5 w-3.5 transition-transform ${showChoices ? 'rotate-180' : ''}`}
+                  />
+                  {showChoices ? 'Hide details' : 'Show details'}
                 </button>
               )}
             </p>
@@ -603,6 +684,8 @@ const DocumentsDriveCreateModal: React.FC<{
         </div>
 
         <div className="space-y-5 px-5 py-5">
+          {!foldedForUpload && (
+          <>
           {showSections && (
           <div>
             <h3 className="mb-2 text-sm font-semibold text-base-content/70">Where</h3>
@@ -849,6 +932,8 @@ const DocumentsDriveCreateModal: React.FC<{
               )}
             </>
           )}
+          </>
+          )}
 
           {mode === 'new-folder' ? (
             <div>
@@ -956,13 +1041,40 @@ const DocumentsDriveCreateModal: React.FC<{
               {progress ? (
                 <div className="rounded-xl bg-base-200 px-4 py-4">
                   <p className="text-sm font-medium">
-                    Uploading {progress.done} of {progress.total}…
+                    {clashPrompt
+                      ? `Uploaded ${progress.done} of ${progress.total} — ${
+                          clashPrompt.clashes.length
+                        } waiting on your answer`
+                      : `Uploading ${progress.done} of ${progress.total}…`}
                   </p>
                   <progress
                     className="progress progress-primary mt-2 w-full"
                     value={progress.done}
                     max={progress.total}
                   />
+                  {/* Storage says nothing about a file until it is in, so a large one would look
+                      like a stall. Naming what is in the air, with its size, explains the wait. */}
+                  {activeFiles.length > 0 && !clashPrompt && (
+                    <ul className="mt-2 space-y-0.5 text-xs text-base-content/60">
+                      {activeFiles.slice(0, 4).map((file) => (
+                        <li key={file.name} className="flex items-center gap-2">
+                          <span className="loading loading-spinner loading-xs shrink-0" />
+                          <span className="truncate">{file.name}</span>
+                          <span className="shrink-0">{formatDocumentSize(file.size)}</span>
+                        </li>
+                      ))}
+                      {activeFiles.length > 4 && <li>and {activeFiles.length - 4} more…</li>}
+                    </ul>
+                  )}
+                  {/* A batch this size takes a while, and it all runs from this window. */}
+                  {progress.total > BULK_SUMMARY_FILE_LIMIT && (
+                    <p className="mt-2 text-xs text-base-content/60">
+                      Keep this window open until it finishes.
+                      {section === 'lead'
+                        ? ' Summaries are left for later on an upload this size — open a document to have one written.'
+                        : ''}
+                    </p>
+                  )}
                 </div>
               ) : dropped ? (
                 <div className="rounded-2xl bg-base-200 px-5 py-4">
@@ -986,7 +1098,8 @@ const DocumentsDriveCreateModal: React.FC<{
                   </ul>
                   {dropped.droppedForLimit > 0 && (
                     <p className="mt-2 text-xs text-error">
-                      {dropped.droppedForLimit} files were skipped — too many at once
+                      {dropped.droppedForLimit} files were skipped — {MAX_FOLDER_UPLOAD_FILES} at a
+                      time is the most this takes
                     </p>
                   )}
                   <button
@@ -1097,6 +1210,20 @@ const DocumentsDriveCreateModal: React.FC<{
           )}
         </div>
       </div>
+
+      {clashPrompt && (
+        <div className="mt-3 w-full max-w-2xl shrink-0 pb-8">
+          <DriveDuplicateUploadDialog
+            clashes={clashPrompt.clashes}
+            destinationLabel={destination ? describeDestination(destination) : null}
+            onDecide={(choices) => {
+              pendingClashAnswer.current = null;
+              setClashPrompt(null);
+              clashPrompt.resolve(choices);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 };

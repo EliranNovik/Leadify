@@ -36,7 +36,12 @@ export type DroppedItem = {
   file: File | null;
 };
 
-export const MAX_FOLDER_UPLOAD_FILES = 300;
+/**
+ * A ceiling on one drop rather than a comfortable batch size: the uploader runs several files at
+ * once, so a whole year's scans is a reasonable thing to drop. It is here only so that a stray
+ * drop of a home folder is refused instead of locking up the tab.
+ */
+export const MAX_FOLDER_UPLOAD_FILES = 2000;
 export const MAX_FOLDER_UPLOAD_DEPTH = 10;
 
 const IGNORED_NAMES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini', '.localized']);

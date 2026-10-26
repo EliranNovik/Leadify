@@ -10183,6 +10183,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         open={Boolean(taxInvoiceDrawerTarget)}
         target={taxInvoiceDrawerTarget}
         subtitle={[client?.name, taxInvoicePayment?.order].filter(Boolean).join(' · ')}
+        leadNumber={client?.lead_number ? String(client.lead_number).replace(/^#/, '').trim() : null}
         onClose={() => setTaxInvoicePayment(null)}
         onSaved={(state: PaymentPlanTaxInvoiceState) => {
           if (!taxInvoicePayment) return;

@@ -3,11 +3,13 @@ import ReactDOM from 'react-dom';
 import {
   DocumentPlusIcon,
   DocumentTextIcon,
+  FolderOpenIcon,
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import DocumentViewerModal, { type DocumentViewerItem } from '../DocumentViewerModal';
+import SavedDocumentPickerModal from './SavedDocumentPickerModal';
 import {
   clearPaymentPlanTaxInvoiceSent,
   markPaymentPlanTaxInvoiceSent,
@@ -38,6 +40,8 @@ type Props = {
   target: TaxInvoiceDocumentTarget | null;
   /** Lead / client line under the heading, so the drawer says what it is about. */
   subtitle?: string;
+  /** The case this payment belongs to, which the saved-document picker opens on. */
+  leadNumber?: string | null;
   onClose: () => void;
   /** Called after a successful save or clear, so the host can patch its own row in place. */
   onSaved?: (state: PaymentPlanTaxInvoiceState) => void;
@@ -93,7 +97,14 @@ function toViewerItems(docs: SignedDoc[]): DocumentViewerItem[] {
  * Reads its own state when opened rather than taking it from the host, so the client's Finances tab
  * and the collection report cannot show different things for the same payment row.
  */
-const TaxInvoiceSentDrawer: React.FC<Props> = ({ open, target, subtitle, onClose, onSaved }) => {
+const TaxInvoiceSentDrawer: React.FC<Props> = ({
+  open,
+  target,
+  subtitle,
+  leadNumber = null,
+  onClose,
+  onSaved,
+}) => {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -102,6 +113,7 @@ const TaxInvoiceSentDrawer: React.FC<Props> = ({ open, target, subtitle, onClose
   const [sentBy, setSentBy] = useState<EmployeeProfile | null>(null);
   const [docs, setDocs] = useState<SignedDoc[]>([]);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
+  const [savedPickerOpen, setSavedPickerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const planId = target?.paymentPlanId ?? null;
@@ -123,6 +135,7 @@ const TaxInvoiceSentDrawer: React.FC<Props> = ({ open, target, subtitle, onClose
       setSentBy(null);
       setDocs([]);
       setPendingDocs([]);
+      setSavedPickerOpen(false);
       setViewerIndex(null);
       setLoading(false);
       return;
@@ -412,6 +425,19 @@ const TaxInvoiceSentDrawer: React.FC<Props> = ({ open, target, subtitle, onClose
                   />
                 </label>
 
+                {/* Outside the drop zone, which is a label and would open the file dialog instead.
+                    An invoice is often already filed under the case or sitting in Smart Scan, and
+                    should not have to be found on a disk and uploaded a second time. */}
+                <button
+                  type="button"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:bg-blue-50/50 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={remainingSlots <= 0 || busy}
+                  onClick={() => setSavedPickerOpen(true)}
+                >
+                  <FolderOpenIcon className="h-5 w-5 text-slate-500" />
+                  Choose from case documents or Smart Scan
+                </button>
+
                 {pendingDocs.length > 0 ? (
                   <ul className="mt-2 space-y-2">
                     {pendingDocs.map((doc) => (
@@ -478,6 +504,14 @@ const TaxInvoiceSentDrawer: React.FC<Props> = ({ open, target, subtitle, onClose
               </button>
             </span>
           </div>
+
+          <SavedDocumentPickerModal
+            open={savedPickerOpen}
+            onClose={() => setSavedPickerOpen(false)}
+            leadNumber={leadNumber}
+            roomLeft={remainingSlots}
+            onAttach={addFiles}
+          />
         </div>
       </div>
 

@@ -1,8 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { DocumentPlusIcon, DocumentTextIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  DocumentPlusIcon,
+  DocumentTextIcon,
+  FolderOpenIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import type { DocumentViewerItem } from '../DocumentViewerModal';
+import SavedDocumentPickerModal from './SavedDocumentPickerModal';
 import { ensureFinanceExpenseRegistry, type FinanceExpenseEntryRow } from '../../lib/financeExpenseCreate';
 import {
   FINANCE_EXPENSE_DOC_MAX_FILES,
@@ -50,6 +56,7 @@ const ExpenseDocumentsDrawer: React.FC<Props> = ({ open, row, onClose, onOpenDoc
   const [docs, setDocs] = useState<DocumentViewerItem[]>([]);
   const [sourceDocs, setSourceDocs] = useState<FinanceExpenseDocumentRow[]>([]);
   const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([]);
+  const [savedPickerOpen, setSavedPickerOpen] = useState(false);
   const [entryId, setEntryId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -57,6 +64,7 @@ const ExpenseDocumentsDrawer: React.FC<Props> = ({ open, row, onClose, onOpenDoc
       setDocs([]);
       setSourceDocs([]);
       setPendingDocs([]);
+      setSavedPickerOpen(false);
       setEntryId(null);
       setLoading(false);
       return;
@@ -243,6 +251,17 @@ const ExpenseDocumentsDrawer: React.FC<Props> = ({ open, row, onClose, onOpenDoc
                 }}
               />
             </label>
+            {/* Outside the drop zone, which is a label and would open the file dialog instead. The
+                invoice is often already filed under the case or waiting in Smart Scan's history. */}
+            <button
+              type="button"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 transition hover:border-blue-300 hover:bg-blue-50/50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={remainingSlots <= 0 || uploading}
+              onClick={() => setSavedPickerOpen(true)}
+            >
+              <FolderOpenIcon className="h-5 w-5 text-slate-500" />
+              Choose from case documents or Smart Scan
+            </button>
             {pendingDocs.length > 0 ? (
               <ul className="mt-2 space-y-2">
                 {pendingDocs.map((doc) => (
@@ -303,6 +322,14 @@ const ExpenseDocumentsDrawer: React.FC<Props> = ({ open, row, onClose, onOpenDoc
             </button>
           </div>
         ) : null}
+
+        <SavedDocumentPickerModal
+          open={savedPickerOpen}
+          onClose={() => setSavedPickerOpen(false)}
+          leadNumber={row.lead_number}
+          roomLeft={remainingSlots}
+          onAttach={addFiles}
+        />
       </div>
     </div>,
     document.body,

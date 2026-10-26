@@ -12,6 +12,7 @@ import {
   BriefcaseIcon,
   BuildingOffice2Icon,
   CalendarDaysIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   DocumentDuplicateIcon,
@@ -666,7 +667,7 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
       return;
     }
     let cancelled = false;
-    findLeadNumbersByPerson(search)
+    void findLeadNumbersByPerson(search)
       .then((keys) => {
         if (!cancelled) setSearchCaseKeys(keys);
       })
@@ -1801,6 +1802,28 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   const clearChecked = () =>
     setCheckedKeys((prev) => (prev.size === 0 ? prev : new Set<string>()));
 
+  /** Lets go of everything in hand, one row or a group of them. */
+  const clearSelection = () => {
+    setSelection(null);
+    clearChecked();
+  };
+
+  /**
+   * Every document listed here, picked out in one go — what Command-clicking down a long page
+   * amounts to. Folders and cases are left out: the action bar only ever works on documents.
+   */
+  const checkEveryRow = () => {
+    if (rows.length === 0) return;
+    // A single row is a single pick, not a group of one, which is the rule toggleChecked keeps.
+    if (rows.length === 1) {
+      setCheckedKeys(new Set());
+      setSelection({ kind: 'doc', key: stableRowKey(rows[0]) });
+      return;
+    }
+    setCheckedKeys(new Set(rows.map(stableRowKey)));
+    setSelection(null);
+  };
+
   /**
    * What can be done to every document in the group at once. Deliberately shorter than one row's own
    * menu: sharing, renaming and managing access are each about one file, and a case to open
@@ -1957,6 +1980,9 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   /** Whether a row is one of the rows being acted on, alone or as part of a group. */
   const isPicked = (key: string) =>
     (selection?.kind === 'doc' && selection.key === key) || checkedKeys.has(key);
+  /** With everything listed already in hand, the header offer turns into letting go of it. */
+  const everyRowPicked =
+    rows.length > 0 && rows.every((row) => isPicked(stableRowKey(row)));
 
   // A group only means anything while its rows are on screen: navigating, filtering or reloading
   // leaves keys behind that nothing can be done to.
@@ -2769,9 +2795,31 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
               <table className="drive-table table table-fixed table-pin-rows [&_td]:py-2 [&_th]:py-2">
                 <thead>
                   <tr className="bg-white text-base-content/60 dark:bg-base-100">
-                    <th className="w-[26rem] select-none font-medium">
-                      <span className="cursor-pointer" onClick={() => toggleSort('file_name')}>
-                        Name{sortIndicator('file_name')}
+                    <th className="group w-[26rem] select-none font-medium">
+                      <span className="flex items-center gap-2">
+                        <span className="cursor-pointer" onClick={() => toggleSort('file_name')}>
+                          Name{sortIndicator('file_name')}
+                        </span>
+                        {/* Kept out of sight until the header is passed over, so the column still
+                            reads as a column, and only offered where there is a list to take. */}
+                        {rows.length > 0 && (
+                          <button
+                            type="button"
+                            className={`btn btn-ghost btn-xs h-5 min-h-0 gap-1 rounded-full px-2 font-medium normal-case text-base-content/70 hover:bg-base-200 ${
+                              everyRowPicked
+                                ? ''
+                                : 'opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100'
+                            }`}
+                            onClick={() => (everyRowPicked ? clearSelection() : checkEveryRow())}
+                          >
+                            {everyRowPicked ? (
+                              <XMarkIcon className="h-3.5 w-3.5" />
+                            ) : (
+                              <CheckIcon className="h-3.5 w-3.5" />
+                            )}
+                            {everyRowPicked ? 'Clear' : `Select all ${rows.length}`}
+                          </button>
+                        )}
                       </span>
                     </th>
                     <th
