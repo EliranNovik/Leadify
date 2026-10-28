@@ -18,10 +18,12 @@ import {
   DocumentDuplicateIcon,
   EllipsisVerticalIcon,
   EyeIcon,
+  EyeSlashIcon,
   FolderArrowDownIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
+  FunnelIcon,
   IdentificationIcon,
   ListBulletIcon,
   LockClosedIcon,
@@ -30,12 +32,14 @@ import {
   PlusIcon,
   ShareIcon,
   ShieldCheckIcon,
+  SparklesIcon,
   Squares2X2Icon,
   TrashIcon,
   UserIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import {
+  EyeSlashIcon as EyeSlashSolidIcon,
   FolderIcon as FolderSolidIcon,
   FolderOpenIcon as FolderOpenSolidIcon,
 } from '@heroicons/react/24/solid';
@@ -43,6 +47,13 @@ import { supabase } from '../lib/supabase';
 import { DocumentFileGlyph, ExcelLogoIcon, WordLogoIcon } from '../lib/documentFileGlyphs';
 import DocumentSidebarThumb from '../components/DocumentSidebarThumb';
 import { RmqDriveLogo } from '../components/RmqDriveLogo';
+import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from '../components/RmqAiLogo';
+import { openRmqAiChat } from '../lib/rmqAiPendingPrompt';
+import {
+  rmqAiDriveDocumentFromRow,
+  setRmqAiDriveDocument,
+  setRmqAiDriveView,
+} from '../lib/rmqAiDriveContext';
 import DocumentsDriveCreateModal, {
   type DriveCreateContext,
   type DriveCreateMode,
@@ -72,6 +83,10 @@ import {
   type CaseDepartmentKey,
   type CaseLeadInfo,
 } from '../lib/caseDepartments';
+import {
+  setCaseDocumentsClientVisible,
+  setDocumentFolderClientVisible,
+} from '../lib/clientVisibleDocuments';
 import { fetchMainDepartments, type MainDepartment } from '../lib/mainDepartments';
 import {
   deleteOfficeDocumentFolder,
@@ -415,7 +430,27 @@ function spaceFolderAsDocumentFolder(
     sort_order: folder.sort_order,
     created_by: null,
     created_at: folder.created_at,
+    // No client ever sees these spaces, so there is nothing to hide from one.
+    client_visible: true,
   };
+}
+
+/**
+ * The icon of a file or folder the client portal will not show, with a struck-through eye in its
+ * corner. Hidden is the exception, so it is what gets marked — a visible file carries no badge.
+ */
+const HiddenFromClientMark: React.FC = () => (
+  <span
+    className="pointer-events-none absolute -right-2 -top-2 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-rose-500 shadow-sm ring-2 ring-base-100"
+    title="Hidden from the client portal"
+  >
+    <EyeSlashSolidIcon className="h-3 w-3 text-white" />
+  </span>
+);
+
+/** Whether this is something the client portal could show, and so something to hide. */
+function canHideFromClient(row: DocumentIndexRow): boolean {
+  return row.source === 'lead';
 }
 
 /**
@@ -558,6 +593,8 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  /** The category and date filters, which live behind the funnel in the search bar. */
+  const [filtersOpen, setFiltersOpen] = useState(false);
   // Cases are what the drive is opened for nearly every time, so that is where it opens.
   const [source, setSource] = useState<DocumentIndexSource | 'all'>('lead');
   const [view, setView] = useState<'table' | 'grid'>('table');
@@ -603,6 +640,8 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   const [viewerRows, setViewerRows] = useState<DocumentIndexRow[]>([]);
   /** Set only for a document created a moment ago, which opens straight into its editor. */
   const [viewerAutoEdit, setViewerAutoEdit] = useState(false);
+  /** Which file the viewer is showing, which changes as it is paged through. */
+  const [viewerActiveId, setViewerActiveId] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [moveRows, setMoveRows] = useState<DocumentIndexRow[] | null>(null);
   /** The document being renamed from the row menu, and the name being typed for it. */
@@ -615,6 +654,8 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   } | null>(null);
   /** The document whose share options are open, from the row menu. */
   const [shareRow, setShareRow] = useState<DocumentIndexRow | null>(null);
+  /** The document whose AI summary is open in the side panel. */
+  const [summaryRow, setSummaryRow] = useState<DocumentIndexRow | null>(null);
   const [accessRow, setAccessRow] = useState<DocumentIndexRow | null>(null);
   /** What the delete confirmation is asking about — superusers only. */
   const [deleteTarget, setDeleteTarget] = useState<DriveDeleteTarget>(null);
@@ -797,9 +838,11 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         return;
       }
       setError(
-        /document_index/i.test(message)
-          ? 'The documents view is missing. Run sql/2026-10-21_document_index_view.sql, then reload.'
-          : message,
+        /client_visible/i.test(message)
+          ? 'Client visibility is not set up yet. Run sql/2026-10-28_client_visible_documents.sql, then reload.'
+          : /document_index/i.test(message)
+            ? 'The documents view is missing. Run sql/2026-10-21_document_index_view.sql, then reload.'
+            : message,
       );
       setRows([]);
       setCaseRows([]);
@@ -1099,6 +1142,11 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
   /** The listed row a file in the viewer came from, which is what anything written goes to. */
   const viewerRowOf = (doc: DocumentViewerItem) =>
     viewerRows.find((item) => stableRowKey(item) === doc.id) ?? null;
+
+  /** The viewer reports what it is showing, since it can be paged through from inside. */
+  const handleViewerDocumentChange = useCallback((doc: DocumentViewerItem | null) => {
+    setViewerActiveId(doc?.id ?? null);
+  }, []);
 
   /** A file's new name, written to the row the viewer is showing. */
   const renameViewerDoc = async (doc: DocumentViewerItem, newName: string) => {
@@ -1724,6 +1772,58 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     },
   });
 
+  /**
+   * Shows or hides case documents in the client portal.
+   *
+   * The lists hold their own copy of each row, so they are corrected here: the mark has to appear
+   * the moment the menu closes, not whenever the next read comes back.
+   */
+  const setRowsClientVisible = async (picked: DocumentIndexRow[], visible: boolean) => {
+    const ids = picked.filter(canHideFromClient).map((row) => row.row_id);
+    if (ids.length === 0) return;
+    try {
+      await setCaseDocumentsClientVisible(ids, visible);
+      const changed = new Set(ids);
+      setRows((prev) =>
+        prev.map((row) =>
+          row.source === 'lead' && changed.has(row.row_id) ? { ...row, client_visible: visible } : row,
+        ),
+      );
+      toast.success(
+        visible
+          ? `${ids.length === 1 ? 'Document is' : `${ids.length} documents are`} viewable by the client`
+          : `${ids.length === 1 ? 'Document is' : `${ids.length} documents are`} hidden from the client`,
+      );
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not change what the client sees');
+    }
+  };
+
+  const setFolderClientVisible = async (folder: DocumentFolder, visible: boolean) => {
+    try {
+      await setDocumentFolderClientVisible(folder.id, visible);
+      const patch = (item: DocumentFolder) =>
+        item.id === folder.id ? { ...item, client_visible: visible } : item;
+      setFolders((prev) => prev.map(patch));
+      setFolderTrail((trail) => trail.map(patch));
+      toast.success(
+        visible
+          ? `“${folder.title}” is viewable by the client`
+          : `“${folder.title}” and everything in it are hidden from the client`,
+      );
+    } catch (err: any) {
+      toast.error(err?.message || 'Could not change what the client sees');
+    }
+  };
+
+  /** The menu entry that flips it, worded for the state it is in. */
+  const clientVisibilityAction = (visible: boolean, onSelect: () => void): RowAction => ({
+    id: 'client-visibility',
+    label: visible ? 'Hide from client portal' : 'Make viewable by client',
+    icon: visible ? EyeSlashIcon : EyeIcon,
+    onSelect,
+  });
+
   const folderActions = (folder: DocumentFolder): RowAction[] => {
     const actions: RowAction[] = [
       {
@@ -1751,6 +1851,14 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         onSelect: () => setRenameFolder(folder),
       },
     ];
+    // Only a case has a client reading it, and only its own folders are in the portal.
+    if (folder.scope_type === 'lead') {
+      actions.push(
+        clientVisibilityAction(folder.client_visible !== false, () =>
+          void setFolderClientVisible(folder, folder.client_visible === false),
+        ),
+      );
+    }
     if (isSuperUser) {
       actions.push({
         id: 'delete-folder',
@@ -1874,6 +1982,19 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         },
       );
     }
+    const caseDocs = picked.filter(canHideFromClient);
+    if (caseDocs.length > 0) {
+      // One answer for the group: if any of them is still viewable, the group is hidden.
+      const anyVisible = caseDocs.some((row) => row.client_visible !== false);
+      actions.push({
+        id: 'client-visibility',
+        label: anyVisible
+          ? `Hide ${caseDocs.length} from client portal`
+          : `Make ${caseDocs.length} viewable by client`,
+        icon: anyVisible ? EyeSlashIcon : EyeIcon,
+        onSelect: () => void setRowsClientVisible(caseDocs, !anyVisible),
+      });
+    }
     if (isSuperUser) {
       actions.push({
         id: 'delete',
@@ -1934,6 +2055,13 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         },
       );
     }
+    if (canHideFromClient(row)) {
+      actions.push(
+        clientVisibilityAction(row.client_visible !== false, () =>
+          void setRowsClientVisible([row], row.client_visible === false),
+        ),
+      );
+    }
     if (isAdmin && isMovableDocument(row) && row.folder_id) {
       actions.push({
         id: 'access',
@@ -1964,6 +2092,38 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     if (!selection) return;
     if (!selectedDoc && !selectedFolder) setSelection(null);
   }, [selection, selectedDoc, selectedFolder]);
+
+  /*
+   * What RMQ AI is told the user is looking at: the file open in the viewer, or failing that the
+   * row they clicked. That is what lets "what is this document about?" mean something in the chat,
+   * and it is cleared on the way out so the chat never talks about a file from a page ago.
+   */
+  const viewerFocusRow = viewerActiveId
+    ? viewerRows.find((row) => stableRowKey(row) === viewerActiveId) ?? null
+    : null;
+  useEffect(() => {
+    const focused = viewerFocusRow || selectedDoc;
+    setRmqAiDriveDocument(
+      focused ? rmqAiDriveDocumentFromRow(focused, viewerFocusRow ? 'open' : 'selected') : null,
+    );
+  }, [viewerFocusRow, selectedDoc]);
+
+  useEffect(() => {
+    setRmqAiDriveView({
+      source,
+      caseKey,
+      caseLabel: caseKey ? caseInfo.get(caseKey)?.name ?? null : null,
+      folderPath: folderTrail.map((folder) => folder.title).join(' / ') || null,
+    });
+  }, [source, caseKey, caseInfo, folderTrail]);
+
+  useEffect(
+    () => () => {
+      setRmqAiDriveDocument(null);
+      setRmqAiDriveView(null);
+    },
+    [],
+  );
 
   const selectionActions: RowAction[] = selectedDoc
     ? rowActions(selectedDoc)
@@ -2177,32 +2337,130 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
             `input` class, which paints itself base-100 and rings itself in base-content on focus:
             an opacity-modified background like `bg-base-300/80` compiles to nothing against its
             colours, so the white underneath was all that ever showed. */}
-        <label className="flex h-12 flex-1 cursor-text items-center gap-2 rounded-full bg-[#e9eef5] px-4 transition-colors focus-within:bg-white focus-within:shadow-md md:max-w-2xl dark:bg-base-100 dark:focus-within:bg-base-200">
-          <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-base-content/40" />
-          <input
-            type="search"
-            className="grow border-none bg-transparent text-sm text-base-content outline-none placeholder:text-base-content/50 focus:outline-none"
-            placeholder="Search files, or a client by name, email or phone"
-            aria-label="Search in documents"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-          />
-          {searchInput ? (
+        <div className="relative flex min-w-0 flex-1 items-center md:max-w-2xl">
+          <label className="flex h-12 w-full cursor-text items-center gap-2 rounded-full bg-[#e9eef5] px-4 transition-colors focus-within:bg-white focus-within:shadow-md dark:bg-base-100 dark:focus-within:bg-base-200">
+            <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-base-content/40" />
+            <input
+              type="search"
+              className="grow border-none bg-transparent text-sm text-base-content outline-none placeholder:text-base-content/50 focus:outline-none"
+              placeholder="Search files, or a client by name, email or phone"
+              aria-label="Search in documents"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+            {searchInput ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle shrink-0 text-base-content/50 hover:bg-base-200 hover:text-base-content"
+                title="Clear the search"
+                aria-label="Clear the search"
+                onClick={() => {
+                  setSearchInput('');
+                  setSearch('');
+                  setPage(0);
+                }}
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            ) : null}
+            {/* The filters live in here rather than out at the edge: they narrow the same list the
+                search does, and the dot says at a glance that something is still narrowing it. */}
             <button
               type="button"
-              className="btn btn-ghost btn-sm btn-circle shrink-0 text-base-content/50 hover:bg-base-200 hover:text-base-content"
-              title="Clear the search"
-              aria-label="Clear the search"
-              onClick={() => {
-                setSearchInput('');
-                setSearch('');
-                setPage(0);
-              }}
+              className={`btn btn-ghost btn-sm btn-circle relative shrink-0 hover:bg-base-200 ${
+                narrowed || filtersOpen ? 'text-primary' : 'text-base-content/50 hover:text-base-content'
+              }`}
+              title={narrowed ? 'Filters are narrowing this list' : 'Filter by category or date'}
+              aria-label="Filter by category or date"
+              aria-expanded={filtersOpen}
+              onClick={() => setFiltersOpen((open) => !open)}
             >
-              <XMarkIcon className="h-5 w-5" />
+              <FunnelIcon className="h-5 w-5" />
+              {narrowed ? (
+                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-primary ring-2 ring-white dark:ring-base-100" />
+              ) : null}
             </button>
+          </label>
+
+          {filtersOpen ? (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setFiltersOpen(false)} />
+              <div className="absolute right-0 top-full z-40 mt-2 w-[28rem] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-base-300 bg-white p-4 shadow-xl dark:bg-base-100">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-base-content">Filters</p>
+                  {narrowed ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs gap-1 text-base-content/60"
+                      onClick={() => {
+                        setCategory('');
+                        setDateFrom('');
+                        setDateTo('');
+                        setPage(0);
+                      }}
+                    >
+                      <XMarkIcon className="h-4 w-4" />
+                      Clear all
+                    </button>
+                  ) : null}
+                </div>
+
+                <label className="mt-3 block">
+                  <span className="text-xs font-medium uppercase tracking-wide text-base-content/50">
+                    Category
+                  </span>
+                  <select
+                    className="select select-bordered mt-1 h-10 min-h-0 w-full rounded-xl text-sm"
+                    value={category}
+                    onChange={(e) => {
+                      setCategory(e.target.value);
+                      setPage(0);
+                    }}
+                  >
+                    <option value="">All categories</option>
+                    {categoryOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="mt-3">
+                  <span className="text-xs font-medium uppercase tracking-wide text-base-content/50">
+                    Uploaded between
+                  </span>
+                  <div className="mt-1 flex items-center gap-2">
+                    <CalendarDaysIcon className="h-5 w-5 shrink-0 text-base-content/40" />
+                    <input
+                      type="date"
+                      className="input input-bordered h-10 min-h-0 w-full rounded-xl text-sm"
+                      value={dateFrom}
+                      max={dateTo || undefined}
+                      aria-label="From date"
+                      onChange={(e) => {
+                        setDateFrom(e.target.value);
+                        setPage(0);
+                      }}
+                    />
+                    <span className="shrink-0 text-base-content/30">–</span>
+                    <input
+                      type="date"
+                      className="input input-bordered h-10 min-h-0 w-full rounded-xl text-sm"
+                      value={dateTo}
+                      min={dateFrom || undefined}
+                      aria-label="To date"
+                      onChange={(e) => {
+                        setDateTo(e.target.value);
+                        setPage(0);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
           ) : null}
-        </label>
+        </div>
         <RowActionsMenu
           actions={createActions}
           align="end"
@@ -2215,70 +2473,17 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
             </>
           }
         />
-        {/* Pushed to the far edge: these narrow what the list already shows, so they sit away
-            from the search and the New button, which act on the drive as a whole. */}
-        <div className="flex min-w-0 shrink-0 items-center gap-2 md:ml-auto">
-          <select
-            className="select h-11 min-h-0 w-[11rem] rounded-2xl border-none bg-transparent text-sm font-medium text-base-content/70 shadow-none transition-colors hover:bg-base-200/70 focus:outline-none"
-            value={category}
-            aria-label="Filter by category"
-            onChange={(e) => {
-              setCategory(e.target.value);
-              setPage(0);
-            }}
-          >
-            <option value="">All categories</option>
-            {categoryOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-
-          <div className="flex h-11 shrink-0 items-center gap-1.5 rounded-2xl px-3 transition-colors hover:bg-base-200/70">
-            <CalendarDaysIcon className="h-5 w-5 shrink-0 text-base-content/40" />
-            <input
-              type="date"
-              className="w-[7.5rem] bg-transparent text-sm text-base-content/70 focus:outline-none"
-              value={dateFrom}
-              max={dateTo || undefined}
-              aria-label="From date"
-              onChange={(e) => {
-                setDateFrom(e.target.value);
-                setPage(0);
-              }}
-            />
-            <span className="shrink-0 text-base-content/30">–</span>
-            <input
-              type="date"
-              className="w-[7.5rem] bg-transparent text-sm text-base-content/70 focus:outline-none"
-              value={dateTo}
-              min={dateFrom || undefined}
-              aria-label="To date"
-              onChange={(e) => {
-                setDateTo(e.target.value);
-                setPage(0);
-              }}
-            />
-          </div>
-
-          {narrowed && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-circle shrink-0 text-base-content/60 hover:bg-base-200"
-              title="Clear filters"
-              aria-label="Clear filters"
-              onClick={() => {
-                setCategory('');
-                setDateFrom('');
-                setDateTo('');
-                setPage(0);
-              }}
-            >
-              <XMarkIcon className="h-5 w-5" />
-            </button>
-          )}
-        </div>
+        {/* The drive hides the app header, so this is the only way to RMQ AI from here. It is told
+            which file is picked out or open, so it can be asked what a document says. */}
+        <button
+          type="button"
+          className="btn h-11 w-11 shrink-0 rounded-full border border-base-300 bg-white p-0 shadow-md transition-shadow hover:bg-base-200 hover:shadow-lg md:ml-auto dark:bg-base-100"
+          title="Ask RMQ AI about these documents"
+          aria-label="Open RMQ AI"
+          onClick={() => openRmqAiChat()}
+        >
+          <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-8 w-8" />
+        </button>
       </div>
 
       <div className="flex min-h-0 flex-1 items-stretch px-2 pb-3 md:px-4 md:pb-4">
@@ -2493,6 +2698,20 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                   {barActions.length > 0 && (
                     <span className="mx-1 h-5 w-px shrink-0 bg-base-300" />
                   )}
+                  {/* Ahead of everything else, and drawn a size larger: the rest of the pill is
+                      about moving the file around, this one is about what is inside it. Offered
+                      only on files already read, since it opens a summary rather than asks for one. */}
+                  {checkedRows.length === 0 && selectedDoc?.ai_summary?.trim() ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm btn-circle text-primary hover:bg-base-300"
+                      title="Read the AI summary"
+                      aria-label={`AI summary of ${selectedDoc.file_name}`}
+                      onClick={() => setSummaryRow(selectedDoc)}
+                    >
+                      <SparklesIcon className="h-6 w-6" />
+                    </button>
+                  ) : null}
                   {barActions
                     .filter((action) => !action.danger)
                     .map((action) => (
@@ -2702,8 +2921,9 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                         onDoubleClick={() => openFolder(folder)}
                         {...folderDragDropProps(folder)}
                       >
-                        <span className="shrink-0" {...folderPeekProps(folder)}>
+                        <span className="relative shrink-0" {...folderPeekProps(folder)}>
                           <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+                          {folder.client_visible === false && <HiddenFromClientMark />}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium text-base-content">
@@ -2737,12 +2957,13 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                           {...documentDragProps(row, key)}
                         >
                           <div className="flex items-center gap-2">
-                            <span className="shrink-0" {...documentPeekProps(row)}>
+                            <span className="relative shrink-0" {...documentPeekProps(row)}>
                               <DocumentFileGlyph
                                 fileType={row.mime_type || ''}
                                 fileName={row.file_name}
                                 className="h-6 w-6"
                               />
+                              {row.client_visible === false && <HiddenFromClientMark />}
                             </span>
                             <span
                               className="min-w-0 flex-1 truncate text-left text-sm font-medium text-base-content"
@@ -2923,8 +3144,9 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                     >
                       <td className="max-w-[26rem]">
                         <span className="flex items-center gap-3">
-                          <span className="shrink-0" {...folderPeekProps(folder)}>
+                          <span className="relative shrink-0" {...folderPeekProps(folder)}>
                             <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+                            {folder.client_visible === false && <HiddenFromClientMark />}
                           </span>
                           <span className="min-w-0 flex-1 truncate font-medium text-base-content">
                             {folder.title}
@@ -2989,12 +3211,13 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                         <td className="max-w-[26rem]">
                           <span className="flex w-full items-center gap-3">
                             {/* Resting on the icon shows the document itself. */}
-                            <span className="shrink-0" {...documentPeekProps(row)}>
+                            <span className="relative shrink-0" {...documentPeekProps(row)}>
                               <DocumentFileGlyph
                                 fileType={row.mime_type || ''}
                                 fileName={row.file_name}
                                 className="h-7 w-7"
                               />
+                              {row.client_visible === false && <HiddenFromClientMark />}
                             </span>
                             <span className="min-w-0 truncate font-medium text-base-content">
                               {row.file_name}
@@ -3120,6 +3343,87 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
         />
       )}
 
+      {/* The summary slides in beside the list rather than over it, so the file it belongs to
+          stays in view. Reading only: it is offered on files that have already been read, and a
+          new one is asked for from the case drawer or from RMQ AI. */}
+      {summaryRow ? (
+        <>
+          <div
+            className="fixed inset-0 z-[60] bg-black/20"
+            onClick={() => setSummaryRow(null)}
+            aria-hidden
+          />
+          <aside
+            className="fixed inset-y-0 right-0 z-[61] flex w-full max-w-md flex-col border-l border-base-300 bg-white shadow-2xl dark:bg-base-100"
+            aria-label={`AI summary of ${summaryRow.file_name}`}
+          >
+            <div className="flex items-start gap-3 border-b border-base-200 px-4 py-3">
+              <DocumentFileGlyph
+                fileType={summaryRow.mime_type || ''}
+                fileName={summaryRow.file_name}
+                className="h-7 w-7"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-base-content" title={summaryRow.file_name}>
+                  {summaryRow.file_name}
+                </p>
+                <p className="truncate text-xs text-base-content/55">
+                  {[
+                    summaryRow.category,
+                    summaryRow.source === 'lead' ? summaryRow.scope_label : DOCUMENT_SOURCE_LABELS[summaryRow.source],
+                    formatModified(summaryRow.created_at),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle shrink-0"
+                onClick={() => setSummaryRow(null)}
+                aria-label="Close the summary"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                <SparklesIcon className="h-3.5 w-3.5" />
+                AI summary
+              </p>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-base-content/90">
+                {summaryRow.ai_summary?.trim()}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 border-t border-base-200 px-4 py-3">
+              <button
+                type="button"
+                className="btn btn-sm flex-1 gap-2"
+                onClick={() => void openPreview(summaryRow)}
+              >
+                <EyeIcon className="h-4 w-4" />
+                Open the file
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm gap-2"
+                onClick={() => {
+                  const text = summaryRow.ai_summary?.trim() || '';
+                  if (!text) return;
+                  void navigator.clipboard
+                    ?.writeText(text)
+                    .then(() => toast.success('Summary copied'))
+                    .catch(() => toast.error('Could not copy the summary'));
+                }}
+              >
+                <DocumentDuplicateIcon className="h-4 w-4" />
+                Copy
+              </button>
+            </div>
+          </aside>
+        </>
+      ) : null}
+
       {viewerDocs && viewerDocs.length > 0 && (
         <DocumentViewerModal
           isOpen
@@ -3128,6 +3432,9 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
             setViewerRows([]);
             setViewerAutoEdit(false);
           }}
+          onActiveDocumentChange={handleViewerDocumentChange}
+          // The chat is told which file is on screen, so it can be asked about it from in here.
+          onOpenAiChat={() => openRmqAiChat()}
           documents={viewerDocs}
           initialIndex={viewerIndex}
           bucketName={viewerDocs[0].storageBucket || undefined}

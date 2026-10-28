@@ -212,7 +212,8 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
       .select(coreSelect)
       .eq('id', update.id)
       .single();
-    existing = retry.data;
+    // The retry reads the same row without the approval columns the database has not got yet.
+    existing = retry.data as typeof existing;
     fetchError = retry.error;
   }
 

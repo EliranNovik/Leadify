@@ -26,6 +26,7 @@ function row(overrides: Partial<DocumentIndexRow> = {}): DocumentIndexRow {
     ai_summary: null,
     classification_id: null,
     area: null,
+    client_visible: true,
     ...overrides,
   };
 }

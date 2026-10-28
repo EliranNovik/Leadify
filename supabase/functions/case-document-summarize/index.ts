@@ -10,7 +10,28 @@ const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const CASE_DOCS_BUCKET = 'lead-sub-efforts-documents';
 const CASE_DOC_SUMMARY_SECRET = Deno.env.get('CASE_DOC_SUMMARY_SECRET') || '';
 
-type SummarizeBody = { documentId?: string; force?: boolean };
+/**
+ * Whether a document gets summarised just for having been uploaded.
+ *
+ * Off unless `AUTO_SUMMARIZE` says otherwise, because every upload otherwise costs an OpenAI call
+ * whether anyone ever reads the summary or not. Set the secret to true to have uploads summarise
+ * themselves again. A summary somebody asks for (`manual: true`) is never gated by this.
+ */
+const AUTO_SUMMARIZE_ENABLED = ['true', '1', 'yes', 'on'].includes(
+  (Deno.env.get('AUTO_SUMMARIZE') || 'false').trim().toLowerCase(),
+);
+
+const AUTO_SUMMARY_OFF_NOTE =
+  'Automatic summaries are turned off. Generate one whenever you need it.';
+
+type SummarizeBody = {
+  documentId?: string;
+  force?: boolean;
+  /** Set when a person asked for this summary, which runs whatever AUTO_SUMMARIZE says. */
+  manual?: boolean;
+  /** Asks only whether automatic summaries are on, so a caller can skip work it must not do. */
+  probe?: boolean;
+};
 
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -224,9 +245,16 @@ serve(async (req) => {
     return json({ error: 'Invalid JSON body' }, 400);
   }
 
+  // Answered before anything else, so a caller can decide not to mark a new upload for summary at
+  // all rather than having it marked and then unmarked.
+  if (body.probe === true) {
+    return json({ success: true, autoSummarize: AUTO_SUMMARIZE_ENABLED });
+  }
+
   const documentId = typeof body.documentId === 'string' ? body.documentId.trim() : '';
   if (!documentId) return json({ error: 'documentId is required' }, 400);
   const force = body.force === true;
+  const manual = body.manual === true;
 
   const supabaseUser = isServiceRequest
     ? supabaseService
@@ -268,6 +296,24 @@ serve(async (req) => {
 
   if (rec.ai_summary_status === 'ready' && !force) {
     return json({ success: true, cached: true });
+  }
+
+  /*
+   * An upload asking for a summary nobody wanted. The row is settled rather than left on whatever
+   * it was marked, since a 'pending' nothing is working on shows as a spinner that never stops;
+   * 'skipped' is what puts a Generate button in front of the reader instead.
+   */
+  if (!manual && !AUTO_SUMMARIZE_ENABLED) {
+    await supabaseUser
+      .from('lead_case_documents')
+      .update({
+        ai_summary_status: 'skipped',
+        ai_summary_error: AUTO_SUMMARY_OFF_NOTE,
+        ai_summary_at: new Date().toISOString(),
+      })
+      .eq('id', documentId)
+      .neq('ai_summary_status', 'ready');
+    return json({ success: true, skipped: true, reason: 'auto_summarize_off' });
   }
 
   /** Records a final state, so no document is ever left sitting on `pending` with the UI spinning. */

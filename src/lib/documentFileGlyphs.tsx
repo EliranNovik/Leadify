@@ -28,7 +28,14 @@ export function inferDocumentFileKind(fileType: string, fileName: string): Docum
   const lowerName = fileName.toLowerCase();
   const ext = lowerName.includes('.') ? lowerName.slice(lowerName.lastIndexOf('.')) : '';
 
-  if (mime.startsWith('image/')) return 'image';
+  // The extensions as well as the mime: an upload that recorded no type at all — iPhone photos
+  // among them — would otherwise wear the plain file glyph.
+  if (
+    mime.startsWith('image/') ||
+    ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.heic', '.heif', '.tif', '.tiff'].includes(ext)
+  ) {
+    return 'image';
+  }
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('audio/')) return 'audio';
   if (mime.includes('pdf') || ext === '.pdf') return 'pdf';

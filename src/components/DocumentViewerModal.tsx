@@ -57,6 +57,8 @@ import {
 import { SubEffortAttachBadge } from './caseDocumentsModalUi';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import { isOutlookMsgFile } from '../lib/outlookMsgFile';
+import { isHeicFile, useHeicPreview } from '../lib/heicPreview';
+import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
 import OutlookMsgView from './OutlookMsgView';
 import DocumentSidebarThumb from './DocumentSidebarThumb';
 import {
@@ -129,6 +131,13 @@ interface DocumentViewerModalProps {
   autoStartOfficeEdit?: boolean;
   /** After a save, so the caller's list can show the new size and refresh previews. */
   onOfficeSaved?: (doc: DocumentViewerItem, info: { size: number }) => void | Promise<void>;
+  /**
+   * Which file of the gallery is on screen, including after paging through them, and null once the
+   * viewer closes. Pass a stable callback — it fires on every change of the shown document.
+   */
+  onActiveDocumentChange?: (doc: DocumentViewerItem | null) => void;
+  /** Shows an RMQ AI button in the header. Set it where the chat knows about these documents. */
+  onOpenAiChat?: () => void;
 }
 
 function isDirectPreviewUrl(url: string): boolean {
@@ -149,7 +158,9 @@ function inferFileType(name: string, fileType?: string): string {
   if (t) return t;
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (ext === 'pdf') return 'application/pdf';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif'].includes(ext)) {
+    return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+  }
   if (ext === 'doc') return 'application/msword';
   if (ext === 'docx') {
     return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -327,6 +338,8 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   allowOfficeEditing = true,
   autoStartOfficeEdit = false,
   onOfficeSaved,
+  onActiveDocumentChange,
+  onOpenAiChat,
 }) => {
   const { instance, accounts } = useMsal();
   const galleryItems = useMemo<DocumentViewerItem[]>(() => {
@@ -738,6 +751,13 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   }, [galleryItems, previewIndex]);
 
   const activeDoc = galleryItems[previewIndex] ?? null;
+
+  // Lets the caller follow what is being read, which is how RMQ AI knows which file to talk about.
+  useEffect(() => {
+    if (!onActiveDocumentChange) return;
+    onActiveDocumentChange(isOpen ? activeDoc : null);
+  }, [isOpen, activeDoc, onActiveDocumentChange]);
+
   const activeName = activeDoc?.name || documentName || 'Document';
   const activeUrl = activeDoc?.url || documentUrl;
   const activeFileType = inferFileType(activeName, activeDoc?.fileType);
@@ -1070,8 +1090,13 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
   const isImage =
     activeFileType.includes('image/') ||
-    !!activeName.match(/\.(jpg|jpeg|png|gif|webp)$/i) ||
-    !!activeUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i);
+    !!activeName.match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/i) ||
+    !!activeUrl.match(/\.(jpg|jpeg|png|gif|webp|heic|heif)$/i);
+  // iPhone photos, which no browser but Safari can draw. The bytes are decoded to a JPEG first;
+  // a download still hands over the original file.
+  const isHeic = isHeicFile(activeName, activeFileType);
+  const heicPreview = useHeicPreview(isHeic ? displayUrl : null, activeStoragePath || displayUrl);
+  const imageDisplayUrl = isHeic ? heicPreview.url : displayUrl;
   const isPdf =
     activeFileType.includes('pdf') ||
     !!activeName.match(/\.pdf$/i) ||
@@ -1128,7 +1153,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
     // Only an image answers to the wheel, and only by zooming. Everything else scrolls as it
     // reads: turning to the next file on a scroll took the page away mid-read.
-    if (!(isImage && !imageError && displayUrl)) return;
+    if (!(isImage && !imageError && imageDisplayUrl)) return;
 
     const onWheel = (e: WheelEvent) => {
       const target = e.target as HTMLElement | null;
@@ -2035,6 +2060,19 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
               </button>
             )
           ) : null}
+          {onOpenAiChat ? (
+            // White and round against the dark header, the way the drive wears it, so RMQ AI looks
+            // like the same button wherever it is reached from.
+            <button
+              type="button"
+              className="btn btn-circle h-10 w-10 min-h-0 shrink-0 border-0 bg-white p-0 shadow-md hover:bg-white/90"
+              onClick={onOpenAiChat}
+              title={`Ask RMQ AI about ${activeName}`}
+              aria-label="Open RMQ AI"
+            >
+              <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-7 w-7" />
+            </button>
+          ) : null}
           {/* Passing the file on and keeping a copy of it are the same errand, so they share one
               washed-out purple pill with a line between them. Flat: daisyUI's button shadow is
               spelled out as important, since its rules share this layer with these. */}
@@ -2249,7 +2287,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           <div
             data-doc-viewer-backdrop
             className={`flex min-h-0 w-full flex-1 ${
-              !loadingUrl && isImage && !imageError && displayUrl
+              !loadingUrl && isImage && !imageError && imageDisplayUrl
                 ? 'min-h-0 flex-col overflow-hidden p-0'
                 : !loadingUrl &&
                     (isPdf || Boolean(officeEmbedUrl)) &&
@@ -2287,6 +2325,21 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 fileName={activeName}
                 onDownloadOriginal={() => void handleDownload()}
               />
+            ) : isImage && !imageError && heicPreview.loading ? (
+              <div className="text-center text-white/80">
+                <span className="loading loading-spinner loading-lg" />
+                <p className="mt-4 text-sm opacity-80">Opening this photo…</p>
+              </div>
+            ) : isImage && !imageError && isHeic && !heicPreview.url ? (
+              <div className="max-w-md text-center text-white/80">
+                <p className="text-lg font-semibold">Could not show this photo</p>
+                <p className="mt-2 text-sm opacity-80">
+                  {heicPreview.error || 'This iPhone photo could not be read in the browser.'}
+                </p>
+                <button type="button" className="btn btn-primary btn-sm mt-4" onClick={() => void handleDownload()}>
+                  Download it instead
+                </button>
+              </div>
             ) : isImage && !imageError ? (
               <div data-doc-viewer-backdrop className="relative flex min-h-0 h-full w-full flex-1 flex-col">
                 <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/15 bg-black/55 px-1.5 py-1 shadow-lg backdrop-blur-md">
@@ -2346,7 +2399,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                   <DocumentAnnotatableView
                     key={`image-${activeDoc?.id || 'none'}`}
                     mode="image"
-                    src={displayUrl}
+                    src={imageDisplayUrl || ''}
                     storagePath={activeStoragePath}
                     alt={activeName}
                     highlights={highlightMarkers}

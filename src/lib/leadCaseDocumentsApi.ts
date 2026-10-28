@@ -7,6 +7,10 @@ import {
 } from './caseDocumentsStorage';
 import { supabase } from './supabase';
 import { fetchStageActorInfo } from './leadStageManager';
+import {
+  newCaseDocumentSummaryFields,
+  requestAutomaticCaseDocumentSummary,
+} from './caseDocumentSummaryPolicy';
 
 export type LeadCaseDocumentType = {
   id: string;
@@ -397,7 +401,7 @@ export async function uploadLeadCaseDocumentForContact(params: {
       mime_type: contentType,
       classification_id: null,
       uploaded_by: actor.fullName ?? null,
-      ai_summary_status: 'pending',
+      ...(await newCaseDocumentSummaryFields()),
       contact_id: contactId,
       document_type_id: documentTypeId,
     })
@@ -415,9 +419,7 @@ export async function uploadLeadCaseDocumentForContact(params: {
     .from(CASE_DOCUMENTS_STORAGE_BUCKET)
     .createSignedUrl(storagePath, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
 
-  void supabase.functions
-    .invoke('case-document-summarize', { body: { documentId: inserted.id } })
-    .catch(() => undefined);
+  void requestAutomaticCaseDocumentSummary(String(inserted.id));
 
   return {
     ...(inserted as LeadCaseDocumentRow),

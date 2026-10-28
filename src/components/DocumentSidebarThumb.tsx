@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
+import { heicObjectUrl, isHeicFile } from '../lib/heicPreview';
 import { renderPdfFirstPageThumbnail } from '../lib/pdfFirstPageThumbnail';
 import { supabase } from '../lib/supabase';
 
@@ -67,6 +68,7 @@ const DocumentSidebarThumb: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
 
   const image = isImageType(fileType, name, url);
+  const heic = image && isHeicFile(name, fileType);
   const pdf = isPdfType(fileType, name, url);
   const previewUrl = /^(https?:|blob:|data:)/i.test(url || '') ? url : null;
   const objectPath = (storagePath || (!previewUrl ? url : '') || '').trim();
@@ -98,10 +100,29 @@ const DocumentSidebarThumb: React.FC<Props> = ({
 
   useEffect(() => {
     if (!visible || !image || failed) return;
-    if (previewUrl) {
+    if (previewUrl && !heic) {
       setThumbSrc(previewUrl);
       setLoading(false);
       return;
+    }
+    if (previewUrl && heic) {
+      let cancelledHeic = false;
+      setLoading(true);
+      void heicObjectUrl(previewUrl, objectPath || previewUrl)
+        .then((decoded) => {
+          if (cancelledHeic) return;
+          setThumbSrc(decoded);
+          setFailed(false);
+        })
+        .catch(() => {
+          if (!cancelledHeic) setFailed(true);
+        })
+        .finally(() => {
+          if (!cancelledHeic) setLoading(false);
+        });
+      return () => {
+        cancelledHeic = true;
+      };
     }
     if (!objectPath || !bucketName) {
       setFailed(true);
@@ -113,21 +134,36 @@ const DocumentSidebarThumb: React.FC<Props> = ({
     void supabase.storage
       .from(bucketName)
       .createSignedUrl(objectPath, 3600)
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (cancelled) return;
         if (error || !data?.signedUrl) {
           setFailed(true);
-        } else {
-          setThumbSrc(data.signedUrl);
-          setFailed(false);
+          setLoading(false);
+          return;
         }
+        // An iPhone photo has to be decoded before it can be drawn; everything else is shown
+        // straight from storage.
+        if (heic) {
+          try {
+            const decoded = await heicObjectUrl(data.signedUrl, objectPath);
+            if (cancelled) return;
+            setThumbSrc(decoded);
+            setFailed(false);
+          } catch {
+            if (!cancelled) setFailed(true);
+          }
+          if (!cancelled) setLoading(false);
+          return;
+        }
+        setThumbSrc(data.signedUrl);
+        setFailed(false);
         setLoading(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [visible, image, previewUrl, objectPath, bucketName, failed]);
+  }, [visible, image, heic, previewUrl, objectPath, bucketName, failed]);
 
   useEffect(() => {
     if (!visible || !pdf || failed) return;

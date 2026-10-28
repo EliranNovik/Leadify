@@ -1,4 +1,5 @@
 import { describeCurrentLeadForPrompt, getRmqAiCurrentLead } from '../rmqAiChatContext';
+import { describeRmqAiDriveDocumentForPrompt } from '../rmqAiDriveContext';
 import { extractLeadNumbers, parseChatSummary } from './chatSummary';
 import { fetchRelatedChatsForLead } from './pastChats';
 import { listActiveFirmMemories, listActiveUserMemories } from './memory';
@@ -86,6 +87,8 @@ export async function buildRmqAiSystemPrompt(
     RMQ_AI_MEMORY_ROUTING_PROMPT,
     describeNowForPrompt(),
     describeCurrentLeadForPrompt(),
+    // Empty unless the documents drive is open, which is where files are talked about.
+    describeRmqAiDriveDocumentForPrompt(),
   ];
   const blob = [
     opts?.userText || '',

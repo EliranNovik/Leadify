@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { allowsAdditionalLeadMeetings, applyLocalLeadStage, preferNewerLeadStage } from './stageUtils';
+import {
+  allowsAdditionalLeadMeetings,
+  applyLocalLeadStage,
+  hasPassedSignedAgreementStage,
+  preferNewerLeadStage,
+} from './stageUtils';
 
 const EARLIER = '2026-10-14T08:00:00.000Z';
 const LATER = '2026-10-14T09:00:00.000Z';
@@ -138,4 +143,14 @@ test('a missing stage does not unlock extra meetings', () => {
   assert.equal(allowsAdditionalLeadMeetings(null), false);
   assert.equal(allowsAdditionalLeadMeetings(undefined), false);
   assert.equal(allowsAdditionalLeadMeetings(''), false);
+});
+
+test('an invoice may only go out from the signed agreement onwards', () => {
+  assert.equal(hasPassedSignedAgreementStage(60), true, 'Client signed agreement');
+  assert.equal(hasPassedSignedAgreementStage(70), true, 'Payment request sent');
+  assert.equal(hasPassedSignedAgreementStage('105'), true, 'Handler Set');
+  assert.equal(hasPassedSignedAgreementStage(50), false, 'Mtng sum+Agreement sent');
+  assert.equal(hasPassedSignedAgreementStage(51), false, 'Client declined price offer');
+  assert.equal(hasPassedSignedAgreementStage(91), false, 'a dropped lead never signed');
+  assert.equal(hasPassedSignedAgreementStage(null), false);
 });

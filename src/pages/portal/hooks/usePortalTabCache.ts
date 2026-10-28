@@ -183,6 +183,11 @@ function buildRealtimeTables(lead: PortalLeadSummary | null): RealtimeTableSubsc
       table: 'lead_case_documents',
       match: (p) => String(p.new?.lead_number ?? p.old?.lead_number ?? '') === leadNumber,
     });
+    // A folder taken out of the client's view has to reach them as quickly as a file does.
+    subs.push({
+      table: 'document_folders',
+      match: (p) => String(p.new?.scope_key ?? p.old?.scope_key ?? '') === leadNumber,
+    });
   }
 
   for (const table of [
@@ -207,41 +212,81 @@ async function fetchPortalScope(
   const patch: Partial<PortalTabCacheData> = {};
   const needs = (tab: PortalTabId) => scope === 'all' || scope === tab;
 
+  /*
+   * None of these reads needs another one's answer, so they go out together: a full refresh
+   * takes as long as the slowest of them instead of the sum of all six. That wait is what the
+   * client used to sit through before a document taken out of their view actually left it.
+   */
+  const reads: Array<Promise<void>> = [];
+
   if (needs('summary')) {
-    patch.summary = await portalGetCaseSummary();
+    reads.push(
+      (async () => {
+        patch.summary = await portalGetCaseSummary();
+      })(),
+    );
   }
 
   if (needs('stages') || needs('summary')) {
-    const sub = await portalGetSubEfforts();
-    patch.subEfforts = sub?.rows ?? [];
-    patch.subEffortsCategoryId = sub?.category_id ?? null;
-    patch.subEffortFolders = sub?.folders ?? [];
+    reads.push(
+      (async () => {
+        const sub = await portalGetSubEfforts();
+        patch.subEfforts = sub?.rows ?? [];
+        patch.subEffortsCategoryId = sub?.category_id ?? null;
+        patch.subEffortFolders = sub?.folders ?? [];
+      })(),
+    );
   }
 
   if (needs('finance') || needs('summary')) {
-    patch.finances = await portalGetFinances();
+    reads.push(
+      (async () => {
+        patch.finances = await portalGetFinances();
+      })(),
+    );
   }
 
   if (needs('meetings') || needs('summary')) {
-    patch.meetings = await portalGetMeetings();
+    reads.push(
+      (async () => {
+        patch.meetings = await portalGetMeetings();
+      })(),
+    );
   }
 
   if (needs('documents') || scope === 'all') {
-    const documents = await portalGetDocuments();
-    patch.documents = documents;
-    patch.documentSignedUrls = await loadDocumentSignedUrls(documents);
+    reads.push(
+      (async () => {
+        const documents = await portalGetDocuments();
+        patch.documents = documents;
+        patch.documentSignedUrls = await loadDocumentSignedUrls(documents);
+      })(),
+    );
   }
 
   if (needs('contacts') || scope === 'all') {
-    const contacts = await portalGetContacts();
-    patch.contacts = contacts;
-    const extras = await loadContactExtras(contacts?.contacts ?? []);
-    patch.poasByContact = extras.poasByContact;
-    patch.contractsByContact = extras.contractsByContact;
-    patch.contactProfileSignedUrls = await loadContactProfileSignedUrls(
-      (contacts?.contacts ?? []).map((c) => c.portal_profile_image_path),
-      existingContactProfileUrls,
+    reads.push(
+      (async () => {
+        const contacts = await portalGetContacts();
+        patch.contacts = contacts;
+        const extras = await loadContactExtras(contacts?.contacts ?? []);
+        patch.poasByContact = extras.poasByContact;
+        patch.contractsByContact = extras.contractsByContact;
+        patch.contactProfileSignedUrls = await loadContactProfileSignedUrls(
+          (contacts?.contacts ?? []).map((c) => c.portal_profile_image_path),
+          existingContactProfileUrls,
+        );
+      })(),
     );
+  }
+
+  // One read failing leaves the rest of the patch standing; what it would have written is simply
+  // left as it was, which `mergeCache` already treats as unchanged.
+  const settled = await Promise.allSettled(reads);
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.error('portal tab read failed', result.reason);
+    }
   }
 
   return patch;

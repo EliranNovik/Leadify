@@ -22,6 +22,10 @@ import {
 } from './staffMeetingDocuments';
 import { normalizeStorageKey, normalizeSubEffortDocItems, subEffortDocUploadedAt } from './subEffortDocumentAttach';
 import { supabase } from './supabase';
+import {
+  newCaseDocumentSummaryFields,
+  requestAutomaticCaseDocumentSummary,
+} from './caseDocumentSummaryPolicy';
 import { resolveUploaderDisplayByKey } from './uploaderDisplay';
 import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
@@ -990,7 +994,7 @@ export async function uploadContractCaseDocument(params: {
       mime_type: contentType,
       classification_id: classificationId,
       uploaded_by: params.uploadedBy,
-      ai_summary_status: 'pending',
+      ...(await newCaseDocumentSummaryFields()),
     })
     .select('id')
     .single();
@@ -1001,8 +1005,6 @@ export async function uploadContractCaseDocument(params: {
   }
 
   if (inserted?.id) {
-    void supabase.functions
-      .invoke('case-document-summarize', { body: { documentId: inserted.id } })
-      .catch(() => undefined);
+    void requestAutomaticCaseDocumentSummary(String(inserted.id));
   }
 }

@@ -2,6 +2,10 @@ import { supabase } from './supabase';
 import { getFrontendBaseUrl } from './api';
 import { fetchStageActorInfo } from './leadStageManager';
 import {
+  newCaseDocumentSummaryFields,
+  requestAutomaticCaseDocumentSummary,
+} from './caseDocumentSummaryPolicy';
+import {
   buildCaseDocumentStoragePath,
   CASE_DOCUMENTS_STORAGE_BUCKET,
   resolveCaseDocumentUploadContentType,
@@ -189,7 +193,7 @@ export async function uploadWordDocumentToCaseFolder(params: {
       mime_type: contentType,
       classification_id: classificationId,
       uploaded_by: actor.fullName ?? null,
-      ai_summary_status: 'pending',
+      ...(await newCaseDocumentSummaryFields()),
     })
     .select('id')
     .single();
@@ -199,9 +203,7 @@ export async function uploadWordDocumentToCaseFolder(params: {
     throw new Error(insErr?.message || 'Failed to save Word document to the case folder');
   }
 
-  void supabase.functions
-    .invoke('case-document-summarize', { body: { documentId: inserted.id } })
-    .catch(() => undefined);
+  void requestAutomaticCaseDocumentSummary(String(inserted.id));
 
   return String(inserted.id);
 }

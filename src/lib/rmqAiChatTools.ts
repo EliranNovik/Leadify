@@ -45,6 +45,7 @@ import {
   queryMatchesOpenLead,
 } from './rmqAiChatContext';
 import { formatLeadResolutionForModel, requireResolvedLead, resolveCrmLead } from './rmqAiLeadResolver';
+import { executeListDriveDocuments, executeSummarizeDriveDocument } from './rmqAiDocumentTools';
 import {
   bookLeadMeeting,
   buildMeetingConfirmation,
@@ -1243,6 +1244,83 @@ export const RMQ_AI_TOOLS = [
           },
         },
         required: ['query', 'reason', 'category'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_drive_documents',
+      description:
+        'List documents in the documents drive: case files, meeting files, office, My space and HR. ALWAYS use this for “what documents does this case / this lead have”, “when was it uploaded”, “who uploaded it”, “which files came in last week”, or to find a file by name. Returns one line per file with its type, case, folder, upload date, uploader and size. Report the file names with the upload date and the uploader; never show the ids.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Words from the file name, folder, type or case label. Omit to list everything in scope.',
+          },
+          lead: {
+            type: 'string',
+            description:
+              'Lead number, client name, email or phone, when the question is about one case. Pass this_case for the case already open in the drive or the client page. Omit it to look across the whole drive.',
+          },
+          section: {
+            type: 'string',
+            description:
+              'Drive section: lead (cases), staff_meeting (meetings), office, personal (My space) or hr. Omit for all of them.',
+          },
+          category: {
+            type: 'string',
+            description: 'Exact document type as the drive labels it, e.g. Passport.',
+          },
+          uploaded_by: {
+            type: 'string',
+            description: 'Part of the uploader’s name, when they ask what one person uploaded.',
+          },
+          date_from: {
+            type: 'string',
+            description: 'Earliest upload day, YYYY-MM-DD.',
+          },
+          date_to: {
+            type: 'string',
+            description: 'Latest upload day, YYYY-MM-DD, included.',
+          },
+          limit: {
+            type: 'number',
+            description: 'How many files to list, up to 80. Default 25, newest first.',
+          },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'summarize_drive_document',
+      description:
+        'Read one document in the drive and say what it is and what it contains. ALWAYS use this when the user asks what a document says, what it is about, to summarise it, or to explain it — including “this document”, “this file” or “it” while a file is picked out or open in the drive, which the DOCUMENT OPEN / PICKED OUT line names. Never guess a document’s contents from its file name. Reading a file nobody has read before takes a few seconds.',
+      parameters: {
+        type: 'object',
+        properties: {
+          document_id: {
+            type: 'string',
+            description:
+              'The drive id as source:row_id, from the DOCUMENT line or from list_drive_documents. Omit to use the file the user has picked out in the drive.',
+          },
+          file_name: {
+            type: 'string',
+            description: 'The file name instead, when no id is known.',
+          },
+          lead: {
+            type: 'string',
+            description: 'Which case to look in, when searching by file name.',
+          },
+          force: {
+            type: 'boolean',
+            description: 'Read the file again rather than reuse the stored summary. Only when they ask for a fresh read.',
+          },
+        },
       },
     },
   },
@@ -5606,6 +5684,25 @@ export async function executeRmqAiTool(toolCall: {
     }
     if (name === 'find_app_page') {
       return executeFindAppPage(args as { query?: string });
+    }
+    if (name === 'list_drive_documents') {
+      return await executeListDriveDocuments(
+        args as {
+          query?: string;
+          lead?: string;
+          section?: string;
+          category?: string;
+          uploaded_by?: string;
+          date_from?: string;
+          date_to?: string;
+          limit?: number;
+        },
+      );
+    }
+    if (name === 'summarize_drive_document') {
+      return await executeSummarizeDriveDocument(
+        args as { document_id?: string; file_name?: string; lead?: string; force?: boolean },
+      );
     }
     if (name === 'create_excel_sheet') {
       return await executeCreateExcelSheet(

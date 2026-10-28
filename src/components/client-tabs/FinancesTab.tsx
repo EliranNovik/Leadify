@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import { getStageName, hasPassedSignedAgreementStage } from '../../lib/stageUtils';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon, BuildingOffice2Icon } from '@heroicons/react/24/outline';
 import { CheckBadgeIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
@@ -907,6 +908,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [sentToFinancePayment, setSentToFinancePayment] = useState<PaymentPlan | null>(null);
   const [sendingReadyToPayInvoice, setSendingReadyToPayInvoice] = useState(false);
   const sendingReadyToPayInvoiceRef = useRef(false);
+  /** Open when an invoice was asked for on a lead that has not reached the signed agreement. */
+  const [agreementNotSignedOpen, setAgreementNotSignedOpen] = useState(false);
 
   // Add state for paid date modal
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -1444,7 +1447,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
+  /**
+   * An invoice is only sent once the client is bound by a signed agreement, which is what stage
+   * 60 records — whether they signed in the portal or a paper copy was filed and the stage moved
+   * by hand. Anything earlier is stopped here and the handler is told which of the two is missing.
+   */
+  const invoiceBlockedByUnsignedAgreement = (): boolean => {
+    if (hasPassedSignedAgreementStage(client?.stage)) return false;
+    setAgreementNotSignedOpen(true);
+    return true;
+  };
+
   const handleOpenSentToFinanceModal = (payment: PaymentPlan) => {
+    if (invoiceBlockedByUnsignedAgreement()) return;
     setSentToFinancePayment(payment);
   };
 
@@ -1458,6 +1473,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const handleSentToFinanceSendInvoice = async (language: ProformaSendLanguage) => {
     if (!sentToFinancePayment || !client?.id) return;
+    if (invoiceBlockedByUnsignedAgreement()) return;
     if (sendingReadyToPayInvoiceRef.current) return;
     sendingReadyToPayInvoiceRef.current = true;
 
@@ -6957,6 +6973,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const enterSendInvoiceSelectMode = () => {
+    if (invoiceBlockedByUnsignedAgreement()) return;
     exitInvoiceAutomationSelectMode();
     setSendInvoiceSelectMode(true);
     setSelectedSendInvoicePaymentKeys(new Set());
@@ -7037,6 +7054,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const handleSendInvoiceConfirm = async (language: ProformaSendLanguage) => {
     if (!client?.id || selectedSendInvoicePayments.length === 0) return;
+    if (invoiceBlockedByUnsignedAgreement()) return;
     if (sendingInvoiceRef.current) return;
     sendingInvoiceRef.current = true;
 
@@ -7458,8 +7476,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return (
       <button
         type="button"
-        className="tooltip tooltip-left z-50 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-        data-tip={`${tip} — click to change`}
+        // A native title rather than a daisyUI tooltip: the tooltip class is pinned at z-index
+        // 9999, which paints the pill over any open modal.
+        className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+        title={`${tip} — click to change`}
         onClick={(e) => {
           e.stopPropagation();
           handleOpenTaxInvoiceDrawer(payment);
@@ -10287,6 +10307,32 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         resource={{ resourceType: 'payment', resourceToken: kioskPaymentToken || '' }}
         title="Display payment on kiosk"
       />
+
+      {agreementNotSignedOpen ? (
+        <dialog open className="modal modal-open z-[140]">
+          <div className="modal-box max-w-lg">
+            <h3 className="text-xl font-bold text-gray-900">The client has not signed the agreement yet</h3>
+            <p className="mt-1 text-sm text-gray-600">
+              This lead is still at <span className="font-medium text-gray-800">{getStageName(client?.stage) || 'an earlier stage'}</span>, so no invoice can be sent.
+            </p>
+            <p className="mt-3 text-sm text-gray-600">Before sending the invoice, either:</p>
+            <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-gray-600">
+              <li>upload the physically signed agreement and update the system so the lead moves to <span className="font-medium text-gray-800">Client signed agreement</span>, or</li>
+              <li>have the client sign the agreement first.</li>
+            </ul>
+            <div className="modal-action">
+              <button type="button" className="btn btn-primary" onClick={() => setAgreementNotSignedOpen(false)}>
+                Got it
+              </button>
+            </div>
+          </div>
+          <form method="dialog" className="modal-backdrop bg-black/40">
+            <button type="button" onClick={() => setAgreementNotSignedOpen(false)} aria-label="Close">
+              close
+            </button>
+          </form>
+        </dialog>
+      ) : null}
 
       <SentToFinanceChoiceModal
         open={Boolean(sentToFinancePayment)}

@@ -5,6 +5,7 @@ import {
 } from './portalSubEfforts';
 import { supabase } from './supabase';
 import { getPortalSessionToken } from './portalSession';
+import { requestAutomaticCaseDocumentSummary } from './caseDocumentSummaryPolicy';
 
 export type PortalLeadSummary = {
   is_legacy: boolean;
@@ -68,11 +69,17 @@ export type PortalDocumentClassification = {
   sort_order?: number;
 };
 
-/** Employee-created folder on a sub-effort (CRM documents box). */
+/**
+ * A folder of the case as the client sees it: one of the drive's own case folders, which nest, or
+ * one of the older sub-effort folders, which do not. Anything the CRM marked as not viewable by
+ * the client never reaches here.
+ */
 export type PortalDocumentFolder = {
   id: string;
   title: string;
   note?: string | null;
+  /** Null at the top of the case; set for a folder inside another folder. */
+  parent_id?: string | null;
   sort_order?: number;
   created_at?: string;
   created_by?: string | null;
@@ -346,9 +353,7 @@ export async function portalUploadDocument(
 
   const documentId = fin.document_id != null ? String(fin.document_id) : undefined;
   if (documentId) {
-    void supabase.functions
-      .invoke('case-document-summarize', { body: { documentId } })
-      .catch((err) => console.warn('case-document-summarize:', err));
+    void requestAutomaticCaseDocumentSummary(documentId);
   }
 
   return { documentId };

@@ -28,7 +28,11 @@ import {
   type DocumentIndexRow,
   type DocumentIndexSource,
 } from './documentIndex';
-import { BULK_SUMMARY_FILE_LIMIT, caseDocumentSummaryFields } from './caseDocumentSummaryPolicy';
+import {
+  autoCaseSummariesEnabled,
+  BULK_SUMMARY_FILE_LIMIT,
+  caseDocumentSummaryFields,
+} from './caseDocumentSummaryPolicy';
 
 /**
  * Uploading from the central documents page, where the destination is chosen rather than implied
@@ -570,7 +574,9 @@ export async function uploadEntriesToDestination(params: {
   };
   if (entries.length === 0) return result;
 
-  const summarise = entries.length <= BULK_SUMMARY_FILE_LIMIT;
+  // Small enough a batch to summarise as it arrives, and uploads allowed to summarise at all.
+  const summarise =
+    entries.length <= BULK_SUMMARY_FILE_LIMIT && (await autoCaseSummariesEnabled());
 
   // Folders first, so every file already has somewhere to land. Each store keeps its own folders,
   // so the tree is rebuilt through whichever one the destination belongs to.

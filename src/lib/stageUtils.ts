@@ -307,9 +307,19 @@ const DROPPED_STAGE_ID = 91;
  * stage describing something that is no longer true. Dropped leads are excluded as well.
  */
 export function allowsAdditionalLeadMeetings(stage: unknown): boolean {
-  if (Number(stage) === DROPPED_STAGE_ID) return false;
   // Same boundary as the rule that stops a meeting moving the stage, which is what makes extra
   // meetings safe here: they add a booking without rewriting where the case has got to.
+  return hasPassedSignedAgreementStage(stage);
+}
+
+/**
+ * Whether the lead has got as far as "Client signed agreement" (60), however it got there: the
+ * client signed in the portal, or a paper copy was filed and the stage moved on by hand.
+ *
+ * Stage 91 is read as unsigned — a dropped lead sits numerically past 60 with nothing signed.
+ */
+export function hasPassedSignedAgreementStage(stage: unknown): boolean {
+  if (Number(stage) === DROPPED_STAGE_ID) return false;
   return shouldPreserveLeadStageOnMeeting(stage);
 }
 

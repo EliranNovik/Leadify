@@ -40,6 +40,12 @@ import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
 import { createPortal } from 'react-dom';
 import { normalizeStorageKey } from '../lib/subEffortDocumentAttach';
 import {
+  fetchSubEffortCaseClassificationId,
+  registerSubEffortDocumentsAsCaseDocuments,
+  renameSubEffortCaseDocument,
+  resolveSubEffortCaseLeadNumber,
+} from '../lib/subEffortCaseDocuments';
+import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
   isEmailAttachmentsBucket,
 } from '../lib/leadEmailAttachments';
@@ -1645,6 +1651,9 @@ export function SubEffortsLogModal({
         .eq('id', selectedRow.id);
       if (error) throw error;
 
+      // The same file is listed as a case document, so the drive would otherwise keep the old name.
+      await renameSubEffortCaseDocument(docKey, trimmed);
+
       setPreviewItems((prev) => prev.map((p) => (p.id === docKey ? { ...p, name: trimmed } : p)));
       onRefresh?.();
     },
@@ -2068,6 +2077,31 @@ export function SubEffortsLogModal({
         .update({ document_url: nextDocumentUrl, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (updateError) throw updateError;
+
+      // The same files are recorded as case documents, which is what the documents drive, the
+      // client portal and the document counts read. A failure there must not undo the upload.
+      try {
+        const caseLeadNumber = await resolveSubEffortCaseLeadNumber({
+          leadNumber,
+          legacyLeadId: selectedRow?.legacy_lead_id ?? null,
+          newLeadId: selectedRow?.new_lead_id ?? null,
+        });
+        await registerSubEffortDocumentsAsCaseDocuments({
+          leadNumber: caseLeadNumber,
+          classificationId: await fetchSubEffortCaseClassificationId(selectedRow?.sub_effort_id),
+          uploadedBy: actor.fullName ?? null,
+          clientVisible: selectedRow?.internal !== true,
+          items: Array.from(files).map((file, idx) => ({
+            path: uploadedPaths[idx],
+            name: file.name,
+            mimeType: uploadedMimeTypes[idx],
+            size: file.size,
+          })),
+        });
+      } catch (mirrorError: any) {
+        console.error('Error filing sub effort documents as case documents:', mirrorError);
+        toast.error('Uploaded, but these files could not be listed in the documents drive.');
+      }
 
       toast.success('Documents uploaded');
       onRefresh?.();

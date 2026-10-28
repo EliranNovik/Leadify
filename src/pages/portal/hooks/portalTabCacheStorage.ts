@@ -1,7 +1,8 @@
 import type { PortalLeadSummary } from '../../../lib/portalApi';
 import type { PortalTabCacheData } from './usePortalTabCache';
 
-const CACHE_VERSION = 4;
+// 5: documents carry folders and what the client may see, so anything cached before is wrong.
+const CACHE_VERSION = 5;
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
 type StoredPortalCache = {

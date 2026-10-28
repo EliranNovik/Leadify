@@ -15,11 +15,12 @@ const PortalStagesTab: React.FC = () => {
       ? 'Case stages will appear here once your case type is set on your file.'
       : 'No case stages are linked to your case type yet.';
 
+  // The hero says where the case stands and nothing else; what to do here is plain from the page.
   const subtitle = active?.sub_effort_name?.trim()
-    ? `Current stage: ${active.sub_effort_name.trim()}. Follow your workflow and view documents for each stage.`
+    ? `Current stage: ${active.sub_effort_name.trim()}`
     : rows.length > 0 && rows.every((row) => row.active === false)
-      ? 'All stages are complete. Review your workflow and documents below.'
-      : 'Follow your case progress and view documents for each stage.';
+      ? 'All stages are complete.'
+      : undefined;
 
   if (initialLoading && !data) return <PortalLoading />;
 

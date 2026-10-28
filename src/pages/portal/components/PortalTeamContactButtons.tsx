@@ -41,14 +41,15 @@ type ContactItem = {
   external: boolean;
 };
 
+// Each way of reaching someone says what it is, so the badge carries its name beside the mark.
 const BUTTON_BASE_CLASS =
-  'inline-flex h-9 w-9 items-center justify-center rounded-full transition-all duration-[180ms] hover:-translate-y-px';
+  'inline-flex h-9 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold transition-all duration-[180ms] hover:-translate-y-px';
 
 const BUTTON_CLASS_BY_KIND: Record<ContactKind, string> = {
   whatsapp:
     'bg-[#25D366] text-white shadow-[0_4px_12px_rgba(37,211,102,0.35)] hover:bg-[#20BD5A] hover:shadow-[0_6px_16px_rgba(37,211,102,0.4)]',
   email:
-    'border border-[#C7E0F4] bg-[#EAF3FC] shadow-sm hover:bg-[#D6EBFA] hover:shadow-md',
+    'border border-[#C7E0F4] bg-[#EAF3FC] text-[#0F5BA8] shadow-sm hover:bg-[#D6EBFA] hover:shadow-md',
   call:
     'border border-[rgba(15,23,42,0.08)] bg-[#f6f5fa] text-[#16161d] hover:bg-[#ececef]',
 };
@@ -95,7 +96,7 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
   ].filter(Boolean) as ContactItem[];
 
   return (
-    <div className="flex items-center justify-start gap-2.5">
+    <div className="flex flex-wrap items-center justify-start gap-2">
       {items.map(({ href, label, kind, external }) => (
         <a
           key={label}
@@ -105,9 +106,10 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
           className={`${BUTTON_BASE_CLASS} ${BUTTON_CLASS_BY_KIND[kind]}`}
           aria-label={label}
         >
-          {kind === 'email' ? <OutlookIcon /> : null}
-          {kind === 'call' ? <PhoneIcon className="h-[18px] w-[18px] text-[#16161d]" /> : null}
+          {kind === 'email' ? <OutlookIcon className="h-[18px] w-[18px]" /> : null}
+          {kind === 'call' ? <PhoneIcon className="h-[18px] w-[18px]" /> : null}
           {kind === 'whatsapp' ? <FaWhatsapp className="h-[18px] w-[18px]" /> : null}
+          <span>{label}</span>
         </a>
       ))}
     </div>

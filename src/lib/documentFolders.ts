@@ -34,10 +34,12 @@ export type DocumentFolder = {
   sort_order: number;
   created_by: string | null;
   created_at: string;
+  /** False hides the folder, and everything under it, from the client portal. */
+  client_visible: boolean;
 };
 
 const FOLDER_SELECT =
-  'id, parent_id, scope_type, scope_key, classification_id, area, title, note, path, depth, sort_order, created_by, created_at';
+  'id, parent_id, scope_type, scope_key, classification_id, area, title, note, path, depth, sort_order, created_by, created_at, client_visible';
 
 /** Matches the depth guard in sql/2026-10-21_document_folders.sql. */
 export const MAX_DOCUMENT_FOLDER_DEPTH = 10;

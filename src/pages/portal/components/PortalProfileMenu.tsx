@@ -15,6 +15,8 @@ type Props = {
   onSettings?: () => void;
   dropUp?: boolean;
   onDark?: boolean;
+  /** Off where the row has no space for it: just the initials and the arrow. */
+  showIdentity?: boolean;
 };
 
 const PortalProfileMenu: React.FC<Props> = ({
@@ -26,6 +28,7 @@ const PortalProfileMenu: React.FC<Props> = ({
   onSettings,
   dropUp = false,
   onDark = false,
+  showIdentity = true,
 }) => {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -60,24 +63,26 @@ const PortalProfileMenu: React.FC<Props> = ({
           stableKey={stableKey}
           className="h-9 w-9 shrink-0 text-xs"
         />
-        <div className="min-w-0 text-left">
-          <span
-            className={`block truncate text-sm font-semibold ${
-              onDark ? 'text-primary-content' : 'text-base-content/80'
-            }`}
-          >
-            {name}
-          </span>
-          {leadNumber ? (
+        {showIdentity ? (
+          <div className="min-w-0 text-left">
             <span
-              className={`block truncate text-xs ${
-                onDark ? 'text-primary-content/70' : 'text-base-content/45'
+              className={`block truncate text-sm font-semibold ${
+                onDark ? 'text-primary-content' : 'text-base-content/80'
               }`}
             >
-              Case #{leadNumber}
+              {name}
             </span>
-          ) : null}
-        </div>
+            {leadNumber ? (
+              <span
+                className={`block truncate text-xs ${
+                  onDark ? 'text-primary-content/70' : 'text-base-content/45'
+                }`}
+              >
+                Case #{leadNumber}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <ChevronDownIcon
           className={`h-4 w-4 shrink-0 transition-transform ${
             onDark ? 'text-primary-content/70' : 'text-base-content/40'

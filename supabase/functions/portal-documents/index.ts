@@ -22,26 +22,49 @@ function leadKeys(summary: LeadSummary | undefined): Set<string> {
   return keys;
 }
 
+/**
+ * How a case number can be spelled inside a storage path. `buildCaseDocumentStoragePath`
+ * (src/lib/caseDocumentsStorage.ts) replaces anything unsafe, so case L209994/3 is filed under
+ * both `L209994/3/` (older uploads) and `L209994_3/` (everything the drive writes). Missing the
+ * second spelling left the client with documents they could see but never open.
+ */
+function pathSpellings(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+  const sanitized = trimmed.replace(/[^\w.\-()+]/g, '_');
+  return sanitized === trimmed ? [trimmed] : [trimmed, sanitized];
+}
+
+function matchesAnyKey(segment: string, allowed: Set<string>): boolean {
+  if (!segment) return false;
+  for (const key of allowed) {
+    if (pathSpellings(key).includes(segment)) return true;
+  }
+  return false;
+}
+
 function isStoragePathAllowed(path: string, summary: LeadSummary | undefined): boolean {
   const allowed = leadKeys(summary);
   if (!allowed.size) return false;
 
   if (path.startsWith('case-documents/')) {
-    const leadNumber = summary?.lead_number ? String(summary.lead_number) : '';
-    if (leadNumber) {
-      return path.includes(`/${leadNumber}/`) || path.startsWith(`case-documents/${leadNumber}/`);
+    const rest = path.slice('case-documents/'.length);
+    for (const key of allowed) {
+      for (const spelling of pathSpellings(key)) {
+        if (rest.startsWith(`${spelling}/`)) return true;
+      }
     }
-    return true;
+    return false;
   }
 
   if (path.startsWith('sub-efforts/')) {
     const leadKey = path.split('/')[1] ?? '';
-    return allowed.has(leadKey);
+    return matchesAnyKey(leadKey, allowed);
   }
 
   // Legacy layout: <leadId>/<subEffortRowId>/<filename>
   const leadKey = path.split('/')[0] ?? '';
-  return allowed.has(leadKey);
+  return matchesAnyKey(leadKey, allowed);
 }
 
 serve(async (req) => {

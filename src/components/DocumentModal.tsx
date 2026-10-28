@@ -44,7 +44,13 @@ import { downloadFilesAsZip } from '../lib/downloadDocumentsZip';
 import { splitScanCaseDocument } from '../lib/smartScan/scanCenterInbox';
 import { expandLeadCaseDocumentLeadNumbers } from '../lib/leadCaseDocumentKeys';
 import { subEffortDocUploadedAt } from '../lib/subEffortDocumentAttach';
-import { BULK_SUMMARY_FILE_LIMIT, BULK_SUMMARY_SKIPPED_NOTE } from '../lib/caseDocumentSummaryPolicy';
+import {
+  autoCaseSummariesEnabled,
+  BULK_SUMMARY_FILE_LIMIT,
+  caseDocumentSummaryFields,
+  requestAutomaticCaseDocumentSummary,
+  requestManualCaseDocumentSummary,
+} from '../lib/caseDocumentSummaryPolicy';
 import {
   EMAIL_ATTACHMENTS_STORAGE_BUCKET,
   emailAttachmentUploaderLabel,
@@ -405,18 +411,6 @@ async function shareDocumentSummary(doc: Document): Promise<void> {
   }
 
   toast.error('Sharing is not available in this browser.');
-}
-
-/** Same stack as other AI features (`ai-lead-summary`, `chat`): OpenAI via Supabase Edge + `OPENAI_API_KEY`. */
-async function requestCaseDocumentSummarize(documentId: string, opts?: { force?: boolean }) {
-  try {
-    const { error } = await supabase.functions.invoke('case-document-summarize', {
-      body: { documentId, ...(opts?.force ? { force: true } : {}) },
-    });
-    if (error) console.warn('case-document-summarize:', error.message);
-  } catch (e) {
-    console.warn('case-document-summarize:', e);
-  }
 }
 
 type DocumentRowActionMenuProps = {
@@ -2306,7 +2300,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       .from('lead_case_documents')
       .update({ ai_summary_status: 'pending', ai_summary_error: null })
       .eq('id', id);
-    void requestCaseDocumentSummarize(id, { force: true });
+    void requestManualCaseDocumentSummary(id, { force: true });
   };
 
   const formatDate = (dateString: string) => {
@@ -2440,7 +2434,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
     /* A row each for a handful of files; one bar for a folder full of them. */
     const condensed = entries.length > CONDENSED_PROGRESS_FILE_LIMIT;
-    const summarise = entries.length <= BULK_SUMMARY_FILE_LIMIT;
+    // Small enough a batch to summarise as it arrives, and uploads allowed to summarise at all.
+    const summarise =
+      entries.length <= BULK_SUMMARY_FILE_LIMIT && (await autoCaseSummariesEnabled());
     const batchStamp = Date.now();
     const batchRowId = `upload-batch-${batchStamp}`;
 
@@ -2595,8 +2591,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 : null,
             ...(leadCaseDocHasFolderColumn ? { folder_id: folderForEntry(entry) } : {}),
             uploaded_by: uploadedBy,
-            ai_summary_status: summarise ? 'pending' : 'skipped',
-            ai_summary_error: summarise ? null : BULK_SUMMARY_SKIPPED_NOTE,
+            ...caseDocumentSummaryFields(summarise),
           })
           .select('id')
           .single();
@@ -2608,7 +2603,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         }
 
         if (summarise && insertedRow?.id) {
-          void requestCaseDocumentSummarize(insertedRow.id as string);
+          void requestAutomaticCaseDocumentSummary(String(insertedRow.id));
         }
 
         if (uploadId) markUpload(uploadId, { status: 'success', progress: 100 });

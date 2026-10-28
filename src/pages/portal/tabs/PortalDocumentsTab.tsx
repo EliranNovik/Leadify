@@ -1,21 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowDownTrayIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
+  ChevronRightIcon,
   DocumentArrowUpIcon,
   EyeIcon,
-  FolderIcon,
+  ListBulletIcon,
   PaperClipIcon,
+  Squares2X2Icon,
   XCircleIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { FolderIcon as FolderSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
 import {
   DocumentPreviewModal,
   type DocumentPreviewItem,
 } from '../../../components/DocumentModal';
-import { DocumentFileGlyph, inferDocumentFileKind } from '../../../lib/documentFileGlyphs';
+import DocumentSidebarThumb from '../../../components/DocumentSidebarThumb';
+import { DocumentFileGlyph } from '../../../lib/documentFileGlyphs';
 import {
   portalGetLeadCaseDocumentTypes,
   portalUploadDocument,
@@ -140,98 +145,21 @@ function inferPortalDocumentMimeType(doc: PortalDocumentRow): string {
   return 'application/octet-stream';
 }
 
-function PortalDocumentPreview({
-  url,
-  fileName,
-  mimeType,
-  onOpen,
-}: {
-  url: string | null;
-  fileName: string;
-  mimeType: string;
-  onOpen?: () => void;
-}) {
-  const [broken, setBroken] = useState(false);
-  const kind = inferDocumentFileKind(mimeType, fileName);
-  const frameClass =
-    'relative h-24 w-28 shrink-0 overflow-hidden rounded-xl border border-base-200 bg-base-100 sm:h-28 sm:w-36 md:h-32 md:w-40';
+/**
+ * The upload area and the table sit in a centred column on a wide screen: a row stretched the
+ * whole width of the page is hard to read across. The boxes keep the full width — they fill it.
+ */
+const DOCUMENTS_COLUMN = 'mx-auto w-full md:max-w-5xl';
 
-  useEffect(() => {
-    setBroken(false);
-  }, [url, fileName, mimeType]);
-
-  const openProps = onOpen
-    ? {
-        type: 'button' as const,
-        onClick: (e: React.MouseEvent) => {
-          e.stopPropagation();
-          onOpen();
-        },
-      }
-    : url
-      ? {
-          href: url,
-          target: '_blank',
-          rel: 'noopener noreferrer',
-        }
-      : {};
-
-  const Wrapper = onOpen ? 'button' : url ? 'a' : 'div';
-
-  const fallback = (
-    <div className={`${frameClass} flex items-center justify-center`}>
-      <DocumentFileGlyph fileType={mimeType} fileName={fileName} className="h-10 w-10 opacity-60" />
-    </div>
-  );
-
-  if (!url) return fallback;
-
-  if (kind === 'image' && !broken) {
-    return (
-      <Wrapper
-        {...openProps}
-        className={`${frameClass} block ${onOpen ? 'cursor-pointer transition-shadow hover:shadow-md' : ''}`}
-        aria-label={`Preview ${fileName}`}
-      >
-        <img
-          src={url}
-          alt=""
-          className="h-full w-full object-cover"
-          loading="lazy"
-          onError={() => setBroken(true)}
-        />
-      </Wrapper>
-    );
-  }
-
-  if (kind === 'pdf') {
-    return (
-      <Wrapper
-        {...openProps}
-        className={`${frameClass} block bg-white ${onOpen ? 'cursor-pointer transition-shadow hover:shadow-md' : ''}`}
-        aria-label={`Preview ${fileName}`}
-      >
-        <iframe
-          src={`${url}#toolbar=0&navpanes=0&view=FitH`}
-          title={fileName}
-          className="pointer-events-none h-full w-full scale-[1.02] border-0 bg-white"
-        />
-      </Wrapper>
-    );
-  }
-
-  return (
-    <Wrapper
-      {...openProps}
-      className={`${frameClass} flex flex-col items-center justify-center gap-1 p-2 transition-colors ${
-        onOpen ? 'cursor-pointer hover:bg-base-200/60 hover:shadow-md' : 'hover:bg-base-200/60'
-      }`}
-      aria-label={`Open ${fileName}`}
-    >
-      <DocumentFileGlyph fileType={mimeType} fileName={fileName} className="h-10 w-10" />
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-base-content/45">Preview</span>
-    </Wrapper>
-  );
+/**
+ * Storage hands a PDF or a Word file back with its own content type, which the browser then
+ * shows (or refuses to show) in a new tab instead of saving. Asking Storage for the file by
+ * name makes it answer with an attachment, so the link downloads whatever the file is.
+ */
+function asDownloadUrl(url: string, fileName: string): string {
+  if (!url.includes('/storage/v1/')) return url;
+  if (/[?&]download=/.test(url)) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}download=${encodeURIComponent(fileName)}`;
 }
 
 const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ sessionContactId = null }) => {
@@ -247,13 +175,28 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
   const [modalContactId, setModalContactId] = useState<number | ''>('');
   const [modalDocumentTypeId, setModalDocumentTypeId] = useState<string>('');
   const [activeTabKey, setActiveTabKey] = useState<PortalDocumentTabKey>('sequence');
-  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  /** The folders walked into, root first, so a folder inside a folder can be stepped back out of. */
+  const [folderTrail, setFolderTrail] = useState<PortalDocumentFolder[]>([]);
+  /**
+   * A table needs width to be worth reading, so a phone opens on the boxes instead. Whichever
+   * one is then chosen stays chosen — turning the phone sideways does not undo it.
+   */
+  const [view, setView] = useState<'table' | 'grid'>(() =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches
+      ? 'grid'
+      : 'table',
+  );
   const loading = initialLoading && !data;
   const [isUploading, setIsUploading] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
+  /** The file being looked at by hovering its icon, placed where the icon is. */
+  const [peek, setPeek] = useState<{ doc: PortalDocumentRow; top: number; left: number } | null>(
+    null,
+  );
+  const peekTimer = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -341,50 +284,72 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     return folders.filter((folder) => folderMatchesPortalTab(folder, activeTab));
   }, [folders, activeTab]);
 
-  const activeFolder = useMemo(
-    () => foldersInActiveCategory.find((folder) => folder.id === activeFolderId) ?? null,
+  const activeFolder = folderTrail.length > 0 ? folderTrail[folderTrail.length - 1] : null;
+  const activeFolderId = activeFolder?.id ?? null;
+
+  /** The folders of the open level: the case's own at the top, a folder's children inside one. */
+  const foldersAtThisLevel = useMemo(
+    () =>
+      foldersInActiveCategory.filter((folder) => (folder.parent_id ?? null) === activeFolderId),
     [foldersInActiveCategory, activeFolderId],
   );
 
-  const unfiledDocuments = useMemo(
-    () => documentsInActiveCategory.filter((doc) => !doc.folder_id),
-    [documentsInActiveCategory],
-  );
-
-  const documentsInActiveFolder = useMemo(() => {
-    if (!activeFolderId) return [];
-    return documentsInActiveCategory.filter((doc) => doc.folder_id === activeFolderId);
-  }, [documentsInActiveCategory, activeFolderId]);
-
-  const visibleDocuments = activeFolderId
-    ? documentsInActiveFolder
-    : foldersInActiveCategory.length > 0
-      ? unfiledDocuments
-      : documentsInActiveCategory;
+  /**
+   * The files of the open level. At the top that is everything not filed away — including a file
+   * whose folder is not in this category, which would otherwise be in the case yet nowhere in it.
+   */
+  const visibleDocuments = useMemo(() => {
+    if (activeFolderId) {
+      return documentsInActiveCategory.filter((doc) => doc.folder_id === activeFolderId);
+    }
+    const known = new Set(foldersInActiveCategory.map((folder) => folder.id));
+    return documentsInActiveCategory.filter((doc) => !doc.folder_id || !known.has(doc.folder_id));
+  }, [documentsInActiveCategory, foldersInActiveCategory, activeFolderId]);
 
   const countDocumentsForTab = useCallback(
     (tab: PortalDocumentTab) => documents.filter((doc) => documentMatchesPortalTab(doc, tab)).length,
     [documents],
   );
 
+  /** What a folder holds, counting its subfolders: the number on a closed folder means all of it. */
   const countDocumentsInFolder = useCallback(
-    (folderId: string) => documentsInActiveCategory.filter((doc) => doc.folder_id === folderId).length,
-    [documentsInActiveCategory],
+    (folderId: string) => {
+      const ids = new Set([folderId]);
+      let frontier = [folderId];
+      while (frontier.length > 0) {
+        const next = foldersInActiveCategory
+          .filter((folder) => folder.parent_id && frontier.includes(folder.parent_id))
+          .map((folder) => folder.id)
+          .filter((id) => !ids.has(id));
+        next.forEach((id) => ids.add(id));
+        frontier = next;
+      }
+      return documentsInActiveCategory.filter((doc) => doc.folder_id && ids.has(doc.folder_id))
+        .length;
+    },
+    [documentsInActiveCategory, foldersInActiveCategory],
   );
 
   useEffect(() => {
-    setActiveFolderId(null);
+    setFolderTrail([]);
   }, [activeTabKey]);
 
+  // A folder that is no longer there — renamed away, hidden, deleted — is stepped back out of.
   useEffect(() => {
-    if (activeFolderId && !foldersInActiveCategory.some((folder) => folder.id === activeFolderId)) {
-      setActiveFolderId(null);
-    }
-  }, [activeFolderId, foldersInActiveCategory]);
+    setFolderTrail((trail) => {
+      const kept: PortalDocumentFolder[] = [];
+      for (const folder of trail) {
+        const current = foldersInActiveCategory.find((item) => item.id === folder.id);
+        if (!current) break;
+        kept.push(current);
+      }
+      return kept.length === trail.length ? trail : kept;
+    });
+  }, [foldersInActiveCategory]);
 
   const uploadFiles = async (
     files: File[],
-    opts: { contactId: number; documentTypeId: string },
+    opts: { contactId: number; documentTypeId?: string },
   ) => {
     if (!files.length) return;
 
@@ -541,7 +506,40 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     [visibleDocuments, signedUrls],
   );
 
+  const closePeek = useCallback(() => {
+    if (peekTimer.current != null) {
+      window.clearTimeout(peekTimer.current);
+      peekTimer.current = null;
+    }
+    setPeek(null);
+  }, []);
+
+  useEffect(() => closePeek, [closePeek]);
+
+  /**
+   * Resting on a file's icon shows the file, so two documents named alike can be told apart
+   * without opening either. It waits a moment first: the mouse crosses icons on its way elsewhere.
+   */
+  const documentPeekProps = (doc: PortalDocumentRow) => ({
+    onMouseEnter: (event: React.MouseEvent<HTMLElement>) => {
+      const element = event.currentTarget;
+      if (peekTimer.current != null) window.clearTimeout(peekTimer.current);
+      peekTimer.current = window.setTimeout(() => {
+        const rect = element.getBoundingClientRect();
+        setPeek({
+          doc,
+          // Below the icon and inside the window, whichever edge it is near.
+          top: Math.min(rect.bottom + 6, window.innerHeight - 300),
+          left: Math.min(Math.max(rect.left + 24, 8), window.innerWidth - 304),
+        });
+      }, 400);
+    },
+    onMouseLeave: closePeek,
+  });
+
   const canSelectFiles = !isUploading;
+  /** An empty list stands where its list would: in the column with the table, full width with the boxes. */
+  const emptyStateColumn = view === 'table' ? DOCUMENTS_COLUMN : '';
 
   if (loading) return <PortalLoading />;
 
@@ -560,14 +558,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         onChange={handleFileInput}
       />
 
-      <p className="text-xs text-base-content/65">
-        {documentTypes.length > 0
-          ? 'Select files to upload. You will choose the contact and document type before each upload.'
-          : 'Select files to upload. You will choose the contact before each upload.'}
-      </p>
-
       <div
-        className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
+        className={`${DOCUMENTS_COLUMN} rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
           isUploading
             ? 'border-primary bg-gray-50'
             : canSelectFiles
@@ -602,7 +594,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       </div>
 
       {uploadedFiles.length > 0 ? (
-        <div className="space-y-2">
+        <div className={`${DOCUMENTS_COLUMN} space-y-2`}>
           {uploadedFiles.map((file, index) => (
             <div
               key={`${file.name}-${index}`}
@@ -650,213 +642,364 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         </div>
       ) : null}
 
-      <nav
-        className="flex w-full min-w-0 touch-pan-x flex-nowrap items-stretch gap-2 overflow-x-auto border-b border-base-200 pb-2 [-webkit-overflow-scrolling:touch]"
-        aria-label="Document categories"
-      >
-        {documentTabs.map((category) => {
-          const count = countDocumentsForTab(category);
-          const active = activeTabKey === category.key;
-          return (
-            <button
-              key={category.key}
-              type="button"
-              onClick={() => setActiveTabKey(category.key)}
-              className={`btn btn-sm inline-flex h-auto min-h-0 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border-0 px-3 py-2.5 text-sm font-bold shadow-none ${
-                active
-                  ? 'btn-primary text-white'
-                  : 'bg-base-200/90 text-base-content hover:bg-base-300/80'
-              }`}
-            >
-              <span className="max-w-[12rem] truncate sm:max-w-[14rem]">{category.label}</span>
-              <span
-                className={
+      <div className="flex w-full min-w-0 items-center gap-2 border-b border-base-200 pb-2">
+        <nav
+          className="flex min-w-0 flex-1 touch-pan-x flex-nowrap items-stretch gap-2 overflow-x-auto [-webkit-overflow-scrolling:touch]"
+          aria-label="Document categories"
+        >
+          {documentTabs.map((category) => {
+            const count = countDocumentsForTab(category);
+            const active = activeTabKey === category.key;
+            return (
+              <button
+                key={category.key}
+                type="button"
+                onClick={() => setActiveTabKey(category.key)}
+                className={`btn btn-sm inline-flex h-auto min-h-0 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border-0 px-3 py-2.5 text-sm font-bold shadow-none ${
                   active
-                    ? 'inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-blue-900'
-                    : 'text-xs font-semibold tabular-nums text-base-content/70'
-                }
+                    ? 'btn-primary text-white'
+                    : 'bg-base-200/90 text-base-content hover:bg-base-300/80'
+                }`}
               >
-                {count}
-              </span>
+                <span className="max-w-[12rem] truncate sm:max-w-[14rem]">{category.label}</span>
+                <span
+                  className={
+                    active
+                      ? 'inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-blue-900'
+                      : 'text-xs font-semibold tabular-nums text-base-content/70'
+                  }
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="flex shrink-0 items-center gap-1 rounded-full bg-base-200 p-1">
+          {([
+            { id: 'table' as const, label: 'Table view', icon: ListBulletIcon },
+            { id: 'grid' as const, label: 'Box view', icon: Squares2X2Icon },
+          ]).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              className={`btn btn-sm rounded-full border-none transition-colors ${
+                view === option.id
+                  ? 'bg-white text-base-content shadow-sm hover:bg-white dark:bg-base-100'
+                  : 'bg-transparent text-base-content/50 hover:bg-base-300'
+              }`}
+              title={option.label}
+              aria-label={option.label}
+              aria-pressed={view === option.id}
+              onClick={() => setView(option.id)}
+            >
+              <option.icon className="h-5 w-5" />
             </button>
-          );
-        })}
-      </nav>
+          ))}
+        </div>
+      </div>
 
-      {activeFolder ? (
-        <div className="flex flex-wrap items-center gap-3">
+      {/* Where in the case you are standing, and the way back up out of it. */}
+      {folderTrail.length > 0 ? (
+        <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm" aria-label="Folder path">
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary"
-            onClick={() => setActiveFolderId(null)}
+            className="inline-flex items-center gap-1.5 font-semibold text-primary"
+            onClick={() => setFolderTrail([])}
           >
             <ChevronLeftIcon className="h-4 w-4" />
-            Back to folders
+            {activeTab?.label ?? 'Documents'}
           </button>
-          <div className="min-w-0">
-            <p className="truncate text-base font-semibold text-base-content/90">{activeFolder.title}</p>
-            <p className="text-xs text-base-content/50">
-              {activeFolder.sub_effort_name ? `${activeFolder.sub_effort_name} · ` : ''}
-              {documentsInActiveFolder.length}{' '}
-              {documentsInActiveFolder.length === 1 ? 'document' : 'documents'}
-            </p>
-          </div>
-        </div>
+          {folderTrail.map((folder, index) => (
+            <span key={folder.id} className="flex min-w-0 items-center gap-1">
+              <ChevronRightIcon className="h-4 w-4 shrink-0 text-base-content/35" />
+              {index === folderTrail.length - 1 ? (
+                <span className="min-w-0 truncate font-semibold text-base-content/85">
+                  {folder.title}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="min-w-0 truncate font-semibold text-primary"
+                  onClick={() => setFolderTrail((trail) => trail.slice(0, index + 1))}
+                >
+                  {folder.title}
+                </button>
+              )}
+            </span>
+          ))}
+        </nav>
       ) : null}
 
       {documents.length === 0 && folders.length === 0 ? (
-        <PortalCard>
+        <PortalCard className={emptyStateColumn}>
           <p className="text-sm text-base-content/45">No documents yet. Upload files using the area above.</p>
         </PortalCard>
       ) : documentsInActiveCategory.length === 0 && foldersInActiveCategory.length === 0 ? (
-        <PortalCard>
+        <PortalCard className={emptyStateColumn}>
           <p className="text-sm text-base-content/45">No documents in this category.</p>
         </PortalCard>
+      ) : foldersAtThisLevel.length === 0 && visibleDocuments.length === 0 ? (
+        <PortalCard className={emptyStateColumn}>
+          <p className="text-sm text-base-content/45">
+            {activeFolder ? 'This folder is empty.' : 'No documents in this category.'}
+          </p>
+        </PortalCard>
+      ) : view === 'grid' ? (
+        /* The drive's cards: folders of this level first, then its files with a look at each. */
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+          {foldersAtThisLevel.map((folder) => {
+            const count = countDocumentsInFolder(folder.id);
+            return (
+              <button
+                key={`folder-card-${folder.id}`}
+                type="button"
+                className="flex select-none items-center gap-3 rounded-xl border border-base-200 bg-base-100 px-3 py-4 text-left transition-shadow hover:shadow-md"
+                onClick={() => setFolderTrail((trail) => [...trail, folder])}
+              >
+                <FolderSolidIcon className="h-7 w-7 shrink-0 text-slate-500" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-base-content">
+                    {folder.title}
+                  </span>
+                  <span className="block truncate text-xs text-base-content/50">
+                    {count} {count === 1 ? 'file' : 'files'}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+
+          {visibleDocuments.map((doc) => {
+            const url = resolveDownloadUrl(doc);
+            const mimeType = inferPortalDocumentMimeType(doc);
+            return (
+              <div
+                key={`doc-card-${doc.id}`}
+                className={`flex select-none flex-col gap-3 rounded-xl border border-base-200 bg-base-100 p-3 transition-shadow hover:shadow-md ${
+                  url ? 'cursor-pointer' : ''
+                }`}
+                onClick={url ? () => openDocumentPreview(doc) : undefined}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0" {...documentPeekProps(doc)}>
+                    <DocumentFileGlyph
+                      fileType={mimeType}
+                      fileName={doc.file_name}
+                      className="h-6 w-6"
+                    />
+                  </span>
+                  <span
+                    className="min-w-0 flex-1 truncate text-left text-sm font-medium text-base-content"
+                    title={doc.file_name}
+                  >
+                    {doc.file_name}
+                  </span>
+                  {url ? (
+                    <a
+                      href={asDownloadUrl(url, doc.file_name)}
+                      download={doc.file_name}
+                      rel="noopener noreferrer"
+                      className="btn btn-ghost btn-sm btn-square shrink-0 text-primary"
+                      title="Download"
+                      aria-label={`Download ${doc.file_name}`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <ArrowDownTrayIcon className="h-5 w-5" />
+                    </a>
+                  ) : (
+                    /* Kept in place so every card reads the same, and plainly out of use. */
+                    <span
+                      className="btn btn-ghost btn-sm btn-square btn-disabled shrink-0"
+                      title="This file is not available to download"
+                      aria-hidden="true"
+                    >
+                      <ArrowDownTrayIcon className="h-5 w-5" />
+                    </span>
+                  )}
+                </div>
+                {/* The thumb is portrait, so a landscape frame crops it to its top. */}
+                <span className="relative block aspect-[4/3] w-full overflow-hidden rounded-lg bg-base-200/60">
+                  <span className="absolute inset-x-0 top-0 block">
+                    <DocumentSidebarThumb
+                      name={doc.file_name}
+                      url={url ?? ''}
+                      fileType={mimeType}
+                    />
+                  </span>
+                </span>
+                <div className="flex items-center justify-between gap-2 text-xs text-base-content/50">
+                  <span className="truncate">
+                    {doc.classification_label || doc.document_type_name || activeTab?.label || ''}
+                  </span>
+                  <span className="shrink-0 tabular-nums">
+                    {new Date(doc.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       ) : (
-        <div className="space-y-4">
-          {!activeFolderId && foldersInActiveCategory.length > 0 ? (
-            <div className="space-y-2">
-              <p className="text-xs font-bold uppercase tracking-[0.12em] text-base-content/45">Folders</p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {foldersInActiveCategory.map((folder) => {
+        /* The same list the case team works in: folders first, then the files of this level. */
+        <PortalCard className={`${DOCUMENTS_COLUMN} overflow-hidden`} padding="p-0">
+          <div className="overflow-x-auto">
+            <table className="table w-full">
+              <thead>
+                <tr className="text-xs uppercase tracking-wide text-base-content/45">
+                  <th className="w-[60%] font-semibold">Name</th>
+                  <th className="hidden font-semibold sm:table-cell">Size</th>
+                  <th className="font-semibold">Date</th>
+                  <th className="text-right font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {foldersAtThisLevel.map((folder) => {
                   const count = countDocumentsInFolder(folder.id);
                   return (
-                    <button
-                      key={folder.id}
-                      type="button"
-                      onClick={() => setActiveFolderId(folder.id)}
-                      className="flex items-center gap-3 rounded-[18px] border border-[rgba(20,20,30,0.06)] bg-white/90 px-4 py-3.5 text-left shadow-[0_12px_30px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(15,23,42,0.08)]"
+                    <tr
+                      key={`folder-${folder.id}`}
+                      className="cursor-pointer border-base-200 hover:bg-base-200/40"
+                      onClick={() => setFolderTrail((trail) => [...trail, folder])}
                     >
-                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
-                        <FolderIcon className="h-7 w-7" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-base font-semibold text-base-content/90">
-                          {folder.title}
-                        </span>
-                        <span className="mt-0.5 block truncate text-sm text-base-content/50">
-                          {folder.sub_effort_name ? `${folder.sub_effort_name} · ` : ''}
-                          {folder.created_by || 'Case team'}
-                          {folder.created_at
-                            ? ` · ${new Date(folder.created_at).toLocaleDateString()}`
-                            : ''}
-                        </span>
-                        {folder.note ? (
-                          <span className="mt-1 block truncate text-xs text-base-content/45" title={folder.note}>
-                            {folder.note}
+                      <td className="max-w-[22rem]">
+                        <span className="flex min-w-0 items-center gap-3">
+                          <FolderSolidIcon className="h-6 w-6 shrink-0 text-slate-500" />
+                          <span className="min-w-0">
+                            <span className="block truncate font-semibold text-base-content/90">
+                              {folder.title}
+                            </span>
+                            {folder.sub_effort_name || folder.note ? (
+                              <span className="block truncate text-xs text-base-content/45">
+                                {[folder.sub_effort_name, folder.note].filter(Boolean).join(' · ')}
+                              </span>
+                            ) : null}
                           </span>
-                        ) : null}
-                      </span>
-                      <span className="inline-flex min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-700 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">
-                        {count}
-                      </span>
-                    </button>
+                        </span>
+                      </td>
+                      <td className="hidden text-sm text-base-content/60 sm:table-cell">
+                        {count} {count === 1 ? 'file' : 'files'}
+                      </td>
+                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/60">
+                        {folder.created_at
+                          ? new Date(folder.created_at).toLocaleDateString()
+                          : '—'}
+                      </td>
+                      <td className="whitespace-nowrap text-right text-sm font-medium text-primary">
+                        Open
+                      </td>
+                    </tr>
                   );
                 })}
-              </div>
-            </div>
-          ) : null}
 
-          {!activeFolderId && foldersInActiveCategory.length > 0 && unfiledDocuments.length > 0 ? (
-            <p className="text-xs font-bold uppercase tracking-[0.12em] text-base-content/45">
-              Unfiled documents
-            </p>
-          ) : null}
-
-          {visibleDocuments.length === 0 ? (
-            <PortalCard>
-              <p className="text-sm text-base-content/45">
-                {activeFolderId
-                  ? 'This folder has no documents yet.'
-                  : foldersInActiveCategory.length > 0
-                    ? 'Open a folder above, or check another category.'
-                    : 'No documents in this category.'}
-              </p>
-            </PortalCard>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {visibleDocuments.map((doc) => {
-                const url = resolveDownloadUrl(doc);
-                const mimeType = inferPortalDocumentMimeType(doc);
-                return (
-                  <PortalCard key={doc.id} className="p-0">
-                    <div
-                      className={`flex items-stretch justify-between gap-4 p-4 md:p-6 ${
-                        url ? 'cursor-pointer transition-shadow hover:shadow-md' : ''
+                {visibleDocuments.map((doc) => {
+                  const url = resolveDownloadUrl(doc);
+                  const mimeType = inferPortalDocumentMimeType(doc);
+                  const meta = [doc.contact_name, doc.document_type_name, doc.sub_effort_name]
+                    .filter(Boolean)
+                    .join(' · ');
+                  return (
+                    <tr
+                      key={doc.id}
+                      className={`border-base-200 ${
+                        url ? 'cursor-pointer hover:bg-base-200/40' : ''
                       }`}
                       onClick={url ? () => openDocumentPreview(doc) : undefined}
-                      onKeyDown={
-                        url
-                          ? (e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                openDocumentPreview(doc);
-                              }
-                            }
-                          : undefined
-                      }
-                      role={url ? 'button' : undefined}
-                      tabIndex={url ? 0 : undefined}
                     >
-                    <div className="flex min-w-0 flex-1 items-start gap-3">
-                      <DocumentFileGlyph
-                        fileType={mimeType}
-                        fileName={doc.file_name}
-                        className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="break-words font-semibold leading-snug text-base-content/90 [overflow-wrap:anywhere]">
-                          {doc.file_name}
-                        </p>
-                        <p className="mt-1 text-xs text-base-content/45">
-                          {new Date(doc.created_at).toLocaleDateString()}
-                          {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(0)} KB` : ''}
-                          {doc.contact_name ? ` · ${doc.contact_name}` : ''}
-                          {doc.document_type_name ? ` · ${doc.document_type_name}` : ''}
-                          {doc.sub_effort_name ? ` · ${doc.sub_effort_name}` : ''}
-                          {doc.uploaded_by ? ` · ${doc.uploaded_by}` : ''}
-                        </p>
+                      <td className="max-w-[22rem]">
+                        <span className="flex min-w-0 items-center gap-3">
+                          <span className="shrink-0" {...documentPeekProps(doc)}>
+                            <DocumentFileGlyph
+                              fileType={mimeType}
+                              fileName={doc.file_name}
+                              className="h-6 w-6"
+                            />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium text-base-content/90">
+                              {doc.file_name}
+                            </span>
+                            {meta ? (
+                              <span className="block truncate text-xs text-base-content/45">
+                                {meta}
+                              </span>
+                            ) : null}
+                          </span>
+                        </span>
+                      </td>
+                      <td className="hidden whitespace-nowrap text-sm tabular-nums text-base-content/60 sm:table-cell">
+                        {doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : '—'}
+                      </td>
+                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/60">
+                        {new Date(doc.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="whitespace-nowrap text-right">
                         {url ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-3">
+                          <span className="inline-flex items-center justify-end gap-1">
                             <button
                               type="button"
-                              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                              className="btn btn-ghost btn-sm btn-square text-primary"
+                              title="View"
+                              aria-label={`View ${doc.file_name}`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openDocumentPreview(doc);
                               }}
                             >
-                              <EyeIcon className="h-4 w-4" />
-                              View
+                              <EyeIcon className="h-5 w-5" />
                             </button>
                             <a
-                              href={url}
-                              target="_blank"
+                              href={asDownloadUrl(url, doc.file_name)}
+                              download={doc.file_name}
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                              className="btn btn-ghost btn-sm btn-square text-primary"
+                              title="Download"
+                              aria-label={`Download ${doc.file_name}`}
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <ArrowDownTrayIcon className="h-4 w-4" />
-                              Download
+                              <ArrowDownTrayIcon className="h-5 w-5" />
                             </a>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                    <PortalDocumentPreview
-                      url={url}
-                      fileName={doc.file_name}
-                      mimeType={mimeType}
-                      onOpen={url ? () => openDocumentPreview(doc) : undefined}
-                    />
-                    </div>
-                  </PortalCard>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                          </span>
+                        ) : (
+                          <span className="text-sm text-base-content/35">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </PortalCard>
       )}
+      {/* Follows the mouse rather than the layout, so it is drawn at the window's level. */}
+      {peek
+        ? createPortal(
+            <div
+              className="pointer-events-none fixed z-[280] w-72 overflow-hidden rounded-xl border border-base-300 bg-base-100 p-3 shadow-2xl"
+              style={{ top: peek.top, left: peek.left }}
+            >
+              <p className="mb-2 truncate text-xs font-semibold uppercase tracking-wide text-base-content/40">
+                {peek.doc.file_name}
+              </p>
+              <DocumentSidebarThumb
+                name={peek.doc.file_name}
+                url={resolveDownloadUrl(peek.doc) ?? ''}
+                fileType={inferPortalDocumentMimeType(peek.doc)}
+              />
+              <p className="mt-2 flex items-center justify-between gap-2 text-xs text-base-content/50">
+                <span className="truncate">
+                  {peek.doc.document_type_name || peek.doc.classification_label || '—'}
+                </span>
+                <span className="shrink-0 tabular-nums">
+                  {peek.doc.file_size ? `${(peek.doc.file_size / 1024).toFixed(0)} KB` : ''}
+                </span>
+              </p>
+            </div>,
+            document.body,
+          )
+        : null}
+
       <DocumentPreviewModal
         isOpen={previewOpen}
         onClose={() => {

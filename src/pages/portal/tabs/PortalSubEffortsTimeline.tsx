@@ -5,7 +5,6 @@ import {
   ChevronLeftIcon,
   ClockIcon,
   DocumentIcon,
-  EyeIcon,
   ArrowDownTrayIcon,
   FolderIcon,
   QuestionMarkCircleIcon,
@@ -234,51 +233,55 @@ function StageProgressIcon({ progress }: { progress: PortalSubEffortProgress }) 
   );
 }
 
-function StageProgressBadge({
-  progress,
-  iconOnly = false,
-}: {
-  progress: PortalSubEffortProgress;
-  iconOnly?: boolean;
-}) {
+function StageProgressBadge({ progress }: { progress: PortalSubEffortProgress }) {
   if (progress === 'completed') {
     return (
       <span
-        className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/70 ${
-          iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
-        }`}
+        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-sm font-semibold leading-none text-emerald-700 ring-1 ring-emerald-200/70"
         title="Done"
         aria-label="Done"
       >
-        <CheckCircleIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
-        {iconOnly ? null : 'Done'}
+        <CheckCircleIcon className="h-4 w-4 shrink-0" aria-hidden />
+        Done
       </span>
     );
   }
   if (progress === 'in_progress') {
     return (
       <span
-        className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-700 ring-1 ring-blue-200/70 ${
-          iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
-        }`}
-        title="Current"
-        aria-label="Current"
+        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold leading-none text-blue-700 ring-1 ring-blue-200/70"
+        title="In process"
+        aria-label="In process"
       >
-        <ArrowPathIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
-        {iconOnly ? null : 'Current'}
+        <ArrowPathIcon className="h-4 w-4 shrink-0" aria-hidden />
+        In process
       </span>
     );
   }
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 ring-1 ring-slate-200/80 ${
-        iconOnly ? 'h-9 w-9' : 'gap-1.5 px-3 py-1.5 text-sm font-semibold leading-none'
-      }`}
+      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold leading-none text-slate-500 ring-1 ring-slate-200/80"
       title="Pending"
       aria-label="Pending"
     >
-      <ClockIcon className={iconOnly ? 'h-5 w-5' : 'h-4 w-4 shrink-0'} aria-hidden />
-      {iconOnly ? null : 'Pending'}
+      <ClockIcon className="h-4 w-4 shrink-0" aria-hidden />
+      Pending
+    </span>
+  );
+}
+
+/** The state of a stage in the workflow list: the mark on its own, with nothing drawn around it. */
+function StageProgressGlyph({ progress }: { progress: PortalSubEffortProgress }) {
+  const { Icon, tone, label } =
+    progress === 'completed'
+      ? { Icon: CheckCircleIcon, tone: 'text-emerald-600', label: 'Done' }
+      : progress === 'in_progress'
+        ? { Icon: ArrowPathIcon, tone: 'text-blue-600', label: 'In process' }
+        : { Icon: ClockIcon, tone: 'text-slate-400', label: 'Pending' };
+
+  return (
+    <span className={`shrink-0 ${tone}`} title={label} aria-label={label}>
+      <Icon className="h-5 w-5" aria-hidden />
     </span>
   );
 }
@@ -289,7 +292,8 @@ function StageStepNumber({ step, progress }: { step: number; progress: PortalSub
       ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80'
       : progress === 'in_progress'
         ? 'bg-blue-600 text-white shadow-[0_0_0_3px_rgba(37,99,235,0.12)]'
-        : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200';
+        // A stage not yet reached counts for little, so its number is barely there.
+        : 'bg-slate-50 text-slate-400 ring-1 ring-slate-100';
 
   return (
     <span
@@ -381,7 +385,7 @@ function PortalStageTimelineItem({
                   compact
                 />
               </div>
-              <StageProgressBadge progress={progress} iconOnly />
+              <StageProgressGlyph progress={progress} />
             </div>
           </button>
           <button
@@ -527,7 +531,8 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
   const selectedProgress = selected ? getPortalSubEffortProgress(selected, currentStageId) : 'pending';
 
   return (
-    <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-[minmax(280px,340px)_1fr] lg:grid-cols-[minmax(300px,360px)_1fr]">
+    // Stage names are long, so the workflow keeps a wide column of its own as the screen grows.
+    <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-[minmax(320px,400px)_1fr] lg:grid-cols-[minmax(380px,460px)_1fr] xl:grid-cols-[minmax(440px,520px)_1fr]">
       <div
         className={`rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:p-5 ${
           mobileDetailOpen ? 'hidden md:block' : ''
@@ -535,14 +540,8 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
       >
         <div className="mb-3 px-0.5">
           <span className="text-base font-semibold text-gray-800 md:text-lg">Workflow</span>
-          {currentStageId != null ? (
-            <p className="mt-0.5 text-xs text-gray-500 md:text-sm">
-              Current:{' '}
-              <span className="font-medium text-gray-700">
-                {rows.find((row) => row.id === currentStageId)?.sub_effort_name || '—'}
-              </span>
-            </p>
-          ) : rows.every((row) => row.active === false) ? (
+          {/* The stage the case is on is marked in the list itself, so it is not named again here. */}
+          {currentStageId == null && rows.every((row) => row.active === false) ? (
             <p className="mt-0.5 text-xs text-emerald-700 md:text-sm">All stages complete</p>
           ) : null}
         </div>
@@ -604,8 +603,7 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
           </div>
 
           <div>
-            <div className="mb-2 flex items-center gap-2 px-0.5">
-              <EyeIcon className="h-4 w-4 text-gray-400" />
+            <div className="mb-2 px-0.5">
               <span className="text-sm font-semibold text-gray-700">Notes from our team</span>
             </div>
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
@@ -622,8 +620,7 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
           </div>
 
           <div>
-            <div className="mb-2 flex items-center gap-2 px-0.5">
-              <DocumentIcon className="h-4 w-4 text-gray-400" />
+            <div className="mb-2 px-0.5">
               <span className="text-sm font-semibold text-gray-700">Documents</span>
             </div>
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">

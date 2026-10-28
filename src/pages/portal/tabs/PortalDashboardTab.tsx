@@ -282,6 +282,8 @@ function buildPortalTeamEmployeeFallback(
     department_name: department?.trim() || 'General',
     bonuses_role: 'Employee',
     linkedin_url: null,
+    // The card shows no hours; this is the standard day the rest of the app assumes.
+    min_hours: 8,
   };
 }
 

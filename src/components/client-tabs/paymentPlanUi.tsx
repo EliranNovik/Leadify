@@ -300,9 +300,11 @@ export function PaymentStatusPill({
       Paid
     </span>
   ) : invoiceSent ? (
+    // A native title rather than a daisyUI tooltip: the tooltip class is pinned at z-index 9999,
+    // which paints the pill over any open modal.
     <span
-      className="tooltip tooltip-right z-50 inline-flex rounded-full bg-indigo-50 px-3.5 py-1.5 text-sm font-semibold text-indigo-700"
-      data-tip={invoiceTip}
+      className="inline-flex rounded-full bg-indigo-50 px-3.5 py-1.5 text-sm font-semibold text-indigo-700"
+      title={invoiceTip}
     >
       Invoice sent
     </span>

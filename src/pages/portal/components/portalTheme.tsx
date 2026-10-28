@@ -14,8 +14,9 @@ export const PORTAL_ACTIVE_NAV_CLASS = 'bg-blue-100 font-semibold text-blue-900'
 export const PORTAL_PAGE_BG = 'bg-gradient-to-b from-[#f7f7fb] to-[#f1f2f6]';
 export const PORTAL_NAV_SURFACE_CLASS =
   'rounded-full border border-white/35 bg-white/[0.86] shadow-[0_12px_40px_rgba(0,0,0,0.12)] backdrop-blur-[18px]';
+// A phone gives the cards nearly its whole width, with just an edge of page left either side.
 export const PORTAL_DASHBOARD_CONTAINER =
-  'mx-auto w-full max-w-[1360px] px-4 md:px-9';
+  'mx-auto w-full max-w-[1360px] px-1.5 md:px-9';
 export const PORTAL_TEAM_CARD_CLASS =
   'rounded-3xl border border-[rgba(20,20,30,0.06)] bg-white/[0.92] shadow-[0_18px_45px_rgba(15,23,42,0.06)]';
 export const PORTAL_NEXT_STEP_CARD_CLASS =

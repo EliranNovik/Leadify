@@ -43,6 +43,8 @@ export type DocumentIndexRow = {
   /** Set for case documents only — the folder tree is keyed by these. */
   classification_id: string | null;
   area: string | null;
+  /** False only on a case document someone has hidden from the client portal. */
+  client_visible: boolean;
 };
 
 export type DocumentIndexSort = 'created_at' | 'file_name' | 'file_size' | 'scope_label';
@@ -93,7 +95,7 @@ export function nextDocumentIndexPage(
 }
 
 const ROW_SELECT =
-  'source, row_id, file_name, storage_bucket, storage_path, mime_type, file_size, uploaded_by, created_at, folder_id, folder_path, scope_key, scope_label, category, ai_summary, classification_id, area';
+  'source, row_id, file_name, storage_bucket, storage_path, mime_type, file_size, uploaded_by, created_at, folder_id, folder_path, scope_key, scope_label, category, ai_summary, classification_id, area, client_visible';
 
 /**
  * PostgREST's `or` filter is itself comma and bracket delimited, so those characters in a search
@@ -213,6 +215,21 @@ export async function fetchDocumentIndex(
 
   if (error) throw error;
   return { rows: (data || []) as DocumentIndexRow[], total: count ?? 0 };
+}
+
+/** One listed document, by the pair that identifies it across the sources. */
+export async function fetchDocumentIndexRow(
+  source: string,
+  rowId: string,
+): Promise<DocumentIndexRow | null> {
+  const { data, error } = await supabase
+    .from('document_index')
+    .select(ROW_SELECT)
+    .eq('source', source)
+    .eq('row_id', rowId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as DocumentIndexRow | null) ?? null;
 }
 
 /** Per-source totals for the filter chips, counted without pulling any rows. */

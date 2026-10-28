@@ -77,6 +77,13 @@ import {
 } from '../lib/rmqAiChatContext';
 import { stashRmqAiComposeDraft } from '../lib/rmqAiComposeDraft';
 import { RMQ_AI_DASHBOARD_ASKS, RMQ_AI_OPEN_EVENT, takeRmqAiPendingPrompt } from '../lib/rmqAiPendingPrompt';
+import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
+import {
+  describeRmqAiDriveDocument,
+  getRmqAiDriveDocument,
+  subscribeRmqAiDriveDocument,
+  type RmqAiDriveDocument,
+} from '../lib/rmqAiDriveContext';
 import { stripAiEmailSignature } from '../lib/emailComposeAiChat';
 import {
   applyCrmDocumentLinksToEmailDraft,
@@ -550,18 +557,96 @@ function ChatThinkingIndicator({ label, detail }: { label: string; detail?: stri
   );
 }
 
+/**
+ * The file the documents drive is showing, with the things usually asked of it.
+ *
+ * Both on the welcome screen, in the suggested questions' place, and above the composer once there
+ * is a conversation going: picking out another file mid-chat has to offer the same buttons for it.
+ */
+function DriveDocumentCard({
+  document: driveDocument,
+  asks,
+  disabled,
+  onAsk,
+  onDismiss,
+  className = '',
+}: {
+  document: RmqAiDriveDocument;
+  asks: Array<{ label: string; prompt: string }>;
+  disabled?: boolean;
+  onAsk: (prompt: string, label?: string) => void;
+  onDismiss?: () => void;
+  className?: string;
+}) {
+  return (
+    <div className={`ai-drive-doc ${className}`}>
+      <div className="flex items-start gap-2.5">
+        <DocumentFileGlyph
+          fileType={driveDocument.mimeType || ''}
+          fileName={driveDocument.fileName}
+          className="h-7 w-7"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold" title={driveDocument.fileName}>
+            {driveDocument.fileName}
+          </p>
+          <p className="truncate text-xs opacity-60" title={describeRmqAiDriveDocument(driveDocument)}>
+            {[
+              driveDocument.category,
+              driveDocument.source === 'lead' && driveDocument.scopeKey
+                ? `case ${driveDocument.scopeKey}`
+                : driveDocument.scopeLabel,
+            ]
+              .filter(Boolean)
+              .join(' · ') || 'In the documents drive'}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 opacity-50 hover:opacity-100"
+          title="Not about this file"
+          aria-label="Dismiss this document"
+          onClick={() => onDismiss?.()}
+        >
+          <XMarkIcon className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {asks.map((ask) => (
+          <button
+            key={ask.label}
+            type="button"
+            className="ai-drive-doc-ask"
+            disabled={disabled}
+            onClick={() => onAsk(ask.prompt, ask.label)}
+          >
+            {ask.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ChatWelcomeHome({
   hasLead,
   disabled,
   onAction,
   onOpenCreateMeeting,
   signals = [],
+  driveDocument = null,
+  driveDocumentAsks = [],
+  onDismissDriveDocument,
 }: {
   hasLead: boolean;
   disabled?: boolean;
   onAction: (prompt: string, label?: string) => void;
   onOpenCreateMeeting: () => void;
   signals?: Array<{ id: string; title: string; reason: string; actions: Array<{ label: string; prompt: string }> }>;
+  /** The file the documents drive has picked out, which takes the suggested questions' place. */
+  driveDocument?: RmqAiDriveDocument | null;
+  driveDocumentAsks?: Array<{ label: string; prompt: string }>;
+  onDismissDriveDocument?: () => void;
 }) {
   const actions = hasLead ? WELCOME_LEAD_ACTIONS : WELCOME_GENERAL_ACTIONS;
   const questions = hasLead ? WELCOME_LEAD_QUESTIONS : WELCOME_GENERAL_QUESTIONS;
@@ -620,23 +705,41 @@ function ChatWelcomeHome({
           </button>
         ))}
       </div>
-      <div className="ai-welcome-divider mt-8 w-full">
-        <span>Suggested questions</span>
-      </div>
-      <div className="mt-4 flex w-full flex-wrap items-center justify-center gap-2">
-        {questions.map((question) => (
-          <button
-            key={question}
-            type="button"
-            className="ai-welcome-ask"
+      {driveDocument ? (
+        <>
+          <div className="ai-welcome-divider mt-8 w-full">
+            <span>{driveDocument.state === 'open' ? 'Open in the drive' : 'Picked out in the drive'}</span>
+          </div>
+          <DriveDocumentCard
+            className="mt-4 w-full"
+            document={driveDocument}
+            asks={driveDocumentAsks}
             disabled={disabled}
-            onClick={() => onAction(question)}
-          >
-            <SparklesIcon className="h-5 w-5 shrink-0 max-md:h-6 max-md:w-6" />
-            {question}
-          </button>
-        ))}
-      </div>
+            onAsk={onAction}
+            onDismiss={onDismissDriveDocument}
+          />
+        </>
+      ) : (
+        <>
+          <div className="ai-welcome-divider mt-8 w-full">
+            <span>Suggested questions</span>
+          </div>
+          <div className="mt-4 flex w-full flex-wrap items-center justify-center gap-2">
+            {questions.map((question) => (
+              <button
+                key={question}
+                type="button"
+                className="ai-welcome-ask"
+                disabled={disabled}
+                onClick={() => onAction(question)}
+              >
+                <SparklesIcon className="h-5 w-5 shrink-0 max-md:h-6 max-md:w-6" />
+                {question}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2139,6 +2242,44 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     return () => window.removeEventListener(RMQ_AI_OPEN_EVENT, onOpen);
   }, [isOpen]);
 
+  /*
+   * The file the documents drive has picked out or open, so clicking a row offers to explain it
+   * without the user having to describe which file they mean. Dismissing it is remembered per
+   * file, so saying no to one does not hide the offer for the next.
+   */
+  const [driveDocument, setDriveDocument] = useState<RmqAiDriveDocument | null>(() =>
+    getRmqAiDriveDocument(),
+  );
+  const [driveDocumentDismissed, setDriveDocumentDismissed] = useState<string | null>(null);
+  useEffect(
+    () => subscribeRmqAiDriveDocument(() => setDriveDocument(getRmqAiDriveDocument())),
+    [],
+  );
+  const driveDocumentOffer =
+    driveDocument && driveDocument.key !== driveDocumentDismissed ? driveDocument : null;
+
+  /** The asks offered for that file, which read as the user's own words in the chat. */
+  const driveDocumentAsks: Array<{ label: string; prompt: string }> = driveDocumentOffer
+    ? [
+        {
+          label: 'Summarise it',
+          prompt: `Summarise the document "${driveDocumentOffer.fileName}" (drive id ${driveDocumentOffer.key}).`,
+        },
+        {
+          label: 'What is it about?',
+          prompt: `What is the document "${driveDocumentOffer.fileName}" (drive id ${driveDocumentOffer.key}) about, and what does it mean for this case?`,
+        },
+        ...(driveDocumentOffer.source === 'lead' && driveDocumentOffer.scopeKey
+          ? [
+              {
+                label: 'Other files on this case',
+                prompt: `Which documents does case ${driveDocumentOffer.scopeKey} have? List each one with when it was uploaded and who uploaded it.`,
+              },
+            ]
+          : []),
+      ]
+    : [];
+
   const startVoiceInput = async () => {
     if (isLoading || isVoiceActive) return;
     if (!voiceRecordingSupported) {
@@ -3249,7 +3390,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     <>
     <div
       ref={panelRef}
-      className={`ai-chat-panel ${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[10050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
+      /* Above the document viewer (z-11000), which is the one surface it is opened over while
+         something else is already full screen. */
+      className={`ai-chat-panel ${isPlacedPanel || isMovingPanel || isResizingPanel || hasCustomSize ? '' : `ai-drawer-enter ${isFloatingPanel ? 'ai-drawer-enter-float' : 'ai-drawer-enter-sheet'}`} fixed z-[11050] flex flex-col overflow-hidden ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
           isFullPage || isMobile
           ? 'inset-0 h-[100dvh] w-full max-w-none'
           : hasCustomSize
@@ -3564,6 +3707,41 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           background: #32343a;
           border: 0;
           box-shadow: none;
+        }
+        /* The box about the file the drive has open, which sits just over the composer. */
+        .ai-drive-doc {
+          border-radius: 1rem;
+          padding: 0.7rem 0.8rem;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+        }
+        .ai-drawer-light .ai-drive-doc {
+          background: #ffffff;
+          color: #1f2937;
+        }
+        .ai-drawer-dark .ai-drive-doc {
+          background: #32343a;
+          color: #e6e7eb;
+        }
+        .ai-drive-doc-ask {
+          border-radius: 999px;
+          padding: 0.3rem 0.7rem;
+          font-size: 12px;
+          font-weight: 600;
+          white-space: nowrap;
+        }
+        .ai-drawer-light .ai-drive-doc-ask {
+          background: #f1f3f9;
+          color: #3b28c7;
+        }
+        .ai-drawer-light .ai-drive-doc-ask:hover {
+          background: #e4e7f5;
+        }
+        .ai-drawer-dark .ai-drive-doc-ask {
+          background: #3c3f47;
+          color: #cdd2ff;
+        }
+        .ai-drawer-dark .ai-drive-doc-ask:hover {
+          background: #474b55;
         }
         .ai-sources-box {
           margin-top: 0.75rem;
@@ -5736,6 +5914,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                         })
                       : []
                   }
+                  driveDocument={driveDocumentOffer}
+                  driveDocumentAsks={driveDocumentAsks}
+                  onDismissDriveDocument={() =>
+                    setDriveDocumentDismissed(driveDocumentOffer?.key ?? null)
+                  }
                 />
               ) : (
               <div className="space-y-4">
@@ -6052,6 +6235,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               }}
             >
               <div className="ai-input-backdrop" aria-hidden="true" />
+              {/* The welcome screen has its own copy of this. Here it rides above the composer, so
+                  turning to another file part way through a chat still offers what to ask of it. */}
+              {!showWelcomeHome && driveDocumentOffer ? (
+                <DriveDocumentCard
+                  className="pointer-events-auto mb-2"
+                  document={driveDocumentOffer}
+                  asks={driveDocumentAsks}
+                  disabled={isLoading}
+                  onAsk={handleQuickAction}
+                  onDismiss={() => setDriveDocumentDismissed(driveDocumentOffer.key)}
+                />
+              ) : null}
               {imagePreviews.length > 0 && (
                 <div className="pointer-events-auto mb-2 flex gap-2 overflow-x-auto">
                   {imagePreviews.map((preview, idx) => (

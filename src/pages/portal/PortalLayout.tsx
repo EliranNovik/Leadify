@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
 import PublicPageContactButtons from '../../components/public/PublicPageContactButtons';
 import type { PortalContact, PortalLeadSummary } from '../../lib/portalApi';
-import { PORTAL_NAV_SURFACE_CLASS, PORTAL_SHELL_CLASS, PORTAL_ACTIVE_NAV_CLASS } from './components/portalTheme';
+import { PORTAL_SHELL_CLASS } from './components/portalTheme';
 import PortalProfileMenu from './components/PortalProfileMenu';
 import PortalNotifications from './components/PortalNotifications';
 import PortalFooter from './components/PortalFooter';
@@ -61,7 +61,7 @@ const PortalLayout: React.FC<Props> = ({
   return (
     <div className={`${PORTAL_SHELL_CLASS} flex flex-col`}>
       {/* Mobile header */}
-      <header className="sticky top-0 z-30 border-b border-[rgba(20,20,30,0.06)] bg-white/90 backdrop-blur-md md:hidden">
+      <header className="sticky top-0 z-30 border-b border-[rgba(20,20,30,0.07)] bg-white/95 backdrop-blur-xl md:hidden">
         <div className="relative flex w-full items-center gap-2 px-2 py-3">
           {hasNav ? (
             <button
@@ -83,13 +83,6 @@ const PortalLayout: React.FC<Props> = ({
 
           <div className="flex-1" />
 
-          {hasNav ? (
-            <PortalNotifications
-              onNavigate={(tabId) => selectTab(tabId)}
-              storageKey={leadSummary?.lead_number}
-            />
-          ) : null}
-
           {contact?.name ? (
             <PortalProfileMenu
               name={contact.name}
@@ -98,13 +91,22 @@ const PortalLayout: React.FC<Props> = ({
               stableKey={coverKey}
               onLogout={onLogout}
               onSettings={onSettings}
+              showIdentity={false}
+            />
+          ) : null}
+
+          {/* Last on the row, so the bell is in the corner and its list opens inside the screen. */}
+          {hasNav ? (
+            <PortalNotifications
+              onNavigate={(tabId) => selectTab(tabId)}
+              storageKey={leadSummary?.lead_number}
             />
           ) : null}
         </div>
       </header>
 
-      {/* Desktop header — single row: logo · nav · profile/bell */}
-      <header className="sticky top-0 z-30 hidden h-20 w-full items-center gap-3 px-4 md:flex lg:px-6">
+      {/* Desktop header — a plain white bar: logo · nav · profile/bell, all sitting on it. */}
+      <header className="sticky top-0 z-30 hidden h-20 w-full items-center gap-3 bg-white/95 px-4 backdrop-blur-xl md:flex lg:px-6">
         <img
           src="/DPL-LOGO1.png"
           alt="Decker Pex & Co Law Offices"
@@ -113,7 +115,7 @@ const PortalLayout: React.FC<Props> = ({
 
         {hasNav ? (
           <nav
-            className={`mx-auto flex min-w-0 flex-wrap items-center justify-center gap-x-1 px-2.5 py-1 ${PORTAL_NAV_SURFACE_CLASS}`}
+            className="mx-auto flex min-w-0 flex-wrap items-center justify-center gap-x-2"
             aria-label="Case sections"
           >
             {navTabs!.map((tab) => {
@@ -123,10 +125,11 @@ const PortalLayout: React.FC<Props> = ({
                   key={tab.id}
                   type="button"
                   onClick={() => selectTab(tab.id)}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-xs transition-colors lg:px-4 lg:py-2 lg:text-sm ${
+                  // The section you are in is marked by a line under it rather than a pill.
+                  className={`shrink-0 border-b-2 px-2 py-1.5 text-xs transition-colors lg:px-3 lg:py-2 lg:text-sm ${
                     active
-                      ? PORTAL_ACTIVE_NAV_CLASS
-                      : 'font-medium text-[#747684] hover:bg-[#f4f4f7] hover:text-[#16161d]'
+                      ? 'border-blue-900 font-semibold text-blue-900'
+                      : 'border-transparent font-medium text-[#747684] hover:text-[#16161d]'
                   }`}
                 >
                   {tab.label}
@@ -140,24 +143,20 @@ const PortalLayout: React.FC<Props> = ({
 
         <div className="flex shrink-0 items-center gap-2 lg:gap-3">
           {contact?.name ? (
-            <div className="rounded-full border border-[rgba(20,20,30,0.06)] bg-white/90 px-1.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
-              <PortalProfileMenu
-                name={contact.name}
-                leadNumber={leadSummary?.lead_number}
-                imageUrl={contactProfileImageUrl}
-                stableKey={coverKey}
-                onLogout={onLogout}
-                onSettings={onSettings}
-              />
-            </div>
+            <PortalProfileMenu
+              name={contact.name}
+              leadNumber={leadSummary?.lead_number}
+              imageUrl={contactProfileImageUrl}
+              stableKey={coverKey}
+              onLogout={onLogout}
+              onSettings={onSettings}
+            />
           ) : null}
           {hasNav ? (
-            <div className="rounded-full border border-[rgba(20,20,30,0.06)] bg-white/90 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
-              <PortalNotifications
-                onNavigate={(tabId) => selectTab(tabId)}
-                storageKey={leadSummary?.lead_number}
-              />
-            </div>
+            <PortalNotifications
+              onNavigate={(tabId) => selectTab(tabId)}
+              storageKey={leadSummary?.lead_number}
+            />
           ) : null}
         </div>
       </header>

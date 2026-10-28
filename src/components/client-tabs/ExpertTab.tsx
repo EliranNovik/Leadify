@@ -26,6 +26,7 @@ import {
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { supabase } from '../../lib/supabase';
+import { newCaseDocumentSummaryFields } from '../../lib/caseDocumentSummaryPolicy';
 import { caseSheetIdentity, fetchCaseSheetsTextForAi } from '../../lib/caseSheetApi';
 import { OPENAI_CHAT_COMPLETIONS_URL, buildChatCompletionBody } from '../../lib/openaiModels';
 import { useAuthContext } from '../../contexts/AuthContext';
@@ -2504,7 +2505,7 @@ ${combinedText}`;
           mime_type: mimeType,
           classification_id: expertCaseDocClassificationId,
           uploaded_by: uploadedBy,
-          ai_summary_status: 'pending',
+          ...(await newCaseDocumentSummaryFields()),
         });
 
         if (insErr) {

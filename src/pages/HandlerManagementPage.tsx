@@ -33,6 +33,8 @@ interface Handler {
   official_name?: string;
   department?: string;
   bonuses_role?: string | null;
+  /** False for an employee who has left: they can still hold cases that need reassigning. */
+  is_active?: boolean;
   newCasesCount: number;
   activeCasesCount: number;
   nonActiveCount?: number;
@@ -120,7 +122,8 @@ const topHandlersBy = (list: Handler[], getValue: (handler: Handler) => number, 
 
 // Module-level cache for table data - persists across SPA navigation, clears on page refresh
 // Bump CACHE_VERSION when data structure changes to invalidate stale cache
-const CACHE_VERSION = 6;
+// 7: handler rows carry whether the employee is still active, and leavers with cases are included.
+const CACHE_VERSION = 7;
 let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null = null;
 
 const HandlerManagementPage: React.FC = () => {
@@ -153,6 +156,10 @@ const HandlerManagementPage: React.FC = () => {
   const [selectedLeadForAssign, setSelectedLeadForAssign] = useState<string | number | null>(null);
   const [employeeSearchQuery, setEmployeeSearchQuery] = useState('');
   const [pageEmployeeSearchQuery, setPageEmployeeSearchQuery] = usePersistedState('handlerManagement_pageEmployeeSearchQuery', '', { storage: 'sessionStorage' });
+  /** The name list under the search bar, open from the moment the bar is clicked. */
+  const [employeeSearchOpen, setEmployeeSearchOpen] = useState(false);
+  /** Searching employees still on staff, or the leavers who still hold cases. */
+  const [employeeStateTab, setEmployeeStateTab] = useState<'active' | 'inactive'>('active');
   const [selectedDepartment, setSelectedDepartment] = usePersistedState('handlerManagement_selectedDepartment', '', { storage: 'sessionStorage' });
   const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
   const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_sortDirection', 'asc', { storage: 'sessionStorage' });
@@ -398,7 +405,8 @@ const HandlerManagementPage: React.FC = () => {
           )
         `)
         .not('employee_id', 'is', null)
-        .eq('is_active', true)
+        // Employees who have left are read as well: cases stay on them until someone reassigns
+        // them, and the search bar's Inactive tab is how those are found.
         .eq('is_staff', true);
 
       if (handlersError) {
@@ -454,6 +462,7 @@ const HandlerManagementPage: React.FC = () => {
             official_name: employee.official_name || null,
             department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
             bonuses_role: employee.bonuses_role || null,
+            is_active: user.is_active !== false,
           };
         })
         .sort((a, b) => a.display_name.localeCompare(b.display_name));
@@ -890,8 +899,37 @@ const HandlerManagementPage: React.FC = () => {
           };
       };
 
+      /*
+       * Everyone still on staff gets a row, plus anyone who has left and still holds cases. The
+       * other leavers are skipped on purpose: each row costs a handful of queries and they have
+       * nothing to show.
+       */
+      const [{ data: newCaseHandlerRows }, { data: legacyCaseHandlerRows }] = await Promise.all([
+        supabase
+          .from('leads')
+          .select('case_handler_id')
+          .not('case_handler_id', 'is', null)
+          .gte('stage', 60)
+          .neq('stage', 91)
+          .is('unactivated_at', null),
+        supabase
+          .from('leads_lead')
+          .select('case_handler_id')
+          .not('case_handler_id', 'is', null)
+          .gte('stage', 60)
+          .neq('stage', 91)
+          .or('status.eq.0,status.is.null'),
+      ]);
+      const caseHandlerIdSet = new Set<number>();
+      [...(newCaseHandlerRows || []), ...(legacyCaseHandlerRows || [])].forEach((row) => {
+        const id = Number((row as { case_handler_id?: number | string | null }).case_handler_id);
+        if (Number.isFinite(id) && id > 0) caseHandlerIdSet.add(id);
+      });
+
       const handlersWithCounts = await Promise.all(
-        handlersData.map((handler) => buildHandlerRow(handler, 'case_handler_id')),
+        handlersData
+          .filter((handler) => handler.is_active || caseHandlerIdSet.has(handler.id))
+          .map((handler) => buildHandlerRow(handler, 'case_handler_id')),
       );
 
       const [{ data: newRetentionRows }, { data: legacyRetentionRows }] = await Promise.all([
@@ -945,6 +983,8 @@ const HandlerManagementPage: React.FC = () => {
             official_name: emp.official_name || null,
             department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
             bonuses_role: emp.bonuses_role || null,
+            // Holds retainer cases but has no staff user row, so there is nothing saying they left.
+            is_active: true,
           });
         });
       }
@@ -1909,8 +1949,21 @@ const HandlerManagementPage: React.FC = () => {
   const handlerOpenCases = (handler: Handler) =>
     (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0);
 
-  const handlersWithCases = handlers.filter((handler) => handlerOpenCases(handler) > 0);
-  const retentionHandlersWithCases = retentionHandlers.filter((handler) => handlerOpenCases(handler) > 0);
+  const isActiveHandler = (handler: Handler) => handler.is_active !== false;
+  /** Employees still on staff, which is who every assignment list may offer. */
+  const activeHandlers = handlers.filter(isActiveHandler);
+
+  const handlersWithCases = activeHandlers.filter((handler) => handlerOpenCases(handler) > 0);
+  const retentionHandlersWithCases = retentionHandlers
+    .filter(isActiveHandler)
+    .filter((handler) => handlerOpenCases(handler) > 0);
+  /** Leavers who still hold cases, listed under the search bar's Inactive tab. */
+  const inactiveHandlersWithCases = handlers
+    .filter((handler) => !isActiveHandler(handler))
+    .filter((handler) => handlerOpenCases(handler) > 0);
+  const inactiveRetentionHandlersWithCases = retentionHandlers
+    .filter((handler) => !isActiveHandler(handler))
+    .filter((handler) => handlerOpenCases(handler) > 0);
 
   const sortHandlerList = (
     list: Handler[],
@@ -1973,19 +2026,48 @@ const HandlerManagementPage: React.FC = () => {
   const uniqueDepartments = Array.from(new Set([
     ...handlersWithCases.map(h => h.department),
     ...retentionHandlersWithCases.map(h => h.department),
+    // So the filter still works on the Inactive tab, where a department may have only leavers.
+    ...inactiveHandlersWithCases.map(h => h.department),
+    ...inactiveRetentionHandlersWithCases.map(h => h.department),
   ].filter(Boolean))).sort();
 
+  /** Which employees the search bar looks through: those on staff, or the leavers. */
+  const searchedHandlers =
+    employeeStateTab === 'inactive' ? inactiveHandlersWithCases : handlersWithCases;
+  const searchedRetentionHandlers =
+    employeeStateTab === 'inactive' ? inactiveRetentionHandlersWithCases : retentionHandlersWithCases;
+
   const filteredHandlersForPage = sortHandlerList(
-    handlersWithCases.filter(matchesPageHandlerFilter),
+    searchedHandlers.filter(matchesPageHandlerFilter),
     sortColumn,
     sortDirection,
   );
 
   const filteredRetentionHandlersForPage = sortHandlerList(
-    retentionHandlersWithCases.filter(matchesPageHandlerFilter),
+    searchedRetentionHandlers.filter(matchesPageHandlerFilter),
     retentionSortColumn,
     retentionSortDirection,
   );
+
+  /**
+   * The names the search bar offers, which are the rows it can actually narrow to — so a name in
+   * the list never leads to an empty page. Typing narrows the list; clicking a name searches it.
+   */
+  const employeeSearchOptions = (() => {
+    const pool = activeTab === 'retention' ? searchedRetentionHandlers : searchedHandlers;
+    const query = pageEmployeeSearchQuery.trim().toLowerCase();
+    const scoped = selectedDepartment
+      ? pool.filter((handler) => handler.department === selectedDepartment)
+      : pool;
+    const matching = query
+      ? scoped.filter(
+          (handler) =>
+            handler.display_name.toLowerCase().includes(query) ||
+            Boolean(handler.department && handler.department.toLowerCase().includes(query)),
+        )
+      : scoped;
+    return [...matching].sort((a, b) => a.display_name.localeCompare(b.display_name));
+  })();
 
   const handleSort = (column: HandlerSortColumn) => {
     if (sortColumn === column) {
@@ -2127,25 +2209,28 @@ const HandlerManagementPage: React.FC = () => {
               onClick={() => {
                 if (card.sort) onSort(card.sort);
               }}
-              className={`${card.gradient} flex flex-col rounded-2xl p-5 text-left text-white shadow-xl transition-all duration-300 ${
+              className={`${card.gradient} flex flex-col overflow-hidden rounded-2xl text-left text-white shadow-xl transition-all duration-300 ${
                 card.sort ? 'hover:scale-105 hover:shadow-2xl' : 'cursor-default'
               } ${active ? 'ring-4 ring-white/70 scale-[1.02]' : ''}`}
             >
-              <div className="flex items-start justify-between gap-3">
-                <p className={`${typeof card.value === 'number' ? 'text-5xl' : 'text-3xl'} font-bold leading-none`}>
-                  {card.value}
-                </p>
-                <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
-                  <Icon className="h-9 w-9" />
+              <div className="p-5 pb-4">
+                <div className="flex items-start justify-between gap-3">
+                  <p className={`${typeof card.value === 'number' ? 'text-5xl' : 'text-3xl'} font-bold leading-none`}>
+                    {card.value}
+                  </p>
+                  <div className="-mt-1 shrink-0 rounded-full bg-white/20 p-3.5">
+                    <Icon className="h-9 w-9" />
+                  </div>
+                </div>
+                <div className="mt-3 min-w-0">
+                  <p className="text-lg font-semibold text-white/90">{card.label}</p>
+                  <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
+                    {card.hint}
+                  </p>
                 </div>
               </div>
-              <div className="mt-3 min-w-0">
-                <p className="text-lg font-semibold text-white/90">{card.label}</p>
-                <p className="mt-0.5 truncate text-xs text-white/80" title={card.hint}>
-                  {card.hint}
-                </p>
-              </div>
-              <div className="mt-3 space-y-2 border-t border-white/20 pt-3">
+              {/* Washed out over the gradient, so the employees read as their own half of the card. */}
+              <div className="mt-auto space-y-2 border-t border-white/25 bg-white/20 px-5 py-4">
                 {card.top.length === 0 ? (
                   <p className="text-sm text-white/70">No employees in this section</p>
                 ) : (
@@ -2170,8 +2255,8 @@ const HandlerManagementPage: React.FC = () => {
     );
   };
 
-  // Filter handlers based on modal search query
-  const filteredHandlersForModal = handlers.filter(handler => {
+  // Filter handlers based on modal search query. Only employees still on staff can take a case.
+  const filteredHandlersForModal = activeHandlers.filter(handler => {
     if (!employeeSearchQuery.trim()) return true;
     const query = employeeSearchQuery.toLowerCase();
     return handler.display_name.toLowerCase().includes(query) ||
@@ -2308,20 +2393,110 @@ const HandlerManagementPage: React.FC = () => {
             : ''
         }`}
       >
-        <div className="relative w-full min-w-0 max-w-md">
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            Search employees
-          </label>
-          <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-[2.15rem] z-10 h-4 w-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search by name or department..."
-            className="input input-bordered w-full rounded-xl border-gray-200 bg-white !pl-9 text-sm"
-            value={pageEmployeeSearchQuery}
-            onChange={(e) => {
-              setPageEmployeeSearchQuery(e.target.value);
-            }}
-          />
+        <div
+          className={`flex w-full min-w-0 max-w-xl items-end gap-2 ${
+            employeeSearchOpen ? 'relative z-30' : ''
+          }`}
+        >
+          <div className="relative min-w-0 flex-1">
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Search employees
+            </label>
+            <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-[2.15rem] z-10 h-4 w-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by name or department..."
+              className="input input-bordered w-full rounded-xl border-gray-200 bg-white !pl-9 text-sm"
+              value={pageEmployeeSearchQuery}
+              onChange={(e) => {
+                setPageEmployeeSearchQuery(e.target.value);
+                if (!employeeSearchOpen) setEmployeeSearchOpen(true);
+              }}
+              onFocus={() => setEmployeeSearchOpen(true)}
+              onClick={() => setEmployeeSearchOpen(true)}
+            />
+            {employeeSearchOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setEmployeeSearchOpen(false)} />
+                {/* overscroll-contain: reaching the end of the list must not scroll the page. */}
+                <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-72 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white py-1 shadow-xl">
+                  {pageEmployeeSearchQuery.trim() && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-gray-500 hover:bg-gray-50"
+                      onClick={() => {
+                        setPageEmployeeSearchQuery('');
+                        setEmployeeSearchOpen(false);
+                      }}
+                    >
+                      <XMarkIcon className="h-3.5 w-3.5" />
+                      Clear search
+                    </button>
+                  )}
+                  {employeeSearchOptions.length === 0 ? (
+                    <p className="px-3 py-6 text-center text-sm text-gray-500">
+                      {employeeStateTab === 'inactive'
+                        ? 'No employees who have left are holding cases here.'
+                        : 'No employees found'}
+                    </p>
+                  ) : (
+                    employeeSearchOptions.map((handler) => (
+                      <button
+                        key={handler.id}
+                        type="button"
+                        className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-gray-50"
+                        onClick={() => {
+                          setPageEmployeeSearchQuery(handler.display_name);
+                          setEmployeeSearchOpen(false);
+                        }}
+                      >
+                        <EmployeeAvatar employeeId={handler.id} size="sm" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold text-gray-900">
+                            {handler.display_name}
+                          </span>
+                          {handler.department && (
+                            <span className="block truncate text-xs text-gray-500">{handler.department}</span>
+                          )}
+                        </span>
+                        <span className="shrink-0 text-xs font-semibold text-gray-500">
+                          {handlerOpenCases(handler)} case{handlerOpenCases(handler) === 1 ? '' : 's'}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+          {(employeeSearchOpen || employeeStateTab === 'inactive') && (
+            /*
+             * Sits after the click-catcher in the DOM and above it in the stack, so choosing a tab
+             * reaches the button instead of closing the name list. It stays on screen while the
+             * Inactive tab is chosen, so the results below are never unexplained.
+             */
+            <div className="relative z-40 inline-flex shrink-0 items-center gap-1 rounded-full bg-gray-200/70 p-1">
+              {(['active', 'inactive'] as const).map((state) => (
+                <button
+                  key={state}
+                  type="button"
+                  className={`rounded-full px-3 py-1.5 text-sm font-semibold capitalize transition ${
+                    employeeStateTab === state
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-800'
+                  }`}
+                  // Keeps the bar focused, so the name list stays open.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setEmployeeStateTab(state);
+                    setEmployeeSearchOpen(true);
+                  }}
+                >
+                  {state}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="flex w-full flex-col items-stretch gap-2 md:w-auto md:flex-row md:items-end">
           <div className="w-full md:w-64">
@@ -3437,7 +3612,7 @@ const HandlerManagementPage: React.FC = () => {
           })();
           return categoryMatch && stageMatch;
         })}
-        handlers={handlers}
+        handlers={activeHandlers}
         onAssignComplete={() => {
           const assignedLeadIds = unassignedLeads.filter(lead => {
             const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
@@ -3495,13 +3670,13 @@ const HandlerManagementPage: React.FC = () => {
               />
             </div>
             <div className="space-y-2 max-h-96 overflow-y-auto">
-              {handlers.filter(handler =>
+              {activeHandlers.filter(handler =>
                 handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
                 handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
               ).length === 0 ? (
                 <p className="text-center text-gray-500 py-8">No employees found</p>
               ) : (
-                handlers
+                activeHandlers
                   .filter(handler =>
                     handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
                     handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())

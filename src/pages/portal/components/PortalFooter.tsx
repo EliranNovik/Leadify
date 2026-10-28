@@ -32,17 +32,30 @@ const PortalFooter: React.FC<{
   return (
     <footer
       className={`${isGray ? 'bg-gray-100 text-gray-800' : 'bg-blue-950 text-white'} print-hide ${
-        compact
-          ? 'mt-6 shrink-0 mb-[env(safe-area-inset-bottom,0px)]'
-          : 'mt-8 md:mt-24 mb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] md:mb-0'
+        compact ? 'mt-6 shrink-0' : 'mt-8 md:mt-24'
       } ${className}`.trim()}
     >
+      {/*
+        On a phone the floating contact buttons sit over the bottom of the page, so the footer
+        holds room for them underneath its own text. That room is padding rather than margin: the
+        plate itself reaches the bottom of the screen instead of leaving the page colour below it.
+      */}
       <div
-        className={`mx-auto max-w-5xl px-4 md:px-8 ${compact ? 'py-6 md:py-8' : 'py-8 md:py-20'}`}
+        className={`mx-auto max-w-5xl px-4 md:px-8 ${
+          compact
+            ? 'pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-6 md:py-8'
+            : 'pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] pt-8 md:py-20'
+        }`}
       >
-        <div className={`flex flex-col items-center justify-center ${compact ? 'gap-3 md:gap-4' : 'gap-4 md:gap-8'}`}>
-          <div className={`space-y-2 text-center ${compact ? 'md:space-y-2.5' : 'md:space-y-3'}`}>
-            <div className="flex items-center justify-center gap-3">
+        {/* Stacked on a phone, so each part of the footer is given room to stand apart. */}
+        <div className={`flex flex-col items-center justify-center ${compact ? 'gap-5 md:gap-4' : 'gap-7 md:gap-8'}`}>
+          <div
+            className={`text-center ${
+              compact ? 'space-y-4 md:space-y-2.5' : 'space-y-5 md:space-y-3'
+            }`}
+          >
+            {/* The firm's name is too long to sit beside the logo on a phone, so it sits under it. */}
+            <div className="flex flex-col items-center justify-center gap-4 md:flex-row md:gap-3">
               <img
                 src={logoSrc}
                 alt="DPL Logo"
@@ -57,7 +70,7 @@ const PortalFooter: React.FC<{
               </p>
             </div>
             <div
-              className={`flex flex-col items-center justify-center gap-1 md:flex-row md:gap-3 ${
+              className={`flex flex-col items-center justify-center gap-2 md:flex-row md:gap-3 ${
                 isGray ? 'text-gray-600' : 'text-blue-100'
               } ${compact ? 'text-sm' : 'text-sm'}`}
             >
@@ -74,10 +87,10 @@ const PortalFooter: React.FC<{
 
         <div
           className={`${isGray ? 'border-t border-gray-200' : 'border-t border-blue-900'} ${
-            compact ? 'mt-5 pt-4' : 'mt-6 md:mt-12 pt-4 md:pt-8'
+            compact ? 'mt-6 pt-5 md:mt-5 md:pt-4' : 'mt-8 pt-6 md:mt-12 md:pt-8'
           }`}
         >
-          <div className="grid grid-cols-1 items-center gap-4 sm:grid-cols-[1fr_auto_1fr] sm:gap-3">
+          <div className="grid grid-cols-1 items-center gap-5 sm:grid-cols-[1fr_auto_1fr] sm:gap-3">
             <div className="hidden sm:block" aria-hidden />
             <p
               className={`text-center text-xs ${isGray ? 'text-gray-500' : 'text-blue-200/90'}`}

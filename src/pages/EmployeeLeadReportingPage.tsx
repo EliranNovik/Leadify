@@ -345,8 +345,8 @@ const EmployeeLeadReportingPage: React.FC = () => {
     ) => {
       try {
         const missing = await fetchMissingLeadAllocationDates(employeeId, {
-          weekdays: schedule?.weekdays,
-          excludedDates: schedule?.excludedDates,
+          weekdays: schedule?.weekdays ?? undefined,
+          excludedDates: schedule?.excludedDates ?? undefined,
         });
         setMissingDates(missing);
       } catch (error) {
