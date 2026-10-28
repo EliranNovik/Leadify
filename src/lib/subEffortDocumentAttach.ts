@@ -156,6 +156,23 @@ export async function attachStoragePathsToSubEffort(params: {
     .eq('id', params.targetSubEffortId);
   if (error) throw error;
 
+  /*
+   * Attached while a folder was open, so the file belongs in that folder everywhere, not only in
+   * this list: the folder is one tree, shared with the case documents drawer and the drive, and it
+   * is recorded on the document's own row. Best effort — the attachment itself has already saved.
+   */
+  if (params.activeFolderId) {
+    const { error: folderError } = await supabase
+      .from('lead_case_documents')
+      .update({ folder_id: params.activeFolderId })
+      .in(
+        'storage_path',
+        addedItems.map((item) => String(item.path)),
+      )
+      .is('folder_id', null);
+    if (folderError) console.warn('lead_case_documents folder_id:', folderError.message);
+  }
+
   return { addedCount: addedItems.length };
 }
 

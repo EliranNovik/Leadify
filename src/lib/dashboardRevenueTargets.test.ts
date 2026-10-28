@@ -9,7 +9,7 @@ import {
   FIRM_MONTHLY_PAYROLL_BUDGET_NIS,
   isWorkingDay,
   monthlyTargetScale,
-  PRIMARY_REVENUE_TARGET_RATIO,
+  GOAL_BAR_REVENUE_TARGET_RATIO,
   REVENUE_TARGET_RATIOS,
   revenueTargetFromPayroll,
   workingDaysInMonthOf,
@@ -73,8 +73,17 @@ test('a lower ratio is a higher target, and the ratios are ordered best first', 
   );
 });
 
-test('the goal bars measure against a ratio the firm actually manages to', () => {
-  assert.ok(REVENUE_TARGET_RATIOS.some((row) => row.ratio === PRIMARY_REVENUE_TARGET_RATIO));
+test('the goal bars measure against the floor, which is the lowest of the three targets', () => {
+  assert.ok(REVENUE_TARGET_RATIOS.some((row) => row.ratio === GOAL_BAR_REVENUE_TARGET_RATIO));
+  const minimum = REVENUE_TARGET_RATIOS.find((row) => row.key === 'minimum');
+  assert.equal(GOAL_BAR_REVENUE_TARGET_RATIO, minimum?.ratio);
+  const barTarget = revenueTargetFromPayroll(100000, GOAL_BAR_REVENUE_TARGET_RATIO);
+  for (const row of REVENUE_TARGET_RATIOS) {
+    assert.ok(
+      revenueTargetFromPayroll(100000, row.ratio) >= barTarget,
+      `${row.key} should not be below the target the bars measure`,
+    );
+  }
 });
 
 test('no payroll means no target rather than an infinite one', () => {
@@ -182,10 +191,10 @@ test('the rolling week is scaled by the working days actually in its window', ()
 
 test('pro-rated targets stay under the monthly target and add up over a month', () => {
   const payroll = 242630;
-  const monthly = revenueTargetFromPayroll(payroll, PRIMARY_REVENUE_TARGET_RATIO);
+  const monthly = revenueTargetFromPayroll(payroll, GOAL_BAR_REVENUE_TARGET_RATIO);
   const day = departmentRevenueTarget({
     monthlyPayrollNis: payroll,
-    ratio: PRIMARY_REVENUE_TARGET_RATIO,
+    ratio: GOAL_BAR_REVENUE_TARGET_RATIO,
     period: 'day',
     refDateKey: '2026-10-11',
   });

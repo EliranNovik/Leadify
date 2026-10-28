@@ -4,6 +4,8 @@ import {
   CheckIcon,
   ChevronRightIcon,
   EllipsisHorizontalIcon,
+  EyeIcon,
+  EyeSlashIcon,
   MagnifyingGlassIcon,
   PencilSquareIcon,
   TagIcon,
@@ -387,6 +389,8 @@ export function DocRowActionsMenu({
   savingDocumentType = false,
   canRename = true,
   canDelete = true,
+  clientVisible,
+  onToggleClientVisible,
 }: {
   onEditFileName: () => void;
   onDelete: () => void;
@@ -398,6 +402,10 @@ export function DocRowActionsMenu({
   savingDocumentType?: boolean;
   canRename?: boolean;
   canDelete?: boolean;
+  /** What the client portal shows of this file now; false means it is closed to them. */
+  clientVisible?: boolean | null;
+  /** Left out for a file the portal could never show, which is nothing to open or close. */
+  onToggleClientVisible?: (next: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [typePanelOpen, setTypePanelOpen] = useState(false);
@@ -473,7 +481,9 @@ export function DocRowActionsMenu({
 
   const busy = disabled || deleting || savingDocumentType;
   const showType = Boolean(onSelectDocumentType);
-  const hasAnyAction = canRename || canDelete || showType;
+  const showClientVisibility = Boolean(onToggleClientVisible);
+  const hiddenFromClient = clientVisible === false;
+  const hasAnyAction = canRename || canDelete || showType || showClientVisibility;
   if (!hasAnyAction) return null;
 
   const menu =
@@ -576,6 +586,25 @@ export function DocRowActionsMenu({
                   <TagIcon className="h-4 w-4 opacity-70" />
                   <span className="min-w-0 flex-1">Document type</span>
                   <ChevronRightIcon className="h-4 w-4 opacity-60" />
+                </button>
+              ) : null}
+              {showClientVisibility ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
+                  onClick={() => {
+                    setOpen(false);
+                    setTypePanelOpen(false);
+                    onToggleClientVisible?.(hiddenFromClient);
+                  }}
+                >
+                  {hiddenFromClient ? (
+                    <EyeIcon className="h-4 w-4 opacity-70" />
+                  ) : (
+                    <EyeSlashIcon className="h-4 w-4 opacity-70" />
+                  )}
+                  {hiddenFromClient ? 'Open to the client' : 'Close to the client'}
                 </button>
               ) : null}
               {canDelete ? (

@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 import { fetchAverageGrossSalaryLastMonths } from './employeeSalaries';
 import {
-  PRIMARY_REVENUE_TARGET_RATIO,
+  GOAL_BAR_REVENUE_TARGET_RATIO,
   revenueTargetFromPayroll,
 } from './dashboardRevenueTargets';
 import {
@@ -536,11 +536,11 @@ export function otherScoreboardExpected(_costTarget: number): number {
 }
 
 /**
- * A department's monthly revenue target: its payroll budget at the firm's primary ratio.
+ * A department's monthly revenue target: its payroll budget at the ratio the goal bars measure
+ * against, which is the 40% floor.
  *
- * Only the primary ratio belongs here, because this feeds the single figure the goal bars measure
- * against. The full set of 30 / 35 / 40% targets is built by the scoreboard from
- * `REVENUE_TARGET_RATIOS`.
+ * Only that one ratio belongs here, because this feeds the single figure the bars are drawn from.
+ * The full set of 30 / 35 / 40% targets is built by the scoreboard from `REVENUE_TARGET_RATIOS`.
  */
 export function departmentScoreboardExpected(dept: {
   cost_target?: number | null;
@@ -548,6 +548,6 @@ export function departmentScoreboardExpected(dept: {
 }): number {
   return revenueTargetFromPayroll(
     departmentScoreboardCostBase(dept),
-    PRIMARY_REVENUE_TARGET_RATIO,
+    GOAL_BAR_REVENUE_TARGET_RATIO,
   );
 }

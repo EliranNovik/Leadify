@@ -85,6 +85,12 @@ export async function registerSubEffortDocumentsAsCaseDocuments(params: {
   uploadedBy?: string | null;
   /** Mirrors the sub-effort's own visibility, so hiding a stage hides its files from the portal. */
   clientVisible?: boolean;
+  /**
+   * The `document_folders` row to file these under, for an upload made while a folder was open.
+   * The folder is shared with the case documents drawer and the drive, so the file lands in the
+   * same folder everywhere.
+   */
+  folderId?: string | null;
 }): Promise<number> {
   const lead = String(params.leadNumber ?? '').trim();
   const items = params.items
@@ -126,17 +132,27 @@ export async function registerSubEffortDocumentsAsCaseDocuments(params: {
       // The object name carries the upload time; the row would otherwise be dated to this mirror.
       created_at: subEffortDocUploadedAt({ path: item.path }) ?? undefined,
       client_visible: params.clientVisible,
+      ...(params.folderId ? { folder_id: params.folderId } : {}),
     }));
   if (rows.length === 0) return 0;
 
   const { error } = await supabase.from('lead_case_documents').insert(rows);
   if (error) {
-    // Client visibility arrived late (sql/2026-10-28_client_visible_documents.sql); without the
-    // column the file is still worth listing.
-    if (/client_visible/i.test(error.message || '')) {
-      const { error: retryError } = await supabase
-        .from('lead_case_documents')
-        .insert(rows.map(({ client_visible: _ignored, ...row }) => row));
+    // Client visibility and folders each arrived late (sql/2026-10-28_client_visible_documents.sql,
+    // sql/2026-10-21_document_folders.sql); without either column the file is still worth listing.
+    const missingColumn = /client_visible/i.test(error.message || '')
+      ? 'client_visible'
+      : /folder_id/i.test(error.message || '')
+        ? 'folder_id'
+        : null;
+    if (missingColumn) {
+      const { error: retryError } = await supabase.from('lead_case_documents').insert(
+        rows.map((row) => {
+          const copy: Record<string, unknown> = { ...row };
+          delete copy[missingColumn];
+          return copy;
+        }),
+      );
       if (retryError) throw retryError;
       return rows.length;
     }

@@ -6,6 +6,7 @@ import {
 } from './caseDocumentsStorage';
 import { expandLeadCaseDocumentLeadNumbers } from './leadCaseDocumentKeys';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from './leadOneDrivePaths';
+import type { DocumentFolderScope } from './documentFolders';
 import {
   leadSubEffortSavedUpdatedBy,
   resolveLeadSubEffortIdentityFromRefs,
@@ -56,6 +57,15 @@ export type CaseCategoryDocument = {
   /** Storage bucket when the file is not in `lead-sub-efforts-documents`. */
   storageBucket?: string;
   source?: 'case' | 'subeffort' | 'email';
+  /**
+   * The folder this file is filed in, shared with the drive and the case documents drawer. Null
+   * for a file that has no case document row of its own — a sub-effort upload from before
+   * sql/2026-10-28_sub_effort_documents_into_case_documents.sql, or an email attachment — which
+   * has nowhere to record a folder and so shows at the top.
+   */
+  folderId?: string | null;
+  /** False only when someone has closed this file to the client portal. */
+  clientVisible?: boolean;
 };
 
 /** @deprecated Prefer CaseCategoryDocument */
@@ -106,7 +116,59 @@ type CaseDocRow = {
   created_at: string;
   onedrive_subfolder: string | null;
   classification_id: string | null;
+  /** The `document_folders` row this file sits in, which is the drive's and the drawer's tree. */
+  folder_id?: string | null;
+  /** False only when someone has closed this file to the client portal. */
+  client_visible?: boolean | null;
 };
+
+const CASE_DOC_BASE_SELECT =
+  'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id';
+
+/*
+ * Flipped off for the session the first time Postgres says there is no such column, i.e. the app is
+ * running ahead of sql/2026-10-21_document_folders.sql or sql/2026-10-28_client_visible_documents.sql.
+ * Reads then go back to the older column list rather than failing, and the part of the screen that
+ * needed it leaves itself out.
+ */
+let caseDocHasFolderColumn = true;
+let caseDocHasClientVisibleColumn = true;
+
+const caseDocSelect = () =>
+  [
+    CASE_DOC_BASE_SELECT,
+    caseDocHasFolderColumn ? 'folder_id' : null,
+    caseDocHasClientVisibleColumn ? 'client_visible' : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+/** The name of the column Postgres says is missing, if that is what went wrong. */
+function missingCaseDocColumn(
+  error: { code?: string; message?: string } | null,
+): 'folder_id' | 'client_visible' | null {
+  if (!error) return null;
+  const code = String(error.code || '');
+  if (code !== '42703' && code !== 'PGRST204' && code !== 'PGRST202') return null;
+  const message = String(error.message || '');
+  if (message.includes('folder_id')) return 'folder_id';
+  if (message.includes('client_visible')) return 'client_visible';
+  return null;
+}
+
+/** True once the column list was narrowed, which is the caller's cue to read again. */
+function dropMissingCaseDocColumn(error: { code?: string; message?: string } | null): boolean {
+  const missing = missingCaseDocColumn(error);
+  if (missing === 'folder_id' && caseDocHasFolderColumn) {
+    caseDocHasFolderColumn = false;
+    return true;
+  }
+  if (missing === 'client_visible' && caseDocHasClientVisibleColumn) {
+    caseDocHasClientVisibleColumn = false;
+    return true;
+  }
+  return false;
+}
 
 function categoryMatchers(category: CaseDocumentCategoryKey) {
   switch (category) {
@@ -128,6 +190,8 @@ function categoryMatchers(category: CaseDocumentCategoryKey) {
 async function fetchCategoryClassificationMeta(category: CaseDocumentCategoryKey): Promise<{
   classificationIds: string[];
   canonicalIdByAlias: Map<string, string>;
+  /** The id the category's one tab is known by, once its duplicate spellings are merged. */
+  canonicalId: string | null;
 }> {
   const { isMatch, merge } = categoryMatchers(category);
   const now = Date.now();
@@ -149,7 +213,55 @@ async function fetchCategoryClassificationMeta(category: CaseDocumentCategoryKey
   const rows = rowsAll.filter((r) => isMatch(r));
   const merged = merge(rows);
   const classificationIds = [...new Set(rows.map((r) => r.id))];
-  return { classificationIds, canonicalIdByAlias: merged.canonicalIdByAlias };
+  return {
+    classificationIds,
+    canonicalIdByAlias: merged.canonicalIdByAlias,
+    canonicalId: merged.tabs[0]?.id ?? classificationIds[0] ?? null,
+  };
+}
+
+/**
+ * The folder tree a category's documents belong to: the case's one tree, which the drive, the
+ * drawer and the sub-effort modal all show, so a folder made in any of them is a folder in all of
+ * them (see applyScope in src/lib/documentFolders.ts).
+ *
+ * The category and the area here are what a folder made from this tab is tagged with, not a
+ * filter. The area is the drawer's, which is also where
+ * sql/2026-10-28_sub_effort_documents_into_case_documents.sql files sub-effort uploads.
+ *
+ * Null while the lead or the category cannot be resolved, which is the caller's cue to leave the
+ * folder view out rather than show an empty root.
+ */
+export async function fetchCaseCategoryFolderScope(
+  category: CaseDocumentCategoryKey,
+  leadNumber: string,
+): Promise<DocumentFolderScope | null> {
+  const lead = String(leadNumber ?? '').trim();
+  if (!lead) return null;
+  const { canonicalId } = await fetchCategoryClassificationMeta(category);
+  if (!canonicalId) return null;
+  return {
+    scopeType: 'lead',
+    scopeKey: lead,
+    classificationId: canonicalId,
+    area: CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
+  };
+}
+
+/** The same tree, for a sub-effort that knows its category by classification id. */
+export function caseClassificationFolderScope(
+  leadNumber: string,
+  classificationId: string | null | undefined,
+): DocumentFolderScope | null {
+  const lead = String(leadNumber ?? '').trim();
+  const classification = String(classificationId ?? '').trim();
+  if (!lead || !classification) return null;
+  return {
+    scopeType: 'lead',
+    scopeKey: lead,
+    classificationId: classification,
+    area: CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
+  };
 }
 
 function inferMime(name: string, fallback?: string | null): string {
@@ -306,18 +418,21 @@ async function fetchCaseCategoryRows(leadNumber: string, classificationIds: stri
    */
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
-    .select(
-      'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
-    )
+    .select(caseDocSelect())
     .in('lead_number', expandLeadCaseDocumentLeadNumbers(leadNumber))
     .in('classification_id', classificationIds)
     .not('storage_path', 'is', null)
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    if (dropMissingCaseDocColumn(error)) {
+      return fetchCaseCategoryRows(leadNumber, classificationIds);
+    }
+    throw error;
+  }
 
   return dedupeCaseRowsByStoragePath(
-    ((rows ?? []) as CaseDocRow[]).filter(
+    ((rows ?? []) as unknown as CaseDocRow[]).filter(
       (r) => !isInternalFolder(r.onedrive_subfolder) && r.contact_id == null,
     ),
   );
@@ -398,6 +513,8 @@ async function mapCaseRowsToDocuments(list: CaseDocRow[]): Promise<CaseCategoryD
       documentTypeName,
       storageBucket: CASE_DOCUMENTS_STORAGE_BUCKET,
       source: 'case' as const,
+      folderId: r.folder_id ?? null,
+      clientVisible: r.client_visible !== false,
     };
   });
 }
@@ -787,18 +904,19 @@ async function fetchAttachedStoragePathSet(
 async function fetchClientPortalCaseRows(leadNumber: string): Promise<CaseDocRow[]> {
   const { data: rows, error } = await supabase
     .from('lead_case_documents')
-    .select(
-      'id, storage_path, file_name, mime_type, uploaded_by, contact_id, document_type_id, created_at, onedrive_subfolder, classification_id',
-    )
+    .select(caseDocSelect())
     .in('lead_number', expandLeadCaseDocumentLeadNumbers(leadNumber))
     .not('contact_id', 'is', null)
     .not('storage_path', 'is', null)
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) {
+    if (dropMissingCaseDocColumn(error)) return fetchClientPortalCaseRows(leadNumber);
+    throw error;
+  }
 
   return dedupeCaseRowsByStoragePath(
-    ((rows ?? []) as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder)),
+    ((rows ?? []) as unknown as CaseDocRow[]).filter((r) => !isInternalFolder(r.onedrive_subfolder)),
   );
 }
 

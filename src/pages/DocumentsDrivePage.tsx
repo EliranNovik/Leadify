@@ -1998,7 +1998,7 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
     if (isSuperUser) {
       actions.push({
         id: 'delete',
-        label: `Delete ${picked.length} documents`,
+        label: `Delete ${picked.length} ${picked.length === 1 ? 'file' : 'files'}`,
         icon: TrashIcon,
         danger: true,
         onSelect: () => setDeleteTarget({ kind: 'docs', rows: picked }),
@@ -2726,8 +2726,8 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                         <action.icon className="h-5 w-5" />
                       </button>
                     ))}
-                  {/* Red rather than grey, and what it deletes is named in the confirmation it
-                      opens, which is where the difference between a file and its folder matters. */}
+                  {/* Red rather than grey, and how much it deletes is spelled out in the
+                      confirmation it opens. */}
                   {barActions
                     .filter((action) => action.danger)
                     .map((action) => (
@@ -3561,16 +3561,20 @@ const DocumentsDrivePage: React.FC<{ onOpenAppNav?: () => void }> = ({ onOpenApp
                   {deleteTarget.kind === 'doc'
                     ? 'Delete this document?'
                     : deleteTarget.kind === 'docs'
-                      ? `Delete ${deleteTarget.rows.length} documents?`
+                      ? `Delete ${deleteTarget.rows.length} ${
+                          deleteTarget.rows.length === 1 ? 'file' : 'files'
+                        }?`
                       : 'Delete this folder?'}
                 </h2>
-                <p className="mt-1 break-words text-sm text-base-content/70">
-                  {deleteTarget.kind === 'doc'
-                    ? deleteTarget.row.file_name
-                    : deleteTarget.kind === 'docs'
-                      ? deleteTarget.rows.map((row) => row.file_name).join(', ')
+                {/* One file is named; a selection is counted in the heading, since a list of
+                    names long enough to matter is too long to read. */}
+                {deleteTarget.kind !== 'docs' && (
+                  <p className="mt-1 break-words text-sm text-base-content/70">
+                    {deleteTarget.kind === 'doc'
+                      ? deleteTarget.row.file_name
                       : deleteTarget.folder.title}
-                </p>
+                  </p>
+                )}
                 <p className="mt-3 text-sm text-base-content/60">
                   {deleteTarget.kind === 'doc'
                     ? 'The file and its record go for good. This cannot be undone.'

@@ -46,7 +46,7 @@ import {
 import {
   allocateDepartmentPayrollBudget,
   departmentRevenueTarget,
-  PRIMARY_REVENUE_TARGET_RATIO,
+  GOAL_BAR_REVENUE_TARGET_RATIO,
   REVENUE_TARGET_RATIOS,
   type RevenueTargetPeriod,
 } from '../lib/dashboardRevenueTargets';
@@ -5704,8 +5704,8 @@ const Dashboard: React.FC = () => {
 
     const getPeriodGoalTarget = (deptName: string, periodKey: string) =>
       deptName === 'Total'
-        ? getRatioTargetTotal(PRIMARY_REVENUE_TARGET_RATIO, periodKey)
-        : getDeptRatioTarget(deptName, PRIMARY_REVENUE_TARGET_RATIO, periodKey);
+        ? getRatioTargetTotal(GOAL_BAR_REVENUE_TARGET_RATIO, periodKey)
+        : getDeptRatioTarget(deptName, GOAL_BAR_REVENUE_TARGET_RATIO, periodKey);
 
     /** Goal-bar amount: Last 3m compares the displayed monthly average. */
     const getPeriodGoalAmount = (deptName: string, periodKey: string) =>
@@ -5802,7 +5802,11 @@ const Dashboard: React.FC = () => {
       const pct = Math.max(0, Math.min(100, Math.round((amount / target) * 100)));
       const nearOrMet = pct >= 90;
       return (
-        <div className="mt-1.5 w-full max-w-[7.5rem] mx-auto">
+        <div
+          className="mt-1.5 w-full max-w-[7.5rem] mx-auto"
+          // Which target the percentage is of, since the table shows three of them.
+          title={`${pct}% of the 40% minimum target, ₪${Math.ceil(target).toLocaleString()}`}
+        >
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               className={`h-full rounded-full transition-all ${nearOrMet ? accentBarDone : accentBar}`}

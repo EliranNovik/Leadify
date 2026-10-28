@@ -1,9 +1,10 @@
+import { expandLeadCaseDocumentLeadNumbers } from './leadCaseDocumentKeys';
 import { supabase } from './supabase';
 
 /**
  * Nestable document folders (`public.document_folders`), shared by the Case documents drawer and
- * the central documents page. Scope keeps the trees apart: for a lead it is the lead number plus
- * the Case documents tab, for the office space it is a single fixed key, and so on.
+ * the central documents page. Scope keeps the trees apart: for a lead it is the case number, for
+ * the office space a single fixed key, and so on.
  *
  * Folder membership lives on the document row (`lead_case_documents.folder_id`). Storage object
  * paths are untouched, exactly like the sub-effort folders this replaces.
@@ -14,9 +15,12 @@ export type DocumentFolderScopeType = 'lead' | 'office' | 'employee' | 'staff_me
 export type DocumentFolderScope = {
   scopeType: DocumentFolderScopeType;
   scopeKey: string;
-  /** Case documents tab. Folders are per tab, so a lead has one tree per category. */
+  /**
+   * Case documents tab a new folder is tagged with. Reading a case lists its whole tree whatever
+   * the tab, as the drive does — see applyScope.
+   */
   classificationId?: string | null;
-  /** Mirrors `lead_case_documents.onedrive_subfolder` so drawer and Expert tab stay separate. */
+  /** Mirrors `lead_case_documents.onedrive_subfolder`, and is likewise only written, not read. */
   area?: string | null;
 };
 
@@ -51,14 +55,38 @@ export function normaliseFolderTitle(raw: string): string {
   return raw.replace(/[/\\]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_DOCUMENT_FOLDER_TITLE);
 }
 
-/** `.eq(col, null)` matches nothing in PostgREST, so nullable scope parts need `.is`. */
+/**
+ * The folders a scope reads. `.eq(col, null)` matches nothing in PostgREST, so nullable parts
+ * need `.is`.
+ *
+ * A case has one tree, which is what the documents drive shows: its folders are read by case
+ * number alone, with the tab and the area left out of the question. They have to be, because the
+ * screens that make a case folder disagree about both columns while meaning the same folder —
+ * the drive's New window writes no area and whichever classification the file it was filing
+ * carried (a tab answers to several, once duplicate classifications are merged), the Case
+ * documents drawer and the sub-effort modal write 'ClientHeaderDocuments' and the tab's
+ * canonical id. Filtering on either hid drive-made folders from the drawer while still listing
+ * the files inside them, which is the one thing a folder view must never do.
+ *
+ * Every spelling of the case number counts, since a folder is keyed by whichever spelling the
+ * screen that made it held ('209994/3' from a legacy row, 'L209994/3' from the client page) —
+ * the same expansion the documents themselves are read with.
+ *
+ * `classificationId` and `area` still say what a *new* folder is written with, so a tab's own
+ * folders stay tagged with that tab.
+ */
 function applyScope(query: any, scope: DocumentFolderScope): any {
-  let next = query.eq('scope_type', scope.scopeType).eq('scope_key', scope.scopeKey);
-  next = scope.classificationId
+  if (scope.scopeType === 'lead') {
+    return query
+      .eq('scope_type', 'lead')
+      .in('scope_key', expandLeadCaseDocumentLeadNumbers(scope.scopeKey));
+  }
+
+  const next = query.eq('scope_type', scope.scopeType).eq('scope_key', scope.scopeKey);
+  const scoped = scope.classificationId
     ? next.eq('classification_id', scope.classificationId)
     : next.is('classification_id', null);
-  next = scope.area ? next.eq('area', scope.area) : next.is('area', null);
-  return next;
+  return scope.area ? scoped.eq('area', scope.area) : scoped.is('area', null);
 }
 
 export async function listDocumentFolders(scope: DocumentFolderScope): Promise<DocumentFolder[]> {
@@ -72,6 +100,22 @@ export async function listDocumentFolders(scope: DocumentFolderScope): Promise<D
 
   if (error) throw error;
   return (data || []) as DocumentFolder[];
+}
+
+/** The scope a folder itself sits in, which is the scope anything under it must sit in too. */
+async function parentScope(parentId: string): Promise<DocumentFolderScope | null> {
+  const { data } = await supabase
+    .from('document_folders')
+    .select('scope_type, scope_key, classification_id, area')
+    .eq('id', parentId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    scopeType: data.scope_type as DocumentFolderScopeType,
+    scopeKey: String(data.scope_key),
+    classificationId: data.classification_id ?? null,
+    area: data.area ?? null,
+  };
 }
 
 async function nextSortOrder(scope: DocumentFolderScope, parentId: string | null): Promise<number> {
@@ -90,11 +134,18 @@ export async function listFolderChildrenAcrossScopes(
   options: { scopeType?: DocumentFolderScopeType; scopeKey?: string | null; limit?: number } = {},
 ): Promise<DocumentFolder[]> {
   const limit = options.limit ?? 500;
+  const scopeType = options.scopeType ?? 'lead';
   let query = supabase
     .from('document_folders')
     .select(FOLDER_SELECT)
-    .eq('scope_type', options.scopeType ?? 'lead');
-  if (options.scopeKey) query = query.eq('scope_key', options.scopeKey);
+    .eq('scope_type', scopeType);
+  if (options.scopeKey) {
+    // A case answers to every spelling of its number, as it does everywhere else.
+    query =
+      scopeType === 'lead'
+        ? query.in('scope_key', expandLeadCaseDocumentLeadNumbers(options.scopeKey))
+        : query.eq('scope_key', options.scopeKey);
+  }
   query = parentId ? query.eq('parent_id', parentId) : query.is('parent_id', null);
 
   const { data, error } = await query
@@ -119,15 +170,21 @@ export async function createDocumentFolder(params: {
 
   const parentId = params.parentId ?? null;
   const sortOrder = await nextSortOrder(params.scope, parentId);
+  /*
+   * A subfolder takes its parent's scope, not the caller's. The database insists the two match,
+   * and a tab can now open a folder of the case that carries no tab of its own (see applyScope),
+   * where a folder made from the caller's scope would be refused.
+   */
+  const scope = parentId ? ((await parentScope(parentId)) ?? params.scope) : params.scope;
 
   const { data, error } = await supabase
     .from('document_folders')
     .insert({
       parent_id: parentId,
-      scope_type: params.scope.scopeType,
-      scope_key: params.scope.scopeKey,
-      classification_id: params.scope.classificationId ?? null,
-      area: params.scope.area ?? null,
+      scope_type: scope.scopeType,
+      scope_key: scope.scopeKey,
+      classification_id: scope.classificationId ?? null,
+      area: scope.area ?? null,
       title,
       note: params.note?.trim() || null,
       sort_order: sortOrder,

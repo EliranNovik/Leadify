@@ -7,6 +7,8 @@ export type PortalSubEffortFolder = {
   sort_order?: number;
   created_at?: string;
   created_by?: string | null;
+  /** Null at the top of the stage's folders. The tree is the case team's own, so it nests. */
+  parent_id?: string | null;
   lead_sub_effort_id: number;
 };
 
@@ -84,6 +86,8 @@ export function normalizePortalSubEffortFolders(
         sort_order: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
         created_at: typeof row.created_at === 'string' ? row.created_at : undefined,
         created_by: typeof row.created_by === 'string' ? row.created_by : null,
+        parent_id:
+          typeof row.parent_id === 'string' && row.parent_id.trim() ? row.parent_id.trim() : null,
         lead_sub_effort_id: leadSubEffortId,
       } satisfies PortalSubEffortFolder;
     })

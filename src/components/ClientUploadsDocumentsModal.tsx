@@ -35,10 +35,16 @@ import {
   DocRowActionsMenu,
   EMPTY_CASE_DOCS_FILTERS,
   filterCaseCategoryDocuments,
-  TableSelectAllHeader,
   useEdgeAwareMenuAlign,
   type CaseDocsFilterState,
 } from './caseDocumentsModalUi';
+import {
+  DocumentDriveTable,
+  HiddenFromClientMark,
+  type DriveTableColumn,
+} from './documentDriveTable';
+import { useFileHoverPeek } from './documentHoverPeek';
+import { setCaseDocumentsClientVisible } from '../lib/clientVisibleDocuments';
 
 const SUB_EFFORT_MENU_WIDTH = 384;
 
@@ -52,6 +58,13 @@ function formatDocDate(dateString: string): string {
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${dd}.${mm}.${yy}, ${hh}:${min}`;
 }
+
+/** What a client upload fills of the drive's list. */
+const CLIENT_UPLOAD_COLUMNS: DriveTableColumn[] = [
+  { id: 'contact', label: 'Uploaded by', className: 'hidden w-[13rem] md:table-cell' },
+  { id: 'type', label: 'Document type', className: 'hidden w-[11rem] lg:table-cell' },
+  { id: 'date', label: 'Uploaded at', className: 'w-[9.5rem]' },
+];
 
 export function ClientUploadsDocumentsModal({
   open,
@@ -75,6 +88,8 @@ export function ClientUploadsDocumentsModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<CaseCategoryDocument[]>([]);
+  /** Resting on a file's icon shows the file itself, as the drive does. */
+  const { peekProps, peekNode } = useFileHoverPeek();
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [isAttaching, setIsAttaching] = useState(false);
@@ -263,6 +278,20 @@ export function ClientUploadsDocumentsModal({
       }
       return next;
     });
+  };
+
+  /** What the client sees of their own upload: closing it takes it out of their portal list. */
+  const setDocClientVisible = async (doc: CaseCategoryDocument, visible: boolean) => {
+    try {
+      await setCaseDocumentsClientVisible([doc.id], visible);
+      setDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, clientVisible: visible } : d)));
+      toast.success(
+        visible ? `“${doc.name}” is open to the client` : `“${doc.name}” is closed to the client`,
+      );
+      onAttached?.();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Could not change what the client sees');
+    }
   };
 
   const startInlineRename = (doc: CaseCategoryDocument) => {
@@ -586,199 +615,163 @@ export function ClientUploadsDocumentsModal({
                 ) : null}
               </div>
             ) : (
-              <div className="min-w-0 overflow-x-auto">
-                <div className="min-w-[920px]">
-                  <table className="mb-2 w-full table-fixed border-collapse">
-                    <colgroup>
-                      <col className="w-12" />
-                      <col />
-                      <col />
-                      <col className="w-[28%]" />
-                      <col className="w-36" />
-                      <col className="w-12" />
-                    </colgroup>
-                    <thead>
-                      <tr className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                        <th className="bg-transparent px-3 py-2 text-center font-semibold align-middle">
-                          <TableSelectAllHeader
-                            checked={
-                              attachableDocs.length > 0 &&
-                              attachableDocs.every((d) => selectedIds.has(d.id))
-                            }
-                            indeterminate={
-                              attachableDocs.some((d) => selectedIds.has(d.id)) &&
-                              !attachableDocs.every((d) => selectedIds.has(d.id))
-                            }
-                            disabled={attachableDocs.length === 0 || busy}
-                            onChange={setTableSelection}
-                          />
-                        </th>
-                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                          Contact name
-                        </th>
-                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                          Document type
-                        </th>
-                        <th className="bg-transparent px-3 py-2 text-left font-semibold">
-                          Document name
-                        </th>
-                        <th className="bg-transparent px-3 py-2 text-center font-semibold whitespace-nowrap">
-                          Uploaded at
-                        </th>
-                        <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                          <span className="sr-only">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-                  </table>
-                  <div className="overflow-x-auto rounded-2xl bg-white">
-                    <table className="w-full table-fixed border-collapse">
-                      <colgroup>
-                        <col className="w-12" />
-                        <col />
-                        <col />
-                        <col className="w-[28%]" />
-                        <col className="w-36" />
-                        <col className="w-12" />
-                      </colgroup>
-                      <tbody>
-                        {visibleDocs.map((doc, index) => {
-                          const canAttachDoc = Boolean(doc.storagePath?.trim());
-                          const checked = selectedIds.has(doc.id);
-                          const isRenaming = renamingDocId === doc.id;
-                          return (
-                            <tr
-                              key={doc.id}
-                              className={`${
-                                checked ? 'bg-primary/[0.03]' : 'bg-white'
-                              }`}
-                            >
-                              <td className="px-3 py-3 text-center align-middle">
-                                <input
-                                  type="checkbox"
-                                  className="checkbox checkbox-sm"
-                                  checked={checked}
-                                  disabled={!canAttachDoc}
-                                  onChange={() => {
-                                    if (canAttachDoc) toggleSelected(doc.id);
-                                  }}
-                                  aria-label={`Select ${doc.name}`}
-                                />
-                              </td>
-                              <td className="px-3 py-3 text-center align-middle text-sm">
-                                <span className="inline-flex max-w-full min-w-0 items-center justify-center gap-1.5">
-                                  {doc.uploadedByName ? (
-                                    <span className="min-w-0 truncate font-medium text-base-content/80">
-                                      {doc.uploadedByName}
-                                    </span>
-                                  ) : (
-                                    <span className="text-base-content/50">—</span>
-                                  )}
-                                  <ClientUploadBadge />
-                                </span>
-                              </td>
-                              <td className="px-3 py-3 text-center align-middle">
-                                {doc.documentTypeName ? (
-                                  <span
-                                    className="inline-block max-w-[14rem] truncate text-sm text-base-content/80"
-                                    title={doc.documentTypeName}
-                                  >
-                                    {doc.documentTypeName}
-                                  </span>
-                                ) : (
-                                  <span className="text-sm text-gray-400">—</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-3 align-middle">
-                                {isRenaming ? (
-                                  <div className="flex min-w-0 items-center gap-1">
-                                    <input
-                                      type="text"
-                                      className="input input-bordered input-sm min-w-0 flex-1"
-                                      value={renameValue}
-                                      onChange={(e) => setRenameValue(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                          e.preventDefault();
-                                          void saveInlineRename();
-                                        }
-                                        if (e.key === 'Escape') {
-                                          e.preventDefault();
-                                          cancelInlineRename();
-                                        }
-                                      }}
-                                      autoFocus
-                                      disabled={renameSaving}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="btn btn-ghost btn-circle btn-sm"
-                                      onClick={() => void saveInlineRename()}
-                                      disabled={renameSaving || !renameValue.trim()}
-                                      aria-label="Save name"
-                                    >
-                                      {renameSaving ? (
-                                        <span className="loading loading-spinner loading-xs" />
-                                      ) : (
-                                        <CheckIcon className="h-4 w-4 text-emerald-600" />
-                                      )}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="btn btn-ghost btn-circle btn-sm"
-                                      onClick={cancelInlineRename}
-                                      disabled={renameSaving}
-                                      aria-label="Cancel rename"
-                                    >
-                                      <XMarkIcon className="h-4 w-4" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className="inline-flex max-w-full items-center gap-2 text-left hover:opacity-80"
-                                    onClick={() => setViewerIndex(index)}
-                                  >
-                                    <DocumentFileGlyph
-                                      fileType={doc.fileType}
-                                      fileName={doc.name}
-                                      className="h-12 w-12 shrink-0"
-                                    />
-                                    <span className="min-w-0 truncate text-sm font-semibold text-base-content">
-                                      {doc.name}
-                                    </span>
-                                  </button>
-                                )}
-                              </td>
-                              <td className="px-3 py-3 text-center align-middle whitespace-nowrap text-sm tabular-nums text-gray-500">
-                                {formatDocDate(doc.lastModified)}
-                              </td>
-                              <td className="px-2 py-3 text-center align-middle">
-                                <DocRowActionsMenu
-                                  disabled={busy || isRenaming}
-                                  deleting={deletingDocId === doc.id}
-                                  savingDocumentType={savingTypeDocId === doc.id}
-                                  documentTypes={documentTypes}
-                                  currentDocumentTypeId={doc.documentTypeId}
-                                  onEditFileName={() => startInlineRename(doc)}
-                                  onDelete={() => void deleteDocument(doc)}
-                                  onSelectDocumentType={(type) =>
-                                    void assignDocumentType(doc, type)
-                                  }
-                                />
-                              </td>
-                            </tr>
-                          );
+              /* The drive's list, so a client upload reads the way the same file does in the
+                 drive, the case documents drawer and the step it is attached to. */
+              <DocumentDriveTable
+                columns={CLIENT_UPLOAD_COLUMNS}
+                minWidthClass="min-w-[860px]"
+                selectAll={{
+                  checked:
+                    attachableDocs.length > 0 &&
+                    attachableDocs.every((d) => selectedIds.has(d.id)),
+                  indeterminate: attachableDocs.some((d) => selectedIds.has(d.id)),
+                  disabled: attachableDocs.length === 0 || busy,
+                  label: 'Select every client upload listed',
+                  onChange: () =>
+                    setTableSelection(!attachableDocs.every((d) => selectedIds.has(d.id))),
+                }}
+                files={visibleDocs.map((doc, index) => {
+                  const canAttachDoc = Boolean(doc.storagePath?.trim());
+                  const checked = selectedIds.has(doc.id);
+                  const isRenaming = renamingDocId === doc.id;
+                  return {
+                    key: doc.id,
+                    icon: (
+                      <span
+                        className="relative inline-flex"
+                        {...peekProps({
+                          id: doc.id,
+                          name: doc.name,
+                          url: doc.url,
+                          fileType: doc.fileType,
+                          storagePath: doc.url ? null : doc.storagePath,
+                          bucketName: doc.storageBucket ?? null,
+                          note: doc.documentTypeName,
                         })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
+                      >
+                        <DocumentFileGlyph
+                          fileType={doc.fileType}
+                          fileName={doc.name}
+                          className="h-7 w-7"
+                        />
+                        {doc.clientVisible === false ? <HiddenFromClientMark /> : null}
+                      </span>
+                    ),
+                    title: doc.name,
+                    name: isRenaming ? (
+                      <div
+                        className="flex min-w-0 items-center gap-1"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          className="input input-bordered input-sm min-w-0 flex-1"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void saveInlineRename();
+                            }
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              cancelInlineRename();
+                            }
+                          }}
+                          autoFocus
+                          disabled={renameSaving}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-circle btn-sm"
+                          onClick={() => void saveInlineRename()}
+                          disabled={renameSaving || !renameValue.trim()}
+                          aria-label="Save name"
+                        >
+                          {renameSaving ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : (
+                            <CheckIcon className="h-4 w-4 text-emerald-600" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-circle btn-sm"
+                          onClick={cancelInlineRename}
+                          disabled={renameSaving}
+                          aria-label="Cancel rename"
+                        >
+                          <XMarkIcon className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      doc.name
+                    ),
+                    onNameClick: isRenaming ? undefined : () => setViewerIndex(index),
+                    onDoubleClick: isRenaming ? undefined : () => setViewerIndex(index),
+                    onClick:
+                      canAttachDoc && !isRenaming ? () => toggleSelected(doc.id) : undefined,
+                    selected: checked,
+                    pick: {
+                      checked,
+                      disabled: !canAttachDoc || busy,
+                      label: `Select ${doc.name}`,
+                      onChange: () => {
+                        if (canAttachDoc) toggleSelected(doc.id);
+                      },
+                    },
+                    cells: {
+                      contact: (
+                        <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
+                          {doc.uploadedByName ? (
+                            <span className="min-w-0 truncate text-sm font-medium text-base-content/80">
+                              {doc.uploadedByName}
+                            </span>
+                          ) : (
+                            <span className="text-sm text-base-content/50">—</span>
+                          )}
+                          <ClientUploadBadge />
+                        </span>
+                      ),
+                      type: doc.documentTypeName ? (
+                        <span
+                          className="block truncate text-sm text-base-content/80"
+                          title={doc.documentTypeName}
+                        >
+                          {doc.documentTypeName}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-gray-400">—</span>
+                      ),
+                      date: (
+                        <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+                          {formatDocDate(doc.lastModified)}
+                        </span>
+                      ),
+                    },
+                    actions: (
+                      <DocRowActionsMenu
+                        disabled={busy || isRenaming}
+                        deleting={deletingDocId === doc.id}
+                        savingDocumentType={savingTypeDocId === doc.id}
+                        documentTypes={documentTypes}
+                        currentDocumentTypeId={doc.documentTypeId}
+                        onEditFileName={() => startInlineRename(doc)}
+                        onDelete={() => void deleteDocument(doc)}
+                        clientVisible={doc.clientVisible}
+                        onToggleClientVisible={(next) => void setDocClientVisible(doc, next)}
+                        onSelectDocumentType={(type) => void assignDocumentType(doc, type)}
+                      />
+                    ),
+                  };
+                })}
+              />
             )}
           </div>
         </div>
       </MobileBottomSheet>
+
+      {peekNode}
 
       <DocumentViewerModal
         isOpen={open && viewerIndex !== null && viewerDocs.length > 0}

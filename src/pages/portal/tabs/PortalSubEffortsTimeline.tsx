@@ -3,14 +3,19 @@ import {
   ArrowPathIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
+  ChevronRightIcon,
   ClockIcon,
   DocumentIcon,
   ArrowDownTrayIcon,
   FolderIcon,
+  FolderOpenIcon,
   QuestionMarkCircleIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
-import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
+import {
+  CheckCircleIcon as CheckCircleSolidIcon,
+  FolderIcon as FolderSolidIcon,
+} from '@heroicons/react/24/solid';
 import {
   DocumentPreviewModal,
   type DocumentPreviewItem,
@@ -24,6 +29,18 @@ import {
   type PortalSubEffortRow,
 } from '../../../lib/portalSubEfforts';
 import { EntityAvatar } from '../components/portalTheme';
+import {
+  DocumentDriveTable,
+  RowKebabMenu,
+  type DriveTableColumn,
+} from '../../../components/documentDriveTable';
+import { useFileHoverPeek } from '../../../components/documentHoverPeek';
+
+/** What the client is shown about a file, in the drive's own list. */
+const PORTAL_DOC_COLUMNS: DriveTableColumn[] = [
+  { id: 'type', label: 'Type', className: 'hidden w-[11rem] sm:table-cell' },
+  { id: 'date', label: 'Added', className: 'hidden w-[9rem] md:table-cell' },
+];
 
 type Props = {
   rows: PortalSubEffortRow[];
@@ -419,6 +436,8 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
   const [descriptionRow, setDescriptionRow] = useState<PortalSubEffortRow | null>(null);
+  /** Resting on a file's icon shows the file itself, so it can be told from the one beside it. */
+  const { peekProps, peekNode } = useFileHoverPeek();
 
   const selected = useMemo(
     () => rows.find((r) => r.id === selectedId) ?? null,
@@ -430,10 +449,23 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
     [folders, selected],
   );
 
-  const activeFolder = useMemo(
-    () => stageFolders.find((folder) => folder.id === activeFolderId) ?? null,
+  /** Root-first way down to the open folder, for the path above the list. */
+  const folderTrail = useMemo(() => {
+    const byId = new Map(stageFolders.map((folder) => [folder.id, folder]));
+    const trail: PortalSubEffortFolder[] = [];
+    let cursor = activeFolderId ? byId.get(activeFolderId) : undefined;
+    while (cursor && trail.length < 12) {
+      trail.unshift(cursor);
+      cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
+    }
+    return trail;
+  }, [stageFolders, activeFolderId]);
+
+  const visibleFolders = useMemo(
+    () => stageFolders.filter((folder) => (folder.parent_id ?? null) === activeFolderId),
     [stageFolders, activeFolderId],
   );
+
 
   const handleSelectRow = (id: number) => {
     setSelectedId(id);
@@ -452,18 +484,36 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
     [selected, signedUrls],
   );
 
-  const unfiledDocs = useMemo(() => docs.filter((doc) => !doc.folder_id), [docs]);
+  /**
+   * How many of the stage's files a folder holds, counting the folders inside it: a folder saying
+   * nothing is in it while a folder within is full would read as a mistake.
+   */
+  const filesInsideFolder = useMemo(() => {
+    const counts = new Map<string, number>();
+    const parentOf = new Map(stageFolders.map((folder) => [folder.id, folder.parent_id ?? null]));
+    for (const doc of docs) {
+      let cursor = doc.folder_id ?? null;
+      let guard = 0;
+      while (cursor && parentOf.has(cursor) && guard < 12) {
+        counts.set(cursor, (counts.get(cursor) || 0) + 1);
+        cursor = parentOf.get(cursor) ?? null;
+        guard += 1;
+      }
+    }
+    return counts;
+  }, [stageFolders, docs]);
 
-  const docsInActiveFolder = useMemo(() => {
-    if (!activeFolderId) return [];
-    return docs.filter((doc) => doc.folder_id === activeFolderId);
-  }, [docs, activeFolderId]);
-
-  const visibleDocs = activeFolderId
-    ? docsInActiveFolder
-    : stageFolders.length > 0
-      ? unfiledDocs
-      : docs;
+  /*
+   * The files at the level now open. A file filed in a folder the stage does not show — the case
+   * team moved it elsewhere — belongs at the top rather than nowhere.
+   */
+  const visibleDocs = useMemo(() => {
+    const known = new Set(stageFolders.map((folder) => folder.id));
+    return docs.filter((doc) => {
+      const folderId = doc.folder_id && known.has(doc.folder_id) ? doc.folder_id : null;
+      return folderId === activeFolderId;
+    });
+  }, [docs, stageFolders, activeFolderId]);
 
   const hasDocs = docs.length > 0;
   const hasFolders = stageFolders.length > 0;
@@ -624,24 +674,37 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
               <span className="text-sm font-semibold text-gray-700">Documents</span>
             </div>
             <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-              {activeFolder ? (
-                <div className="mb-4 flex flex-wrap items-center gap-3">
+              {/* The folders are the case team's own, shown the way our drive shows them: the path
+                  back up, then the folders of this level, then the files sitting in it. */}
+              {hasFolders ? (
+                <nav className="mb-3 flex min-w-0 flex-wrap items-center gap-1 text-sm" aria-label="Folder path">
                   <button
                     type="button"
-                    className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary"
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                      activeFolderId ? 'text-gray-500 hover:bg-gray-100' : 'text-gray-900'
+                    }`}
                     onClick={() => setActiveFolderId(null)}
                   >
-                    <ChevronLeftIcon className="h-4 w-4" />
-                    Back to folders
+                    <FolderIcon className="h-4 w-4 shrink-0" aria-hidden />
+                    All documents
                   </button>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-gray-900">{activeFolder.title}</p>
-                    <p className="text-xs text-gray-500">
-                      {docsInActiveFolder.length}{' '}
-                      {docsInActiveFolder.length === 1 ? 'document' : 'documents'}
-                    </p>
-                  </div>
-                </div>
+                  {folderTrail.map((folder, index) => (
+                    <span key={folder.id} className="inline-flex min-w-0 items-center gap-1">
+                      <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+                      <button
+                        type="button"
+                        className={`max-w-[12rem] truncate rounded-md px-2 py-1 font-medium transition-colors ${
+                          index === folderTrail.length - 1
+                            ? 'text-gray-900'
+                            : 'text-gray-500 hover:bg-gray-100'
+                        }`}
+                        onClick={() => setActiveFolderId(folder.id)}
+                      >
+                        {folder.title}
+                      </button>
+                    </span>
+                  ))}
+                </nav>
               ) : null}
 
               {!hasDocs && !hasFolders ? (
@@ -654,143 +717,132 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
                   Loading documents…
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {!activeFolderId && hasFolders ? (
-                    <div className="space-y-2">
-                      <p className="text-xs font-bold uppercase tracking-[0.12em] text-gray-400">
-                        Folders
-                      </p>
-                      <div className="space-y-2">
-                        {stageFolders.map((folder) => {
-                          const count = docs.filter((doc) => doc.folder_id === folder.id).length;
-                          return (
-                            <button
-                              key={folder.id}
-                              type="button"
-                              onClick={() => setActiveFolderId(folder.id)}
-                              className="flex w-full items-center gap-3 rounded-xl border border-gray-100 bg-gray-50/70 px-3 py-2.5 text-left transition hover:border-gray-200 hover:bg-gray-50"
-                            >
-                              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
-                                <FolderIcon className="h-7 w-7" />
-                              </span>
-                              <span className="min-w-0 flex-1">
-                                <span className="block truncate text-sm font-semibold text-gray-900">
-                                  {folder.title}
-                                </span>
-                                <span className="mt-0.5 block truncate text-xs text-gray-500">
-                                  {folder.created_by || 'Case team'}
-                                  {folder.created_at
-                                    ? ` · ${new Date(folder.created_at).toLocaleDateString()}`
-                                    : ''}
-                                </span>
-                                {folder.note ? (
-                                  <span
-                                    className="mt-1 block truncate text-xs text-gray-400"
-                                    title={folder.note}
-                                  >
-                                    {folder.note}
-                                  </span>
-                                ) : null}
-                              </span>
-                              <span className="inline-flex min-w-[28px] shrink-0 items-center justify-center rounded-full bg-slate-700 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">
-                                {count}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {!activeFolderId && hasFolders && unfiledDocs.length > 0 ? (
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-gray-400">
-                      Unfiled documents
-                    </p>
-                  ) : null}
-
-                  {visibleDocs.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/50 px-4 py-6 text-center text-sm text-gray-400">
+                <DocumentDriveTable
+                  columns={PORTAL_DOC_COLUMNS}
+                  minWidthClass="min-w-[520px]"
+                  folders={visibleFolders.map((folder) => {
+                    const count = filesInsideFolder.get(folder.id) || 0;
+                    return {
+                      key: `folder-${folder.id}`,
+                      icon: <FolderSolidIcon className="h-7 w-7 text-slate-500" />,
+                      name: folder.title,
+                      title: folder.title,
+                      below: (
+                        <span className="text-xs text-gray-500">
+                          {count === 0 ? 'Empty' : `${count} document${count === 1 ? '' : 's'}`}
+                          {folder.note ? ` · ${folder.note}` : ''}
+                        </span>
+                      ),
+                      cells: {
+                        type: <span className="text-sm text-gray-500">Folder</span>,
+                        date: (
+                          <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+                            {folder.created_at
+                              ? new Date(folder.created_at).toLocaleDateString()
+                              : '—'}
+                          </span>
+                        ),
+                      },
+                      onClick: () => setActiveFolderId(folder.id),
+                      actions: (
+                        <RowKebabMenu
+                          label={`Options for ${folder.title}`}
+                          items={[
+                            {
+                              id: 'open',
+                              label: 'Open folder',
+                              icon: FolderOpenIcon,
+                              onSelect: () => setActiveFolderId(folder.id),
+                            },
+                          ]}
+                        />
+                      ),
+                    };
+                  })}
+                  files={visibleDocs.map((doc, idx) => {
+                    const label = doc.name || doc.raw.split('/').pop() || 'Document';
+                    const href = doc.url || doc.raw;
+                    const canPreview = !!doc.url;
+                    return {
+                      key: `${doc.raw}-${idx}`,
+                      icon: (
+                        <span
+                          className="relative inline-flex"
+                          {...peekProps({
+                            id: `${doc.raw}-${idx}`,
+                            name: label,
+                            url: doc.url,
+                            fileType: guessFileType(doc),
+                            note: formatFileTypeLabel(doc),
+                          })}
+                        >
+                          <DocumentIcon
+                            className={`h-7 w-7 ${doc.isPdf ? 'text-red-500/80' : 'text-slate-400'}`}
+                          />
+                        </span>
+                      ),
+                      name: label,
+                      title: label,
+                      onNameClick: canPreview ? () => openDocPreview(doc) : undefined,
+                      onDoubleClick: canPreview ? () => openDocPreview(doc) : undefined,
+                      cells: {
+                        type: (
+                          <span className="block truncate text-sm text-gray-500">
+                            {formatFileTypeLabel(doc)}
+                          </span>
+                        ),
+                        date: <span className="text-sm text-gray-400">—</span>,
+                      },
+                      actions: (
+                        <RowKebabMenu
+                          label={`Options for ${label}`}
+                          items={[
+                            ...(canPreview
+                              ? [
+                                  {
+                                    id: 'preview',
+                                    label: 'Preview',
+                                    icon: DocumentIcon,
+                                    onSelect: () => openDocPreview(doc),
+                                  },
+                                ]
+                              : []),
+                            {
+                              id: 'download',
+                              label: 'Download',
+                              icon: ArrowDownTrayIcon,
+                              href,
+                              downloadAs: label,
+                            },
+                          ]}
+                        />
+                      ),
+                    };
+                  })}
+                  empty={
+                    <p className="px-4 py-8 text-center text-sm text-gray-400">
                       {activeFolderId
                         ? 'This folder has no documents yet.'
-                        : hasFolders
-                          ? 'Open a folder above to view its documents.'
-                          : 'No documents uploaded for this stage yet.'}
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-gray-100">
-                      {visibleDocs.map((doc, idx) => {
-                        const label = doc.name || doc.raw.split('/').pop() || 'Document';
-                        const href = doc.url || doc.raw;
-                        const canPreview = !!doc.url;
-                        const typeLabel = formatFileTypeLabel(doc);
-
-                        return (
-                          <div
-                            key={`${doc.raw}-${idx}`}
-                            className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center"
-                          >
-                            <div className="flex min-w-0 flex-1 items-center gap-3">
-                              <button
-                                type="button"
-                                disabled={!canPreview}
-                                onClick={() => openDocPreview(doc)}
-                                className={`flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gray-100 ${
-                                  canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
-                                }`}
-                                aria-label={canPreview ? `Preview ${label}` : undefined}
-                              >
-                                {doc.isImage && canPreview ? (
-                                  <img
-                                    src={doc.url}
-                                    alt=""
-                                    className="h-full w-full object-cover"
-                                    loading="lazy"
-                                  />
-                                ) : doc.isPdf ? (
-                                  <DocumentIcon className="h-7 w-7 text-red-500/80" />
-                                ) : (
-                                  <DocumentIcon className="h-7 w-7 text-slate-400" />
-                                )}
-                              </button>
-                              <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold text-gray-900">{label}</div>
-                                <div className="mt-0.5 text-xs text-gray-500">{typeLabel}</div>
-                              </div>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1.5 sm:pl-2">
-                              {canPreview ? (
-                                <button
-                                  type="button"
-                                  onClick={() => openDocPreview(doc)}
-                                  className="btn btn-ghost btn-xs h-8 rounded-full px-3"
-                                >
-                                  Preview
-                                </button>
-                              ) : null}
-                              {canPreview ? (
-                                <a
-                                  href={href}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  download={label}
-                                  className="btn btn-ghost btn-xs h-8 gap-1 rounded-full px-3"
-                                >
-                                  <ArrowDownTrayIcon className="h-3.5 w-3.5" />
-                                  Download
-                                </a>
-                              ) : null}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                        : 'No documents uploaded for this stage yet.'}
+                    </p>
+                  }
+                  footer={
+                    visibleDocs.length === 0 && visibleFolders.length > 0 ? (
+                      <span className="block text-center text-xs text-gray-400">
+                        {activeFolderId
+                          ? 'Files in this folder itself will appear here'
+                          : 'Files outside these folders will appear here'}
+                      </span>
+                    ) : null
+                  }
+                />
               )}
             </div>
           </div>
         </div>
       )}
+
+      {peekNode}
 
       <DocumentPreviewModal
         isOpen={previewOpen}

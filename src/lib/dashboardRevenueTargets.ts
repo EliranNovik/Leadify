@@ -65,8 +65,17 @@ export const REVENUE_TARGET_RATIOS: {
   { key: 'minimum', ratio: 0.4, label: 'Monthly target · 40% minimum' },
 ];
 
-/** The ratio the goal bars measure against: the firm's primary objective. */
-export const PRIMARY_REVENUE_TARGET_RATIO = 0.3;
+/**
+ * The ratio the goal bars measure against: the 40% floor, the lowest of the three targets.
+ *
+ * The bars answer "is this department clear of the line it must not cross", which is the question
+ * a column of progress bars can actually answer at a glance. Measured against the 30% objective
+ * instead, a department sitting comfortably above its floor still showed a part-filled bar, so the
+ * bars read as failure nearly everywhere and said nothing about the one target that matters first.
+ * The other two ratios are still shown in full as the target rows under the table.
+ */
+export const GOAL_BAR_REVENUE_TARGET_RATIO =
+  REVENUE_TARGET_RATIOS.find((row) => row.key === 'minimum')?.ratio ?? 0.4;
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;

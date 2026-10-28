@@ -8,17 +8,19 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   DocumentIcon,
-  EllipsisVerticalIcon,
   EyeIcon,
+  EyeSlashIcon,
   FolderIcon,
   FolderPlusIcon,
   PlusIcon,
+  FolderOpenIcon,
   QuestionMarkCircleIcon,
   LockClosedIcon,
   PencilSquareIcon,
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { FolderIcon as FolderSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
 import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
@@ -37,8 +39,34 @@ import {
   type CaseDocumentCategoryKey,
 } from '../lib/sequenceOfEventsDocuments';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
-import { createPortal } from 'react-dom';
 import { normalizeStorageKey } from '../lib/subEffortDocumentAttach';
+import {
+  countDocumentsByFolder,
+  DocumentFolderBreadcrumb,
+  DocumentFolderDialog,
+  FOLDER_DROP_ROOT,
+  useDocumentFolderTree,
+  type FolderDialogState,
+} from './documentFolderBrowser';
+import {
+  DocumentDriveTable,
+  HiddenFromClientMark,
+  RowKebabMenu,
+  type DriveTableColumn,
+  type DriveTableRow,
+} from './documentDriveTable';
+import { useFileHoverPeek } from './documentHoverPeek';
+import {
+  setCaseDocumentsClientVisible,
+  setDocumentFolderClientVisible,
+} from '../lib/clientVisibleDocuments';
+import {
+  childFolders,
+  folderSubtreeIds,
+  folderTrail,
+  type DocumentFolder,
+  type DocumentFolderScope,
+} from '../lib/documentFolders';
 import {
   fetchSubEffortCaseClassificationId,
   registerSubEffortDocumentsAsCaseDocuments,
@@ -71,12 +99,26 @@ const emptyCategoryCounts = (): Record<CaseDocumentCategoryKey, number> => ({
 
 const SUB_EFFORTS_DOCS_BUCKET = 'lead-sub-efforts-documents';
 
+/** The attach picker has room for little more than the name and when the file arrived. */
+const ATTACH_TABLE_COLUMNS: DriveTableColumn[] = [
+  { id: 'date', label: 'Uploaded at', className: 'w-[9.5rem]' },
+];
+
+/** The drive's columns, as a step's documents can fill them. */
+const SUB_EFFORT_TABLE_COLUMNS: DriveTableColumn[] = [
+  { id: 'type', label: 'Document type', className: 'hidden w-[11rem] md:table-cell' },
+  { id: 'uploader', label: 'Uploaded by', className: 'hidden w-[11rem] lg:table-cell' },
+  { id: 'date', label: 'Uploaded at', className: 'w-[9.5rem]' },
+];
+
 type CaseDocPick = {
   id: string;
   file_name: string;
   storage_path: string;
   mime_type: string | null;
   created_at: string;
+  /** The folder of the shared tree this file is filed in, so the picker can show the folders. */
+  folder_id: string | null;
   signedUrl?: string;
 };
 
@@ -90,6 +132,10 @@ type ResolvedDoc = {
   path?: string;
   folder_id?: string | null;
   bucket?: string;
+  /** The `lead_case_documents` row mirroring this file, which is what folders are recorded on. */
+  caseDocId?: string | null;
+  /** False only when someone has closed this file to the client portal. */
+  clientVisible?: boolean;
   documentTypeName?: string | null;
   uploadedByName?: string | null;
   uploadedByPhotoUrl?: string | null;
@@ -122,20 +168,11 @@ type DocItem = {
   path?: string;
   name?: string;
   mimeType?: string;
-  /** Optional folder id from lead_sub_effort_folders; null/missing = unfiled. */
+  /** The `document_folders` row the file sits in; null/missing means the top of the tree. */
   folder_id?: string | null;
   bucket?: string;
 };
 
-type SubEffortFolder = {
-  id: string;
-  lead_sub_effort_id: number;
-  title: string;
-  note: string | null;
-  created_by: string | null;
-  created_at: string;
-  sort_order: number;
-};
 
 function normalizeDocItems(documentUrl: any): DocItem[] {
   if (!documentUrl) return [];
@@ -230,11 +267,6 @@ function isPdfUrl(url: string): boolean {
   if (!raw) return false;
   const withoutQuery = raw.split('?')[0].split('#')[0].toLowerCase();
   return withoutQuery.endsWith('.pdf');
-}
-
-function isImageMime(mime: string | null | undefined): boolean {
-  const m = String(mime || '').toLowerCase();
-  return m.startsWith('image/');
 }
 
 function inferMimeFromName(name: string): string {
@@ -941,6 +973,10 @@ export function SubEffortsLogModal({
   const [caseDocs, setCaseDocs] = useState<CaseDocPick[]>([]);
   const [caseDocsLoading, setCaseDocsLoading] = useState(false);
   const [selectedCaseDocIds, setSelectedCaseDocIds] = useState<Set<string>>(() => new Set());
+  /** Where in the folders the attach picker is looking, which is its own place, not the box's. */
+  const [attachFolderId, setAttachFolderId] = useState<string | null>(null);
+  /** Resting on a file's icon shows the file itself, as the drive does. */
+  const { peekProps, peekNode } = useFileHoverPeek();
   const [isAttaching, setIsAttaching] = useState(false);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -950,24 +986,9 @@ export function SubEffortsLogModal({
   const [renamingDocKey, setRenamingDocKey] = useState<string | null>(null);
   const [renameDocValue, setRenameDocValue] = useState('');
   const [renameDocSaving, setRenameDocSaving] = useState(false);
-  const [folders, setFolders] = useState<SubEffortFolder[]>([]);
-  const [foldersLoading, setFoldersLoading] = useState(false);
-  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
-  const [folderModalOpen, setFolderModalOpen] = useState(false);
-  const [folderModalMode, setFolderModalMode] = useState<'create' | 'edit'>('create');
-  const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
-  const [folderTitleDraft, setFolderTitleDraft] = useState('');
-  const [folderNoteDraft, setFolderNoteDraft] = useState('');
-  const [folderSaving, setFolderSaving] = useState(false);
+  const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
   const [dragDocKey, setDragDocKey] = useState<string | null>(null);
   const [dropTargetFolderId, setDropTargetFolderId] = useState<string | null | undefined>(undefined);
-  const [moveMenuDocKey, setMoveMenuDocKey] = useState<string | null>(null);
-  const [moveMenuPos, setMoveMenuPos] = useState<{
-    top?: number;
-    bottom?: number;
-    right: number;
-    maxHeight: number;
-  } | null>(null);
   const [docMetaByPath, setDocMetaByPath] = useState<
     Map<
       string,
@@ -976,10 +997,12 @@ export function SubEffortsLogModal({
         uploadedByName: string | null;
         uploadedByPhotoUrl: string | null;
         isClientPortalUpload: boolean;
+        caseDocId: string | null;
+        folderId: string | null;
+        clientVisible: boolean;
       }
     >
   >(() => new Map());
-  const [folderMenuId, setFolderMenuId] = useState<string | null>(null);
   const [descriptionRow, setDescriptionRow] = useState<any | null>(null);
   const [categoryModalOpen, setCategoryModalOpen] = useState<CaseDocumentCategoryKey | null>(null);
   const [clientUploadsOpen, setClientUploadsOpen] = useState(false);
@@ -1012,65 +1035,6 @@ export function SubEffortsLogModal({
     setOrderedTimelineRows(timelineRowsFromProps);
   }, [timelineRowsFromProps]);
 
-  React.useEffect(() => {
-    if (!moveMenuDocKey && !folderMenuId) return;
-    const onPointerDown = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest('[data-sub-effort-menu]')) return;
-      if (target.closest('[data-sub-effort-doc-menu]')) return;
-      setMoveMenuDocKey(null);
-      setMoveMenuPos(null);
-      setFolderMenuId(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setMoveMenuDocKey(null);
-        setMoveMenuPos(null);
-        setFolderMenuId(null);
-      }
-    };
-    const onReposition = () => {
-      if (!moveMenuDocKey) return;
-      const btn = document.querySelector(
-        `[data-sub-effort-doc-trigger="${CSS.escape(moveMenuDocKey)}"]`,
-      ) as HTMLElement | null;
-      if (!btn) return;
-      const rect = btn.getBoundingClientRect();
-      const gap = 4;
-      const margin = 8;
-      const estimated = 320;
-      const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
-      const spaceAbove = rect.top - gap - margin;
-      const openUp = spaceBelow < Math.min(estimated, 240) && spaceAbove > spaceBelow;
-      const available = Math.max(140, openUp ? spaceAbove : spaceBelow);
-      const maxHeight = Math.min(320, available);
-      const right = Math.max(8, window.innerWidth - rect.right);
-      if (openUp) {
-        setMoveMenuPos({
-          bottom: Math.max(margin, window.innerHeight - rect.top + gap),
-          right,
-          maxHeight,
-        });
-      } else {
-        setMoveMenuPos({
-          top: rect.bottom + gap,
-          right,
-          maxHeight,
-        });
-      }
-    };
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('resize', onReposition);
-    window.addEventListener('scroll', onReposition, true);
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('resize', onReposition);
-      window.removeEventListener('scroll', onReposition, true);
-    };
-  }, [moveMenuDocKey, folderMenuId]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -1363,6 +1327,11 @@ export function SubEffortsLogModal({
         uploadedByName: meta.uploadedByName ?? d.uploadedByName ?? null,
         uploadedByPhotoUrl: meta.uploadedByPhotoUrl ?? d.uploadedByPhotoUrl ?? null,
         isClientPortalUpload: meta.isClientPortalUpload,
+        caseDocId: meta.caseDocId,
+        clientVisible: meta.clientVisible,
+        // The case document row is where the drive and the drawer read the folder from, so it wins.
+        // The item's own folder is the fallback for a file that was never recorded as a case document.
+        folder_id: meta.folderId ?? d.folder_id ?? null,
       };
     });
   }, [resolvedDocs, docMetaByPath]);
@@ -1389,15 +1358,20 @@ export function SubEffortsLogModal({
       try {
         const { data: rows, error } = await supabase
           .from('lead_case_documents')
-          .select('storage_path, document_type_id, contact_id, uploaded_by')
+          .select(
+            'id, storage_path, document_type_id, contact_id, uploaded_by, folder_id, client_visible',
+          )
           .eq('lead_number', lead)
           .in('storage_path', paths);
         if (error || cancelled) return;
         const typed = (rows ?? []) as {
+          id: string;
           storage_path: string;
           document_type_id: string | null;
           contact_id: number | null;
           uploaded_by: string | null;
+          folder_id: string | null;
+          client_visible: boolean | null;
         }[];
 
         const typeIds = [
@@ -1456,6 +1430,9 @@ export function SubEffortsLogModal({
             uploadedByName: string | null;
             uploadedByPhotoUrl: string | null;
             isClientPortalUpload: boolean;
+            caseDocId: string | null;
+            folderId: string | null;
+            clientVisible: boolean;
           }
         >();
         for (const r of typed) {
@@ -1474,6 +1451,11 @@ export function SubEffortsLogModal({
             uploadedByPhotoUrl:
               !isClientPortalUpload && resolved?.photoUrl ? resolved.photoUrl : null,
             isClientPortalUpload,
+            caseDocId: r.id ? String(r.id) : null,
+            folderId: r.folder_id ?? null,
+            // Viewable unless the row says otherwise, which is also what a database without the
+            // column yet means.
+            clientVisible: r.client_visible !== false,
           });
         }
         setDocMetaByPath(next);
@@ -1491,57 +1473,70 @@ export function SubEffortsLogModal({
     setRenameDocValue('');
     setRenameDocSaving(false);
     setActiveFolderId(null);
-    setMoveMenuDocKey(null);
-    setMoveMenuPos(null);
-    setFolderMenuId(null);
     setDragDocKey(null);
     setDropTargetFolderId(undefined);
   }, [selectedRow?.id]);
 
-  const loadFolders = useCallback(async (subEffortId: number | string) => {
-    setFoldersLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('lead_sub_effort_folders')
-        .select('id, lead_sub_effort_id, title, note, created_by, created_at, sort_order')
-        .eq('lead_sub_effort_id', subEffortId)
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true });
-      if (error) throw error;
-      setFolders((data as SubEffortFolder[]) ?? []);
-    } catch (e) {
-      console.error('Error loading sub-effort folders:', e);
-      setFolders([]);
-    } finally {
-      setFoldersLoading(false);
-    }
-  }, []);
+  /**
+   * The category the sub-effort's files are filed under, which is the folder tree they belong to.
+   * Null for a step with no case document category: its files then sit in the lead's own tree.
+   */
+  const [subEffortClassificationId, setSubEffortClassificationId] = useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!open || !selectedRow?.id) {
-      setFolders([]);
-      return;
-    }
-    void loadFolders(selectedRow.id);
-  }, [open, selectedRow?.id, loadFolders]);
+    setSubEffortClassificationId(null);
+    const subEffortId = selectedRow?.sub_effort_id;
+    if (!open || !subEffortId) return;
+    let cancelled = false;
+    void fetchSubEffortCaseClassificationId(subEffortId)
+      .then((value) => {
+        if (!cancelled) setSubEffortClassificationId(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedRow?.sub_effort_id]);
 
-  const activeFolder = useMemo(
-    () => (activeFolderId ? folders.find((f) => f.id === activeFolderId) ?? null : null),
-    [activeFolderId, folders],
+  /*
+   * Deliberately the scope the case documents drawer builds for the same tab, so this is not a
+   * folder view of its own: a folder made here is the folder the drawer and the documents drive
+   * show, and a file filed here is filed there.
+   */
+  const folderScope = useMemo<DocumentFolderScope | null>(() => {
+    const lead = String(leadNumber ?? '').trim();
+    if (!lead) return null;
+    return {
+      scopeType: 'lead',
+      scopeKey: lead,
+      classificationId: subEffortClassificationId,
+      area: caseDocumentsSubfolder?.trim() || CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
+    };
+  }, [leadNumber, subEffortClassificationId, caseDocumentsSubfolder]);
+
+  const folderTree = useDocumentFolderTree(folderScope, { enabled: open });
+  const activeFolder = folderTree.trail[folderTree.trail.length - 1] ?? null;
+  const folders = folderTree.visibleFolders;
+  const foldersLoading = folderTree.loading;
+  const activeFolderId = folderTree.activeFolderId;
+  const setActiveFolderId = folderTree.setActiveFolderId;
+
+  /** Which folder a file counts as being in, by the tree now on screen. */
+  const docFolderId = useCallback(
+    (doc: ResolvedDoc) => folderTree.folderIdOf(doc.folder_id),
+    [folderTree],
   );
 
-  React.useEffect(() => {
-    if (activeFolderId && folders.length > 0 && !folders.some((f) => f.id === activeFolderId)) {
-      setActiveFolderId(null);
-    }
-  }, [activeFolderId, folders]);
+  const visibleDocs = useMemo(
+    () => resolvedDocsWithMeta.filter((d) => folderTree.folderIdOf(d.folder_id) === activeFolderId),
+    [resolvedDocsWithMeta, folderTree, activeFolderId],
+  );
 
-  const visibleDocs = useMemo(() => {
-    if (activeFolderId) {
-      return resolvedDocsWithMeta.filter((d) => d.folder_id === activeFolderId);
-    }
-    return resolvedDocsWithMeta.filter((d) => !d.folder_id);
-  }, [resolvedDocsWithMeta, activeFolderId]);
+  /** Direct files plus everything in the folders below, for the count on a folder row. */
+  const folderFileCounts = useMemo(
+    () => countDocumentsByFolder(folderTree.folders, resolvedDocsWithMeta.map(docFolderId)),
+    [folderTree.folders, resolvedDocsWithMeta, docFolderId],
+  );
 
   const downloadAllDocuments = useCallback(async () => {
     if (isDownloadingAll) return;
@@ -1720,110 +1715,104 @@ export function SubEffortsLogModal({
       }
 
       try {
+        /*
+         * The file's folder is recorded on its case document row, which is what the documents
+         * drive and the case documents drawer read. The sub-effort's own list keeps a copy, for a
+         * file that was never recorded as a case document.
+         */
+        const moving = resolvedDocsWithMeta.find(
+          (d) => String(d.path || d.raw || '').trim() === docKey,
+        );
+        if (moving?.caseDocId) {
+          const moved = await folderTree.moveDocuments([moving.caseDocId], targetFolderId);
+          if (!moved) return;
+        }
         const actor = await fetchStageActorInfo();
         const { error } = await supabase
           .from('lead_sub_efforts')
           .update({ document_url: next, ...leadSubEffortActorFields(actor) })
           .eq('id', selectedRow.id);
         if (error) throw error;
-        toast.success(targetFolderId ? 'Moved to folder' : 'Moved to Unfiled');
-        setMoveMenuDocKey(null);
+        setDocMetaByPath((prev) => {
+          const key = normalizeStorageKey(docKey);
+          const meta = key ? prev.get(key) : undefined;
+          if (!key || !meta) return prev;
+          const copy = new Map(prev);
+          copy.set(key, { ...meta, folderId: targetFolderId });
+          return copy;
+        });
+        toast.success(targetFolderId ? 'Moved to folder' : 'Moved out of the folder');
         onRefresh?.();
       } catch (e: any) {
         console.error('moveDocToFolder:', e);
         toast.error(e?.message || 'Failed to move document');
       }
     },
-    [selectedRow, onRefresh],
+    [selectedRow, onRefresh, resolvedDocsWithMeta, folderTree],
   );
 
-  const openCreateFolderModal = () => {
-    setFolderModalMode('create');
-    setEditingFolderId(null);
-    setFolderTitleDraft('');
-    setFolderNoteDraft('');
-    setFolderModalOpen(true);
-  };
-
-  const openEditFolderModal = (folder: SubEffortFolder) => {
-    setFolderModalMode('edit');
-    setEditingFolderId(folder.id);
-    setFolderTitleDraft(folder.title || '');
-    setFolderNoteDraft(folder.note || '');
-    setFolderModalOpen(true);
-    setFolderMenuId(null);
-  };
-
-  const saveFolderModal = async () => {
-    if (!selectedRow?.id || folderSaving) return;
-    const title = folderTitleDraft.trim();
-    if (!title) {
-      toast.error('Folder title is required');
-      return;
-    }
-    const note = folderNoteDraft.trim() || null;
-    setFolderSaving(true);
-    try {
-      if (folderModalMode === 'create') {
-        const actor = await fetchStageActorInfo();
-        const maxSort = folders.reduce((m, f) => Math.max(m, Number(f.sort_order) || 0), -1);
-        const { error } = await supabase.from('lead_sub_effort_folders').insert({
-          lead_sub_effort_id: selectedRow.id,
-          title,
-          note,
-          created_by: actor.fullName,
-          sort_order: maxSort + 1,
-        });
-        if (error) throw error;
-        toast.success('Folder created');
-      } else if (editingFolderId) {
-        const { error } = await supabase
-          .from('lead_sub_effort_folders')
-          .update({ title, note })
-          .eq('id', editingFolderId);
-        if (error) throw error;
-        toast.success('Folder updated');
+  /**
+   * What the client sees of this file in the portal. The flag lives on the case document row, the
+   * one place the portal reads, so a file that was never recorded there has nothing to flip.
+   */
+  const setDocClientVisible = useCallback(
+    async (doc: ResolvedDoc, visible: boolean) => {
+      if (!doc.caseDocId) {
+        toast.error('This file is not listed in the case documents yet, so the client never sees it.');
+        return;
       }
-      setFolderModalOpen(false);
-      await loadFolders(selectedRow.id);
-    } catch (e: any) {
-      console.error('saveFolderModal:', e);
-      toast.error(e?.message || 'Failed to save folder');
-    } finally {
-      setFolderSaving(false);
-    }
-  };
+      try {
+        await setCaseDocumentsClientVisible([doc.caseDocId], visible);
+        const key = normalizeStorageKey(doc.path);
+        if (key) {
+          setDocMetaByPath((prev) => {
+            const meta = prev.get(key);
+            if (!meta) return prev;
+            const copy = new Map(prev);
+            copy.set(key, { ...meta, clientVisible: visible });
+            return copy;
+          });
+        }
+        toast.success(
+          visible ? `“${doc.name}” is open to the client` : `“${doc.name}” is closed to the client`,
+        );
+        onRefresh?.();
+      } catch (e: any) {
+        toast.error(e?.message || 'Could not change what the client sees');
+      }
+    },
+    [onRefresh],
+  );
 
-  const deleteFolder = async (folder: SubEffortFolder) => {
-    if (!selectedRow?.id) return;
-    const ok = window.confirm(
-      `Delete folder “${folder.title}”? Documents inside will move to Unfiled.`,
-    );
-    if (!ok) return;
-    setFolderMenuId(null);
-    try {
-      const existingItems = normalizeDocItems(selectedRow.document_url);
-      const next = existingItems.map((it) =>
-        it.folder_id === folder.id ? { ...it, folder_id: null } : it,
-      );
-      const actor = await fetchStageActorInfo();
-      const { error: docsError } = await supabase
-        .from('lead_sub_efforts')
-        .update({ document_url: next, ...leadSubEffortActorFields(actor) })
-        .eq('id', selectedRow.id);
-      if (docsError) throw docsError;
+  /** A folder closed to the client takes everything filed under it, however deep, with it. */
+  const setFolderClientVisible = useCallback(
+    async (folder: DocumentFolder, visible: boolean) => {
+      try {
+        await setDocumentFolderClientVisible(folder.id, visible);
+        await folderTree.reload();
+        toast.success(
+          visible
+            ? `“${folder.title}” is open to the client`
+            : `“${folder.title}” and everything in it are closed to the client`,
+        );
+      } catch (e: any) {
+        toast.error(e?.message || 'Could not change what the client sees');
+      }
+    },
+    [folderTree],
+  );
 
-      const { error } = await supabase.from('lead_sub_effort_folders').delete().eq('id', folder.id);
-      if (error) throw error;
+  const openCreateFolderModal = () => setFolderDialog({ mode: 'create', folder: null });
 
-      if (activeFolderId === folder.id) setActiveFolderId(null);
-      toast.success('Folder deleted');
-      await loadFolders(selectedRow.id);
-      onRefresh?.();
-    } catch (e: any) {
-      console.error('deleteFolder:', e);
-      toast.error(e?.message || 'Failed to delete folder');
-    }
+  const openEditFolderModal = (folder: DocumentFolder) => setFolderDialog({ mode: 'rename', folder });
+
+  /**
+   * The folder goes; its files stay where they are stored and show at the top again, which is what
+   * every other screen on this tree does with a file whose folder it cannot find.
+   */
+  const deleteFolder = async (folder: DocumentFolder) => {
+    const deleted = await folderTree.deleteFolder(folder, folderFileCounts.get(folder.id) || 0);
+    if (deleted) onRefresh?.();
   };
 
   const startInlineRename = (doc: ResolvedDoc) => {
@@ -2091,6 +2080,8 @@ export function SubEffortsLogModal({
           classificationId: await fetchSubEffortCaseClassificationId(selectedRow?.sub_effort_id),
           uploadedBy: actor.fullName ?? null,
           clientVisible: selectedRow?.internal !== true,
+          // Uploaded while a folder was open, so that is the folder it belongs in everywhere.
+          folderId: activeFolderId,
           items: Array.from(files).map((file, idx) => ({
             path: uploadedPaths[idx],
             name: file.name,
@@ -2121,20 +2112,31 @@ export function SubEffortsLogModal({
     }
     setIsAttachModalOpen(true);
     setSelectedCaseDocIds(new Set());
+    setAttachFolderId(folderTree.activeFolderId);
     setCaseDocsLoading(true);
     try {
       const sub = caseDocumentsSubfolder?.trim() ? caseDocumentsSubfolder.trim() : null;
-      let q = supabase
-        .from('lead_case_documents')
-        .select('id, file_name, storage_path, mime_type, created_at')
-        .eq('lead_number', leadNumber.trim())
-        .not('storage_path', 'is', null)
-        .order('created_at', { ascending: false })
-        .limit(100);
-      if (sub) q = q.eq('onedrive_subfolder', sub);
-      else q = q.is('onedrive_subfolder', null);
+      // Enough of the case to browse by folder rather than scroll. `folder_id` arrived with the
+      // shared folders, so a database without it is read without it.
+      const read = async (withFolder: boolean) => {
+        let q = supabase
+          .from('lead_case_documents')
+          .select(
+            withFolder
+              ? 'id, file_name, storage_path, mime_type, created_at, folder_id'
+              : 'id, file_name, storage_path, mime_type, created_at',
+          )
+          .eq('lead_number', leadNumber.trim())
+          .not('storage_path', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(500);
+        if (sub) q = q.eq('onedrive_subfolder', sub);
+        else q = q.is('onedrive_subfolder', null);
+        return q;
+      };
 
-      const { data, error } = await q;
+      let { data, error } = await read(true);
+      if (error && String(error.code || '') === '42703') ({ data, error } = await read(false));
       if (error) throw error;
       const base = ((data as any[]) || []).map((r) => ({
         id: String(r.id),
@@ -2142,6 +2144,7 @@ export function SubEffortsLogModal({
         storage_path: String(r.storage_path || ''),
         mime_type: typeof r.mime_type === 'string' ? (r.mime_type as string) : null,
         created_at: String(r.created_at || new Date().toISOString()),
+        folder_id: typeof r.folder_id === 'string' && r.folder_id.trim() ? r.folder_id : null,
       })) as CaseDocPick[];
 
       // Sign URLs for preview/open (images + docs)
@@ -2193,7 +2196,13 @@ export function SubEffortsLogModal({
             name: d.file_name || undefined,
             mimeType: d.mime_type || inferMimeFromName(d.file_name),
           };
-          if (activeFolderId) item.folder_id = activeFolderId;
+          /*
+           * A file already filed stays in its folder — picking a folder whole would otherwise
+           * empty it into whichever folder this step happened to be showing. Only a loose file
+           * follows the open folder.
+           */
+          const folderId = d.folder_id ?? activeFolderId ?? null;
+          if (folderId) item.folder_id = folderId;
           return item;
         })
         .filter((d) => d.path && !existingKeySet.has(String(d.path)));
@@ -2206,6 +2215,18 @@ export function SubEffortsLogModal({
         .update({ document_url: merged, ...leadSubEffortActorFields(actor) })
         .eq('id', selectedRow.id);
       if (error) throw error;
+
+      // Attached while a folder was open: the loose files among them are case documents already,
+      // so filing them is a move, and the drawer and the drive show them there from now on too.
+      if (activeFolderId && addedItems.length > 0) {
+        const movedIds = picked
+          .filter(
+            (d) =>
+              !d.folder_id && addedItems.some((item) => item.path === d.storage_path?.trim()),
+          )
+          .map((d) => d.id);
+        if (movedIds.length > 0) await folderTree.moveDocuments(movedIds, activeFolderId);
+      }
 
       toast.success('Attached to sub effort');
       setIsAttachModalOpen(false);
@@ -2239,6 +2260,164 @@ export function SubEffortsLogModal({
       setIsMarkingComplete(false);
     }
   };
+
+  /*
+   * The attach picker, as the drive shows a case: the folders of this category first, each one
+   * takeable whole, then the files sitting at that level.
+   */
+  const attachTrail = folderTrail(folderTree.folders, attachFolderId);
+  const attachFileCounts = countDocumentsByFolder(
+    folderTree.folders,
+    caseDocs.map((d) => folderTree.folderIdOf(d.folder_id)),
+  );
+
+  const caseDocIdsInFolder = (folder: DocumentFolder): string[] => {
+    const inside = new Set(folderSubtreeIds(folderTree.folders, folder.id));
+    return caseDocs.filter((d) => d.folder_id && inside.has(d.folder_id)).map((d) => d.id);
+  };
+
+  const toggleCaseDocPick = (id: string) =>
+    setSelectedCaseDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const toggleCaseFolderPick = (folder: DocumentFolder) => {
+    const ids = caseDocIdsInFolder(folder);
+    if (ids.length === 0) {
+      toast.error(`"${folder.title}" has no files to attach.`);
+      return;
+    }
+    setSelectedCaseDocIds((prev) => {
+      const next = new Set(prev);
+      const wholeFolderPicked = ids.every((id) => prev.has(id));
+      for (const id of ids) {
+        if (wholeFolderPicked) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const attachFolderRows: DriveTableRow[] = childFolders(folderTree.folders, attachFolderId).map(
+    (folder) => {
+      const filesInside = attachFileCounts.get(folder.id) || 0;
+      const ids = caseDocIdsInFolder(folder);
+      const picked = ids.filter((id) => selectedCaseDocIds.has(id)).length;
+      return {
+        key: `folder-${folder.id}`,
+        icon: <FolderSolidIcon className="h-7 w-7 text-slate-500" />,
+        name: folder.title,
+        title: folder.title,
+        below: (
+          <span className="text-xs text-base-content/55">
+            {filesInside === 0 ? 'Empty' : `${filesInside} file${filesInside === 1 ? '' : 's'}`}
+            {picked > 0 ? ` · ${picked} selected` : ''}
+          </span>
+        ),
+        cells: {
+          date: (
+            <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+              {formatDateTime(folder.created_at)}
+            </span>
+          ),
+        },
+        pick:
+          ids.length > 0
+            ? {
+                checked: picked === ids.length,
+                indeterminate: picked > 0,
+                disabled: isAttaching,
+                label: `Attach the ${ids.length} file${ids.length === 1 ? '' : 's'} in ${folder.title}`,
+                onChange: () => toggleCaseFolderPick(folder),
+              }
+            : undefined,
+        onClick: () => setAttachFolderId(folder.id),
+        actions: (
+          <RowKebabMenu
+            label={`Options for ${folder.title}`}
+            items={[
+              {
+                id: 'open',
+                label: 'Open folder',
+                icon: FolderOpenIcon,
+                onSelect: () => setAttachFolderId(folder.id),
+              },
+              ...(ids.length > 0
+                ? [
+                    {
+                      id: 'pick',
+                      label: 'Select everything inside',
+                      icon: FolderIcon,
+                      onSelect: () => toggleCaseFolderPick(folder),
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        ),
+      };
+    },
+  );
+
+  const attachFileRows: DriveTableRow[] = caseDocs
+    .filter((d) => folderTree.folderIdOf(d.folder_id) === attachFolderId)
+    .map((d) => {
+      const mime = d.mime_type || inferMimeFromName(d.file_name);
+      const checked = selectedCaseDocIds.has(d.id);
+      return {
+        key: d.id,
+        icon: (
+          <span
+            className="relative inline-flex"
+            {...peekProps({
+              id: `case-${d.id}`,
+              name: d.file_name,
+              url: d.signedUrl,
+              fileType: mime,
+              storagePath: d.signedUrl ? null : d.storage_path,
+              bucketName: SUB_EFFORTS_DOCS_BUCKET,
+            })}
+          >
+            <DocumentFileGlyph fileType={mime} fileName={d.file_name} className="h-7 w-7" />
+          </span>
+        ),
+        name: d.file_name,
+        title: d.file_name,
+        selected: checked,
+        onClick: () => toggleCaseDocPick(d.id),
+        onNameClick: () => openCaseDocPreview(d),
+        onDoubleClick: () => openCaseDocPreview(d),
+        pick: {
+          checked,
+          disabled: isAttaching,
+          label: `Attach ${d.file_name}`,
+          onChange: () => toggleCaseDocPick(d.id),
+        },
+        cells: {
+          date: (
+            <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+              {formatDateTime(d.created_at)}
+            </span>
+          ),
+        },
+        actions: (
+          <RowKebabMenu
+            label={`Options for ${d.file_name}`}
+            items={[
+              {
+                id: 'preview',
+                label: 'Preview',
+                icon: EyeIcon,
+                onSelect: () => openCaseDocPreview(d),
+              },
+            ]}
+          />
+        ),
+      };
+    });
 
   if (!open) return null;
 
@@ -2756,51 +2935,45 @@ export function SubEffortsLogModal({
 
                     <div>
                       <div className="mb-2 flex items-center justify-between gap-3 px-0.5">
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          {activeFolder ? (
-                            <>
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm btn-square h-10 w-10 shrink-0"
-                                onClick={() => setActiveFolderId(null)}
-                                aria-label="Back to folders"
-                                title="Back"
-                              >
-                                <ChevronLeftIcon className="h-6 w-6" />
-                              </button>
-                              <FolderIcon className="h-6 w-6 shrink-0 text-amber-500/90" />
-                              <span className="truncate text-base font-semibold text-base-content/85 md:text-lg">
-                                {activeFolder.title}
-                              </span>
-                              {activeFolder.note ? (
-                                <span
-                                  className="badge badge-ghost badge-sm max-w-[9rem] truncate font-normal"
-                                  title={activeFolder.note}
-                                >
-                                  {activeFolder.note}
-                                </span>
-                              ) : null}
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm btn-square shrink-0"
-                                onClick={() => openEditFolderModal(activeFolder)}
-                                aria-label="Edit folder"
-                                title="Edit folder"
-                              >
-                                <PencilSquareIcon className="h-5 w-5" />
-                              </button>
-                            </>
+                        {/* Where in the folders this step's files are being read, the same tree the
+                            case documents drawer and the documents drive show. Dropping a file on a
+                            crumb files it there. */}
+                        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                          {folderTree.ready ? (
+                            <DocumentFolderBreadcrumb
+                              tree={folderTree}
+                              rootLabel="Documents"
+                              dragging={Boolean(dragDocKey)}
+                              dropTarget={
+                                dropTargetFolderId === null
+                                  ? FOLDER_DROP_ROOT
+                                  : dropTargetFolderId ?? null
+                              }
+                              onDropTargetChange={(target) =>
+                                setDropTargetFolderId(
+                                  target === FOLDER_DROP_ROOT ? null : target ?? undefined,
+                                )
+                              }
+                              onDropToRoot={() => {
+                                if (dragDocKey) void moveDocToFolder(dragDocKey, null);
+                              }}
+                            />
                           ) : (
                             <span className="text-base font-semibold text-gray-500">Documents</span>
                           )}
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
-                          {!activeFolderId ? (
+                          {folderTree.ready ? (
                             <button
                               type="button"
                               className="btn btn-ghost btn-sm h-10 gap-1.5 rounded-full px-3.5 text-sm font-medium text-base-content/70 hover:bg-white hover:shadow-sm"
                               onClick={openCreateFolderModal}
-                              disabled={!selectedRow?.id}
+                              disabled={folderTree.busy}
+                              title={
+                                activeFolder
+                                  ? `Create a folder inside ${activeFolder.title}`
+                                  : 'Create a folder here'
+                              }
                             >
                               <FolderPlusIcon className="h-5 w-5" />
                               New folder
@@ -2845,82 +3018,72 @@ export function SubEffortsLogModal({
                         : null;
                       const hasVisibleDocs = visibleDocs.length > 0;
                       const hasReadyVisible = visibleDocs.some((d) => d.url);
-                      const showFolders = !activeFolderId;
                       const hasFolders = folders.length > 0;
-                      const isEmptyRoot = showFolders && !hasFolders && !hasVisibleDocs && !foldersLoading;
-                      const isEmptyFolder = !!activeFolderId && !hasVisibleDocs;
+                      /* Nothing filed and nothing uploaded: the drop area is the whole box, rather
+                         than a table of nothing with a drop area under it. */
+                      const isEmptyRoot =
+                        !activeFolderId && !hasFolders && !hasVisibleDocs && !foldersLoading;
 
-                      const renderDocRow = (doc: ResolvedDoc, idx: number) => {
+                      const docRows: DriveTableRow[] = visibleDocs.map((doc, idx) => {
                         const href = doc.url || doc.raw;
                         const canPreview = !!doc.url;
                         const docKey = String(doc.path || doc.raw || '').trim();
-                        const moveOpen = moveMenuDocKey === docKey;
-                        const canMove = Boolean(docKey && (folders.length > 0 || activeFolderId));
-                        return (
-                          <tr
-                            key={`${doc.raw}-${idx}`}
-                            className={`${
-                              dragDocKey === docKey ? 'opacity-60' : ''
-                            }`}
-                            draggable={!!docKey}
-                            onDragStart={(e) => {
+                        const currentFolderId = docFolderId(doc);
+                        return {
+                          key: docKey || `row-${idx}`,
+                          icon: (
+                            <span
+                              className="relative inline-flex"
+                              {...peekProps({
+                                id: docKey || `row-${idx}`,
+                                name: doc.name,
+                                url: doc.url,
+                                fileType: doc.mimeType,
+                                // Only as the way in when no signed URL has arrived yet: given
+                                // one, the thumbnail reads the file straight from it.
+                                storagePath: doc.url ? null : doc.path,
+                                bucketName: doc.bucket || SUB_EFFORTS_DOCS_BUCKET,
+                                note: doc.documentTypeName,
+                              })}
+                            >
+                              <DocumentFileGlyph
+                                fileType={doc.mimeType}
+                                fileName={doc.name}
+                                className="h-7 w-7"
+                              />
+                              {doc.clientVisible === false ? <HiddenFromClientMark /> : null}
+                            </span>
+                          ),
+                          name: doc.name,
+                          title: doc.name,
+                          onNameClick: canPreview ? () => openDocPreview(doc) : undefined,
+                          onDoubleClick: canPreview ? () => openDocPreview(doc) : undefined,
+                          dragging: dragDocKey === docKey,
+                          draggable: !!docKey,
+                          dragProps: {
+                            onDragStart: (e) => {
                               if (!docKey) return;
                               e.dataTransfer.setData('application/x-sub-effort-doc', docKey);
                               e.dataTransfer.effectAllowed = 'move';
                               setDragDocKey(docKey);
-                              setMoveMenuDocKey(null);
-                              setMoveMenuPos(null);
-                            }}
-                            onDragEnd={() => {
+                            },
+                            onDragEnd: () => {
                               setDragDocKey(null);
                               setDropTargetFolderId(undefined);
-                            }}
-                          >
-                            <td className="px-3 py-3 align-middle">
-                              <button
-                                type="button"
-                                disabled={!canPreview}
-                                onClick={() => openDocPreview(doc)}
-                                className={`inline-flex min-w-0 max-w-full items-center gap-2.5 text-left ${
-                                  canPreview ? 'hover:opacity-80' : 'cursor-default'
-                                }`}
+                            },
+                          },
+                          cells: {
+                            type: doc.documentTypeName ? (
+                              <span
+                                className="block truncate text-sm text-base-content/80"
+                                title={doc.documentTypeName}
                               >
-                                <span className="relative inline-flex h-12 w-10 shrink-0 overflow-hidden rounded-md bg-transparent">
-                                  {doc.isImage && canPreview ? (
-                                    <img
-                                      src={doc.url}
-                                      alt=""
-                                      className="h-full w-full object-cover"
-                                      loading="lazy"
-                                    />
-                                  ) : (
-                                    <span className="flex h-full w-full items-center justify-center">
-                                      <DocumentFileGlyph
-                                        fileType={doc.mimeType}
-                                        fileName={doc.name}
-                                        className="h-10 w-10 shrink-0"
-                                      />
-                                    </span>
-                                  )}
-                                </span>
-                                <span className="min-w-0 truncate text-sm font-semibold text-base-content">
-                                  {doc.name}
-                                </span>
-                              </button>
-                            </td>
-                            <td className="px-3 py-3 text-center align-middle">
-                              {doc.documentTypeName ? (
-                                <span
-                                  className="inline-block max-w-[14rem] truncate text-sm text-base-content/80"
-                                  title={doc.documentTypeName}
-                                >
-                                  {doc.documentTypeName}
-                                </span>
-                              ) : (
-                                <span className="text-sm text-gray-400">—</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-3 text-center align-middle text-sm">
+                                {doc.documentTypeName}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-gray-400">—</span>
+                            ),
+                            uploader: (
                               <DocumentUploaderCell
                                 name={doc.uploadedByName || fallbackUploaderName}
                                 photoUrl={
@@ -2930,180 +3093,188 @@ export function SubEffortsLogModal({
                                 }
                                 isClientPortalUpload={Boolean(doc.isClientPortalUpload)}
                               />
-                            </td>
-                            <td className="px-3 py-3 text-center align-middle whitespace-nowrap text-sm tabular-nums text-gray-500">
-                              {uploadedAt || '—'}
-                            </td>
-                            <td className="px-2 py-3 text-center align-middle">
-                              <div className="inline-flex justify-end" data-sub-effort-menu>
-                                <button
-                                  type="button"
-                                  data-sub-effort-doc-trigger={docKey || undefined}
-                                  className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors ${
-                                    moveOpen
-                                      ? 'bg-gray-900 text-white shadow-sm'
-                                      : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'
-                                  }`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setFolderMenuId(null);
-                                    if (moveOpen) {
-                                      setMoveMenuDocKey(null);
-                                      setMoveMenuPos(null);
-                                      return;
-                                    }
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    const gap = 4;
-                                    const margin = 8;
-                                    const estimated = 320;
-                                    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
-                                    const spaceAbove = rect.top - gap - margin;
-                                    const openUp =
-                                      spaceBelow < Math.min(estimated, 240) && spaceAbove > spaceBelow;
-                                    const available = Math.max(140, openUp ? spaceAbove : spaceBelow);
-                                    const maxHeight = Math.min(320, available);
-                                    const right = Math.max(8, window.innerWidth - rect.right);
-                                    setMoveMenuPos(
-                                      openUp
-                                        ? {
-                                            bottom: Math.max(margin, window.innerHeight - rect.top + gap),
-                                            right,
-                                            maxHeight,
-                                          }
-                                        : {
-                                            top: rect.bottom + gap,
-                                            right,
-                                            maxHeight,
-                                          },
-                                    );
-                                    setMoveMenuDocKey(docKey || `row-${idx}`);
-                                  }}
-                                  aria-label="Document options"
-                                  aria-expanded={moveOpen}
-                                  aria-haspopup="menu"
-                                  title="More options"
-                                >
-                                  <EllipsisVerticalIcon className="h-5 w-5" />
-                                </button>
-                                {moveOpen && moveMenuPos
-                                  ? createPortal(
-                                      <div
-                                        data-sub-effort-doc-menu
-                                        role="menu"
-                                        className="fixed z-[80] w-56 overflow-y-auto overscroll-contain rounded-xl border border-base-200 bg-white py-1 shadow-lg"
-                                        style={{
-                                          top: moveMenuPos.top,
-                                          bottom: moveMenuPos.bottom,
-                                          right: moveMenuPos.right,
-                                          maxHeight: moveMenuPos.maxHeight,
-                                        }}
-                                      >
-                                        {canPreview ? (
-                                          <button
-                                            type="button"
-                                            role="menuitem"
-                                            className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                                            onClick={() => {
-                                              setMoveMenuDocKey(null);
-                                              setMoveMenuPos(null);
-                                              openDocPreview(doc);
-                                            }}
-                                          >
-                                            <EyeIcon className="h-4 w-4 opacity-70" />
-                                            Preview
-                                          </button>
-                                        ) : null}
-                                        <a
-                                          href={href}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          download={doc.name}
-                                          role="menuitem"
-                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                                          onClick={() => {
-                                            setMoveMenuDocKey(null);
-                                            setMoveMenuPos(null);
-                                          }}
-                                        >
-                                          <ArrowDownTrayIcon className="h-4 w-4 opacity-70" />
-                                          Download
-                                        </a>
-                                        <button
-                                          type="button"
-                                          role="menuitem"
-                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                                          onClick={() => {
-                                            setMoveMenuDocKey(null);
-                                            setMoveMenuPos(null);
-                                            startInlineRename(doc);
-                                          }}
-                                        >
-                                          <PencilSquareIcon className="h-4 w-4 opacity-70" />
-                                          Edit file name
-                                        </button>
-                                        <button
-                                          type="button"
-                                          role="menuitem"
-                                          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-red-600 hover:bg-red-50"
-                                          onClick={() => {
-                                            setMoveMenuDocKey(null);
-                                            setMoveMenuPos(null);
-                                            void deleteSubEffortDocument(doc);
-                                          }}
-                                        >
-                                          <TrashIcon className="h-4 w-4" />
-                                          Delete
-                                        </button>
-                                        {canMove ? (
-                                          <>
-                                            <div className="my-1 border-t border-gray-100" />
-                                            <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
-                                              Move to
-                                            </div>
-                                            {activeFolderId ? (
-                                              <button
-                                                type="button"
-                                                role="menuitem"
-                                                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                                                onClick={() => {
-                                                  setMoveMenuDocKey(null);
-                                                  setMoveMenuPos(null);
-                                                  void moveDocToFolder(docKey, null);
-                                                }}
-                                              >
-                                                <DocumentIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                                                Unfiled
-                                              </button>
-                                            ) : null}
-                                            {folders
-                                              .filter((f) => f.id !== (doc.folder_id ?? null))
-                                              .map((f) => (
-                                                <button
-                                                  key={f.id}
-                                                  type="button"
-                                                  role="menuitem"
-                                                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-base-content hover:bg-base-200/70"
-                                                  onClick={() => {
-                                                    setMoveMenuDocKey(null);
-                                                    setMoveMenuPos(null);
-                                                    void moveDocToFolder(docKey, f.id);
-                                                  }}
-                                                >
-                                                  <FolderIcon className="h-4 w-4 shrink-0 text-amber-500" />
-                                                  <span className="min-w-0 truncate">{f.title}</span>
-                                                </button>
-                                              ))}
-                                          </>
-                                        ) : null}
-                                      </div>,
-                                      document.body,
-                                    )
-                                  : null}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      };
+                            ),
+                            date: (
+                              <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+                                {uploadedAt || '—'}
+                              </span>
+                            ),
+                          },
+                          actions: (
+                            <RowKebabMenu
+                              label={`Options for ${doc.name}`}
+                              items={[
+                                ...(canPreview
+                                  ? [
+                                      {
+                                        id: 'preview',
+                                        label: 'Preview',
+                                        icon: EyeIcon,
+                                        onSelect: () => openDocPreview(doc),
+                                      },
+                                    ]
+                                  : []),
+                                {
+                                  id: 'download',
+                                  label: 'Download',
+                                  icon: ArrowDownTrayIcon,
+                                  href,
+                                  downloadAs: doc.name,
+                                },
+                                {
+                                  id: 'rename',
+                                  label: 'Edit file name',
+                                  icon: PencilSquareIcon,
+                                  onSelect: () => startInlineRename(doc),
+                                },
+                                ...(doc.caseDocId
+                                  ? [
+                                      {
+                                        id: 'client-visibility',
+                                        label:
+                                          doc.clientVisible === false
+                                            ? 'Open to the client'
+                                            : 'Close to the client',
+                                        icon:
+                                          doc.clientVisible === false ? EyeIcon : EyeSlashIcon,
+                                        onSelect: () =>
+                                          void setDocClientVisible(
+                                            doc,
+                                            doc.clientVisible === false,
+                                          ),
+                                      },
+                                    ]
+                                  : []),
+                                {
+                                  id: 'delete',
+                                  label: 'Delete',
+                                  icon: TrashIcon,
+                                  danger: true,
+                                  onSelect: () => void deleteSubEffortDocument(doc),
+                                },
+                                // Straight into any folder of the tree, however deep it sits,
+                                // for a file that should not have to be dragged there.
+                                ...(docKey && currentFolderId
+                                  ? [
+                                      {
+                                        id: 'move-root',
+                                        section: 'Move to',
+                                        label: 'Top of the documents',
+                                        icon: DocumentIcon,
+                                        onSelect: () => void moveDocToFolder(docKey, null),
+                                      },
+                                    ]
+                                  : []),
+                                ...(docKey
+                                  ? folderTree.folders
+                                      .filter((f) => f.id !== currentFolderId)
+                                      .map((f) => ({
+                                        id: `move-${f.id}`,
+                                        section: 'Move to',
+                                        label: f.title,
+                                        icon: FolderIcon,
+                                        depth: f.depth,
+                                        onSelect: () => void moveDocToFolder(docKey, f.id),
+                                      }))
+                                  : []),
+                              ]}
+                            />
+                          ),
+                        };
+                      });
+
+                      const folderRows: DriveTableRow[] = folders.map((folder) => {
+                        const filesInside = folderFileCounts.get(folder.id) || 0;
+                        return {
+                          key: `folder-${folder.id}`,
+                          icon: (
+                            <span className="relative inline-flex">
+                              <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+                              {folder.client_visible === false ? <HiddenFromClientMark /> : null}
+                            </span>
+                          ),
+                          name: folder.title,
+                          title: folder.title,
+                          below: (
+                            <span className="text-xs text-base-content/55">
+                              {filesInside === 0
+                                ? 'Empty'
+                                : `${filesInside} file${filesInside === 1 ? '' : 's'}`}
+                            </span>
+                          ),
+                          cells: {
+                            type: <span className="text-sm text-base-content/70">Folder</span>,
+                            uploader: folder.created_by ? (
+                              <span className="block truncate text-sm text-base-content/70">
+                                {folder.created_by}
+                              </span>
+                            ) : null,
+                            date: (
+                              <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+                                {formatDateTime(folder.created_at)}
+                              </span>
+                            ),
+                          },
+                          dropActive: dropTargetFolderId === folder.id,
+                          onClick: () => setActiveFolderId(folder.id),
+                          dragProps: {
+                            onDragOver: (e) => {
+                              if (!dragDocKey) return;
+                              e.preventDefault();
+                              setDropTargetFolderId(folder.id);
+                            },
+                            onDragLeave: () =>
+                              setDropTargetFolderId((prev) =>
+                                prev === folder.id ? undefined : prev,
+                              ),
+                            onDrop: (e) => {
+                              if (!dragDocKey) return;
+                              e.preventDefault();
+                              setDropTargetFolderId(undefined);
+                              void moveDocToFolder(dragDocKey, folder.id);
+                            },
+                          },
+                          actions: (
+                            <RowKebabMenu
+                              label={`Options for ${folder.title}`}
+                              items={[
+                                {
+                                  id: 'open',
+                                  label: 'Open folder',
+                                  icon: FolderOpenIcon,
+                                  onSelect: () => setActiveFolderId(folder.id),
+                                },
+                                {
+                                  id: 'rename',
+                                  label: 'Rename folder',
+                                  icon: PencilSquareIcon,
+                                  onSelect: () => openEditFolderModal(folder),
+                                },
+                                {
+                                  id: 'client-visibility',
+                                  label:
+                                    folder.client_visible === false
+                                      ? 'Open to the client'
+                                      : 'Close to the client',
+                                  icon: folder.client_visible === false ? EyeIcon : EyeSlashIcon,
+                                  onSelect: () =>
+                                    void setFolderClientVisible(
+                                      folder,
+                                      folder.client_visible === false,
+                                    ),
+                                },
+                                {
+                                  id: 'delete',
+                                  label: 'Delete folder',
+                                  icon: TrashIcon,
+                                  danger: true,
+                                  onSelect: () => void deleteFolder(folder),
+                                },
+                              ]}
+                            />
+                          ),
+                        };
+                      });
 
                       const fileDropHandlers = {
                         onDragEnter: (e: React.DragEvent) => {
@@ -3173,227 +3344,35 @@ export function SubEffortsLogModal({
 
                       return (
                         <div className="space-y-3">
-                          {showFolders ? (
-                            <div className="space-y-2">
-                              {foldersLoading ? (
-                                <div className="flex items-center gap-2 py-2 text-xs text-base-content/45">
+                          {/* The drive's list: folders above files, so this step's documents read
+                              the same here, in the case documents drawer and in the drive. */}
+                          <DocumentDriveTable
+                            columns={SUB_EFFORT_TABLE_COLUMNS}
+                            folders={folderRows}
+                            files={docRows}
+                            minWidthClass="min-w-[760px]"
+                            empty={
+                              <p className="px-4 py-6 text-center text-sm text-base-content/45">
+                                {activeFolderId
+                                  ? 'This folder is empty'
+                                  : 'No documents uploaded yet'}
+                              </p>
+                            }
+                            footer={
+                              foldersLoading ? (
+                                <span className="flex items-center gap-2 text-xs text-base-content/45">
                                   <span className="loading loading-spinner loading-xs" />
                                   Loading folders…
-                                </div>
-                              ) : null}
-                              {folders.map((folder) => {
-                                const count = resolvedDocs.filter((d) => d.folder_id === folder.id).length;
-                                const isDropTarget = dropTargetFolderId === folder.id;
-                                const menuOpen = folderMenuId === folder.id;
-                                return (
-                                  <div
-                                    key={folder.id}
-                                    className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 transition ${
-                                      isDropTarget
-                                        ? 'bg-primary/5 ring-1 ring-primary/30'
-                                        : 'bg-gray-50/60 hover:bg-gray-50'
-                                    }`}
-                                    onDragEnter={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      if (dragDocKey || e.dataTransfer.types.includes('application/x-sub-effort-doc')) {
-                                        setDropTargetFolderId(folder.id);
-                                      }
-                                    }}
-                                    onDragOver={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      e.dataTransfer.dropEffect = 'move';
-                                      setDropTargetFolderId(folder.id);
-                                    }}
-                                    onDragLeave={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      setDropTargetFolderId((prev) => (prev === folder.id ? undefined : prev));
-                                    }}
-                                    onDrop={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      setDropTargetFolderId(undefined);
-                                      const key =
-                                        e.dataTransfer.getData('application/x-sub-effort-doc') || dragDocKey;
-                                      if (key) void moveDocToFolder(key, folder.id);
-                                    }}
-                                  >
-                                    <button
-                                      type="button"
-                                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                                      onClick={() => {
-                                        setActiveFolderId(folder.id);
-                                        setFolderMenuId(null);
-                                        setMoveMenuDocKey(null);
-                                      }}
-                                    >
-                                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
-                                        <FolderIcon className="h-7 w-7" />
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="flex items-center gap-2">
-                                          <span className="truncate text-base font-semibold text-base-content/85">
-                                            {folder.title}
-                                          </span>
-                                          {folder.note ? (
-                                            <span
-                                              className="badge badge-ghost badge-sm max-w-[8rem] truncate font-normal"
-                                              title={folder.note}
-                                            >
-                                              {folder.note}
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                        <span className="mt-0.5 block text-sm text-gray-500">
-                                          {folder.created_by ? folder.created_by : 'Unknown'}
-                                          <span className="mx-1.5 text-gray-300">·</span>
-                                          {formatDateTime(folder.created_at)}
-                                        </span>
-                                      </span>
-                                    </button>
-                                    <div className="relative flex shrink-0 items-center gap-2" data-sub-effort-menu>
-                                      <span className="badge badge-sm tabular-nums border-0 bg-gray-600 font-medium text-white">
-                                        {count}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        className={`inline-flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
-                                          menuOpen
-                                            ? 'bg-gray-900 text-white shadow-sm'
-                                            : 'text-gray-500 opacity-80 hover:bg-white hover:text-gray-800 hover:opacity-100 group-hover:opacity-100'
-                                        }`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMoveMenuDocKey(null);
-                                          setFolderMenuId((prev) => (prev === folder.id ? null : folder.id));
-                                        }}
-                                        aria-label="Folder options"
-                                        aria-expanded={menuOpen}
-                                        aria-haspopup="menu"
-                                      >
-                                        <EllipsisVerticalIcon className="h-5 w-5" />
-                                      </button>
-                                      {menuOpen ? (
-                                        <div
-                                          role="menu"
-                                          className="absolute right-0 top-full z-30 mt-2 w-44 overflow-hidden rounded-2xl border border-gray-200/80 bg-white/95 p-1.5 shadow-[0_12px_40px_rgba(15,23,42,0.12)] ring-1 ring-black/5 backdrop-blur-sm"
-                                        >
-                                          <button
-                                            type="button"
-                                            role="menuitem"
-                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
-                                            onClick={() => openEditFolderModal(folder)}
-                                          >
-                                            <PencilSquareIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                                            Edit
-                                          </button>
-                                          <button
-                                            type="button"
-                                            role="menuitem"
-                                            className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
-                                            onClick={() => void deleteFolder(folder)}
-                                          >
-                                            <TrashIcon className="h-4 w-4 shrink-0" />
-                                            Delete
-                                          </button>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-
-                          {activeFolderId ? (
-                            <div
-                              className={`mb-1 rounded-lg border border-dashed px-3 py-2 text-center text-xs transition ${
-                                dropTargetFolderId === null
-                                  ? 'border-primary/50 bg-primary/5 text-primary'
-                                  : 'border-transparent text-base-content/40'
-                              }`}
-                              onDragEnter={(e) => {
-                                e.preventDefault();
-                                if (dragDocKey || e.dataTransfer.types.includes('application/x-sub-effort-doc')) {
-                                  setDropTargetFolderId(null);
-                                }
-                              }}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                setDropTargetFolderId(null);
-                              }}
-                              onDragLeave={() => setDropTargetFolderId(undefined)}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                setDropTargetFolderId(undefined);
-                                const key =
-                                  e.dataTransfer.getData('application/x-sub-effort-doc') || dragDocKey;
-                                if (key) void moveDocToFolder(key, null);
-                              }}
-                            >
-                              {dragDocKey ? 'Drop here to move to Unfiled' : null}
-                            </div>
-                          ) : null}
-
-                          {isEmptyFolder ? (
-                            <div className="py-4 text-center text-sm text-base-content/45">
-                              This folder is empty
-                            </div>
-                          ) : hasVisibleDocs ? (
-                            <div className="min-w-0 overflow-x-auto">
-                              <div className="min-w-[780px]">
-                                <table className="mb-2 w-full table-fixed border-collapse">
-                                  <colgroup>
-                                    <col />
-                                    <col className="w-[20%]" />
-                                    <col className="w-[22%]" />
-                                    <col className="w-36" />
-                                    <col className="w-12" />
-                                  </colgroup>
-                                  <thead>
-                                    <tr className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                      <th className="bg-transparent px-3 py-2 text-left font-semibold">
-                                        Document name
-                                      </th>
-                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                        Document type
-                                      </th>
-                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                        Uploaded by
-                                      </th>
-                                      <th className="bg-transparent px-3 py-2 text-center font-semibold whitespace-nowrap">
-                                        Uploaded at
-                                      </th>
-                                      <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                        <span className="sr-only">Actions</span>
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                </table>
-                                <div className="overflow-x-auto rounded-2xl bg-white">
-                                  <table className="w-full table-fixed border-collapse">
-                                    <colgroup>
-                                      <col />
-                                      <col className="w-[20%]" />
-                                      <col className="w-[22%]" />
-                                      <col className="w-36" />
-                                      <col className="w-12" />
-                                    </colgroup>
-                                    <tbody>
-                                      {visibleDocs.map((doc, idx) => renderDocRow(doc, idx))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-                            </div>
-                          ) : showFolders && hasFolders ? (
-                            <div className="py-1 text-center text-xs text-base-content/40">
-                              Unfiled documents will appear here
-                            </div>
-                          ) : null}
+                                </span>
+                              ) : hasFolders && !hasVisibleDocs ? (
+                                <span className="block text-center text-xs text-base-content/40">
+                                  {activeFolderId
+                                    ? 'Files in this folder itself will appear here'
+                                    : 'Files outside these folders will appear here'}
+                                </span>
+                              ) : null
+                            }
+                          />
 
                           <div
                             className={`flex min-h-[100px] flex-col items-center justify-center rounded-xl border border-dashed px-4 py-8 text-center transition ${
@@ -3497,77 +3476,13 @@ export function SubEffortsLogModal({
         </div>
       ) : null}
 
-      {folderModalOpen ? (
-        <div className="modal modal-open z-[310]">
-          <div className="modal-box max-w-md">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-sm font-semibold">
-                {folderModalMode === 'create' ? 'New folder' : 'Edit folder'}
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => (folderSaving ? null : setFolderModalOpen(false))}
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="mt-4 space-y-3">
-              <label className="form-control w-full">
-                <span className="label-text text-xs font-medium">Title</span>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={folderTitleDraft}
-                  onChange={(e) => setFolderTitleDraft(e.target.value)}
-                  placeholder="Folder name"
-                  autoFocus
-                  disabled={folderSaving}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void saveFolderModal();
-                    }
-                  }}
-                />
-              </label>
-              <label className="form-control w-full">
-                <span className="label-text text-xs font-medium">Note (optional)</span>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={folderNoteDraft}
-                  onChange={(e) => setFolderNoteDraft(e.target.value)}
-                  placeholder="Tip text on the folder badge"
-                  disabled={folderSaving}
-                />
-              </label>
-            </div>
-            <div className="modal-action">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setFolderModalOpen(false)}
-                disabled={folderSaving}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => void saveFolderModal()}
-                disabled={folderSaving || !folderTitleDraft.trim()}
-              >
-                {folderSaving ? 'Saving…' : folderModalMode === 'create' ? 'Create' : 'Save'}
-              </button>
-            </div>
-          </div>
-          <div
-            className="modal-backdrop"
-            onClick={() => (folderSaving ? null : setFolderModalOpen(false))}
-          />
-        </div>
-      ) : null}
+      {/* The same dialog the case documents drawer names a folder with, since it is one tree. */}
+      <DocumentFolderDialog
+        state={folderDialog}
+        tree={folderTree}
+        onClose={() => setFolderDialog(null)}
+        onSaved={() => onRefresh?.()}
+      />
 
       {renamingDocKey ? (
         <div className="modal modal-open z-[310]">
@@ -3658,68 +3573,63 @@ export function SubEffortsLogModal({
               ) : caseDocs.length === 0 ? (
                 <div className="text-sm opacity-70">No case documents found.</div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {caseDocs.map((d) => {
-                    const checked = selectedCaseDocIds.has(d.id);
-                    const mime = d.mime_type || inferMimeFromName(d.file_name);
-                    const isImg = isImageMime(mime);
-                    return (
+                <div className="space-y-2">
+                  {/* The case's own folders, so a whole folder can be attached rather than its
+                      files one at a time. The picker keeps its own place in the tree. */}
+                  {attachTrail.length > 0 || attachFolderRows.length > 0 ? (
+                    <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm" aria-label="Folder path">
                       <button
-                        key={d.id}
                         type="button"
-                        className={`text-left rounded-xl border p-3 transition ${
-                          checked ? 'border-primary bg-primary/5' : 'border-base-200 hover:bg-base-200/40'
+                        className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium transition-colors ${
+                          attachFolderId ? 'text-base-content/70 hover:bg-base-200/70' : 'text-base-content'
                         }`}
-                        onClick={() => {
-                          setSelectedCaseDocIds((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(d.id)) next.delete(d.id);
-                            else next.add(d.id);
-                            return next;
-                          });
-                        }}
+                        onClick={() => setAttachFolderId(null)}
                       >
-                        <div className="flex items-start gap-3">
-                          <div
-                            className="h-14 w-14 shrink-0 rounded-lg bg-base-200 overflow-hidden flex items-center justify-center cursor-pointer hover:ring-2 hover:ring-primary/20"
-                            title="Preview file"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              openCaseDocPreview(d);
-                            }}
-                          >
-                            {isImg && d.signedUrl ? (
-                              <img src={d.signedUrl} alt="" className="h-full w-full object-cover" />
-                            ) : (
-                              <span className="flex h-full w-full items-center justify-center">
-                                <DocumentFileGlyph
-                                  fileType={mime}
-                                  fileName={d.file_name}
-                                  className="h-8 w-8 shrink-0"
-                                />
-                              </span>
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div
-                              className="text-sm font-semibold truncate hover:underline cursor-pointer"
-                              title="Preview file"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                openCaseDocPreview(d);
-                              }}
-                            >
-                              {d.file_name}
-                            </div>
-                            <div className="text-xs opacity-70 tabular-nums">{formatDateTime(d.created_at)}</div>
-                          </div>
-                          <input type="checkbox" className="checkbox checkbox-sm mt-1" checked={checked} readOnly />
-                        </div>
+                        <FolderIcon className="h-4 w-4 shrink-0" aria-hidden />
+                        All case documents
                       </button>
-                    );
-                  })}
+                      {attachTrail.map((folder) => (
+                        <span key={folder.id} className="inline-flex min-w-0 items-center gap-1">
+                          <ChevronRightIcon className="h-3.5 w-3.5 shrink-0 text-base-content/40" aria-hidden />
+                          <button
+                            type="button"
+                            className="max-w-[10rem] truncate rounded-md px-2 py-1 font-medium text-base-content/70 transition-colors hover:bg-base-200/70"
+                            onClick={() => setAttachFolderId(folder.id)}
+                          >
+                            {folder.title}
+                          </button>
+                        </span>
+                      ))}
+                    </nav>
+                  ) : null}
+                  <div className="max-h-[60vh] overflow-y-auto">
+                    <DocumentDriveTable
+                      columns={ATTACH_TABLE_COLUMNS}
+                      folders={attachFolderRows}
+                      files={attachFileRows}
+                      minWidthClass="min-w-[560px]"
+                      empty={
+                        <p className="px-4 py-8 text-center text-sm text-base-content/45">
+                          {attachFolderId
+                            ? 'This folder is empty'
+                            : 'No case documents found.'}
+                        </p>
+                      }
+                    />
+                  </div>
+                  {selectedCaseDocIds.size > 0 ? (
+                    <p className="px-1 text-xs text-base-content/55">
+                      {selectedCaseDocIds.size} file{selectedCaseDocIds.size === 1 ? '' : 's'} selected
+                      {' · '}
+                      <button
+                        type="button"
+                        className="link link-hover font-medium"
+                        onClick={() => setSelectedCaseDocIds(new Set())}
+                      >
+                        clear
+                      </button>
+                    </p>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -3746,6 +3656,8 @@ export function SubEffortsLogModal({
           <div className="modal-backdrop" onClick={() => (isAttaching ? null : setIsAttachModalOpen(false))} />
         </div>
       ) : null}
+
+      {peekNode}
 
       <DocumentPreviewModal
         isOpen={previewOpen}

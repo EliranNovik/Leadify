@@ -4,10 +4,15 @@ import {
   ChevronDownIcon,
   DocumentIcon,
   ExclamationTriangleIcon,
+  EyeIcon,
+  EyeSlashIcon,
+  FolderOpenIcon,
   PaperClipIcon,
+  PencilSquareIcon,
   TrashIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { FolderIcon as FolderSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
 import MobileBottomSheet from './MobileBottomSheet';
 import DocumentViewerModal, { type DocumentViewerItem } from './DocumentViewerModal';
@@ -16,9 +21,31 @@ import {
   CASE_DOCUMENT_CATEGORY_META,
   deleteCaseCategoryDocument,
   fetchCaseCategoryDocuments,
+  fetchCaseCategoryFolderScope,
   type CaseCategoryDocument,
   type CaseDocumentCategoryKey,
 } from '../lib/sequenceOfEventsDocuments';
+import { folderSubtreeIds, type DocumentFolder, type DocumentFolderScope } from '../lib/documentFolders';
+import {
+  countDocumentsByFolder,
+  DocumentFolderBreadcrumb,
+  DocumentFolderDialog,
+  useDocumentFolderTree,
+  type FolderDialogState,
+  type FolderDropTarget,
+} from './documentFolderBrowser';
+import {
+  DocumentDriveTable,
+  HiddenFromClientMark,
+  RowKebabMenu,
+  type DriveTableColumn,
+  type DriveTableRow,
+} from './documentDriveTable';
+import { useFileHoverPeek } from './documentHoverPeek';
+import {
+  setCaseDocumentsClientVisible,
+  setDocumentFolderClientVisible,
+} from '../lib/clientVisibleDocuments';
 import {
   fetchLeadCaseDocumentTypes,
   updateCaseDocumentType,
@@ -44,7 +71,6 @@ import {
   DocRowActionsMenu,
   EMPTY_CASE_DOCS_FILTERS,
   SubEffortAttachBadge,
-  TableSelectAllHeader,
   filterCaseCategoryDocuments,
   useEdgeAwareMenuAlign,
   type CaseDocsFilterState,
@@ -61,18 +87,6 @@ function formatDocDate(dateString: string): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${dd}.${mm}.${yy}, ${hh}:${min}`;
-}
-
-function isImageDocument(fileType: string | null | undefined, fileName: string): boolean {
-  const ft = String(fileType ?? '').toLowerCase();
-  if (ft.includes('image/')) return true;
-  return /\.(jpe?g|png|gif|webp|bmp|svg|heic|avif)$/i.test(fileName);
-}
-
-function isPdfDocument(fileType: string | null | undefined, fileName: string): boolean {
-  const ft = String(fileType ?? '').toLowerCase();
-  if (ft.includes('pdf')) return true;
-  return /\.pdf$/i.test(fileName);
 }
 
 function attachmentSortRank(
@@ -124,47 +138,13 @@ function attachmentGroupMeta(
   };
 }
 
-function DocPreviewThumb({
-  doc,
-}: {
-  doc: Pick<CaseCategoryDocument, 'url' | 'fileType' | 'name'>;
-}) {
-  const showImage = isImageDocument(doc.fileType, doc.name) && /^https?:\/\//i.test(doc.url);
-  const showPdf = isPdfDocument(doc.fileType, doc.name);
-  return (
-    <span className="relative inline-flex h-[4.5rem] w-14 shrink-0 overflow-hidden rounded-md bg-transparent">
-      {showImage ? (
-        <img
-          src={doc.url}
-          alt=""
-          className="h-full w-full object-cover"
-          loading="lazy"
-          draggable={false}
-        />
-      ) : showPdf ? (
-        <span className="flex h-full w-full flex-col justify-between rounded-md bg-white px-1.5 pb-1.5 pt-2 shadow-none">
-          <span>
-            <span className="mb-1.5 block h-0.5 w-2/3 rounded-full bg-red-500/80" />
-            <span className="space-y-1">
-              <span className="block h-0.5 w-full rounded-full bg-slate-200" />
-              <span className="block h-0.5 w-[85%] rounded-full bg-slate-200" />
-              <span className="block h-0.5 w-[70%] rounded-full bg-slate-200" />
-            </span>
-          </span>
-          <span className="text-[8px] font-bold uppercase tracking-wide text-red-600">PDF</span>
-        </span>
-      ) : (
-        <span className="flex h-full w-full items-center justify-center">
-          <DocumentFileGlyph
-            fileType={doc.fileType}
-            fileName={doc.name}
-            className="h-14 w-14 shrink-0"
-          />
-        </span>
-      )}
-    </span>
-  );
-}
+/** The columns of the drive's list, as this category can fill them. */
+const CATEGORY_TABLE_COLUMNS: DriveTableColumn[] = [
+  { id: 'type', label: 'Document type', className: 'hidden w-[11rem] md:table-cell' },
+  { id: 'attached', label: 'Attached to', className: 'hidden w-[13rem] lg:table-cell' },
+  { id: 'uploader', label: 'Uploaded by', className: 'hidden w-[11rem] lg:table-cell' },
+  { id: 'date', label: 'Uploaded at', className: 'w-[9.5rem]' },
+];
 
 export function SequenceOfEventsDocumentsModal({
   open,
@@ -217,6 +197,38 @@ export function SequenceOfEventsDocumentsModal({
   const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
   const [documentTypes, setDocumentTypes] = useState<LeadCaseDocumentType[]>([]);
   const [savingTypeDocId, setSavingTypeDocId] = useState<string | null>(null);
+
+  /**
+   * The folders this category's files are filed in: the drive's and the case documents drawer's
+   * own tree, resolved from the lead and the category rather than kept here, so all three show the
+   * same folders.
+   */
+  const [folderScope, setFolderScope] = useState<DocumentFolderScope | null>(null);
+  const folderTree = useDocumentFolderTree(folderScope, { enabled: open });
+  const [folderDialog, setFolderDialog] = useState<FolderDialogState>(null);
+  const [draggingDocId, setDraggingDocId] = useState<string | null>(null);
+  const [folderDropTarget, setFolderDropTarget] = useState<FolderDropTarget>(null);
+  /** Resting on a file's icon shows the file itself, as the drive does. */
+  const { peekProps, peekNode } = useFileHoverPeek();
+
+  useEffect(() => {
+    const lead = leadNumber?.trim();
+    if (!open || !lead) {
+      setFolderScope(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchCaseCategoryFolderScope(category, lead)
+      .then((scope) => {
+        if (!cancelled) setFolderScope(scope);
+      })
+      .catch(() => {
+        if (!cancelled) setFolderScope(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, leadNumber, category]);
 
   const attachOptions = useMemo(() => listSubEffortAttachOptions(subEffortRows), [subEffortRows]);
 
@@ -354,10 +366,18 @@ export function SequenceOfEventsDocumentsModal({
   }, [attachMenuOpen, removeMenuOpen]);
 
   const sortedDocs = useMemo(() => {
-    const filtered = filterCaseCategoryDocuments(docs, filters, {
+    const matching = filterCaseCategoryDocuments(docs, filters, {
       attachmentsByPath,
       applySubEffortFilter: true,
     });
+    /*
+     * A file whose folder belongs to another tab or area sits at the top rather than nowhere, and
+     * a file with no case document row of its own — an older sub-effort upload, an email
+     * attachment — has no folder to be in, so it sits there too.
+     */
+    const filtered = folderTree.ready
+      ? matching.filter((doc) => folderTree.folderIdOf(doc.folderId) === folderTree.activeFolderId)
+      : matching;
     return [...filtered].sort((a, b) => {
       const aPath = normalizeStorageKey(a.storagePath);
       const bPath = normalizeStorageKey(b.storagePath);
@@ -373,7 +393,132 @@ export function SequenceOfEventsDocumentsModal({
       if (byDate !== 0) return byDate;
       return a.name.localeCompare(b.name);
     });
-  }, [docs, filters, attachmentsByPath, attachOptions]);
+  }, [
+    docs,
+    filters,
+    attachmentsByPath,
+    attachOptions,
+    folderTree.ready,
+    folderTree.folderIdOf,
+    folderTree.activeFolderId,
+  ]);
+
+  /** Counted over everything in the category, so a folder row counts what is inside it. */
+  const folderFileCounts = useMemo(
+    () =>
+      countDocumentsByFolder(
+        folderTree.folders,
+        docs.map((doc) => folderTree.folderIdOf(doc.folderId)),
+      ),
+    [folderTree.folders, folderTree.folderIdOf, docs],
+  );
+
+  /**
+   * Files a document, keeping the list in step without a reload.
+   *
+   * Only a file that is a case document in its own right can be filed: the folder is a column on
+   * that row. Attachments living on a sub-effort or an email have nowhere to record one.
+   */
+  const moveDocumentToFolder = useCallback(
+    async (doc: CaseCategoryDocument, folderId: string | null) => {
+      if (doc.source !== 'case') {
+        toast.error('Only case documents can be moved into folders.');
+        return;
+      }
+      if ((doc.folderId ?? null) === folderId) return;
+      const moved = await folderTree.moveDocuments([doc.id], folderId);
+      if (!moved) return;
+      setDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, folderId } : d)));
+      const target = folderId ? folderTree.folders.find((f) => f.id === folderId) : null;
+      toast.success(target ? `Moved into ${target.title}` : 'Moved out of the folder');
+    },
+    [folderTree],
+  );
+
+  const dropDocumentOn = useCallback(
+    (folderId: string | null) => {
+      const doc = docs.find((d) => d.id === draggingDocId);
+      setDraggingDocId(null);
+      if (doc) void moveDocumentToFolder(doc, folderId);
+    },
+    [docs, draggingDocId, moveDocumentToFolder],
+  );
+
+  /**
+   * The files a folder would attach: everything in it and in the folders under it, which is what
+   * taking a folder whole means. A file with no storage path of its own cannot be attached.
+   */
+  const attachableIdsInFolder = useCallback(
+    (folder: DocumentFolder): string[] => {
+      const inside = new Set(folderSubtreeIds(folderTree.folders, folder.id));
+      return docs
+        .filter((doc) => doc.storagePath?.trim() && doc.folderId && inside.has(doc.folderId))
+        .map((doc) => doc.id);
+    },
+    [docs, folderTree.folders],
+  );
+
+  /**
+   * What the client sees of this file in the portal. The flag is a column on the case document row,
+   * so an email attachment or an older sub-effort upload has nothing to flip.
+   */
+  const setDocClientVisible = useCallback(
+    async (doc: CaseCategoryDocument, visible: boolean) => {
+      if (doc.source !== 'case') {
+        toast.error('Only case documents can be opened or closed to the client.');
+        return;
+      }
+      try {
+        await setCaseDocumentsClientVisible([doc.id], visible);
+        setDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, clientVisible: visible } : d)));
+        toast.success(
+          visible ? `“${doc.name}” is open to the client` : `“${doc.name}” is closed to the client`,
+        );
+        onAttached?.();
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Could not change what the client sees');
+      }
+    },
+    [onAttached],
+  );
+
+  /** A folder closed to the client takes everything filed under it, however deep, with it. */
+  const setFolderClientVisible = useCallback(
+    async (folder: DocumentFolder, visible: boolean) => {
+      try {
+        await setDocumentFolderClientVisible(folder.id, visible);
+        await folderTree.reload();
+        toast.success(
+          visible
+            ? `“${folder.title}” is open to the client`
+            : `“${folder.title}” and everything in it are closed to the client`,
+        );
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Could not change what the client sees');
+      }
+    },
+    [folderTree],
+  );
+
+  const toggleFolderPick = useCallback(
+    (folder: DocumentFolder) => {
+      const ids = attachableIdsInFolder(folder);
+      if (ids.length === 0) {
+        toast.error(`"${folder.title}" has no files to attach.`);
+        return;
+      }
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        const wholeFolderPicked = ids.every((id) => prev.has(id));
+        for (const id of ids) {
+          if (wholeFolderPicked) next.delete(id);
+          else next.add(id);
+        }
+        return next;
+      });
+    },
+    [attachableIdsInFolder],
+  );
 
   const displayedDocGroups = useMemo(() => {
     type Group = {
@@ -412,9 +557,13 @@ export function SequenceOfEventsDocumentsModal({
     return map;
   }, [sortedDocs]);
 
+  /*
+   * Everything picked, not only what is on screen: a folder is picked whole, and the files that
+   * came with it are a level down from the list the pick was made in.
+   */
   const selectedDocs = useMemo(
-    () => sortedDocs.filter((d) => selectedIds.has(d.id)),
-    [sortedDocs, selectedIds],
+    () => docs.filter((d) => selectedIds.has(d.id)),
+    [docs, selectedIds],
   );
 
   const removeOptions = useMemo(() => {
@@ -788,6 +937,267 @@ export function SequenceOfEventsDocumentsModal({
   };
 
   const busy = isAttaching || isRemoving;
+
+  /** A folder as the drive lists it: opened by clicking, taken whole by its checkbox. */
+  const folderRows: DriveTableRow[] = folderTree.ready
+    ? folderTree.visibleFolders.map((folder) => {
+        const filesInside = folderFileCounts.get(folder.id) || 0;
+        const attachable = attachableIdsInFolder(folder);
+        const picked = attachable.filter((id) => selectedIds.has(id)).length;
+        return {
+          key: `folder-${folder.id}`,
+          icon: (
+            <span className="relative inline-flex">
+              <FolderSolidIcon className="h-7 w-7 text-slate-500" />
+              {folder.client_visible === false ? <HiddenFromClientMark /> : null}
+            </span>
+          ),
+          name: folder.title,
+          title: folder.title,
+          below: (
+            <span className="text-xs text-base-content/55">
+              {filesInside === 0 ? 'Empty' : `${filesInside} file${filesInside === 1 ? '' : 's'}`}
+              {picked > 0 ? ` · ${picked} selected` : ''}
+            </span>
+          ),
+          cells: {
+            type: <span className="text-sm text-base-content/70">Folder</span>,
+            uploader: folder.created_by ? (
+              <span className="block truncate text-sm text-base-content/70">{folder.created_by}</span>
+            ) : null,
+            date: (
+              <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+                {formatDocDate(folder.created_at)}
+              </span>
+            ),
+          },
+          pick:
+            attachable.length > 0
+              ? {
+                  checked: picked === attachable.length,
+                  indeterminate: picked > 0,
+                  disabled: busy,
+                  label: `Select the ${attachable.length} file${
+                    attachable.length === 1 ? '' : 's'
+                  } in ${folder.title}`,
+                  onChange: () => toggleFolderPick(folder),
+                }
+              : undefined,
+          dropActive: folderDropTarget === folder.id,
+          onClick: () => folderTree.setActiveFolderId(folder.id),
+          actions: (
+            <RowKebabMenu
+              label={`Options for ${folder.title}`}
+              items={[
+                {
+                  id: 'open',
+                  label: 'Open folder',
+                  icon: FolderOpenIcon,
+                  onSelect: () => folderTree.setActiveFolderId(folder.id),
+                },
+                {
+                  id: 'rename',
+                  label: 'Rename folder',
+                  icon: PencilSquareIcon,
+                  onSelect: () => setFolderDialog({ mode: 'rename', folder }),
+                },
+                {
+                  id: 'client-visibility',
+                  label:
+                    folder.client_visible === false
+                      ? 'Open to the client'
+                      : 'Close to the client',
+                  icon: folder.client_visible === false ? EyeIcon : EyeSlashIcon,
+                  onSelect: () =>
+                    void setFolderClientVisible(folder, folder.client_visible === false),
+                },
+                {
+                  id: 'delete',
+                  label: 'Delete folder',
+                  icon: TrashIcon,
+                  danger: true,
+                  onSelect: () => void folderTree.deleteFolder(folder, filesInside),
+                },
+              ]}
+            />
+          ),
+          dragProps: {
+            onDragOver: (event) => {
+              if (!draggingDocId) return;
+              event.preventDefault();
+              setFolderDropTarget(folder.id);
+            },
+            onDragLeave: () =>
+              setFolderDropTarget((prev) => (prev === folder.id ? null : prev)),
+            onDrop: (event) => {
+              if (!draggingDocId) return;
+              event.preventDefault();
+              setFolderDropTarget(null);
+              dropDocumentOn(folder.id);
+            },
+          },
+        };
+      })
+    : [];
+
+  const fileRow = (doc: CaseCategoryDocument): DriveTableRow => {
+    const pathKey = normalizeStorageKey(doc.storagePath);
+    const attachedTo = pathKey
+      ? orderedAttachments(attachmentsByPath.get(pathKey) ?? [], attachOptions)
+      : [];
+    const canAttachDoc = Boolean(doc.storagePath?.trim());
+    const checked = selectedIds.has(doc.id);
+    const isRenaming = renamingDocId === doc.id;
+    const viewerIdx = viewerIndexByDocId.get(doc.id) ?? 0;
+    return {
+      key: doc.id,
+      icon: (
+        <span
+          className="relative inline-flex"
+          {...peekProps({
+            id: doc.id,
+            name: doc.name,
+            url: doc.url,
+            fileType: doc.fileType,
+            storagePath: doc.url ? null : doc.storagePath,
+            bucketName: doc.storageBucket ?? null,
+            note: doc.documentTypeName,
+          })}
+        >
+          <DocumentFileGlyph fileType={doc.fileType} fileName={doc.name} className="h-7 w-7" />
+          {doc.clientVisible === false ? <HiddenFromClientMark /> : null}
+        </span>
+      ),
+      title: doc.name,
+      name: isRenaming ? (
+        <div className="flex min-w-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+          <input
+            type="text"
+            className="input input-bordered input-sm min-w-0 flex-1"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void saveInlineRename();
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelInlineRename();
+              }
+            }}
+            autoFocus
+            disabled={renameSaving}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-sm"
+            onClick={() => void saveInlineRename()}
+            disabled={renameSaving || !renameValue.trim()}
+            aria-label="Save name"
+          >
+            {renameSaving ? (
+              <span className="loading loading-spinner loading-xs" />
+            ) : (
+              <CheckIcon className="h-4 w-4 text-emerald-600" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-sm"
+            onClick={cancelInlineRename}
+            disabled={renameSaving}
+            aria-label="Cancel rename"
+          >
+            <XMarkIcon className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        doc.name
+      ),
+      onNameClick: isRenaming ? undefined : () => setViewerIndex(viewerIdx),
+      selected: checked,
+      dragging: draggingDocId === doc.id,
+      draggable: folderTree.ready && doc.source === 'case' && !isRenaming,
+      dragProps: {
+        onDragStart: () => setDraggingDocId(doc.id),
+        onDragEnd: () => {
+          setDraggingDocId(null);
+          setFolderDropTarget(null);
+        },
+      },
+      onClick: canAttachDoc && !isRenaming ? () => toggleSelected(doc.id) : undefined,
+      onDoubleClick: isRenaming ? undefined : () => setViewerIndex(viewerIdx),
+      pick: {
+        checked,
+        disabled: !canAttachDoc || busy,
+        label: `Select ${doc.name}`,
+        onChange: () => {
+          if (canAttachDoc) toggleSelected(doc.id);
+        },
+      },
+      cells: {
+        type: doc.documentTypeName ? (
+          <span className="block truncate text-sm text-base-content/80" title={doc.documentTypeName}>
+            {doc.documentTypeName}
+          </span>
+        ) : (
+          <span className="text-sm text-gray-400">—</span>
+        ),
+        attached:
+          attachedTo.length > 0 ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {attachedTo.map((a) => (
+                <SubEffortAttachBadge
+                  key={a.id}
+                  name={a.name}
+                  highlight={String(a.id) === String(targetSubEffortId ?? '')}
+                />
+              ))}
+            </div>
+          ) : (
+            <span className="text-sm text-gray-400">—</span>
+          ),
+        uploader: (
+          <DocumentUploaderCell
+            name={doc.uploadedByName}
+            photoUrl={doc.uploadedByPhotoUrl}
+            isClientPortalUpload={doc.isClientPortalUpload}
+          />
+        ),
+        date: (
+          <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
+            {formatDocDate(doc.lastModified)}
+          </span>
+        ),
+      },
+      actions: (
+        <DocRowActionsMenu
+          disabled={busy || isRenaming}
+          deleting={deletingDocId === doc.id}
+          savingDocumentType={savingTypeDocId === doc.id}
+          canRename={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
+          canDelete={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
+          documentTypes={documentTypes}
+          currentDocumentTypeId={doc.documentTypeId}
+          onEditFileName={() => startInlineRename(doc)}
+          onDelete={() => void deleteDocument(doc)}
+          clientVisible={doc.clientVisible}
+          onToggleClientVisible={
+            doc.source === 'case'
+              ? (next) => void setDocClientVisible(doc, next)
+              : undefined
+          }
+          onSelectDocumentType={
+            doc.source === 'email' || isLeadEmailAttachmentId(doc.id)
+              ? undefined
+              : (type) => void assignDocumentType(doc, type)
+          }
+        />
+      ),
+    };
+  };
+
   const canOpenAttachMenu = selectedIds.size > 0 && !busy && attachOptions.length > 0;
   const canOpenRemoveMenu = selectedIds.size > 0 && !busy && removeOptions.length > 0;
   const attachMenuAlign = useEdgeAwareMenuAlign(attachMenuOpen, attachMenuRef, SUB_EFFORT_MENU_WIDTH);
@@ -849,7 +1259,9 @@ export function SequenceOfEventsDocumentsModal({
             showSubEffortFilter
             showDocumentTypeFilter
             trailingActions={
-              sortedDocs.length > 0 ? (
+              /* Offered while there is anything in the category, not only while files are listed:
+                 a folder picked whole is a selection made where no file is on screen. */
+              docs.length > 0 ? (
                 <>
                   <div className="relative" ref={attachMenuRef}>
                     <button
@@ -965,6 +1377,21 @@ export function SequenceOfEventsDocumentsModal({
           />
 
           <div className="min-h-0 flex-1 overflow-auto px-4 pb-6 md:px-6">
+            {/* The folders of the documents drive and the case documents drawer, which are this
+                category's own: a file dragged onto one is filed there for all three, and a folder
+                taken whole attaches the files inside it. */}
+            {!loading && !error && folderTree.ready ? (
+              <div className="pb-3 pt-1">
+                <DocumentFolderBreadcrumb
+                  tree={folderTree}
+                  onCreateFolder={() => setFolderDialog({ mode: 'create', folder: null })}
+                  dropTarget={folderDropTarget}
+                  onDropTargetChange={setFolderDropTarget}
+                  onDropToRoot={() => dropDocumentOn(null)}
+                  dragging={Boolean(draggingDocId)}
+                />
+              </div>
+            ) : null}
             {loading ? (
               <div className="flex items-center justify-center py-16">
                 <span className="loading loading-spinner loading-md text-base-content/40" />
@@ -974,263 +1401,100 @@ export function SequenceOfEventsDocumentsModal({
                 <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0" />
                 <span>{error}</span>
               </div>
-            ) : sortedDocs.length === 0 ? (
+            ) : folderRows.length === 0 && sortedDocs.length === 0 ? (
               <div className="mx-auto mt-16 max-w-md rounded-2xl border border-dashed border-gray-200 bg-white/70 px-6 py-10 text-center">
                 <DocumentIcon className="mx-auto mb-3 h-10 w-10 text-base-content/30" />
                 <p className="text-sm font-medium text-base-content/70">
-                  {docs.length ? 'No documents match your filters' : emptyLabel}
+                  {folderTree.activeFolderId
+                    ? 'This folder is empty'
+                    : docs.length
+                      ? 'No documents match your filters'
+                      : emptyLabel}
                 </p>
               </div>
             ) : (
               <div className="space-y-6">
-                {displayedDocGroups.map((group) => (
-                  <section key={group.key} className="space-y-2.5">
+                {/* Folders lead, as they do in the drive: what is inside them is a level down, so
+                    a flat list of files above them would hide most of the category. */}
+                {folderRows.length > 0 ? (
+                  <section className="space-y-2.5">
                     <div className="flex items-center gap-2.5 px-0.5">
-                      <h3
-                        className={`min-w-0 truncate text-base font-semibold tracking-tight sm:text-lg ${
-                          group.key === UNATTACHED_GROUP_KEY
-                            ? 'text-base-content/55'
-                            : 'text-base-content/90'
-                        }`}
-                        title={group.title}
-                      >
-                        {group.title}
+                      <h3 className="min-w-0 truncate text-base font-semibold tracking-tight text-base-content/90 sm:text-lg">
+                        Folders
                       </h3>
                       <span className="badge badge-md h-7 min-h-7 shrink-0 border-0 bg-gray-200 px-2.5 text-sm font-semibold tabular-nums text-gray-700">
-                        {group.docs.length}
+                        {folderRows.length}
                       </span>
                     </div>
-
-                    <div className="min-w-0 overflow-x-auto">
-                      <div className="min-w-[1080px]">
-                        <table className="mb-2 w-full table-fixed border-collapse">
-                          <colgroup>
-                            <col className="w-12" />
-                            <col className="w-[24%]" />
-                            <col className="w-[14%]" />
-                            <col className="w-[24%]" />
-                            <col />
-                            <col className="w-36" />
-                            <col className="w-12" />
-                          </colgroup>
-                          <thead>
-                            <tr className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold align-middle">
-                                {(() => {
-                                  const attachableInGroup = group.docs.filter((d) =>
-                                    Boolean(d.storagePath?.trim()),
-                                  );
-                                  const selectedInGroup = attachableInGroup.filter((d) =>
-                                    selectedIds.has(d.id),
-                                  );
-                                  const allSelected =
-                                    attachableInGroup.length > 0 &&
-                                    selectedInGroup.length === attachableInGroup.length;
-                                  const someSelected =
-                                    selectedInGroup.length > 0 && !allSelected;
-                                  return (
-                                    <TableSelectAllHeader
-                                      checked={allSelected}
-                                      indeterminate={someSelected}
-                                      disabled={attachableInGroup.length === 0 || busy}
-                                      onChange={(next) => setGroupSelection(group.docs, next)}
-                                    />
-                                  );
-                                })()}
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-left font-semibold">
-                                Document name
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                Document type
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                Attached to
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                Uploaded by
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold whitespace-nowrap">
-                                Uploaded at
-                              </th>
-                              <th className="bg-transparent px-3 py-2 text-center font-semibold">
-                                <span className="sr-only">Actions</span>
-                              </th>
-                            </tr>
-                          </thead>
-                        </table>
-                        <div className="overflow-x-auto rounded-2xl bg-white">
-                          <table className="w-full table-fixed border-collapse">
-                            <colgroup>
-                              <col className="w-12" />
-                              <col className="w-[24%]" />
-                              <col className="w-[14%]" />
-                              <col className="w-[24%]" />
-                              <col />
-                              <col className="w-36" />
-                              <col className="w-12" />
-                            </colgroup>
-                            <tbody>
-                              {group.docs.map((doc) => {
-                                const pathKey = normalizeStorageKey(doc.storagePath);
-                                const attachedTo = pathKey
-                                  ? orderedAttachments(
-                                      attachmentsByPath.get(pathKey) ?? [],
-                                      attachOptions,
-                                    )
-                                  : [];
-                                const canAttachDoc = Boolean(doc.storagePath?.trim());
-                                const checked = selectedIds.has(doc.id);
-                                const isRenaming = renamingDocId === doc.id;
-                                const viewerIdx = viewerIndexByDocId.get(doc.id) ?? 0;
-                                return (
-                                  <tr
-                                    key={doc.id}
-                                    className={`${
-                                      checked ? 'bg-primary/[0.03]' : 'bg-white'
-                                    }`}
-                                  >
-                                    <td className="px-3 py-3 text-center align-middle">
-                                      <input
-                                        type="checkbox"
-                                        className="checkbox checkbox-sm"
-                                        checked={checked}
-                                        disabled={!canAttachDoc}
-                                        onChange={() => {
-                                          if (canAttachDoc) toggleSelected(doc.id);
-                                        }}
-                                        aria-label={`Select ${doc.name}`}
-                                      />
-                                    </td>
-                                    <td className="px-3 py-3 align-middle">
-                                      {isRenaming ? (
-                                        <div className="flex min-w-0 items-center gap-1">
-                                          <input
-                                            type="text"
-                                            className="input input-bordered input-sm min-w-0 flex-1"
-                                            value={renameValue}
-                                            onChange={(e) => setRenameValue(e.target.value)}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                void saveInlineRename();
-                                              }
-                                              if (e.key === 'Escape') {
-                                                e.preventDefault();
-                                                cancelInlineRename();
-                                              }
-                                            }}
-                                            autoFocus
-                                            disabled={renameSaving}
-                                          />
-                                          <button
-                                            type="button"
-                                            className="btn btn-ghost btn-circle btn-sm"
-                                            onClick={() => void saveInlineRename()}
-                                            disabled={renameSaving || !renameValue.trim()}
-                                            aria-label="Save name"
-                                          >
-                                            {renameSaving ? (
-                                              <span className="loading loading-spinner loading-xs" />
-                                            ) : (
-                                              <CheckIcon className="h-4 w-4 text-emerald-600" />
-                                            )}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="btn btn-ghost btn-circle btn-sm"
-                                            onClick={cancelInlineRename}
-                                            disabled={renameSaving}
-                                            aria-label="Cancel rename"
-                                          >
-                                            <XMarkIcon className="h-4 w-4" />
-                                          </button>
-                                        </div>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          className="inline-flex min-w-0 max-w-full items-center gap-2 text-left hover:opacity-80"
-                                          onClick={() => setViewerIndex(viewerIdx)}
-                                        >
-                                          <DocPreviewThumb doc={doc} />
-                                          <span className="min-w-0 truncate text-sm font-semibold text-base-content">
-                                            {doc.name}
-                                          </span>
-                                        </button>
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-3 text-center align-middle">
-                                      {doc.documentTypeName ? (
-                                        <span
-                                          className="inline-block max-w-[14rem] truncate text-sm text-base-content/80"
-                                          title={doc.documentTypeName}
-                                        >
-                                          {doc.documentTypeName}
-                                        </span>
-                                      ) : (
-                                        <span className="text-sm text-gray-400">—</span>
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-3 text-center align-middle">
-                                      {attachedTo.length > 0 ? (
-                                        <div className="flex min-w-0 flex-wrap items-center justify-center gap-1.5">
-                                          {attachedTo.map((a) => (
-                                            <SubEffortAttachBadge
-                                              key={a.id}
-                                              name={a.name}
-                                              highlight={
-                                                String(a.id) === String(targetSubEffortId ?? '')
-                                              }
-                                            />
-                                          ))}
-                                        </div>
-                                      ) : (
-                                        <span className="text-sm text-gray-400">—</span>
-                                      )}
-                                    </td>
-                                    <td className="px-3 py-3 text-center align-middle text-sm">
-                                      <DocumentUploaderCell
-                                        name={doc.uploadedByName}
-                                        photoUrl={doc.uploadedByPhotoUrl}
-                                        isClientPortalUpload={doc.isClientPortalUpload}
-                                      />
-                                    </td>
-                                    <td className="px-3 py-3 text-center align-middle whitespace-nowrap text-sm tabular-nums text-gray-500">
-                                      {formatDocDate(doc.lastModified)}
-                                    </td>
-                                    <td className="px-2 py-3 text-center align-middle">
-                                      <DocRowActionsMenu
-                                        disabled={busy || isRenaming}
-                                        deleting={deletingDocId === doc.id}
-                                        savingDocumentType={savingTypeDocId === doc.id}
-                                        canRename={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
-                                        canDelete={doc.source !== 'email' && !isLeadEmailAttachmentId(doc.id)}
-                                        documentTypes={documentTypes}
-                                        currentDocumentTypeId={doc.documentTypeId}
-                                        onEditFileName={() => startInlineRename(doc)}
-                                        onDelete={() => void deleteDocument(doc)}
-                                        onSelectDocumentType={
-                                          doc.source === 'email' || isLeadEmailAttachmentId(doc.id)
-                                            ? undefined
-                                            : (type) => void assignDocumentType(doc, type)
-                                        }
-                                      />
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </div>
+                    <DocumentDriveTable
+                      columns={CATEGORY_TABLE_COLUMNS}
+                      folders={folderRows}
+                      minWidthClass="min-w-[900px]"
+                    />
                   </section>
-                ))}
+                ) : null}
+
+                {sortedDocs.length === 0 ? (
+                  <p className="px-0.5 text-sm text-base-content/55">
+                    {folderTree.activeFolderId
+                      ? 'Every file here is inside one of these folders.'
+                      : 'Every file in this category is inside one of these folders.'}
+                  </p>
+                ) : null}
+
+                {displayedDocGroups.map((group) => {
+                  const attachableInGroup = group.docs.filter((d) =>
+                    Boolean(d.storagePath?.trim()),
+                  );
+                  const selectedInGroup = attachableInGroup.filter((d) => selectedIds.has(d.id));
+                  const allSelected =
+                    attachableInGroup.length > 0 &&
+                    selectedInGroup.length === attachableInGroup.length;
+                  return (
+                    <section key={group.key} className="space-y-2.5">
+                      <div className="flex items-center gap-2.5 px-0.5">
+                        <h3
+                          className={`min-w-0 truncate text-base font-semibold tracking-tight sm:text-lg ${
+                            group.key === UNATTACHED_GROUP_KEY
+                              ? 'text-base-content/55'
+                              : 'text-base-content/90'
+                          }`}
+                          title={group.title}
+                        >
+                          {group.title}
+                        </h3>
+                        <span className="badge badge-md h-7 min-h-7 shrink-0 border-0 bg-gray-200 px-2.5 text-sm font-semibold tabular-nums text-gray-700">
+                          {group.docs.length}
+                        </span>
+                      </div>
+                      <DocumentDriveTable
+                        columns={CATEGORY_TABLE_COLUMNS}
+                        files={group.docs.map((doc) => fileRow(doc))}
+                        minWidthClass="min-w-[900px]"
+                        selectAll={{
+                          checked: allSelected,
+                          indeterminate: selectedInGroup.length > 0,
+                          disabled: attachableInGroup.length === 0 || busy,
+                          label: `Select every file under ${group.title}`,
+                          onChange: () => setGroupSelection(group.docs, !allSelected),
+                        }}
+                      />
+                    </section>
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
       </MobileBottomSheet>
+
+      {peekNode}
+
+      <DocumentFolderDialog
+        state={folderDialog}
+        tree={folderTree}
+        onClose={() => setFolderDialog(null)}
+      />
 
       <DocumentViewerModal
         isOpen={open && viewerIndex !== null && viewerDocs.length > 0}
