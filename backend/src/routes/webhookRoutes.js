@@ -11,6 +11,8 @@ router.post('/hook/catch', webhookController.catchFormData);
 // External partner webhook — schedule a meeting for an existing lead
 router.get('/hook/partner/meeting/health', partnerMeetingWebhookController.health);
 router.post('/hook/partner/meeting', partnerMeetingWebhookController.createMeeting);
+// …and move that lead to a stage the partner knows about (another meeting, client signed)
+router.post('/hook/partner/lead-stage', partnerMeetingWebhookController.setLeadStage);
 
 // Facebook lead webhook (verification + payload)
 router.get('/hook/facebook', (req, res, next) => {

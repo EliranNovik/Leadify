@@ -678,20 +678,24 @@ const PublicContractView: React.FC<{
               .eq('id', firmId)
               .maybeSingle();
           }
-        } else if (contractData.legacy_id) {
-          // Legacy lead - fetch from leads_lead table
+        } else if (contractData.legacy_id || contractData.client_id) {
+          /*
+           * The lead behind the contract, read through a function that checks the link's own
+           * token. This page is open to anyone holding the link, so it runs as `anon`, and
+           * `public.leads` is not a table a visitor may query — the same function covers legacy
+           * leads, and brings the closer back with it.
+           */
           clientDataPromise = supabase
-            .from('leads_lead')
-            .select('id, lead_number, manual_id, master_id, name, email, phone, mobile')
-            .eq('id', contractData.legacy_id)
-            .single();
-        } else if (contractData.client_id) {
-          // New lead - fetch from leads table
-          clientDataPromise = supabase
-            .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic')
-            .eq('id', contractData.client_id)
-            .single();
+            .rpc('public_contract_client', {
+              p_contract_id: contractId,
+              p_public_token: token,
+            })
+            .then(({ data, error }: { data: any; error: any }) => {
+              // Loud, because a missing function would otherwise just render a contract with no
+              // name on it (sql/2026-10-29_public_contract_client_rpc.sql).
+              if (error) console.error('public_contract_client failed:', error);
+              return { data: data && typeof data === 'object' ? data : null, error };
+            });
         }
 
         // STEP 4: Process template (required for rendering, but keep it fast)
@@ -1312,33 +1316,26 @@ const PublicContractView: React.FC<{
     }
   };
 
-  // Fetch closer employee
+  /*
+   * Fetch closer employee.
+   *
+   * The closer arrives with the client (public_contract_client), because this page may not read
+   * the lead tables itself: a legacy lead names its closer by id, a new lead by display name.
+   */
   const fetchCloserEmployee = async (clientData: any, leadType: 'legacy' | 'new') => {
     try {
       let closerId: number | null = null;
       let closerDisplayName: string | null = null;
 
       if (leadType === 'legacy') {
-        // For legacy leads, fetch closer_id from leads_lead
-        const { data: legacyLeadData } = await supabase
-          .from('leads_lead')
-          .select('closer_id')
-          .eq('id', clientData.id)
-          .single();
-
-        if (legacyLeadData?.closer_id) {
-          closerId = legacyLeadData.closer_id;
+        const legacyCloserId = Number(clientData?.closer_id);
+        if (Number.isFinite(legacyCloserId) && legacyCloserId > 0) {
+          closerId = legacyCloserId;
         }
       } else {
-        // For new leads, fetch closer from leads table (it's a display name string)
-        const { data: newLeadData } = await supabase
-          .from('leads')
-          .select('closer')
-          .eq('id', clientData.id)
-          .single();
-
-        if (newLeadData?.closer && newLeadData.closer.trim() !== '' && newLeadData.closer !== '---') {
-          closerDisplayName = newLeadData.closer.trim();
+        const closer = String(clientData?.closer || '').trim();
+        if (closer !== '' && closer !== '---') {
+          closerDisplayName = closer;
         }
       }
 

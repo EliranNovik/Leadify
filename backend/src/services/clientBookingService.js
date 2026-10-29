@@ -1795,21 +1795,71 @@ async function resolveExternalFirm(firmIdRaw) {
   return data;
 }
 
-async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externalFirmId) {
+const MEETING_SCHEDULED_STAGE = 20;
+const ANOTHER_MEETING_STAGE = 55;
+const CLIENT_SIGNED_STAGE = 60;
+
+/**
+ * The stages a partner may ask for, by the names the CRM shows.
+ *
+ * Deliberately short: a partner knows whether it booked a meeting and whether its client signed,
+ * and nothing else about where a case stands. Everything past signing (handler set, application
+ * submitted, …) is ours to write.
+ */
+const PARTNER_STAGES = {
+  [MEETING_SCHEDULED_STAGE]: 'Meeting scheduled',
+  [ANOTHER_MEETING_STAGE]: 'Another meeting',
+  [CLIENT_SIGNED_STAGE]: 'Client signed agreement',
+};
+
+async function readLeadStage(leadInfo) {
+  const { data, error } = leadInfo.is_legacy
+    ? await supabase.from('leads_lead').select('stage').eq('id', leadInfo.legacy_lead_id).maybeSingle()
+    : await supabase.from('leads').select('stage').eq('id', leadInfo.new_lead_id).maybeSingle();
+  if (error) throw error;
+  const numeric = Number(data?.stage);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+/**
+ * Where a booking leaves the lead, which is the rule the CRM's own booking follows
+ * (`decideStageForBooking` in src/lib/aiMeetingBooking.ts): a meeting arranged after the agreement
+ * went out is "Another meeting", a signed client is never dragged back to an earlier stage, and
+ * anything before that is "Meeting scheduled".
+ *
+ * Null means leave the stage alone.
+ */
+function stageForPartnerBooking(currentStage) {
+  if (currentStage != null && currentStage >= CLIENT_SIGNED_STAGE) return null;
+  if (currentStage != null && currentStage >= 40) return ANOTHER_MEETING_STAGE;
+  return MEETING_SCHEDULED_STAGE;
+}
+
+/**
+ * Write a lead's stage the way the CRM does: the stage on the lead, who changed it and when, and a
+ * row in `leads_leadstage` so the change shows in the lead's history rather than appearing from
+ * nowhere.
+ *
+ * `assignScheduler` is for a booking, which also puts the partner service employee on the lead as
+ * its scheduler. A stage written on its own leaves the lead's people untouched.
+ */
+async function writePartnerLeadStage(leadInfo, schedulerEmployee, options) {
+  const { stageId, externalFirmId = null, assignScheduler = false } = options;
   const now = new Date().toISOString();
-  const stageId = 20;
   const stageChangedBy = schedulerEmployee.display_name || `Employee ${schedulerEmployee.id}`;
 
   if (leadInfo.is_legacy) {
+    const patch = {
+      stage: stageId,
+      stage_changed_by: stageChangedBy,
+      stage_changed_at: now,
+    };
+    if (assignScheduler) patch.meeting_scheduler_id = schedulerEmployee.id;
+    if (externalFirmId) patch.external_firm_id = externalFirmId;
+
     const { error } = await supabase
       .from('leads_lead')
-      .update({
-        stage: stageId,
-        meeting_scheduler_id: schedulerEmployee.id,
-        external_firm_id: externalFirmId,
-        stage_changed_by: stageChangedBy,
-        stage_changed_at: now,
-      })
+      .update(patch)
       .eq('id', leadInfo.legacy_lead_id);
     if (error) throw error;
 
@@ -1824,16 +1874,18 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externa
     return;
   }
 
+  const patch = {
+    stage: stageId,
+    stage_changed_by: stageChangedBy,
+    stage_changed_at: now,
+  };
+  // Store display name (UI convention for new-lead text roles); fall back to id string
+  if (assignScheduler) patch.scheduler = schedulerEmployee.display_name || String(schedulerEmployee.id);
+  if (externalFirmId) patch.external_firm_id = externalFirmId;
+
   const { error } = await supabase
     .from('leads')
-    .update({
-      stage: stageId,
-      // Store display name (UI convention for new-lead text roles); fall back to id string
-      scheduler: schedulerEmployee.display_name || String(schedulerEmployee.id),
-      external_firm_id: externalFirmId,
-      stage_changed_by: stageChangedBy,
-      stage_changed_at: now,
-    })
+    .update(patch)
     .eq('id', leadInfo.new_lead_id);
   if (error) throw error;
 
@@ -1845,6 +1897,119 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externa
     newlead_id: leadInfo.new_lead_id,
     creator_id: schedulerEmployee.id,
   });
+}
+
+/**
+ * The stage a partner-booked meeting leaves behind.
+ *
+ * `requestedStage` is the webhook's optional `stage`, for a partner that knows this is a second
+ * meeting; without it the lead's current stage decides, so booking never moves a case backwards.
+ */
+async function updateLeadStageForPartnerMeeting(
+  leadInfo,
+  schedulerEmployee,
+  externalFirmId,
+  requestedStage = null,
+) {
+  const currentStage = await readLeadStage(leadInfo);
+  const stageId = requestedStage ?? stageForPartnerBooking(currentStage);
+  if (stageId == null) {
+    return { stage: currentStage, changed: false, note: 'Lead stage unchanged — a signed client is not moved by a meeting.' };
+  }
+  if (currentStage === stageId) {
+    // The lead's people and firm still want writing, so this is not a no-op.
+    await writePartnerLeadStage(leadInfo, schedulerEmployee, {
+      stageId,
+      externalFirmId,
+      assignScheduler: true,
+    });
+    return { stage: stageId, changed: false, note: `Lead already on ${PARTNER_STAGES[stageId] || stageId}.` };
+  }
+
+  await writePartnerLeadStage(leadInfo, schedulerEmployee, {
+    stageId,
+    externalFirmId,
+    assignScheduler: true,
+  });
+  return {
+    stage: stageId,
+    changed: true,
+    note: `Lead stage set to ${PARTNER_STAGES[stageId] || stageId}.`,
+  };
+}
+
+/**
+ * Set a lead's stage from a partner, without a meeting — the signing case above all.
+ *
+ * Forward only: a partner says its client signed, which must not undo a case the firm has already
+ * taken further (handler set, application submitted). The 60 → 105 advance, the celebration and
+ * everything else hanging off stage 60 are database triggers and CRM logic, so they happen here
+ * exactly as they do when a client signs through our own contract link.
+ */
+async function setPartnerLeadStage(payload) {
+  const leadRef = String(payload?.lead_ref || payload?.lead_number || '').trim();
+  if (!leadRef) throw new Error('lead_ref (or lead_number) is required');
+
+  const requestedStage = Number(payload?.stage);
+  if (!Number.isFinite(requestedStage) || !PARTNER_STAGES[requestedStage]) {
+    throw new Error(
+      `stage must be a number, one of: ${Object.entries(PARTNER_STAGES)
+        .map(([id, name]) => `${id} (${name})`)
+        .join(', ')}`,
+    );
+  }
+
+  const leadInfo = await resolveLeadByRef(leadRef);
+  const schedulerEmployee = await resolvePartnerSchedulerEmployee();
+  const externalFirm = payload?.external_firm_id || payload?.firm_id
+    ? await resolveExternalFirm(payload.external_firm_id || payload.firm_id)
+    : null;
+
+  const currentStage = await readLeadStage(leadInfo);
+  const leadResult = {
+    lead_ref: leadInfo.lead_number || leadRef,
+    display_name: leadInfo.display_name || null,
+    is_legacy: Boolean(leadInfo.is_legacy),
+  };
+
+  if (currentStage != null && currentStage > requestedStage) {
+    return {
+      ok: true,
+      changed: false,
+      lead: leadResult,
+      stage: { from: currentStage, to: currentStage, requested: requestedStage, name: PARTNER_STAGES[requestedStage] },
+      note: `Lead is already past that stage (${currentStage}), so it was left where it is.`,
+    };
+  }
+
+  if (currentStage === requestedStage) {
+    return {
+      ok: true,
+      changed: false,
+      lead: leadResult,
+      stage: { from: currentStage, to: currentStage, requested: requestedStage, name: PARTNER_STAGES[requestedStage] },
+      note: `Lead is already on ${PARTNER_STAGES[requestedStage]}.`,
+    };
+  }
+
+  await writePartnerLeadStage(leadInfo, schedulerEmployee, {
+    stageId: requestedStage,
+    externalFirmId: externalFirm?.id || null,
+  });
+
+  return {
+    ok: true,
+    changed: true,
+    lead: leadResult,
+    stage: {
+      from: currentStage,
+      to: requestedStage,
+      requested: requestedStage,
+      name: PARTNER_STAGES[requestedStage],
+    },
+    external_firm: externalFirm ? { id: externalFirm.id, name: externalFirm.name } : undefined,
+    note: `Lead stage set to ${PARTNER_STAGES[requestedStage]}.`,
+  };
 }
 
 async function createPartnerMeeting(payload) {
@@ -1862,11 +2027,26 @@ async function createPartnerMeeting(payload) {
     external_firm_id: externalFirmIdRaw,
     skip_availability_check: skipAvailabilityCheck,
     send_notifications: sendNotifications = true,
+    stage: requestedStageRaw,
   } = payload;
 
   const resolvedLeadRef = String(leadRef || leadNumber || '').trim();
   if (!resolvedLeadRef) throw new Error('lead_ref (or lead_number) is required');
   if (!date || !time) throw new Error('date and time are required');
+
+  /*
+   * A booking may only land on a meeting stage. Signing is not something a booking can report, so
+   * stage 60 goes through the lead-stage webhook instead of this one.
+   */
+  let requestedStage = null;
+  if (requestedStageRaw !== undefined && requestedStageRaw !== null && requestedStageRaw !== '') {
+    requestedStage = Number(requestedStageRaw);
+    if (requestedStage !== MEETING_SCHEDULED_STAGE && requestedStage !== ANOTHER_MEETING_STAGE) {
+      throw new Error(
+        `stage must be ${MEETING_SCHEDULED_STAGE} (${PARTNER_STAGES[MEETING_SCHEDULED_STAGE]}) or ${ANOTHER_MEETING_STAGE} (${PARTNER_STAGES[ANOTHER_MEETING_STAGE]}) when booking a meeting; use the lead-stage webhook for ${CLIENT_SIGNED_STAGE} (${PARTNER_STAGES[CLIENT_SIGNED_STAGE]})`,
+      );
+    }
+  }
   if (!country && !clientTimezoneRaw) {
     throw new Error('country (ISO code) or client_timezone is required for timezone conversion');
   }
@@ -2015,8 +2195,14 @@ async function createPartnerMeeting(payload) {
 
   if (insertError) throw insertError;
 
+  let stageResult = null;
   try {
-    await updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externalFirm.id);
+    stageResult = await updateLeadStageForPartnerMeeting(
+      leadInfo,
+      schedulerEmployee,
+      externalFirm.id,
+      requestedStage,
+    );
   } catch (stageErr) {
     console.error('Partner meeting stage update failed:', stageErr);
     notificationWarnings.push(`Lead stage: ${stageErr.message}`);
@@ -2073,6 +2259,14 @@ async function createPartnerMeeting(payload) {
       external_firm_id: externalFirm.id,
       external_firm_name: externalFirm.name,
     },
+    stage: stageResult
+      ? {
+          id: stageResult.stage,
+          name: PARTNER_STAGES[stageResult.stage] || null,
+          changed: stageResult.changed,
+          note: stageResult.note,
+        }
+      : undefined,
     external_firm: {
       id: externalFirm.id,
       name: externalFirm.name,
@@ -2138,6 +2332,8 @@ module.exports = {
   getScheduledMeetings,
   bookMeeting,
   createPartnerMeeting,
+  setPartnerLeadStage,
+  PARTNER_STAGES,
   createCrmCalendarEvent,
   isPexCrmOutboundEnabled,
 };
