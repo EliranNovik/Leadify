@@ -1,5 +1,6 @@
 import { getStageName } from './stageUtils';
 import { convertToNIS } from './currencyConversion';
+import { toSignCalendarDateKey } from './stage60SignDate';
 
 /** Minimal lead shape for marketing dashboard breakdown (matches report LeadRow). */
 export type MarketingBreakdownLead = {
@@ -19,6 +20,8 @@ export type MarketingBreakdownLead = {
   currency_id?: number | null;
   source: string | null;
   source_id: string | null;
+  /** Stage-60 sign timestamp when known (deals signed-in-range cohort). */
+  signed_at?: string | null;
   misc_leadsource?: {
     id: number;
     name: string;
@@ -32,6 +35,8 @@ export type MarketingLeadBreakdownRow = {
   clientName: string;
   /** Main category · subcategory (from misc_category + misc_maincategory). */
   category: string;
+  /** YYYY-MM-DD (Asia/Jerusalem) when stage-60 sign date is known. */
+  dateSigned: string | null;
   totalValueNis: number;
 };
 
@@ -73,7 +78,8 @@ export function formatMarketingCategoryDisplay(
   return fallback || '—';
 }
 
-export type MarketingBreakdownMetric = 'deals';
+/** `deals` = current stage looks signed; `signedInRange` = already filtered by stage-60 sign date. */
+export type MarketingBreakdownMetric = 'deals' | 'signedInRange';
 
 type SourceRow = { id: string; name: string; channel_id: string | null };
 type ChannelRow = { id: string; label: string; code: string; is_active: boolean };
@@ -274,6 +280,8 @@ function leadMatchesMetric(lead: MarketingBreakdownLead, metric: MarketingBreakd
   switch (metric) {
     case 'deals':
       return hasSignedDeal(lead);
+    case 'signedInRange':
+      return true;
     default:
       return false;
   }
@@ -285,6 +293,7 @@ export function leadToBreakdownRow(lead: MarketingBreakdownLead): MarketingLeadB
     leadNumber: lead.lead_number?.trim() || lead.id,
     clientName: lead.name?.trim() || '—',
     category: lead.category?.trim() || '—',
+    dateSigned: toSignCalendarDateKey(lead.signed_at) || null,
     totalValueNis: leadRevenueNis(lead),
   };
 }

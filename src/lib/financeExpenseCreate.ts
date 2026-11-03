@@ -2,6 +2,8 @@ import type { ElementType } from 'react';
 import {
   BuildingOffice2Icon,
   BuildingOfficeIcon,
+  CreditCardIcon,
+  HandRaisedIcon,
   HomeModernIcon,
   MegaphoneIcon,
   UserGroupIcon,
@@ -38,7 +40,9 @@ export type FinanceExpenseKind =
   | 'office'
   | 'marketing'
   | 'rent'
-  | 'partner_draws';
+  | 'partner_draws'
+  | 'loan'
+  | 'paid_by_office';
 
 export const FINANCE_EXPENSE_KIND_LABEL: Record<FinanceExpenseKind, string> = {
   lead: 'Client',
@@ -48,6 +52,8 @@ export const FINANCE_EXPENSE_KIND_LABEL: Record<FinanceExpenseKind, string> = {
   marketing: 'Marketing',
   rent: 'Rent',
   partner_draws: 'Partner draws',
+  loan: 'Loan',
+  paid_by_office: 'Paid by office',
 };
 
 /**
@@ -62,20 +68,23 @@ export const FINANCE_EXPENSE_KIND_ICON: Record<FinanceExpenseKind, ElementType> 
   marketing: MegaphoneIcon,
   rent: HomeModernIcon,
   partner_draws: UserGroupIcon,
+  loan: CreditCardIcon,
+  paid_by_office: HandRaisedIcon,
 };
 
-/** Marketing, rent, and partner draws: add only for superuser / collection. */
+/** Marketing, rent, partner draws and loans: add only for superuser / collection. */
 export const FINANCE_EXPENSE_ADD_RESTRICTED_KINDS: FinanceExpenseKind[] = [
   'marketing',
   'rent',
   'partner_draws',
+  'loan',
 ];
 
 export function canAddFinanceExpenseKind(
   kind: FinanceExpenseKind,
   canManageRestricted: boolean,
 ): boolean {
-  if (kind === 'marketing' || kind === 'rent' || kind === 'partner_draws') return canManageRestricted;
+  if (FINANCE_EXPENSE_ADD_RESTRICTED_KINDS.includes(kind)) return canManageRestricted;
   return true;
 }
 
@@ -91,7 +100,7 @@ export function canEditFinanceExpenseKind(
   kind: FinanceExpenseKind,
   canManageRestricted: boolean,
 ): boolean {
-  if (kind === 'marketing' || kind === 'rent' || kind === 'partner_draws') return canManageRestricted;
+  if (FINANCE_EXPENSE_ADD_RESTRICTED_KINDS.includes(kind)) return canManageRestricted;
   return true;
 }
 
@@ -134,6 +143,8 @@ const KIND_TABLE: Record<FinanceExpenseKind, string> = {
   marketing: 'source_media_expense',
   rent: 'office_rent_expense',
   partner_draws: 'partner_draw_expense',
+  loan: 'loan_payment_expense',
+  paid_by_office: 'paid_by_office_expense',
 };
 
 function monthStart(value: string): string {
@@ -649,6 +660,173 @@ export async function createPartnerDrawFinanceExpense(input: CreatePartnerDrawFi
   return { destinationId: String(data.id), entryId, updated: false, needsConfirm: false };
 }
 
+export type LoanOption = {
+  id: string;
+  lender: string;
+  principalNis: number;
+};
+
+/** Loans the firm is still repaying, for the picker in the add-expense drawer. */
+export async function fetchActiveLoans(): Promise<LoanOption[]> {
+  const { data, error } = await supabase
+    .from('loans')
+    .select('id, lender, principal_nis, is_active')
+    .eq('is_active', true)
+    .order('lender', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((row: any) => ({
+    id: String(row.id),
+    lender: String(row.lender || '').trim() || 'Loan',
+    principalNis: Number(row.principal_nis) || 0,
+  }));
+}
+
+export type CreateLoanFinanceExpenseInput = {
+  loanId: string;
+  lender: string;
+  expenseMonth: string;
+  amount: number;
+  dueDate?: string | null;
+  paid?: boolean;
+  notes?: string | null;
+  confirmUpdate?: boolean;
+};
+
+export async function findLoanMonthExpense(loanId: string, expenseMonth: string) {
+  const expense_month = monthStart(expenseMonth);
+  const { data, error } = await supabase
+    .from('loan_payment_expense')
+    .select('id, amount_nis')
+    .eq('loan_id', loanId)
+    .eq('expense_month', expense_month)
+    .maybeSingle();
+  if (error) throw error;
+  return data
+    ? { id: Number(data.id), amount: Number(data.amount_nis) || 0, expenseMonth: expense_month }
+    : null;
+}
+
+/** One repayment per loan per month, so a second one for the same month replaces the first. */
+export async function createLoanFinanceExpense(input: CreateLoanFinanceExpenseInput) {
+  await assertCanManageRestrictedFinanceExpenses('add loan repayments');
+  const expense_month = monthStart(input.expenseMonth);
+  const existing = await findLoanMonthExpense(input.loanId, expense_month);
+  const createdBy = await currentAuthUserId();
+  const dueDate = input.dueDate?.trim() || null;
+  const paid = Boolean(input.paid);
+
+  if (existing) {
+    if (!input.confirmUpdate) {
+      return {
+        destinationId: String(existing.id),
+        entryId: null,
+        updated: false,
+        needsConfirm: true,
+        existingAmount: existing.amount,
+      };
+    }
+    const { error } = await supabase
+      .from('loan_payment_expense')
+      .update({
+        amount_nis: input.amount,
+        due_date: dueDate,
+        paid,
+        notes: input.notes?.trim() || null,
+      })
+      .eq('id', existing.id);
+    if (error) throw error;
+    const entryId = await upsertRegistry({
+      kind: 'loan',
+      destinationId: existing.id,
+      expenseDate: expense_month,
+      amount: input.amount,
+      currencyCode: 'ILS',
+      categoryLabel: 'Loan repayment',
+      vendorLabel: input.lender,
+      notes: input.notes || null,
+    });
+    return { destinationId: String(existing.id), entryId, updated: true, needsConfirm: false };
+  }
+
+  const { data, error } = await supabase
+    .from('loan_payment_expense')
+    .insert({
+      loan_id: input.loanId,
+      expense_month,
+      amount_nis: input.amount,
+      due_date: dueDate,
+      paid,
+      notes: input.notes?.trim() || null,
+      created_by: createdBy,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  const entryId = await upsertRegistry({
+    kind: 'loan',
+    destinationId: data.id,
+    expenseDate: expense_month,
+    amount: input.amount,
+    currencyCode: 'ILS',
+    categoryLabel: 'Loan repayment',
+    vendorLabel: input.lender,
+    notes: input.notes || null,
+  });
+  return { destinationId: String(data.id), entryId, updated: false, needsConfirm: false };
+}
+
+export type CreatePaidByOfficeFinanceExpenseInput = {
+  identity: LeadFeeIdentity;
+  leadNumber?: string | null;
+  clientName?: string | null;
+  amount: number;
+  currencyCode?: string | null;
+  expenseDate: string;
+  description?: string | null;
+  paid?: boolean;
+};
+
+/** A case expense the office covered because the client did not pay. */
+export async function createPaidByOfficeFinanceExpense(
+  input: CreatePaidByOfficeFinanceExpenseInput,
+) {
+  const currency = (input.currencyCode || FIRM_MANAGEMENT_DEFAULT_CURRENCY).trim() || 'ILS';
+  const createdBy = await currentAuthUserId();
+  const newLeadId = input.identity.leadType === 'new' ? input.identity.newLeadId : null;
+  const legacyLeadId = input.identity.leadType === 'legacy' ? input.identity.legacyLeadId : null;
+
+  const { data, error } = await supabase
+    .from('paid_by_office_expense')
+    .insert({
+      expense_date: input.expenseDate,
+      amount: input.amount,
+      currency,
+      new_lead_id: newLeadId,
+      legacy_lead_id: legacyLeadId,
+      lead_number: input.leadNumber?.trim() || null,
+      description: input.description?.trim() || null,
+      paid: Boolean(input.paid),
+      created_by: createdBy,
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+
+  const entryId = await upsertRegistry({
+    kind: 'paid_by_office',
+    destinationId: data.id,
+    expenseDate: input.expenseDate,
+    amount: input.amount,
+    currencyCode: currency,
+    newLeadId,
+    legacyLeadId,
+    categoryLabel: 'Paid by office',
+    vendorLabel: input.clientName || input.leadNumber || null,
+    notes: input.description || null,
+  });
+  return { destinationId: String(data.id), entryId, updated: false };
+}
+
 export async function ensureFinanceExpenseRegistry(row: FinanceExpenseEntryRow): Promise<number> {
   if (Number.isFinite(row.id) && row.id > 0) return row.id;
   const id = await upsertRegistry({
@@ -738,6 +916,8 @@ export type FinanceExpenseEditDetails = {
   leadSourceId: number | null;
   rentOfficeId: number | null;
   employeeId: number | null;
+  loanId: string | null;
+  dueDate: string | null;
   leadType: 'new' | 'legacy' | null;
   newLeadId: string | null;
   legacyLeadId: number | null;
@@ -765,11 +945,13 @@ export async function fetchFinanceExpenseEditDetails(
     leadSourceId: null,
     rentOfficeId: null,
     employeeId: null,
+    loanId: null,
+    dueDate: null,
     leadType: row.legacy_lead_id != null ? 'legacy' : row.new_lead_id ? 'new' : null,
     newLeadId: row.new_lead_id,
     legacyLeadId: row.legacy_lead_id,
     leadNumber: row.lead_number,
-    clientName: row.kind === 'lead' ? row.vendor_label : null,
+    clientName: row.kind === 'lead' || row.kind === 'paid_by_office' ? row.vendor_label : null,
   };
 
   if (row.kind === 'lead') {
@@ -881,6 +1063,41 @@ export async function fetchFinanceExpenseEditDetails(
       base.month = data.expense_month ? String(data.expense_month).slice(0, 7) : base.month;
       base.employeeId = data.employee_id != null ? Number(data.employee_id) : null;
     }
+  } else if (row.kind === 'loan') {
+    const { data, error } = await supabase
+      .from('loan_payment_expense')
+      .select('amount_nis, expense_month, loan_id, due_date, paid, notes')
+      .eq('id', row.destination_id)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) {
+      base.amount = Number(data.amount_nis) || 0;
+      base.month = data.expense_month ? String(data.expense_month).slice(0, 7) : base.month;
+      base.loanId = data.loan_id != null ? String(data.loan_id) : null;
+      base.dueDate = data.due_date ? String(data.due_date).slice(0, 10) : null;
+      base.paid = Boolean(data.paid);
+      base.notes = data.notes != null ? String(data.notes) : base.notes;
+    }
+  } else if (row.kind === 'paid_by_office') {
+    const { data, error } = await supabase
+      .from('paid_by_office_expense')
+      .select(
+        'amount, currency, expense_date, description, paid, lead_number, new_lead_id, legacy_lead_id',
+      )
+      .eq('id', row.destination_id)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) {
+      base.amount = Number(data.amount) || 0;
+      base.currencyCode = data.currency != null ? String(data.currency) : row.currency_code;
+      base.expenseDate = data.expense_date ? String(data.expense_date).slice(0, 10) : row.expense_date;
+      base.notes = data.description != null ? String(data.description) : '';
+      base.paid = Boolean(data.paid);
+      base.newLeadId = data.new_lead_id != null ? String(data.new_lead_id) : row.new_lead_id;
+      base.legacyLeadId = data.legacy_lead_id != null ? Number(data.legacy_lead_id) : row.legacy_lead_id;
+      base.leadNumber = data.lead_number != null ? String(data.lead_number) : row.lead_number;
+      base.leadType = base.legacyLeadId != null ? 'legacy' : 'new';
+    }
   }
   return base;
 }
@@ -909,6 +1126,10 @@ export async function updateFinanceExpense(input: {
   rentOfficeName?: string | null;
   employeeId?: number | null;
   employeeName?: string | null;
+  loanId?: string | null;
+  lender?: string | null;
+  dueDate?: string | null;
+  leadNumber?: string | null;
   vendorLabel?: string | null;
 }): Promise<void> {
   const row = input.row;
@@ -1080,6 +1301,68 @@ export async function updateFinanceExpense(input: {
     });
     return;
   }
+  if (row.kind === 'loan') {
+    await assertCanManageRestrictedFinanceExpenses('edit loan repayments');
+    if (!input.loanId) throw new Error('Choose a loan');
+    const expense_month = monthStart(input.month || '');
+    const { error } = await supabase
+      .from('loan_payment_expense')
+      .update({
+        loan_id: input.loanId,
+        expense_month,
+        amount_nis: input.amount,
+        due_date: input.dueDate?.trim() || null,
+        paid: Boolean(input.paid),
+        notes: input.notes?.trim() || null,
+      })
+      .eq('id', row.destination_id);
+    if (error) throw error;
+    await upsertRegistry({
+      kind: 'loan',
+      destinationId: row.destination_id,
+      expenseDate: expense_month,
+      amount: input.amount,
+      currencyCode: 'ILS',
+      categoryLabel: 'Loan repayment',
+      vendorLabel: input.lender,
+      notes: input.notes,
+    });
+    return;
+  }
+  if (row.kind === 'paid_by_office') {
+    if (!input.identity) throw new Error('Choose a lead');
+    const currency = (input.currencyCode || FIRM_MANAGEMENT_DEFAULT_CURRENCY).trim() || 'ILS';
+    const newLeadId = input.identity.leadType === 'new' ? input.identity.newLeadId : null;
+    const legacyLeadId = input.identity.leadType === 'legacy' ? input.identity.legacyLeadId : null;
+    const expenseDate = input.expenseDate || row.expense_date;
+    const { error } = await supabase
+      .from('paid_by_office_expense')
+      .update({
+        expense_date: expenseDate,
+        amount: input.amount,
+        currency,
+        new_lead_id: newLeadId,
+        legacy_lead_id: legacyLeadId,
+        lead_number: input.leadNumber?.trim() || row.lead_number,
+        description: input.notes?.trim() || null,
+        paid: Boolean(input.paid),
+      })
+      .eq('id', row.destination_id);
+    if (error) throw error;
+    await upsertRegistry({
+      kind: 'paid_by_office',
+      destinationId: row.destination_id,
+      expenseDate,
+      amount: input.amount,
+      currencyCode: currency,
+      newLeadId,
+      legacyLeadId,
+      categoryLabel: 'Paid by office',
+      vendorLabel: input.vendorLabel || null,
+      notes: input.notes,
+    });
+    return;
+  }
   if (row.kind !== 'marketing') throw new Error('Unsupported expense type');
   await assertCanManageRestrictedFinanceExpenses('edit marketing expenses');
   if (!input.leadSourceId) throw new Error('Choose a lead source');
@@ -1123,6 +1406,12 @@ export async function deleteFinanceExpense(row: FinanceExpenseEntryRow): Promise
     if (error) throw error;
   } else if (row.kind === 'partner_draws') {
     const { error } = await supabase.from('partner_draw_expense').delete().eq('id', row.destination_id);
+    if (error) throw error;
+  } else if (row.kind === 'loan') {
+    const { error } = await supabase.from('loan_payment_expense').delete().eq('id', row.destination_id);
+    if (error) throw error;
+  } else if (row.kind === 'paid_by_office') {
+    const { error } = await supabase.from('paid_by_office_expense').delete().eq('id', row.destination_id);
     if (error) throw error;
   } else {
     throw new Error('Unsupported expense type');
@@ -1573,6 +1862,85 @@ export async function fetchFinanceExpenseEntries(
             category_label: 'Partner draws',
             vendor_label: joinLabel(row.tenants_employee, 'display_name'),
             notes: null,
+            created_by: row.created_by != null ? String(row.created_by) : null,
+          }),
+        );
+      }),
+    );
+  }
+
+  if (include('loan')) {
+    tasks.push(
+      safeTable('loan_payment_expense', async () => {
+        let q = supabase
+          .from('loan_payment_expense')
+          .select(
+            'id, created_at, created_by, amount_nis, expense_month, notes, loan_id, loans:loan_id ( lender )',
+          )
+          .order('created_at', { ascending: false })
+          .limit(300);
+        const orExpr = dateOrCreated('expense_month');
+        if (orExpr) q = q.or(orExpr);
+        const { data, error } = await q;
+        if (error) throw error;
+        return (data || []).map((row: any) =>
+          emptyEntry({
+            id: Number(row.id),
+            created_at: String(row.created_at),
+            kind: 'loan',
+            destination_table: 'loan_payment_expense',
+            destination_id: String(row.id),
+            expense_date: row.expense_month
+              ? String(row.expense_month).slice(0, 10)
+              : localYmdFromTimestamp(row.created_at),
+            amount: Number(row.amount_nis) || 0,
+            currency_code: 'ILS',
+            firm_id: null,
+            new_lead_id: null,
+            legacy_lead_id: null,
+            category_label: 'Loan repayment',
+            vendor_label: joinLabel(row.loans, 'lender'),
+            notes: row.notes != null ? String(row.notes) : null,
+            created_by: row.created_by != null ? String(row.created_by) : null,
+          }),
+        );
+      }),
+    );
+  }
+
+  if (include('paid_by_office')) {
+    tasks.push(
+      safeTable('paid_by_office_expense', async () => {
+        let q = supabase
+          .from('paid_by_office_expense')
+          .select(
+            'id, created_at, created_by, amount, currency, expense_date, description, lead_number, new_lead_id, legacy_lead_id',
+          )
+          .order('created_at', { ascending: false })
+          .limit(300);
+        const orExpr = dateOrCreated('expense_date');
+        if (orExpr) q = q.or(orExpr);
+        const { data, error } = await q;
+        if (error) throw error;
+        return (data || []).map((row: any) =>
+          emptyEntry({
+            id: Number(row.id),
+            created_at: String(row.created_at),
+            kind: 'paid_by_office',
+            destination_table: 'paid_by_office_expense',
+            destination_id: String(row.id),
+            expense_date: row.expense_date
+              ? String(row.expense_date).slice(0, 10)
+              : localYmdFromTimestamp(row.created_at),
+            amount: Number(row.amount) || 0,
+            currency_code: row.currency != null ? String(row.currency) : 'ILS',
+            firm_id: null,
+            new_lead_id: row.new_lead_id != null ? String(row.new_lead_id) : null,
+            legacy_lead_id: row.legacy_lead_id != null ? Number(row.legacy_lead_id) : null,
+            category_label: 'Paid by office',
+            vendor_label: row.lead_number != null ? String(row.lead_number) : null,
+            lead_number: row.lead_number != null ? String(row.lead_number) : null,
+            notes: row.description != null ? String(row.description) : null,
             created_by: row.created_by != null ? String(row.created_by) : null,
           }),
         );

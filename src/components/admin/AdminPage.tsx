@@ -61,6 +61,8 @@ import SourceMediaExpensesManager from './SourceMediaExpensesManager';
 import EmployeeSalariesManager from './EmployeeSalariesManager';
 import OfficeRentExpensesManager from './OfficeRentExpensesManager';
 import PartnerDrawsManager from './PartnerDrawsManager';
+import LoansManager from './LoansManager';
+import PaidByOfficeExpensesManager from './PaidByOfficeExpensesManager';
 import FirmManagementCostsManager from './FirmManagementCostsManager';
 import {
   EXPENSE_TYPE_CODE_MARKETING,
@@ -187,6 +189,8 @@ const ADMIN_TABS: AdminTab[] = [
       'Rent',
       'Partner Draws',
       'Salaries',
+      'Loans',
+      'Paid By Office',
     ],
     requiresAdmin: true,
   },
@@ -1836,6 +1840,12 @@ const AdminPage: React.FC<AdminPageProps> = ({
                 ) : selectedTab?.label === 'All Expenses' &&
                   selectedTab?.subcategories[selected.sub] === 'Partner Draws' ? (
                   <div className="w-full"><PartnerDrawsManager /></div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Loans' ? (
+                  <div className="w-full"><LoansManager /></div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Paid By Office' ? (
+                  <div className="w-full"><PaidByOfficeExpensesManager /></div>
                 ) : (
                   <div className="flex items-center justify-center text-xl font-semibold text-primary">
                     {`${selectedTab?.label} / ${selectedTab?.subcategories[selected.sub]}`}

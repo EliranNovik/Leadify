@@ -875,10 +875,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const handleToggleBoolean = async (record: Record, fieldName: string, newValue: boolean) => {
     try {
       const dbValue = booleanStorage === 'native' ? newValue : (newValue ? 't' : 'f');
-      
+      const patch: Record = { [fieldName]: dbValue } as Record;
+      // A row that is no longer paid cannot keep a payment date: office expenses have a check
+      // constraint saying so, and leaving one behind is wrong on any table that tracks both.
+      if (fieldName === 'paid' && !newValue && 'paid_at' in record) {
+        patch.paid_at = null;
+      }
+
       const { error } = await supabase
         .from(tableName)
-        .update({ [fieldName]: dbValue })
+        .update(patch)
         .eq('id', String(record.id));
 
       if (error) {
@@ -888,7 +894,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         // Update local state
         setRecords(prev => prev.map(r => 
           r.id === record.id 
-            ? { ...r, [fieldName]: newValue }
+            ? { ...r, ...patch, [fieldName]: newValue }
             : r
         ));
         toast.success(`${fieldName} updated successfully`);

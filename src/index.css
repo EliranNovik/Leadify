@@ -530,6 +530,17 @@ html,
 
 /* Drive: runs without the app header, so it starts at the top of the window, not below a bar
    that is not there. Only the notch is kept clear. */
+/* External user chrome: Header is h-11 (+ pb) / md:h-12 — keep content tight under it. */
+.app-main-scroll.external-user-scroll {
+  padding-top: calc(constant(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 2.75rem + 0.375rem) !important;
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 2.75rem + 0.375rem) !important;
+}
+@media (min-width: 768px) {
+  .app-main-scroll.external-user-scroll {
+    padding-top: calc(3rem + var(--rmq-urlbar-h, 0px)) !important;
+  }
+}
+
 .app-main-scroll.drive-scroll {
   padding-top: constant(safe-area-inset-top, 0px) !important;
   padding-top: env(safe-area-inset-top, 0px) !important;

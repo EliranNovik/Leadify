@@ -59,7 +59,11 @@ export const stageRecordMatchesSignDateRange = (
   return true;
 };
 
-/** Resolve sign timestamp (prefer `date`, fallback `cdate`). */
+/**
+ * Resolve Client signed agreement (stage 60) timestamp from leads_leadstage history.
+ * Prefer `date` (business sign date on the history row), then `cdate` (when the stage
+ * row was added to the table).
+ */
 export const resolveStage60SignTimestamp = (record: { date?: string | null; cdate?: string | null }): string | null =>
   record.date ?? record.cdate ?? null;
 

@@ -1,7 +1,7 @@
 import React from 'react';
-import { HomeIcon, UserGroupIcon, UserIcon } from '@heroicons/react/24/outline';
+import { HomeIcon, LifebuoyIcon, UserGroupIcon, UserIcon } from '@heroicons/react/24/outline';
 
-export type HandlerPageTab = 'dashboard' | 'handlers' | 'retention';
+export type HandlerPageTab = 'dashboard' | 'handlers' | 'retention' | 'client_support';
 
 const TABS: Array<{
   id: HandlerPageTab;
@@ -11,6 +11,7 @@ const TABS: Array<{
   { id: 'dashboard', label: 'Dashboard', icon: <HomeIcon className="h-7 w-7" /> },
   { id: 'handlers', label: 'Handlers', icon: <UserGroupIcon className="h-7 w-7" /> },
   { id: 'retention', label: 'Retention Handler', icon: <UserIcon className="h-7 w-7" /> },
+  { id: 'client_support', label: 'Client Support', icon: <LifebuoyIcon className="h-7 w-7" /> },
 ];
 
 type Props = {

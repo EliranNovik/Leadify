@@ -1182,6 +1182,9 @@ const AppContentInner: React.FC = () => {
                         ? // No header to clear. The inset itself lives in index.css, since
                           // `.app-main-scroll` sets a header-sized padding a utility cannot undo.
                           'scrollbar-hide drive-scroll'
+                        : isExternalUser && !isLoadingExternal
+                          ? // External header is h-11 / md:h-12 — snug content under it (see .external-user-scroll).
+                            'scrollbar-hide external-user-scroll'
                         : `pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
                   } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >

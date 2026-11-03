@@ -8538,11 +8538,13 @@ export default function ReportsPage() {
   }, [searchQuery, isSuperUser, hasCollectionAccess]);
 
   const greyExportReport = isGoogleSheetConversionExportReport(selectedReport?.label);
+  const greyShellReport =
+    greyExportReport || selectedReport?.label === 'Marketing dashboard';
 
   return (
     <div
       className={
-        greyExportReport
+        greyShellReport
           ? 'min-h-[calc(100dvh-3.5rem)] space-y-8 bg-[#f3f4f6] p-4 md:p-6'
           : 'space-y-8 p-0 md:p-6'
       }
@@ -8933,7 +8935,7 @@ export default function ReportsPage() {
                 {selectedReport.shellTitle ? (
                   <selectedReport.shellTitle />
                 ) : selectedReport?.label === 'Marketing dashboard' ? (
-                  <div className="flex min-w-0 flex-wrap items-center gap-3">
+                  <div className="inline-flex min-w-0 items-center gap-1.5">
                     <h3 className="m-0 text-2xl font-bold text-gray-900 dark:text-white">
                       <span className="inline-flex items-center gap-2">
                         <MegaphoneIcon className="h-7 w-7 text-primary" />
@@ -8942,13 +8944,14 @@ export default function ReportsPage() {
                     </h3>
                     <button
                       type="button"
-                      className="btn btn-ghost btn-sm gap-2 text-base normal-case"
+                      className="btn btn-ghost btn-circle btn-sm shrink-0 text-base-content/55 hover:text-primary"
                       onClick={() => setMarketingReportDocsOpen(true)}
                       aria-expanded={marketingReportDocsOpen}
                       aria-controls="marketing-report-docs-modal"
+                      aria-label="About this report"
+                      title="About this report"
                     >
-                      <InformationCircleIcon className="h-5 w-5 shrink-0" />
-                      About this report
+                      <InformationCircleIcon className="h-5 w-5" />
                     </button>
                   </div>
                 ) : (

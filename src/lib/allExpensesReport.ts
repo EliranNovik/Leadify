@@ -14,6 +14,8 @@ export const EXPENSE_CATEGORY_LABELS = {
   partner_draws: 'Partner draws',
   salaries: 'Salaries',
   office: 'Office expenses',
+  loans: 'Loans',
+  paid_by_office: 'Paid by office',
 } as const;
 
 export type ExpenseCategoryKey = keyof typeof EXPENSE_CATEGORY_LABELS;
@@ -25,6 +27,8 @@ export const EXPENSE_CATEGORY_ORDER: ExpenseCategoryKey[] = [
   'partner_draws',
   'salaries',
   'office',
+  'loans',
+  'paid_by_office',
 ];
 
 export type ExpenseCategoryTotals = Record<ExpenseCategoryKey, number> & {
@@ -32,10 +36,30 @@ export type ExpenseCategoryTotals = Record<ExpenseCategoryKey, number> & {
   firm_management_marketing: number;
 };
 
+/** Every key a total is kept under, including the marketing slice of firm management. */
+export type ExpenseTotalsKey = keyof ExpenseCategoryTotals;
+
+/**
+ * An amount split by whether the firm has actually paid it out.
+ *
+ * `overdue` is the part of `unpaid` that is already due: an expense month is treated as due at
+ * month end, so anything left unpaid from a past month is debt today. Loan repayments carry a
+ * real due date and use it instead.
+ */
+export type ExpensePaidSplit = {
+  total: number;
+  paid: number;
+  unpaid: number;
+  overdue: number;
+};
+
+export type ExpenseCategorySplits = Record<ExpenseTotalsKey, ExpensePaidSplit>;
+
 export type MonthlyExpenseBreakdown = {
   monthKey: string;
   label: string;
   totals: ExpenseCategoryTotals;
+  splits: ExpenseCategorySplits;
   totalNis: number;
 };
 
@@ -93,50 +117,131 @@ export function emptyCategoryTotals(): ExpenseCategoryTotals {
     partner_draws: 0,
     salaries: 0,
     office: 0,
+    loans: 0,
+    paid_by_office: 0,
     firm_management_marketing: 0,
   };
+}
+
+export const EXPENSE_TOTALS_KEYS: ExpenseTotalsKey[] = [
+  ...EXPENSE_CATEGORY_ORDER,
+  'firm_management_marketing',
+];
+
+function emptySplit(): ExpensePaidSplit {
+  return { total: 0, paid: 0, unpaid: 0, overdue: 0 };
+}
+
+export function emptyCategorySplits(): ExpenseCategorySplits {
+  const out = {} as ExpenseCategorySplits;
+  for (const key of EXPENSE_TOTALS_KEYS) out[key] = emptySplit();
+  return out;
+}
+
+export function addExpenseSplits(a: ExpensePaidSplit, b: ExpensePaidSplit): ExpensePaidSplit {
+  return {
+    total: a.total + b.total,
+    paid: a.paid + b.paid,
+    unpaid: a.unpaid + b.unpaid,
+    overdue: a.overdue + b.overdue,
+  };
+}
+
+type SplitMap = Map<string, ExpensePaidSplit>;
+
+function isPaidFlag(value: unknown): boolean {
+  return value === true || value === 't' || value === 'true' || value === 1;
+}
+
+function todayIso(): string {
+  const d = new Date();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+function currentMonthKey(): string {
+  return `${todayIso().slice(0, 7)}-01`;
+}
+
+/** An expense month is due at month end, so past months are already due and this month is not. */
+function monthAlreadyDue(monthKey: string): boolean {
+  return monthKey < currentMonthKey();
+}
+
+function addToSplitMap(
+  map: SplitMap,
+  monthKey: string,
+  amount: number,
+  paid: boolean,
+  alreadyDue: boolean,
+): void {
+  const prev = map.get(monthKey) || emptySplit();
+  map.set(monthKey, {
+    total: prev.total + amount,
+    paid: prev.paid + (paid ? amount : 0),
+    unpaid: prev.unpaid + (paid ? 0 : amount),
+    overdue: prev.overdue + (!paid && alreadyDue ? amount : 0),
+  });
+}
+
+function mergeSplitMaps(a: SplitMap, b: SplitMap): SplitMap {
+  const out: SplitMap = new Map(a);
+  for (const [key, split] of b) {
+    out.set(key, addExpenseSplits(out.get(key) || emptySplit(), split));
+  }
+  return out;
+}
+
+/**
+ * True when the table or column this report wants does not exist yet, which is what a database
+ * that has not run sql/2026-10-30_expense_paid_flags_loans_and_paid_by_office.sql looks like.
+ */
+function isMissingSchemaError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  if (error.code === '42P01' || error.code === '42703' || error.code === 'PGRST205') return true;
+  return /does not exist|schema cache/i.test(String(error.message || ''));
 }
 
 function salaryMonthKey(salaryYear: number, salaryMonth: number): string {
   return `${salaryYear}-${String(salaryMonth).padStart(2, '0')}-01`;
 }
 
-async function fetchSourceMediaByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
+async function fetchSourceMediaByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
   if (monthKeys.length === 0) return byMonth;
 
   const { data, error } = await supabase
     .from('source_media_expense')
-    .select('expense_month, amount')
+    .select('expense_month, amount, paid')
     .in('expense_month', monthKeys);
 
   if (error) throw error;
 
   for (const row of data || []) {
     const key = String(row.expense_month).slice(0, 10);
-    const prev = byMonth.get(key) || 0;
-    byMonth.set(key, prev + (Number(row.amount) || 0));
+    addToSplitMap(byMonth, key, Number(row.amount) || 0, isPaidFlag(row.paid), monthAlreadyDue(key));
   }
   return byMonth;
 }
 
 async function fetchFirmManagementSplitByMonth(monthKeys: string[]): Promise<{
-  firmManagement: Map<string, number>;
-  marketing: Map<string, number>;
-  rent: Map<string, number>;
-  office: Map<string, number>;
+  firmManagement: SplitMap;
+  marketing: SplitMap;
+  rent: SplitMap;
+  office: SplitMap;
 }> {
-  const firmManagement = new Map<string, number>();
-  const marketing = new Map<string, number>();
-  const rent = new Map<string, number>();
-  const office = new Map<string, number>();
+  const firmManagement: SplitMap = new Map();
+  const marketing: SplitMap = new Map();
+  const rent: SplitMap = new Map();
+  const office: SplitMap = new Map();
   if (monthKeys.length === 0) {
     return { firmManagement, marketing, rent, office };
   }
 
   const { data, error } = await supabase
     .from('firm_management_costs')
-    .select('billing_month, amount, currency, expense_types ( code )')
+    .select('billing_month, amount, currency, paid, expense_types ( code )')
     .in('billing_month', monthKeys);
 
   if (error) throw error;
@@ -144,63 +249,131 @@ async function fetchFirmManagementSplitByMonth(monthKeys: string[]): Promise<{
   for (const row of data || []) {
     const key = String(row.billing_month).slice(0, 10);
     const nis = managementAmountToNis(row.amount, row.currency);
+    const paid = isPaidFlag(row.paid);
+    const due = monthAlreadyDue(key);
     const typeRaw = row.expense_types as { code?: string | null } | { code?: string | null }[] | null;
     const code = (Array.isArray(typeRaw) ? typeRaw[0]?.code : typeRaw?.code) ?? null;
 
     if (code === EXPENSE_TYPE_CODE_RENT) {
-      rent.set(key, (rent.get(key) || 0) + nis);
+      addToSplitMap(rent, key, nis, paid, due);
     } else if (code === EXPENSE_TYPE_CODE_MARKETING) {
-      marketing.set(key, (marketing.get(key) || 0) + nis);
+      addToSplitMap(marketing, key, nis, paid, due);
     } else if (code === EXPENSE_TYPE_CODE_OFFICE) {
-      office.set(key, (office.get(key) || 0) + nis);
+      addToSplitMap(office, key, nis, paid, due);
     } else {
-      firmManagement.set(key, (firmManagement.get(key) || 0) + nis);
+      addToSplitMap(firmManagement, key, nis, paid, due);
     }
   }
 
   return { firmManagement, marketing, rent, office };
 }
 
-async function fetchRentByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
+async function fetchRentByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
   if (monthKeys.length === 0) return byMonth;
 
   const { data, error } = await supabase
     .from('office_rent_expense')
-    .select('expense_month, amount_nis')
+    .select('expense_month, amount_nis, paid')
     .in('expense_month', monthKeys);
 
   if (error) throw error;
 
   for (const row of data || []) {
     const key = String(row.expense_month).slice(0, 10);
-    const prev = byMonth.get(key) || 0;
-    byMonth.set(key, prev + (Number(row.amount_nis) || 0));
+    addToSplitMap(byMonth, key, Number(row.amount_nis) || 0, isPaidFlag(row.paid), monthAlreadyDue(key));
   }
   return byMonth;
 }
 
-async function fetchPartnerDrawsByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
+async function fetchPartnerDrawsByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
   if (monthKeys.length === 0) return byMonth;
 
   const { data, error } = await supabase
     .from('partner_draw_expense')
-    .select('expense_month, amount_nis')
+    .select('expense_month, amount_nis, paid')
     .in('expense_month', monthKeys);
 
   if (error) throw error;
 
   for (const row of data || []) {
     const key = String(row.expense_month).slice(0, 10);
-    const prev = byMonth.get(key) || 0;
-    byMonth.set(key, prev + (Number(row.amount_nis) || 0));
+    addToSplitMap(byMonth, key, Number(row.amount_nis) || 0, isPaidFlag(row.paid), monthAlreadyDue(key));
   }
   return byMonth;
 }
 
-async function fetchOfficeExpensesByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
+async function fetchLoanPaymentsByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
+  if (monthKeys.length === 0) return byMonth;
+
+  const { data, error } = await supabase
+    .from('loan_payment_expense')
+    .select('expense_month, amount_nis, due_date, paid')
+    .in('expense_month', monthKeys);
+
+  if (error) {
+    if (isMissingSchemaError(error)) {
+      console.warn('loan_payment_expense is missing; loans will read as 0 until the migration runs');
+      return byMonth;
+    }
+    throw error;
+  }
+
+  const today = todayIso();
+  for (const row of data || []) {
+    const key = String(row.expense_month).slice(0, 10);
+    const dueDate = row.due_date ? String(row.due_date).slice(0, 10) : '';
+    const due = dueDate ? dueDate < today : monthAlreadyDue(key);
+    addToSplitMap(byMonth, key, Number(row.amount_nis) || 0, isPaidFlag(row.paid), due);
+  }
+  return byMonth;
+}
+
+async function fetchPaidByOfficeByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
+  if (monthKeys.length === 0) return byMonth;
+
+  const monthKeySet = new Set(monthKeys);
+  const years = [...new Set(monthKeys.map(k => Number(k.slice(0, 4))))].filter(Number.isFinite);
+  if (years.length === 0) return byMonth;
+
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+
+  const { data, error } = await supabase
+    .from('paid_by_office_expense')
+    .select('expense_date, amount, currency, paid')
+    .gte('expense_date', `${minYear}-01-01`)
+    .lt('expense_date', `${maxYear + 1}-01-01`);
+
+  if (error) {
+    if (isMissingSchemaError(error)) {
+      console.warn('paid_by_office_expense is missing; the category will read as 0 until the migration runs');
+      return byMonth;
+    }
+    throw error;
+  }
+
+  for (const row of data || []) {
+    const date = String(row.expense_date || '').slice(0, 10);
+    if (date.length < 7) continue;
+    const monthKey = `${date.slice(0, 7)}-01`;
+    if (!monthKeySet.has(monthKey)) continue;
+    addToSplitMap(
+      byMonth,
+      monthKey,
+      managementAmountToNis(row.amount, row.currency),
+      isPaidFlag(row.paid),
+      monthAlreadyDue(monthKey),
+    );
+  }
+  return byMonth;
+}
+
+async function fetchOfficeExpensesByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
   if (monthKeys.length === 0) return byMonth;
 
   const monthKeySet = new Set(monthKeys);
@@ -212,7 +385,7 @@ async function fetchOfficeExpensesByMonth(monthKeys: string[]): Promise<Map<stri
 
   const { data, error } = await supabase
     .from('office_expenses')
-    .select('created_at, amount, currency')
+    .select('created_at, amount, currency, paid')
     .gte('created_at', `${minYear}-01-01`)
     .lt('created_at', `${maxYear + 1}-01-01`);
 
@@ -223,14 +396,19 @@ async function fetchOfficeExpensesByMonth(monthKeys: string[]): Promise<Map<stri
     if (created.length < 7) continue;
     const monthKey = `${created.slice(0, 7)}-01`;
     if (!monthKeySet.has(monthKey)) continue;
-    const prev = byMonth.get(monthKey) || 0;
-    byMonth.set(monthKey, prev + managementAmountToNis(row.amount, row.currency));
+    addToSplitMap(
+      byMonth,
+      monthKey,
+      managementAmountToNis(row.amount, row.currency),
+      isPaidFlag(row.paid),
+      monthAlreadyDue(monthKey),
+    );
   }
   return byMonth;
 }
 
-async function fetchSalariesByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
+async function fetchSalariesByMonth(monthKeys: string[]): Promise<SplitMap> {
+  const byMonth: SplitMap = new Map();
   if (monthKeys.length === 0) return byMonth;
 
   const monthKeySet = new Set(monthKeys);
@@ -242,7 +420,7 @@ async function fetchSalariesByMonth(monthKeys: string[]): Promise<Map<string, nu
 
   const { data, error } = await supabase
     .from('employee_salary')
-    .select('gross_salary, salary_month, salary_year')
+    .select('gross_salary, salary_month, salary_year, paid')
     .gte('salary_year', minYear)
     .lte('salary_year', maxYear);
 
@@ -251,8 +429,7 @@ async function fetchSalariesByMonth(monthKeys: string[]): Promise<Map<string, nu
   for (const row of data || []) {
     const key = salaryMonthKey(Number(row.salary_year), Number(row.salary_month));
     if (!monthKeySet.has(key)) continue;
-    const prev = byMonth.get(key) || 0;
-    byMonth.set(key, prev + (Number(row.gross_salary) || 0));
+    addToSplitMap(byMonth, key, Number(row.gross_salary) || 0, isPaidFlag(row.paid), monthAlreadyDue(key));
   }
   return byMonth;
 }
@@ -260,27 +437,44 @@ async function fetchSalariesByMonth(monthKeys: string[]): Promise<Map<string, nu
 export function mergeMonthlyBreakdown(
   monthKeys: string[],
   maps: {
-    sourceMedia: Map<string, number>;
-    firmManagement: Map<string, number>;
-    rent: Map<string, number>;
-    partnerDraws: Map<string, number>;
-    salaries: Map<string, number>;
-    office: Map<string, number>;
-    firmManagementMarketing: Map<string, number>;
-    firmManagementRent: Map<string, number>;
-    firmManagementOffice: Map<string, number>;
+    sourceMedia: SplitMap;
+    firmManagement: SplitMap;
+    rent: SplitMap;
+    partnerDraws: SplitMap;
+    salaries: SplitMap;
+    office: SplitMap;
+    loans: SplitMap;
+    paidByOffice: SplitMap;
+    firmManagementMarketing: SplitMap;
+    firmManagementRent: SplitMap;
+    firmManagementOffice: SplitMap;
   },
 ): MonthlyExpenseBreakdown[] {
+  // Firm management lines typed as rent or office belong to those categories, so the two maps
+  // are merged before anything is read per month.
+  const rent = mergeSplitMaps(maps.rent, maps.firmManagementRent);
+  const office = mergeSplitMaps(maps.office, maps.firmManagementOffice);
+
+  const byCategory: Record<ExpenseTotalsKey, SplitMap> = {
+    source_media: maps.sourceMedia,
+    firm_management: maps.firmManagement,
+    rent,
+    partner_draws: maps.partnerDraws,
+    salaries: maps.salaries,
+    office,
+    loans: maps.loans,
+    paid_by_office: maps.paidByOffice,
+    firm_management_marketing: maps.firmManagementMarketing,
+  };
+
   return monthKeys.map(monthKey => {
-    const totals: ExpenseCategoryTotals = {
-      source_media: maps.sourceMedia.get(monthKey) || 0,
-      firm_management: maps.firmManagement.get(monthKey) || 0,
-      rent: (maps.rent.get(monthKey) || 0) + (maps.firmManagementRent.get(monthKey) || 0),
-      partner_draws: maps.partnerDraws.get(monthKey) || 0,
-      salaries: maps.salaries.get(monthKey) || 0,
-      office: (maps.office.get(monthKey) || 0) + (maps.firmManagementOffice.get(monthKey) || 0),
-      firm_management_marketing: maps.firmManagementMarketing.get(monthKey) || 0,
-    };
+    const splits = emptyCategorySplits();
+    const totals = emptyCategoryTotals();
+    for (const key of EXPENSE_TOTALS_KEYS) {
+      const split = byCategory[key].get(monthKey) || emptySplit();
+      splits[key] = split;
+      totals[key] = split.total;
+    }
     const totalNis =
       EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + totals[key], 0) +
       totals.firm_management_marketing;
@@ -288,6 +482,7 @@ export function mergeMonthlyBreakdown(
       monthKey,
       label: formatMonthKeyLabel(monthKey),
       totals,
+      splits,
       totalNis,
     };
   });
@@ -304,8 +499,29 @@ export function sumCategoryTotals(rows: MonthlyExpenseBreakdown[]): ExpenseCateg
   return out;
 }
 
+export function sumCategorySplits(rows: MonthlyExpenseBreakdown[]): ExpenseCategorySplits {
+  const out = emptyCategorySplits();
+  for (const row of rows) {
+    for (const key of EXPENSE_TOTALS_KEYS) {
+      out[key] = addExpenseSplits(out[key], row.splits?.[key] || emptySplit());
+    }
+  }
+  return out;
+}
+
 export function marketingExpenseTotal(totals: ExpenseCategoryTotals): number {
   return totals.source_media + totals.firm_management_marketing;
+}
+
+/** Marketing as the summary boxes show it: source media plus firm management marketing lines. */
+export function marketingExpenseSplit(splits: ExpenseCategorySplits): ExpensePaidSplit {
+  return addExpenseSplits(splits.source_media, splits.firm_management_marketing);
+}
+
+/** What the firm still owes: unpaid lines whose due date has passed. */
+export function expenseDebtTotal(splits: ExpenseCategorySplits): number {
+  return EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + splits[key].overdue, 0) +
+    splits.firm_management_marketing.overdue;
 }
 
 export async function fetchAllExpensesBreakdown(monthKeys: string[]): Promise<MonthlyExpenseBreakdown[]> {
@@ -316,6 +532,8 @@ export async function fetchAllExpensesBreakdown(monthKeys: string[]): Promise<Mo
     partnerDraws,
     salaries,
     office,
+    loans,
+    paidByOffice,
   ] = await Promise.all([
     fetchSourceMediaByMonth(monthKeys),
     fetchFirmManagementSplitByMonth(monthKeys),
@@ -323,6 +541,8 @@ export async function fetchAllExpensesBreakdown(monthKeys: string[]): Promise<Mo
     fetchPartnerDrawsByMonth(monthKeys),
     fetchSalariesByMonth(monthKeys),
     fetchOfficeExpensesByMonth(monthKeys),
+    fetchLoanPaymentsByMonth(monthKeys),
+    fetchPaidByOfficeByMonth(monthKeys),
   ]);
 
   return mergeMonthlyBreakdown(monthKeys, {
@@ -332,6 +552,8 @@ export async function fetchAllExpensesBreakdown(monthKeys: string[]): Promise<Mo
     partnerDraws,
     salaries,
     office,
+    loans,
+    paidByOffice,
     firmManagementMarketing: firmManagementSplit.marketing,
     firmManagementRent: firmManagementSplit.rent,
     firmManagementOffice: firmManagementSplit.office,

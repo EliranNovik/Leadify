@@ -31,6 +31,16 @@ import {
   type SourceRowLike,
 } from '../lib/leadDateFilters';
 import {
+  fetchStage60RecordsInRange,
+  resolveStage60SignTimestamp,
+} from '../lib/stage60SignDate';
+import {
+  fetchAllRowsForLeadIds,
+  isExpenseInstallmentRow,
+  resolveLegacyPaymentCurrency,
+} from '../lib/invoicedInstallments';
+import { isPaymentPlanInvoiceSent } from '../lib/markPaymentPlanInvoiceSent';
+import {
   ResponsiveContainer,
   BarChart,
   Bar,
@@ -47,8 +57,10 @@ import {
   CheckCircleIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  DocumentTextIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline';
+import { ChartBar, Search } from 'lucide-react';
 
 type ChannelRow = { id: string; code: string; label: string; is_active: boolean };
 /** misc_leadsource.id is bigint: keep as string to avoid precision loss */
@@ -87,6 +99,8 @@ type LeadRow = {
   currency_id?: number | null;
   phone?: string | null;
   mobile?: string | null;
+  /** Stage-60 Client signed agreement timestamp (when loaded for signed-in-range deals). */
+  signed_at?: string | null;
   misc_country?: { id: number; name: string } | null;
   misc_leadsource?: {
     id: number;
@@ -228,14 +242,6 @@ async function fetchLeadIdsWithMeetingsFromTable(
   }
 
   return { leadIds, error: null };
-}
-
-function hasSignedDeal(lead: LeadRow): boolean {
-  if (isMarketingStage91(lead)) return false;
-  const r = stageRank(lead);
-  if (r >= 60) return true;
-  const name = getStageName(String(lead.stage ?? '')).toLowerCase();
-  return name.includes('signed') && name.includes('client');
 }
 
 /** Numeric stage ids aligned with Scheduled report / pipeline (history_leads.stage is bigint). */
@@ -949,6 +955,118 @@ async function fetchPaginatedNewLeads(
   return { rows, truncated };
 }
 
+const NEW_LEAD_MARKETING_SELECT = `
+    id,
+    created_at,
+    lead_number,
+    name,
+    category,
+    scheduler,
+    meeting_scheduler_id,
+    stage,
+    source,
+    source_id,
+    status,
+    eligible,
+    eligibility_status,
+    unactivated_at,
+    unactivation_reason,
+    balance,
+    proposal_total,
+    balance_currency,
+    probability,
+    country_id,
+    currency_id,
+    phone,
+    mobile,
+    misc_country!country_id ( id, name ),
+    misc_leadsource!fk_leads_source_id ( id, name, channel_id ),
+    misc_category!category_id ( name, parent_id, misc_maincategory!parent_id ( id, name ) )
+  `;
+
+const LEGACY_LEAD_MARKETING_SELECT = `
+    *,
+    misc_leadsource!leads_lead_source_id_fkey(id, name, channel_id),
+    misc_category!leads_lead_category_id_fkey ( name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+    scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+    accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code)
+  `;
+
+/** Load lead rows by id (new UUID + legacy numeric) for marketing deal attribution. */
+async function fetchMarketingLeadsByIds(
+  newLeadIds: string[],
+  legacyLeadNumericIds: number[],
+): Promise<LeadRow[]> {
+  const combined: LeadRow[] = [];
+  const chunkSize = 100;
+
+  for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+    const chunk = newLeadIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('leads')
+      .select(NEW_LEAD_MARKETING_SELECT)
+      .in('id', chunk);
+    if (error) throw error;
+    combined.push(...((data || []) as unknown as LeadRow[]).map(enrichLeadCategoryName));
+  }
+
+  for (let i = 0; i < legacyLeadNumericIds.length; i += chunkSize) {
+    const chunk = legacyLeadNumericIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('leads_lead')
+      .select(LEGACY_LEAD_MARKETING_SELECT)
+      .in('id', chunk);
+    if (error) throw error;
+    for (const raw of (data || []) as Record<string, unknown>[]) {
+      combined.push(mapLegacyLeadToRow(raw));
+    }
+  }
+
+  return combined;
+}
+
+/**
+ * Leads that hit Client signed agreement (stage 60) with sign date in range
+ * (same calendar logic as Signed Sales / Dashboard). Caller applies marketing filters
+ * without created_at — deals are attributed by sign date, not lead creation.
+ */
+async function fetchSignedDealLeadRowsInRange(fromDate: string, toDate: string): Promise<LeadRow[]> {
+  if (!fromDate && !toDate) return [];
+  const stageRows = await fetchStage60RecordsInRange(fromDate || undefined, toDate || undefined);
+  const newIds: string[] = [];
+  const legacyIds: number[] = [];
+  const seen = new Set<string>();
+  const signedAtByLeadId = new Map<string, string>();
+  for (const r of stageRows) {
+    const ts = resolveStage60SignTimestamp(r);
+    if (r.newlead_id) {
+      const id = String(r.newlead_id);
+      if (ts) {
+        const prev = signedAtByLeadId.get(id);
+        if (!prev || ts > prev) signedAtByLeadId.set(id, ts);
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      newIds.push(id);
+    } else if (r.lead_id != null && Number.isFinite(Number(r.lead_id))) {
+      const id = `legacy-${r.lead_id}`;
+      if (ts) {
+        const prev = signedAtByLeadId.get(id);
+        if (!prev || ts > prev) signedAtByLeadId.set(id, ts);
+      }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      legacyIds.push(Number(r.lead_id));
+    }
+  }
+  if (newIds.length === 0 && legacyIds.length === 0) return [];
+  const leads = await fetchMarketingLeadsByIds(newIds, legacyIds);
+  return leads.map((l) => ({
+    ...l,
+    signed_at: signedAtByLeadId.get(l.id) ?? null,
+  }));
+}
+
 async function fetchCallLogsPaged(
   applyLeadFilter: (q: ReturnType<typeof supabase.from>) => ReturnType<typeof supabase.from>,
   callFrom?: string,
@@ -1022,11 +1140,16 @@ function applyMarketingLeadFilters(
     countries: CountryRow[];
     firmIdToSourceIds: Map<string, string[]>;
     sourceIdToFirmIds: Map<string, string[]>;
+    /** When false, skip created_at range (used for deals signed in range). Default true. */
+    requireCreatedInRange?: boolean;
   },
 ): LeadRow[] {
   const lookup = buildSourceLookupMaps(opts.allSources);
+  const requireCreatedInRange = opts.requireCreatedInRange !== false;
   return rows.filter((lead) => {
-    if (!timestampInCalendarRange(lead.created_at, opts.fromDate, opts.toDate)) return false;
+    if (requireCreatedInRange && !timestampInCalendarRange(lead.created_at, opts.fromDate, opts.toDate)) {
+      return false;
+    }
     if (!leadMatchesMainCategoryFilter(lead, opts.mainCategoryIds)) return false;
     if (opts.channelIds.length > 0) {
       const cid = leadChannelId(lead, lookup.sourceNameToRow, lookup.sourceIdToRow);
@@ -1123,6 +1246,75 @@ function leadRevenueNis(lead: LeadRow): number {
   }
 }
 
+const MARKETING_INVOICE_SENT_OR =
+  'invoice_sent.eq.true,invoice_sent_at.not.is.null,invoice_send_automation_sent_at.not.is.null';
+
+function paymentAmountToNis(value: unknown, currency: unknown): number {
+  const raw = Number(value ?? 0);
+  if (!raw || !Number.isFinite(raw)) return 0;
+  try {
+    return convertToNIS(raw, currency ?? '₪');
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Sum of invoiced payment-plan installments (ex-VAT `value`, expenses excluded) per signed-deal lead.
+ * Keys match LeadRow.id (UUID or `legacy-{n}`).
+ */
+async function fetchInvoicedNisByDealLeadId(
+  newLeadIds: string[],
+  legacyLeadNumericIds: number[],
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (newLeadIds.length === 0 && legacyLeadNumericIds.length === 0) return map;
+
+  const add = (leadKey: string, nis: number) => {
+    if (!leadKey || !(nis > 0)) return;
+    map.set(leadKey, (map.get(leadKey) || 0) + nis);
+  };
+
+  if (newLeadIds.length > 0) {
+    const rows = await fetchAllRowsForLeadIds<Record<string, unknown>>(newLeadIds, (chunk) =>
+      supabase
+        .from('payment_plans')
+        .select(
+          'id, lead_id, value, currency, cancel_date, payment_order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at',
+        )
+        .is('cancel_date', null)
+        .or(MARKETING_INVOICE_SENT_OR)
+        .in('lead_id', chunk as string[]),
+    );
+    for (const row of rows) {
+      if (!isPaymentPlanInvoiceSent(row as any)) continue;
+      if (isExpenseInstallmentRow(row, 'new')) continue;
+      add(String(row.lead_id ?? ''), paymentAmountToNis(row.value, row.currency));
+    }
+  }
+
+  if (legacyLeadNumericIds.length > 0) {
+    const rows = await fetchAllRowsForLeadIds<Record<string, unknown>>(legacyLeadNumericIds, (chunk) =>
+      supabase
+        .from('finances_paymentplanrow')
+        .select(
+          'id, lead_id, value, currency_id, cancel_date, order, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+        )
+        .is('cancel_date', null)
+        .or(MARKETING_INVOICE_SENT_OR)
+        .in('lead_id', chunk as number[]),
+    );
+    for (const row of rows) {
+      if (!isPaymentPlanInvoiceSent(row as any)) continue;
+      if (isExpenseInstallmentRow(row, 'legacy')) continue;
+      const currency = resolveLegacyPaymentCurrency(row);
+      add(`legacy-${row.lead_id}`, paymentAmountToNis(row.value, currency));
+    }
+  }
+
+  return map;
+}
+
 type AggRow = {
   key: string;
   channel: string;
@@ -1137,6 +1329,8 @@ type AggRow = {
   leadsExclStage91: number;
   /** Internal: stage-91 count (stripped before display). */
   stage91?: number;
+  /** Invoiced installment total (NIS) for signed-in-range deals. */
+  invoicedNis: number;
   revenueNis: number;
   inactive: number;
   notEligible: number;
@@ -1161,6 +1355,7 @@ type MacroSortKey =
   | 'pctMtg'
   | 'pctOffer'
   | 'pctDeal'
+  | 'invoiced'
   | 'revenue'
   | 'inactive';
 
@@ -1183,6 +1378,8 @@ function macroSortValue(r: AggRow, key: MacroSortKey): number {
       return r.offers;
     case 'deals':
       return r.deals;
+    case 'invoiced':
+      return r.invoicedNis;
     case 'revenue':
       return r.revenueNis;
     case 'inactive':
@@ -1266,23 +1463,31 @@ const MARKETING_REPORT_INTRO = (
     Compare lead volume and funnel conversion by <strong>source</strong> or <strong>channel</strong> for leads
     created in the date range you choose (calendar dates in Asia/Jerusalem, same as Lead Search). The cohort
     includes new leads and legacy leads (including subleads). Use the filters, then click{' '}
-    <strong>go</strong> to load results.
+    <strong>Search</strong> to load results.
   </>
 );
 
 const MARKETING_REPORT_INTRO_DETAILS = (
   <>
-    The macro table shows leads, eligible, meetings, offers, signed deals, revenue (NIS), inactive leads, and
-    media/management cost columns. <strong>Meetings</strong> are active leads with at least one non-canceled
+    The macro table shows leads, eligible, meetings, offers, signed deals, invoiced (NIS), revenue (NIS), inactive
+    leads, and media/management cost columns. <strong>Meetings</strong> are active leads with at least one non-canceled
     meeting in the meetings table (one per lead); stage 21 (meeting rescheduling) is not counted.{' '}
-    <strong>Offers</strong>, <strong>deals</strong>, and Lead→Offer / Lead→Deal % exclude stage 91 (dropped
-    spam). Click a deals number to open the signed-deal list. Provider (firm) comes from source–firm links in
-    Admin. Funnel timing uses stage history; sales behaviour uses scheduler-matched call logs for qualified
-    leads before offer stage.
+    <strong>Offers</strong> use the created-in-range cohort (current stage). <strong>Deals</strong>,{' '}
+    <strong>invoiced</strong>, and <strong>revenue</strong> use Client signed agreement (stage 60) by{' '}
+    <em>sign date</em> in the same range (leads_leadstage), attributed to the lead&apos;s source—even when the
+    lead was created earlier. <strong>Invoiced</strong> sums payment-plan installments with an invoice sent
+    (ex-VAT, expenses excluded). <strong>Revenue</strong> is the deal balance/proposal in NIS. Lead→Offer % is
+    cohort-based; Lead→Deal % is signed-in-range deals ÷ cohort leads (excl. stage 91). Click a deals number to
+    open the signed-deal list. Provider (firm) comes from source–firm links in Admin. Funnel timing uses stage
+    history; sales behaviour uses scheduler-matched call logs for qualified leads before offer stage.
   </>
 );
 const REPORT_TABLE_CLASS =
   'table text-sm md:text-base [&_thead_th]:!text-base-content/55';
+
+/** Grey-page white panels — same shell as Handler Management / conversion export reports. */
+const REPORT_WHITE_PANEL =
+  'rounded-2xl bg-white p-4 shadow-sm ring-1 ring-gray-100 sm:p-5';
 
 /**
  * Search input + multi-select list. Selected rows are checked; order is fixed while open (selected-first snapshot
@@ -1508,7 +1713,7 @@ async function fetchAllSourceFirmLinks(): Promise<
 }
 
 const GROUP_BY_TOGGLE_CLASS =
-  'min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0';
+  'min-w-[7rem] cursor-pointer rounded-full px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0';
 
 export type MarketingDashboardReportProps = {
   docsOpen?: boolean;
@@ -1533,10 +1738,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const macroSortAlign: 'center' | 'end' = 'center';
   const macroCellAlign = 'text-center';
   const macroLabelAlign = 'text-left';
-  const macroLabelColClass = `macro-label-col ${macroLabelAlign} w-[7rem] max-w-[7rem] sm:w-[8rem] sm:max-w-[8rem] whitespace-normal break-words align-top leading-snug`;
-  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed w-full min-w-0 border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-words [&_td:not(.macro-label-col)]:whitespace-nowrap [&_th]:border-0 [&_td]:border-0 [&_thead_tr]:border-0 [&_tbody_tr]:border-0 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_th]:bg-white [&_td]:bg-white`;
   const filterColClass = FILTER_COL_CLASS;
   const macroTableScrollRef = useRef<HTMLDivElement | null>(null);
+  const macroTableSectionRef = useRef<HTMLDivElement | null>(null);
+  const macroBottomScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const syncingMacroHScrollRef = useRef(false);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [channelIds, setChannelIds] = useState<string[]>([]);
@@ -1545,11 +1751,60 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const [firmIds, setFirmIds] = useState<string[]>([]);
   const [mainCategoryIds, setMainCategoryIds] = useState<string[]>([]);
   const [groupMode, setGroupMode] = useState<GroupMode>('source');
+  const showSourceCol = groupMode === 'source';
+  const showProviderCol = !isExternalVariant;
+  /** Sticky left columns: Channel → Source → Provider; metrics scroll underneath. */
+  const stickyEdgeClass =
+    'border-r border-base-300 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.12)]';
+  const stickyChannelClass =
+    'macro-sticky-col sticky left-0 z-[22] min-w-[8rem] w-[8rem] bg-white';
+  const stickySourceClass =
+    'macro-sticky-col macro-label-col sticky left-[8rem] z-[22] min-w-[12rem] w-[12rem] sm:min-w-[14rem] sm:w-[14rem] bg-white';
+  const stickyProviderLeftClass = showSourceCol
+    ? 'sticky left-[20rem] sm:left-[22rem]'
+    : 'sticky left-[8rem]';
+  const stickyProviderClass = `macro-sticky-col macro-label-col ${stickyProviderLeftClass} z-[22] min-w-[12rem] w-[12rem] sm:min-w-[14rem] sm:w-[14rem] bg-white`;
+  const channelIsLastSticky = !showSourceCol && !showProviderCol;
+  const sourceIsLastSticky = showSourceCol && !showProviderCol;
+  const providerIsLastSticky = showProviderCol;
+  const macroLabelColClass = `${macroLabelAlign} whitespace-normal break-normal [overflow-wrap:normal] [word-break:keep-all] hyphens-none align-middle leading-snug`;
+  const macroLabelTextClass =
+    'block break-normal [overflow-wrap:normal] [word-break:keep-all] hyphens-none';
+  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed !border-separate border-spacing-0 w-full min-w-[78rem] border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-normal [&_td:not(.macro-label-col)]:whitespace-nowrap [&_thead_th]:border-0 [&_thead_th]:border-b [&_thead_th]:border-base-300 [&_tbody_td]:border-0 [&_tbody_td]:border-b [&_tbody_td]:border-base-200 [&_tfoot_td]:border-0 [&_tfoot_td]:border-t-2 [&_tfoot_td]:border-base-300 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_tfoot_tr]:bg-base-200 [&_th]:bg-white [&_td]:bg-white [&_tfoot_td]:bg-base-200`;
+  const macroColGroup = (
+    <colgroup>
+      <col className="w-[8rem]" />
+      {showSourceCol ? <col className="w-[12rem] sm:w-[14rem]" /> : null}
+      {showProviderCol ? <col className="w-[12rem] sm:w-[14rem]" /> : null}
+      <col className="w-[4.5rem]" />
+      <col className="w-[4.5rem]" />
+      <col className="w-[5rem]" />
+      <col className="w-[4.5rem]" />
+      <col className="w-[4.5rem]" />
+      <col className="w-[5.25rem]" />
+      <col className="w-[5.25rem]" />
+      <col className="w-[5.5rem]" />
+      <col className="w-[5.5rem]" />
+      <col className="w-[6.5rem]" />
+      <col className="w-[6.5rem]" />
+      <col className="w-[4.5rem]" />
+      {showProviderCol ? (
+        <>
+          <col className="w-[6.5rem]" />
+          <col className="w-[7rem]" />
+          <col className="w-[6.5rem]" />
+          <col className="w-[4.75rem]" />
+        </>
+      ) : null}
+    </colgroup>
+  );
   const [macroSort, setMacroSort] = useState<{ key: MacroSortKey; dir: 'asc' | 'desc' }>({
     key: 'leads',
     dir: 'desc',
   });
-  const [macroAtRightEdge, setMacroAtRightEdge] = useState(false);
+  const [macroNeedsHScroll, setMacroNeedsHScroll] = useState(false);
+  const [macroTableOnScreen, setMacroTableOnScreen] = useState(false);
+  const [macroScrollWidth, setMacroScrollWidth] = useState(0);
   const [docsOpenLocal, setDocsOpenLocal] = useState(false);
   const docsControlled = onDocsOpenChange != null;
   const docsOpen = docsControlled ? Boolean(docsOpenProp) : docsOpenLocal;
@@ -1569,6 +1824,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const [countries, setCountries] = useState<CountryRow[]>([]);
   const [mainCategories, setMainCategories] = useState<MainCategoryRow[]>([]);
   const [leads, setLeads] = useState<LeadRow[]>([]);
+  /** Leads that reached stage 60 (Client signed agreement) with sign date in the report range. */
+  const [signedDealLeads, setSignedDealLeads] = useState<LeadRow[]>([]);
+  /** Invoiced installment NIS totals keyed by LeadRow.id for signedDealLeads. */
+  const [invoicedNisByLeadId, setInvoicedNisByLeadId] = useState<Map<string, number>>(() => new Map());
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1766,7 +2025,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         return { ...lead, country_id: contactCountryId };
       });
 
-      let rows = applyMarketingLeadFilters([...newLeadRows, ...legacyLeadRows], {
+      const marketingFilterOpts = {
         fromDate,
         toDate,
         channelIds,
@@ -1778,7 +2037,35 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         countries,
         firmIdToSourceIds,
         sourceIdToFirmIds,
-      });
+      };
+
+      let rows = applyMarketingLeadFilters([...newLeadRows, ...legacyLeadRows], marketingFilterOpts);
+
+      let signedDealRows: LeadRow[] = [];
+      try {
+        if (fromDate || toDate) {
+          let signedRaw = await fetchSignedDealLeadRowsInRange(fromDate, toDate);
+          if (legacyContactCountryIds.size > 0) {
+            signedRaw = signedRaw.map((lead) => {
+              const numericId = legacyLeadNumericId(lead);
+              if (numericId == null) return lead;
+              const contactCountryId = legacyContactCountryIds.get(String(numericId));
+              if (contactCountryId == null) return lead;
+              return { ...lead, country_id: contactCountryId };
+            });
+          }
+          signedDealRows = applyMarketingLeadFilters(signedRaw, {
+            ...marketingFilterOpts,
+            requireCreatedInRange: false,
+          }).filter((l) => !isMarketingStage91(l));
+        } else {
+          // No date range: fall back to cohort leads currently at/after signed.
+          signedDealRows = rows.filter((l) => !isMarketingStage91(l) && stageRank(l) >= HIST_STAGE.signed);
+        }
+      } catch (e) {
+        console.warn('signed deal (stage 60) fetch:', e);
+        signedDealRows = [];
+      }
 
       setFetchTruncated(newTruncated || legacyLeadRows.length >= maxRows);
 
@@ -1828,7 +2115,21 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         });
       }
 
+      let invoicedByLead = new Map<string, number>();
+      try {
+        const signedNewIds = signedDealRows.filter((r) => !isLegacyLeadId(r.id)).map((r) => r.id);
+        const signedLegacyIds = signedDealRows
+          .map((r) => legacyLeadNumericId(r))
+          .filter((n): n is number => n != null);
+        invoicedByLead = await fetchInvoicedNisByDealLeadId(signedNewIds, signedLegacyIds);
+      } catch (e) {
+        console.warn('signed deal invoiced amounts:', e);
+        invoicedByLead = new Map();
+      }
+
       setLeads(rows);
+      setSignedDealLeads(signedDealRows);
+      setInvoicedNisByLeadId(invoicedByLead);
       if (!isExternalVariant) {
         const [mediaBySource, managementByFirm] = await Promise.all([
           fetchMediaExpensesBySource(fromDate, toDate),
@@ -1988,6 +2289,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       console.error(e);
       setLoadError(e?.message || 'Failed to load leads');
       setLeads([]);
+      setSignedDealLeads([]);
+      setInvoicedNisByLeadId(new Map());
       setMediaExpenseBySourceId({});
       setManagementExpenseByFirmId({});
       setFetchTruncated(false);
@@ -2059,6 +2362,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'history_leads' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, scheduleReportRefresh)
       .subscribe();
 
@@ -2114,6 +2418,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           deals: 0,
           leadsExclStage91: 0,
           stage91: 0,
+          invoicedNis: 0,
           revenueNis: 0,
           inactive: 0,
           notEligible: 0,
@@ -2155,10 +2460,63 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         row.meetings += 1;
       }
       if (hasOfferOrBeyond(l)) row.offers += 1;
-      if (hasSignedDeal(l)) {
-        row.deals += 1;
-        row.revenueNis += leadRevenueNis(l);
+    }
+
+    // Deals / invoiced / revenue: sign date in range (stage 60), attributed to source — may include leads created earlier.
+    const countedDealIds = new Set<string>();
+    for (const l of signedDealLeads) {
+      if (countedDealIds.has(l.id)) continue;
+      countedDealIds.add(l.id);
+      const channel = getChannelLabel(l);
+      const source = getSourceLabel(l);
+      const key = groupMode === 'channel' ? channel : `${channel}|||${source}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          channel,
+          source: groupMode === 'channel' ? '—' : source,
+          provider: '—',
+          leads: 0,
+          eligible: 0,
+          meetings: 0,
+          offers: 0,
+          deals: 0,
+          leadsExclStage91: 0,
+          stage91: 0,
+          invoicedNis: 0,
+          revenueNis: 0,
+          inactive: 0,
+          notEligible: 0,
+          mediaNis: 0,
+          managementNis: 0,
+          _providerNames: new Set<string>(),
+          _sourceIds: new Set<string>(),
+          _firmIds: new Set<string>(),
+          _countedMeetingLeadIds: new Set<string>(),
+        });
       }
+      const row = map.get(key)!;
+      const srcRow = resolveSourceRow(l);
+      if (srcRow?.id) {
+        row._sourceIds!.add(String(srcRow.id));
+        for (const firmId of sourceIdToFirmIds.get(String(srcRow.id)) || []) {
+          row._firmIds!.add(firmId);
+        }
+      } else if (l.source_id != null && String(l.source_id).trim() !== '') {
+        const sid = String(l.source_id);
+        row._sourceIds!.add(sid);
+        for (const firmId of sourceIdToFirmIds.get(sid) || []) {
+          row._firmIds!.add(firmId);
+        }
+      }
+      const firmSourceId = srcRow?.id ?? (l.source_id != null ? String(l.source_id) : null);
+      if (firmSourceId) {
+        const pname = sourceIdToFirmName.get(String(firmSourceId));
+        if (pname && row._providerNames) row._providerNames.add(pname);
+      }
+      row.deals += 1;
+      row.invoicedNis += invoicedNisByLeadId.get(l.id) || 0;
+      row.revenueNis += leadRevenueNis(l);
     }
 
     // Firm filter: show every source linked to the selected firm(s), even with 0 leads in range.
@@ -2188,6 +2546,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           deals: 0,
           leadsExclStage91: 0,
           stage91: 0,
+          invoicedNis: 0,
           revenueNis: 0,
           inactive: 0,
           notEligible: 0,
@@ -2201,6 +2560,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       }
     }
 
+    // Management cost is attached after sort (top visible row per firm) — keep _firmIds here.
     return Array.from(map.values()).map((r) => {
       const names = r._providerNames;
       let provider = '—';
@@ -2210,23 +2570,25 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         (sum, sourceId) => sum + (mediaExpenseBySourceId[sourceId] || 0),
         0,
       );
-      const managementNis = [...(r._firmIds || [])].reduce(
-        (sum, firmId) => sum + (managementExpenseByFirmId[firmId] || 0),
-        0,
-      );
       const stage91 = r.stage91 ?? 0;
       const leadsExclStage91 = Math.max(0, r.leads - stage91);
       const {
         _providerNames,
         _sourceIds,
-        _firmIds,
         _countedMeetingLeadIds: _mtgIds,
         stage91: _s91,
         ...rest
       } = r;
-      return { ...rest, provider, mediaNis, managementNis, leadsExclStage91 };
+      return {
+        ...rest,
+        provider,
+        mediaNis,
+        managementNis: 0,
+        leadsExclStage91,
+        _firmIds: r._firmIds,
+      };
     });
-  }, [leads, leadIdsWithMeeting, groupMode, channels, firmIds, firmIdToSourceIds, sourceIdToFirmName, sourceIdToFirmIds, mediaExpenseBySourceId, managementExpenseByFirmId, allSources]);
+  }, [leads, signedDealLeads, invoicedNisByLeadId, leadIdsWithMeeting, groupMode, channels, firmIds, firmIdToSourceIds, sourceIdToFirmName, sourceIdToFirmIds, mediaExpenseBySourceId, allSources]);
 
   const sortedAggregates = useMemo(() => {
     const rows = [...aggregates];
@@ -2238,8 +2600,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       if (va !== vb) return sign * (va < vb ? -1 : 1);
       return a.key.localeCompare(b.key);
     });
-    return rows;
-  }, [aggregates, macroSort]);
+    // Firm management cost once per provider — show on the topmost visible row for that firm.
+    const firmAssigned = new Set<string>();
+    return rows.map((r) => {
+      let managementNis = 0;
+      for (const firmId of r._firmIds || []) {
+        if (firmAssigned.has(firmId)) continue;
+        firmAssigned.add(firmId);
+        managementNis += managementExpenseByFirmId[firmId] || 0;
+      }
+      const { _firmIds: _omitFirms, ...rest } = r;
+      return { ...rest, managementNis };
+    });
+  }, [aggregates, macroSort, managementExpenseByFirmId]);
 
   const toggleMacroSort = useCallback((key: MacroSortKey) => {
     setMacroSort((prev) =>
@@ -2251,12 +2624,12 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     (agg: AggRow) => {
       if (agg.deals <= 0) return;
       const rows = filterLeadsForMarketingBreakdown({
-        leads,
+        leads: signedDealLeads,
         agg: { key: agg.key, channel: agg.channel, source: agg.source },
         groupMode,
         channels,
         allSources,
-        metric: 'deals',
+        metric: 'signedInRange',
       });
       setLeadBreakdownModal({
         open: true,
@@ -2267,7 +2640,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         rows,
       });
     },
-    [leads, groupMode, channels, allSources],
+    [signedDealLeads, groupMode, channels, allSources],
   );
 
   const totals = useMemo(() => {
@@ -2277,20 +2650,28 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       meetings: 0,
       offers: 0,
       deals: 0,
+      invoiced: 0,
       revenue: 0,
       inactive: 0,
+      leadsExclStage91: 0,
+      mediaNis: 0,
+      managementNis: 0,
     };
-    for (const r of aggregates) {
+    for (const r of sortedAggregates) {
       t.leads += r.leads;
       t.eligible += r.eligible;
       t.meetings += r.meetings;
       t.offers += r.offers;
       t.deals += r.deals;
+      t.invoiced += r.invoicedNis;
       t.revenue += r.revenueNis;
       t.inactive += r.inactive;
+      t.leadsExclStage91 += r.leadsExclStage91;
+      t.mediaNis += r.mediaNis;
+      t.managementNis += r.managementNis;
     }
     return t;
-  }, [aggregates]);
+  }, [sortedAggregates]);
 
   const funnelData = useMemo(() => {
     return [
@@ -2433,6 +2814,96 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     };
   }, [leads, callLogsRows, schedulerDisplayNames, employeeDisplayNameToId]);
 
+  const updateMacroScrollState = useCallback(() => {
+    const el = macroTableScrollRef.current;
+    if (!el) {
+      setMacroNeedsHScroll(false);
+      setMacroScrollWidth(0);
+      return;
+    }
+    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    setMacroNeedsHScroll(maxLeft > 4);
+    setMacroScrollWidth(el.scrollWidth);
+    const bottom = macroBottomScrollbarRef.current;
+    if (bottom && !syncingMacroHScrollRef.current && bottom.scrollLeft !== el.scrollLeft) {
+      syncingMacroHScrollRef.current = true;
+      bottom.scrollLeft = el.scrollLeft;
+      requestAnimationFrame(() => {
+        syncingMacroHScrollRef.current = false;
+      });
+    }
+  }, []);
+
+  const updateMacroTableOnScreen = useCallback(() => {
+    const section = macroTableSectionRef.current;
+    if (!section) {
+      setMacroTableOnScreen(false);
+      return;
+    }
+    const rect = section.getBoundingClientRect();
+    const vh = window.innerHeight || 0;
+    // Visible while the table is on screen; hide once scrolled fully past it.
+    setMacroTableOnScreen(rect.top < vh - 48 && rect.bottom > 72);
+  }, []);
+
+  const syncMacroHScrollFromBottom = useCallback(() => {
+    const bottom = macroBottomScrollbarRef.current;
+    const el = macroTableScrollRef.current;
+    if (!bottom || !el || syncingMacroHScrollRef.current) return;
+    syncingMacroHScrollRef.current = true;
+    el.scrollLeft = bottom.scrollLeft;
+    requestAnimationFrame(() => {
+      syncingMacroHScrollRef.current = false;
+    });
+  }, []);
+
+  useEffect(() => {
+    updateMacroScrollState();
+    updateMacroTableOnScreen();
+    const onWin = () => {
+      updateMacroScrollState();
+      updateMacroTableOnScreen();
+    };
+    window.addEventListener('resize', onWin, { passive: true });
+    window.addEventListener('scroll', onWin, { passive: true, capture: true });
+    const el = macroTableScrollRef.current;
+    const section = macroTableSectionRef.current;
+    let ro: ResizeObserver | null = null;
+    if (el && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => updateMacroScrollState());
+      ro.observe(el);
+    }
+    const io =
+      typeof IntersectionObserver !== 'undefined' && section
+        ? new IntersectionObserver(() => updateMacroTableOnScreen(), {
+            root: null,
+            threshold: [0, 0.01, 0.1, 1],
+          })
+        : null;
+    if (io && section) io.observe(section);
+    return () => {
+      window.removeEventListener('resize', onWin);
+      window.removeEventListener('scroll', onWin, true);
+      ro?.disconnect();
+      io?.disconnect();
+    };
+  }, [
+    updateMacroScrollState,
+    updateMacroTableOnScreen,
+    searched,
+    loading,
+    sortedAggregates.length,
+    groupMode,
+    isExternalVariant,
+  ]);
+
+  useEffect(() => {
+    if (!macroNeedsHScroll || !macroTableOnScreen) return;
+    const el = macroTableScrollRef.current;
+    const bottom = macroBottomScrollbarRef.current;
+    if (el && bottom) bottom.scrollLeft = el.scrollLeft;
+  }, [macroNeedsHScroll, macroTableOnScreen, macroScrollWidth]);
+
   const fmtMoney = (n: number) =>
     `₪ ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
@@ -2466,16 +2937,70 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     );
   };
 
-  return (
-    <div className={`${isExternalVariant ? 'space-y-8' : 'space-y-4'} pb-12 relative w-full min-w-0 max-w-full ${isExternalVariant ? 'bg-white' : ''}`}>
-      {loading && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
-          <div className="flex flex-col items-center gap-3">
-            <span className="loading loading-spinner w-16 h-16 text-primary" />
-            <div className="text-sm font-semibold text-base-content/70">Running report…</div>
-          </div>
-        </div>
+  /** Same sticky Channel/Source/Provider cells as the main table so the floating total aligns. */
+  const renderMacroStickyTotalLabelCells = (bgClass: string) => (
+    <>
+      <td
+        className={`whitespace-nowrap font-extrabold ${macroCellAlign} ${stickyChannelClass} ${bgClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+      >
+        Total
+      </td>
+      {showSourceCol && (
+        <td
+          className={`${stickySourceClass} ${macroLabelColClass} ${bgClass}${sourceIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+          aria-hidden
+        />
       )}
+      {showProviderCol && (
+        <td
+          className={`${stickyProviderClass} ${macroLabelColClass} ${bgClass}${providerIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+          aria-hidden
+        />
+      )}
+    </>
+  );
+
+  const macroMetricCell = `${macroCellAlign} min-w-[4.25rem]`;
+  const macroMoneyCell = `${macroCellAlign} min-w-[6.5rem]`;
+  const macroPctCell = `${macroCellAlign} min-w-[4.75rem] !text-gray-400`;
+
+  const renderMacroTotalMetricCells = () => (
+    <>
+      <td className={`${macroMetricCell} font-extrabold`}>{totals.leads}</td>
+      <td className={`${macroMetricCell} font-extrabold`}>{totals.eligible}</td>
+      <td className={`${macroMetricCell} font-extrabold`}>{totals.meetings}</td>
+      <td className={`${macroMetricCell} font-extrabold`}>{totals.offers}</td>
+      <td className={`${macroMetricCell} font-extrabold text-blue-600`}>{totals.deals}</td>
+      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.eligible, totals.leads)}</td>
+      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.meetings, totals.leads)}</td>
+      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.offers, totals.leadsExclStage91)}</td>
+      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.deals, totals.leadsExclStage91)}</td>
+      <td className={`${macroMoneyCell} font-extrabold`}>{fmtMoney(totals.invoiced)}</td>
+      <td className={`${macroMoneyCell} font-extrabold !text-green-600`}>{fmtMoney(totals.revenue)}</td>
+      <td className={`${macroMetricCell} font-extrabold`}>{totals.inactive}</td>
+      {!isExternalVariant && (
+        <>
+          <td className={`${macroMoneyCell} font-extrabold`}>
+            {totals.mediaNis > 0 ? fmtMoney(totals.mediaNis) : '—'}
+          </td>
+          <td className={`${macroMoneyCell} font-extrabold`}>
+            {totals.managementNis > 0 ? fmtMoney(totals.managementNis) : '—'}
+          </td>
+          <td className={`${macroMoneyCell} font-extrabold`}>
+            {totals.mediaNis + totals.managementNis > 0
+              ? fmtMoney(totals.mediaNis + totals.managementNis)
+              : '—'}
+          </td>
+          <td className={`${macroPctCell} font-extrabold`}>100.0%</td>
+        </>
+      )}
+    </>
+  );
+
+  const panelClass = isExternalVariant ? '' : REPORT_WHITE_PANEL;
+
+  return (
+    <div className={`${isExternalVariant ? 'space-y-8' : 'space-y-5'} pb-12 relative w-full min-w-0 max-w-full ${isExternalVariant ? 'bg-white' : ''}`}>
       {docsOpen && !isExternalVariant && (
         <div
           className="modal modal-open z-50"
@@ -2506,8 +3031,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               <p>{MARKETING_REPORT_INTRO_DETAILS}</p>
               <p className="text-base-content/60">
                 Media and management costs use Admin marketing expenses and firm management costs for calendar
-                months overlapping your date range. Large cohorts may stop at 30,000 leads—narrow dates or filters if
-                you see a truncation warning.
+                months overlapping your date range. Management cost is counted once per provider (shown on the
+                topmost table row for that firm after sorting), so multi-source firms are not multiplied in Total.
+                Large cohorts may stop at 30,000 leads—narrow dates or filters if you see a truncation warning.
               </p>
             </div>
             <div className="modal-action mt-6 border-t border-base-200 pt-4">
@@ -2520,7 +3046,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         </div>
       )}
 
-      <div className={`flex w-full flex-col items-start ${isExternalVariant ? 'gap-6' : 'gap-3'}`}>
+      <div className={`flex w-full flex-col items-start ${isExternalVariant ? 'gap-6' : `gap-4 ${panelClass}`}`}>
         <div className={`flex flex-wrap items-end ${isExternalVariant ? 'gap-3 sm:gap-4' : 'gap-2 sm:gap-3'}`}>
           <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
@@ -2528,7 +3054,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </span>
             <div
               className={
-                'inline-flex rounded-2xl p-1 ' +
+                'inline-flex rounded-full p-1 ' +
                 'border border-base-content/[0.08] bg-base-300/45 dark:border-white/[0.06] dark:bg-base-content/[0.1] ' +
                 'shadow-[inset_0_4px_14px_rgba(0,0,0,0.11),inset_0_2px_4px_rgba(0,0,0,0.05),0_1px_0_rgba(255,255,255,0.35)] ' +
                 'dark:shadow-[inset_0_5px_18px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.05)]'
@@ -2564,12 +3090,18 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           </div>
           <button
             type="button"
-            className="btn btn-circle h-12 w-12 min-h-12 shrink-0 rounded-full border-0 bg-black text-sm font-bold lowercase tracking-tight text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50"
+            className="btn h-12 min-h-12 shrink-0 gap-2 rounded-full border-0 bg-black px-5 text-sm font-semibold text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50"
             onClick={() => void runReport()}
             disabled={loading}
-            aria-label="Run report"
+            aria-label={loading ? 'Searching…' : 'Search'}
+            aria-busy={loading}
           >
-            {loading ? <span className="loading loading-spinner loading-sm text-white" /> : 'go'}
+            {loading ? (
+              <span className="loading loading-spinner loading-sm text-white" />
+            ) : (
+              <Search className="h-5 w-5" strokeWidth={2} aria-hidden />
+            )}
+            Search
           </button>
         </div>
         <div
@@ -2677,10 +3209,35 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         </div>
       )}
 
+      {loading && (
+        <div
+          className="flex flex-col items-center justify-center gap-6 px-6 py-20 min-h-[min(70vh,32rem)]"
+          aria-busy="true"
+          aria-live="polite"
+        >
+          <div className="relative flex h-28 w-28 items-center justify-center">
+            <span className="absolute inset-0 rounded-full bg-primary opacity-30 animate-ping" aria-hidden />
+            <span
+              className="absolute inset-2 rounded-full border-[3px] border-transparent border-t-primary border-r-primary/40 animate-spin"
+              aria-hidden
+            />
+            <span
+              className="absolute inset-5 rounded-full border-2 border-transparent border-b-primary/70 animate-spin [animation-direction:reverse] [animation-duration:1.1s]"
+              aria-hidden
+            />
+            <ChartBar className="relative h-9 w-9 text-primary" strokeWidth={2} aria-hidden />
+          </div>
+          <div className="text-center space-y-1.5">
+            <p className="text-xl font-semibold tracking-tight text-base-content">Running report</p>
+            <p className="text-sm text-base-content/55">Matching your filters…</p>
+          </div>
+        </div>
+      )}
+
       {searched && !loading && (
         <>
           {!isExternalVariant && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             {[
               {
                 label: 'Leads',
@@ -2715,6 +3272,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   'bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-400 text-white',
               },
               {
+                label: 'Invoiced (NIS)',
+                value: fmtMoney(totals.invoiced),
+                icon: DocumentTextIcon,
+                targetId: 'marketing-kpi-macro',
+                className:
+                  'bg-gradient-to-tr from-amber-500 via-orange-500 to-rose-400 text-white',
+              },
+              {
                 label: 'Revenue (NIS)',
                 value: fmtMoney(totals.revenue),
                 icon: BanknotesIcon,
@@ -2730,43 +3295,42 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   const el = document.getElementById(k.targetId);
                   el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
-                className={`rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl shadow-xl relative overflow-hidden p-6 min-h-[7.5rem] text-left ${k.className}`}
+                className={`rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl shadow-xl relative overflow-hidden p-5 min-h-[7.5rem] text-left flex flex-col ${k.className}`}
               >
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                    <k.icon className="w-7 h-7 text-white opacity-95" />
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center justify-center w-14 h-14 shrink-0 -mt-1 -ml-1 rounded-full bg-white/20 shadow">
+                    <k.icon className="w-8 h-8 text-white opacity-95" />
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-white/85">{k.label}</div>
-                    <div className="text-3xl font-extrabold text-white leading-tight">{k.value}</div>
+                  <div className="text-3xl font-extrabold text-white leading-none min-w-0 break-words text-right">
+                    {k.value}
                   </div>
+                </div>
+                <div className="mt-auto pt-3 text-sm font-semibold text-white/85">
+                  {k.label}
                 </div>
               </button>
             ))}
           </div>
           )}
 
-          {/* Main macro table */}
+          {/* Main macro table — Channel/Source/Provider stay pinned; metrics scroll horizontally */}
           <div
             id="marketing-kpi-macro"
-            ref={macroTableScrollRef}
-            className="scroll-mt-24 w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain bg-white"
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-              const nearRight = el.scrollLeft >= maxLeft - 2;
-              setMacroAtRightEdge(nearRight);
-            }}
+            ref={macroTableSectionRef}
+            className={`scroll-mt-24 w-full max-w-full min-w-0 ${isExternalVariant ? 'bg-white' : REPORT_WHITE_PANEL}`}
           >
-            <h3 className="mb-5 text-base font-bold text-base-content">
-              Macro performance (by {groupMode})
-            </h3>
+            <div
+              ref={macroTableScrollRef}
+              className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain"
+              onScroll={() => updateMacroScrollState()}
+            >
             <table className={macroTableClass}>
+              {macroColGroup}
               <thead>
                 <tr className="border-b border-base-300 bg-base-100 text-[11px] uppercase tracking-wide">
                   <th
-                    colSpan={(groupMode === 'source' ? 2 : 1) + (isExternalVariant ? 0 : 1)}
-                    className="text-center text-base-content/50"
+                    colSpan={(showSourceCol ? 2 : 1) + (showProviderCol ? 1 : 0)}
+                    className={`sticky left-0 z-[23] bg-white text-center text-base-content/50 ${stickyEdgeClass}`}
                     style={{ letterSpacing: '0.08em' }}
                   >
                     Performance
@@ -2779,13 +3343,13 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     Funnel
                   </th>
                   <th
-                    colSpan={2}
+                    colSpan={3}
                     className="text-center text-base-content/50"
                     style={{ letterSpacing: '0.08em' }}
                   >
                     Revenue
                   </th>
-                  {!isExternalVariant && (
+                  {showProviderCol && (
                     <th
                       colSpan={4}
                       className="text-center text-base-content/60"
@@ -2796,11 +3360,28 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   )}
                 </tr>
                 <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
-                  <th scope="col" className="text-center">Channel</th>
-                  {groupMode === 'source' && (
-                    <th scope="col" className={macroLabelColClass}>Source</th>
+                  <th
+                    scope="col"
+                    className={`text-center ${stickyChannelClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                  >
+                    Channel
+                  </th>
+                  {showSourceCol && (
+                    <th
+                      scope="col"
+                      className={`${stickySourceClass} ${macroLabelColClass}${sourceIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                    >
+                      Source
+                    </th>
                   )}
-                  {!isExternalVariant && <th scope="col" className={macroLabelColClass}>Provider</th>}
+                  {showProviderCol && (
+                    <th
+                      scope="col"
+                      className={`${stickyProviderClass} ${macroLabelColClass}${providerIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                    >
+                      Provider
+                    </th>
+                  )}
                   <MacroSortableTh
                     sortKey="leads"
                     activeKey={macroSort.key}
@@ -2901,6 +3482,17 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     Lead→Deal %
                   </MacroSortableTh>
                   <MacroSortableTh
+                    sortKey="invoiced"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Invoiced NIS"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
+                  >
+                    Invoiced
+                  </MacroSortableTh>
+                  <MacroSortableTh
                     sortKey="revenue"
                     activeKey={macroSort.key}
                     dir={macroSort.dir}
@@ -2939,7 +3531,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   const totalCostNis = r.mediaNis + r.managementNis;
                   return (
                     <tr key={r.key}>
-                      <td className={`whitespace-nowrap ${macroCellAlign}`}>
+                      <td
+                        className={`whitespace-nowrap ${macroCellAlign} ${stickyChannelClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                      >
                         <div className="flex justify-center">
                           <ChannelLabel
                             label={r.channel}
@@ -2948,17 +3542,29 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                           />
                         </div>
                       </td>
-                      {groupMode === 'source' && (
-                        <td className={macroLabelColClass}>
-                          {r.source}
+                      {showSourceCol && (
+                        <td
+                          className={`${stickySourceClass} ${macroLabelColClass}${sourceIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                        >
+                          <span className={macroLabelTextClass} title={r.source}>
+                            {r.source}
+                          </span>
                         </td>
                       )}
-                      {!isExternalVariant && <td className={`text-base-content/50 ${macroLabelColClass}`}>{r.provider}</td>}
+                      {showProviderCol && (
+                        <td
+                          className={`text-base-content/50 ${stickyProviderClass} ${macroLabelColClass}${providerIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                        >
+                          <span className={macroLabelTextClass} title={r.provider}>
+                            {r.provider}
+                          </span>
+                        </td>
+                      )}
                       <td className={macroCellAlign}>{r.leads}</td>
                       <td className={macroCellAlign}>{r.eligible}</td>
                       <td className={macroCellAlign}>{r.meetings}</td>
                       <td className={macroCellAlign}>{r.offers}</td>
-                      <td className={macroCellAlign}>
+                      <td className={`${macroCellAlign} text-blue-600`}>
                         {r.deals > 0 ? (
                           <button
                             type="button"
@@ -2972,11 +3578,12 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                           r.deals
                         )}
                       </td>
-                      <td className={macroCellAlign}>{macroPct(r.eligible, r.leads)}</td>
-                      <td className={macroCellAlign}>{macroPct(r.meetings, r.leads)}</td>
-                      <td className={macroCellAlign}>{macroPct(r.offers, offerDealDenom)}</td>
-                      <td className={macroCellAlign}>{macroPct(r.deals, offerDealDenom)}</td>
-                      <td className={`${macroCellAlign} text-sm font-semibold`}>{fmtMoney(r.revenueNis)}</td>
+                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.eligible, r.leads)}</td>
+                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.meetings, r.leads)}</td>
+                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.offers, offerDealDenom)}</td>
+                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.deals, offerDealDenom)}</td>
+                      <td className={`${macroCellAlign} text-sm font-semibold`}>{fmtMoney(r.invoicedNis)}</td>
+                      <td className={`${macroCellAlign} text-sm font-semibold !text-green-600`}>{fmtMoney(r.revenueNis)}</td>
                       <td className={macroCellAlign}>{r.inactive}</td>
                       {!isExternalVariant && (
                         <>
@@ -2990,34 +3597,40 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   );
                 })}
               </tbody>
+              {sortedAggregates.length > 0 && (
+                <tfoot>
+                  <tr className="border-t-2 border-base-300 bg-base-200 font-extrabold">
+                    {renderMacroStickyTotalLabelCells('!bg-base-200')}
+                    {renderMacroTotalMetricCells()}
+                  </tr>
+                </tfoot>
+              )}
             </table>
+            </div>
           </div>
 
-          {/* Quick horizontal navigation for the macro table */}
-          {!isExternalVariant && (
-          <button
-            type="button"
-            onClick={() => {
-              const el = macroTableScrollRef.current;
-              if (!el) return;
-              const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-              const nextLeft = macroAtRightEdge ? 0 : maxLeft;
-              el.scrollTo({ left: nextLeft, behavior: 'smooth' });
-            }}
-            className="fixed bottom-5 right-3 z-[80] h-10 w-10 rounded-full border border-white/10 bg-black/35 text-white shadow-xl backdrop-blur-xl transition hover:bg-black/55 focus:outline-none"
-            aria-label={macroAtRightEdge ? 'Scroll macro table to start' : 'Scroll macro table to end'}
-            title={macroAtRightEdge ? 'Scroll to start' : 'Scroll to end'}
-          >
-            <span className="text-xl leading-none">{macroAtRightEdge ? '←' : '→'}</span>
-          </button>
+          {macroNeedsHScroll && macroTableOnScreen && (
+            <div
+              className="fixed inset-x-0 bottom-0 z-[80] hidden border-t border-gray-200/80 bg-[#f3f4f6]/95 backdrop-blur-sm md:block"
+              aria-hidden={false}
+            >
+              <div
+                ref={macroBottomScrollbarRef}
+                className="w-full overflow-x-auto overflow-y-hidden"
+                onScroll={syncMacroHScrollFromBottom}
+                aria-label="Table horizontal scrollbar"
+              >
+                <div style={{ width: macroScrollWidth, height: 1 }} />
+              </div>
+            </div>
           )}
 
           {/* Funnel chart */}
           <div
             id="marketing-kpi-funnel"
-            className={`scroll-mt-24 ${isExternalVariant ? 'pt-2' : ''}`}
+            className={`scroll-mt-24 ${isExternalVariant ? 'pt-2' : REPORT_WHITE_PANEL}`}
           >
-            <h3 className={`${isExternalVariant ? 'mb-4' : 'mb-2'} text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
+            <h3 className={`${isExternalVariant ? 'mb-4' : 'mb-4'} text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
             <div className="h-64 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={funnelData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -3033,10 +3646,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           </div>
 
           {!isExternalVariant && (
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-5 lg:grid-cols-2">
             <div
               id="marketing-kpi-timing"
-              className="scroll-mt-24"
+              className={`scroll-mt-24 ${REPORT_WHITE_PANEL}`}
             >
               <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel timing (avg. days)</h3>
               {historyError && (
@@ -3081,7 +3694,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </div>
             <div
               id="marketing-kpi-sales"
-              className="scroll-mt-24"
+              className={`scroll-mt-24 ${REPORT_WHITE_PANEL}`}
             >
               <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Sales behaviour / quality</h3>
               {callLogsError && (
@@ -3090,19 +3703,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               {!callLogsError && leads.length > 0 && (
                 <div className="mt-3 space-y-3">
                   <div className="flex flex-wrap gap-3 text-sm">
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Qualified leads: <strong>{salesBehaviourStats.qualifiedCount}</strong>
                     </span>
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Matched calls: <strong>{salesBehaviourStats.totalMatchedCalls}</strong>
                     </span>
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Answered: <strong>{salesBehaviourStats.totalAnsweredCalls}</strong>
                     </span>
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Not answered: <strong>{salesBehaviourStats.totalMissedCalls}</strong>
                     </span>
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Avg call (matched):{' '}
                       <strong>
                         {salesBehaviourStats.overallAvgSec != null
@@ -3110,7 +3723,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                           : '—'}
                       </strong>
                     </span>
-                    <span className="rounded-lg bg-base-200 px-2 py-1">
+                    <span className="rounded-lg bg-gray-100 px-2 py-1 text-gray-700">
                       Avg probability (cohort):{' '}
                       <strong>
                         {salesBehaviourStats.avgProbability != null
@@ -3166,9 +3779,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       )}
 
       {!searched && (
-        <div className="rounded-2xl border border-dashed border-base-300/70 bg-base-200/25 px-4 py-10 text-center dark:border-base-content/15 dark:bg-base-300/10">
+        <div className="px-4 py-10 text-center">
           <p className="text-base leading-relaxed text-base-content/55">
-            Set your filters above, then click <span className="font-semibold text-base-content/75">go</span> to
+            Set your filters above, then click <span className="font-semibold text-base-content/75">Search</span> to
             load results.
           </p>
         </div>
@@ -3180,6 +3793,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         title={leadBreakdownModal.title}
         rows={leadBreakdownModal.rows}
         formatMoney={fmtMoney}
+        disableLeadLinks={isExternalVariant}
       />
     </div>
   );

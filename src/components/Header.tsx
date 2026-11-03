@@ -4155,11 +4155,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // External user header - simplified view
   if (isExternalUser && !isLoadingExternal) {
     const extHeaderNavItemClass =
-      'relative inline-flex h-9 min-h-0 shrink-0 items-center justify-center rounded-lg px-2.5 text-sm font-semibold tracking-tight text-base-content/80 md:px-3.5 ' +
-      'transition-[color,transform,box-shadow,background-color] duration-200 ease-out ' +
+      'relative inline-flex h-9 min-h-0 shrink-0 items-center justify-center rounded-none px-2.5 text-sm font-semibold tracking-tight text-base-content/80 md:px-3.5 ' +
+      'border-b-2 border-transparent ' +
+      'transition-[color,transform,box-shadow,background-color,border-color] duration-200 ease-out ' +
       'hover:-translate-y-px hover:bg-base-200/70 hover:text-base-content hover:shadow-md dark:hover:bg-base-300/45 ' +
       'active:translate-y-0 active:scale-[0.97] active:shadow-sm ' +
       'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 dark:focus-visible:ring-offset-base-100';
+    const extHeaderNavActiveClass =
+      '!text-primary border-b-2 !border-primary hover:bg-transparent hover:!text-primary hover:shadow-none hover:translate-y-0 dark:hover:bg-transparent';
+    const isExtNavActive = (path: string) =>
+      location.pathname === path || location.pathname.startsWith(`${path}/`);
+    const extNavClass = (path: string) =>
+      `${extHeaderNavItemClass} ${isExtNavActive(path) ? extHeaderNavActiveClass : ''}`;
+    const extMobileNavClass = (path: string) =>
+      isExtNavActive(path) ? 'font-semibold text-primary underline decoration-2 underline-offset-4' : '';
     const extHeaderSignOutClass =
       'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-base-content/70 transition-all duration-200 ease-out ' +
       'hover:bg-base-200/70 hover:text-base-content hover:shadow-md dark:hover:bg-base-300/45 active:scale-[0.96] ' +
@@ -4189,16 +4198,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           {/* Desktop: inline nav */}
           <div className="absolute left-1/2 z-10 hidden max-w-[min(94vw,36rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-1 gap-y-1 md:flex md:max-w-none md:flex-nowrap md:gap-2">
-            <Link to="/external-home" className={extHeaderNavItemClass}>
+            <Link to="/external-home" className={extNavClass('/external-home')}>
               Dashboard
             </Link>
-            <Link to="/external-reports" className={extHeaderNavItemClass}>
+            <Link to="/external-reports" className={extNavClass('/external-reports')}>
               Report
             </Link>
-            <Link to="/access-logs" className={extHeaderNavItemClass}>
+            <Link to="/access-logs" className={extNavClass('/access-logs')}>
               Access logs
             </Link>
-            <Link to="/external-settings" className={extHeaderNavItemClass}>
+            <Link to="/external-settings" className={extNavClass('/external-settings')}>
               Settings
             </Link>
             <button
@@ -4222,18 +4231,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="flex-1 justify-end flex items-center pr-1 md:pr-0">
             {/* Mobile hamburger */}
             <div className="dropdown dropdown-end md:hidden">
-              <button
-                type="button"
+              <div
+                tabIndex={0}
+                role="button"
                 className={extHeaderSignOutClass}
                 title="Menu"
+                aria-label="Menu"
               >
                 <Bars3Icon className="w-6 h-6" />
-              </button>
-              <ul className="menu dropdown-content mt-2 w-64 rounded-box bg-base-100 p-2 shadow-lg border border-base-200">
-                <li><Link to="/external-home">Dashboard</Link></li>
-                <li><Link to="/external-reports">Report</Link></li>
-                <li><Link to="/access-logs">Access logs</Link></li>
-                <li><Link to="/external-settings">Settings</Link></li>
+              </div>
+              <ul
+                tabIndex={0}
+                className="menu dropdown-content z-[100] mt-2 w-64 rounded-box border border-base-200 bg-base-100 p-2 shadow-lg"
+              >
+                <li><Link to="/external-home" className={extMobileNavClass('/external-home')}>Dashboard</Link></li>
+                <li><Link to="/external-reports" className={extMobileNavClass('/external-reports')}>Report</Link></li>
+                <li><Link to="/access-logs" className={extMobileNavClass('/access-logs')}>Access logs</Link></li>
+                <li><Link to="/external-settings" className={extMobileNavClass('/external-settings')}>Settings</Link></li>
                 <li>
                   <button
                     type="button"

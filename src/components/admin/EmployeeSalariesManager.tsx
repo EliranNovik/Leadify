@@ -20,6 +20,7 @@ import {
   getSalaryRoleDisplayName,
   salaryAvatarGradientStyle,
   fetchPayrollDocumentPath,
+  setEmployeeSalaryPaid,
   SALARY_DOCUMENTS_BUCKET,
   type SalaryEntryRow,
 } from '../../lib/employeeSalaries';
@@ -280,6 +281,22 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
     [],
   );
 
+  /**
+   * A salary already on file is marked straight away, so the paid column works like the toggles on
+   * the other expense screens. One not saved yet only changes here and travels with Save.
+   */
+  const togglePaid = useCallback(async (row: SalaryEntryRow, paid: boolean) => {
+    setRows(prev => prev.map(r => (r.employee_id === row.employee_id ? { ...r, paid } : r)));
+    if (!row.recordId) return;
+    try {
+      await setEmployeeSalaryPaid(row.recordId, paid);
+    } catch (e) {
+      console.error(e);
+      toast.error('Could not update the paid flag');
+      setRows(prev => prev.map(r => (r.employee_id === row.employee_id ? { ...r, paid: !paid } : r)));
+    }
+  }, []);
+
   const filteredRows = useMemo(() => {
     const term = search.trim().toLowerCase();
     return rows.filter(r => {
@@ -301,6 +318,7 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
     const withSalary = rows.filter(r => !isSalaryMissing(r));
     return {
       count: withSalary.length,
+      paidCount: withSalary.filter(r => r.paid).length,
       gross: withSalary.reduce((sum, r) => sum + (r.gross_salary || 0), 0),
       net: withSalary.reduce((sum, r) => sum + (r.net_salary || 0), 0),
     };
@@ -716,6 +734,15 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
                   >
                     Hour rate
                   </th>
+                  <th
+                    className={
+                      embedded
+                        ? 'bg-transparent font-semibold text-center'
+                        : 'font-semibold text-center'
+                    }
+                  >
+                    Paid
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -805,6 +832,23 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
                     >
                       {hourRate != null ? `${formatAllocationCostNis(hourRate)}/h` : '—'}
                     </td>
+                    <td className="text-center">
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-success toggle-sm"
+                        checked={row.paid}
+                        disabled={isSalaryMissing(row)}
+                        onChange={e => void togglePaid(row, e.target.checked)}
+                        aria-label={`Mark ${row.employee_name}'s salary paid`}
+                        title={
+                          isSalaryMissing(row)
+                            ? 'Enter a salary first'
+                            : row.paid
+                              ? 'Paid'
+                              : 'Not paid yet'
+                        }
+                      />
+                    </td>
                   </tr>
                   );
                 })}
@@ -815,6 +859,9 @@ const EmployeeSalariesManager: React.FC<EmployeeSalariesManagerProps> = ({
                   <td className="text-right">{formatSalaryCurrency(totals.net)}</td>
                   <td className="text-right">{formatSalaryCurrency(totals.gross)}</td>
                   <td className="text-right">—</td>
+                  <td className="text-center">
+                    {totals.count > 0 ? `${totals.paidCount}/${totals.count}` : '—'}
+                  </td>
                 </tr>
               </tfoot>
             </table>

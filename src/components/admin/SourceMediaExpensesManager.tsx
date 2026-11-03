@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 import { supabase } from '../../lib/supabase';
+import { PAID_EXPENSE_FIELD } from './expenseManagerShared';
 import type { ExpenseManagerEmbedProps } from '../reports/expenses/expenseDetailTypes';
 
 const MONTH_OPTIONS = [
@@ -506,7 +507,7 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       readOnly: true,
       hideInAdd: true,
       hideInEdit: true,
-      formatValue: (_value: unknown, record: { lead_source_id?: unknown }) =>
+      formatValue: (_value: unknown, record: Record<string, any>) =>
         sourceFirmById[String(record.lead_source_id ?? '')] ?? '—',
     },
     {
@@ -516,7 +517,7 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       readOnly: true,
       hideInAdd: true,
       hideInEdit: true,
-      formatValue: (_value: unknown, record: { lead_source_id?: unknown }) =>
+      formatValue: (_value: unknown, record: Record<string, any>) =>
         sourceChannelById[String(record.lead_source_id ?? '')] ?? '—',
     },
     {
@@ -537,6 +538,7 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       placeholder: 'e.g., 5000',
       formatValue: (value: unknown) => formatAmount(value),
     },
+    PAID_EXPENSE_FIELD,
     {
       name: 'created_at',
       label: 'Created At',
@@ -576,6 +578,7 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       queryModifier={queryModifier}
       queryModifierKey={`${filterYear}-${filterMonth}`}
       onRecordsLoaded={loadPeriodTotal}
+      booleanStorage="native"
     />
   );
 };

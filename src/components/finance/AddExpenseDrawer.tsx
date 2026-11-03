@@ -27,15 +27,19 @@ import { createExternalFirm, firmIsExactMatch, firmMatchesSearch } from '../../l
 import { FIRM_MANAGEMENT_DEFAULT_CURRENCY } from '../../lib/firmManagementCosts';
 import {
   createLeadFinanceExpense,
+  createLoanFinanceExpense,
   createMarketingFinanceExpense,
   createOfficeFinanceExpense,
   createOtherFirmFinanceExpense,
+  createPaidByOfficeFinanceExpense,
   createPartnerDrawFinanceExpense,
   createRentFinanceExpense,
   createSubcontractorFinanceExpense,
   ensureFinanceExpenseRegistry,
+  fetchActiveLoans,
   fetchFinanceExpenseEditDetails,
   updateFinanceExpense,
+  type LoanOption,
   canAddFinanceExpenseKind,
   canEditFinanceExpenseKind,
   FINANCE_EXPENSE_KIND_ICON,
@@ -117,6 +121,8 @@ const KINDS: FinanceExpenseKind[] = [
   'marketing',
   'rent',
   'partner_draws',
+  'loan',
+  'paid_by_office',
 ];
 /** How the expense-type boxes are laid out. Must match the `grid-cols-2` on that grid, which Tailwind
  *  has to see written out, so the two cannot be derived from one another. */
@@ -237,6 +243,9 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [employees, setEmployees] = useState<ActiveStaffEmployee[]>([]);
   const [employeeId, setEmployeeId] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
+  const [loans, setLoans] = useState<LoanOption[]>([]);
+  const [loanId, setLoanId] = useState('');
+  const [dueDate, setDueDate] = useState('');
 
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
   const [currencyId, setCurrencyId] = useState('');
@@ -253,11 +262,18 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const [editLoading, setEditLoading] = useState(false);
 
   const isLeadSplit = kind === 'lead' && leadEntryMode === 'split' && !editRow;
-  const needsLead = (kind === 'lead' && !isLeadSplit) || kind === 'subcontractor';
+  const needsLead =
+    (kind === 'lead' && !isLeadSplit) || kind === 'subcontractor' || kind === 'paid_by_office';
   const needsFirm = kind === 'subcontractor' || kind === 'other_firm' || kind === 'office';
-  const usesIsoCurrency = kind === 'other_firm' || kind === 'office';
-  const usesNisOnly = kind === 'marketing' || kind === 'rent' || kind === 'partner_draws';
-  const usesMonth = kind === 'other_firm' || kind === 'marketing' || kind === 'rent' || kind === 'partner_draws';
+  const usesIsoCurrency = kind === 'other_firm' || kind === 'office' || kind === 'paid_by_office';
+  const usesNisOnly =
+    kind === 'marketing' || kind === 'rent' || kind === 'partner_draws' || kind === 'loan';
+  const usesMonth =
+    kind === 'other_firm' ||
+    kind === 'marketing' ||
+    kind === 'rent' ||
+    kind === 'partner_draws' ||
+    kind === 'loan';
   const visibleKinds = useMemo(
     () => KINDS.filter((k) => canAddFinanceExpenseKind(k, canManageRestrictedKinds)),
     [canManageRestrictedKinds],
@@ -312,6 +328,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
     setRentOfficeId('');
     setEmployeeId('');
     setEmployeeSearch('');
+    setLoanId('');
+    setDueDate('');
     setCurrencyId('');
     setIsoCurrency(FIRM_MANAGEMENT_DEFAULT_CURRENCY);
     setAmount('');
@@ -394,6 +412,14 @@ const AddExpenseDrawer: React.FC<Props> = ({
         setRentOffices(rentRows);
         if (rentRows[0]?.id) setRentOfficeId((prev) => prev || String(rentRows[0].id));
         setEmployees(employeeRes || []);
+        // Asked for on its own: a database without the loans table yet should still open the
+        // drawer for every other kind (sql/2026-10-30_expense_paid_flags_loans_and_paid_by_office.sql).
+        try {
+          const loanRows = await fetchActiveLoans();
+          if (!cancelled) setLoans(loanRows);
+        } catch (err) {
+          console.warn('[AddExpenseDrawer] loans:', err);
+        }
       } catch (err) {
         console.warn('[AddExpenseDrawer] lookups:', err);
       }
@@ -421,6 +447,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
     setRentOfficeId('');
     setEmployeeId('');
     setEmployeeSearch('');
+    setLoanId('');
+    setDueDate('');
     setContactId('');
     setPaidBy('client');
     setIncludeVat(false);
@@ -458,6 +486,8 @@ const AddExpenseDrawer: React.FC<Props> = ({
         if (details.leadSourceId) setSourceId(String(details.leadSourceId));
         if (details.rentOfficeId) setRentOfficeId(String(details.rentOfficeId));
         if (details.employeeId) setEmployeeId(String(details.employeeId));
+        if (details.loanId) setLoanId(details.loanId);
+        setDueDate(details.dueDate || '');
         if (details.leadType === 'legacy' && details.legacyLeadId != null) {
           setSelectedLead({
             leadType: 'legacy',
@@ -666,6 +696,7 @@ const AddExpenseDrawer: React.FC<Props> = ({
   const selectedSource = sources.find((s) => String(s.id) === sourceId) || null;
   const selectedRentOffice = rentOffices.find((o) => String(o.id) === rentOfficeId) || null;
   const selectedEmployee = employees.find((e) => String(e.id) === employeeId) || null;
+  const selectedLoan = loans.find((l) => l.id === loanId) || null;
   const selectedCurrency = currencies.find((c) => String(c.id) === currencyId) || null;
   const splitAmounts = useMemo(
     () => splitExpenseAmountEvenly(Number(amount), splitTargets.length),
@@ -956,6 +987,83 @@ const AddExpenseDrawer: React.FC<Props> = ({
             toast.success('Partner draw added');
           }
           entryId = result.entryId;
+        }
+      } else if (kind === 'loan') {
+        if (!selectedLoan) throw new Error('Choose a loan');
+        if (editRow) {
+          await updateFinanceExpense({
+            row: editRow,
+            amount: rounded,
+            month,
+            loanId: selectedLoan.id,
+            lender: selectedLoan.lender,
+            dueDate: dueDate || null,
+            paid,
+            notes,
+          });
+          toast.success('Expense updated');
+        } else {
+          let result = await createLoanFinanceExpense({
+            loanId: selectedLoan.id,
+            lender: selectedLoan.lender,
+            expenseMonth: month,
+            amount: rounded,
+            dueDate: dueDate || null,
+            paid,
+            notes,
+          });
+          if (result.needsConfirm) {
+            const ok = window.confirm(
+              `${selectedLoan.lender} already has ₪${result.existingAmount?.toLocaleString()} for ${month}. Replace it with ₪${rounded.toLocaleString()}?`,
+            );
+            if (!ok) {
+              setSaving(false);
+              return;
+            }
+            result = await createLoanFinanceExpense({
+              loanId: selectedLoan.id,
+              lender: selectedLoan.lender,
+              expenseMonth: month,
+              amount: rounded,
+              dueDate: dueDate || null,
+              paid,
+              notes,
+              confirmUpdate: true,
+            });
+            toast.success('Loan repayment updated');
+          } else {
+            toast.success('Loan repayment added');
+          }
+          entryId = result.entryId;
+        }
+      } else if (kind === 'paid_by_office') {
+        if (!selectedLead) throw new Error('Choose a lead');
+        if (editRow) {
+          await updateFinanceExpense({
+            row: editRow,
+            identity: identityFromPick(selectedLead),
+            amount: rounded,
+            currencyCode: isoCurrency,
+            expenseDate,
+            leadNumber: selectedLead.leadNumber,
+            vendorLabel: selectedLead.clientName || selectedLead.leadNumber,
+            notes,
+            paid,
+          });
+          toast.success('Expense updated');
+        } else {
+          const result = await createPaidByOfficeFinanceExpense({
+            identity: identityFromPick(selectedLead),
+            leadNumber: selectedLead.leadNumber,
+            clientName: selectedLead.clientName,
+            amount: rounded,
+            currencyCode: isoCurrency,
+            expenseDate,
+            description: notes,
+            paid,
+          });
+          entryId = result.entryId;
+          toast.success('Expense added');
         }
       } else if (kind === 'marketing') {
         if (!selectedSource) throw new Error('Choose a lead source');
@@ -1607,6 +1715,60 @@ const AddExpenseDrawer: React.FC<Props> = ({
                 ))}
               </select>
             </div>
+          ) : null}
+
+          {kind === 'loan' ? (
+            <>
+              <div className="form-control">
+                <label className="label py-1">
+                  <span className="label-text font-medium text-slate-700">Loan</span>
+                </label>
+                <select
+                  className="select select-bordered w-full"
+                  value={loanId}
+                  onChange={(e) => setLoanId(e.target.value)}
+                >
+                  <option value="">Select loan</option>
+                  {loans.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.lender}
+                      {l.principalNis > 0 ? ` — ₪${l.principalNis.toLocaleString()}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {loans.length === 0 ? (
+                  <p className="mt-1 text-xs text-slate-500">
+                    No loans on file yet. Add one under Admin → All Expenses → Loans.
+                  </p>
+                ) : null}
+              </div>
+              <div className="form-control">
+                <label className="label py-1">
+                  <span className="label-text font-medium text-slate-700">Due date</span>
+                </label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={dueDate}
+                  onChange={(e) => setDueDate(e.target.value)}
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Leave empty to treat the repayment as due at the end of the month.
+                </p>
+              </div>
+            </>
+          ) : null}
+
+          {kind === 'loan' || kind === 'paid_by_office' ? (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="checkbox checkbox-sm"
+                checked={paid}
+                onChange={(e) => setPaid(e.target.checked)}
+              />
+              Paid
+            </label>
           ) : null}
 
           <div className="flex items-end gap-2">

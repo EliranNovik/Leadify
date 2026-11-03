@@ -66,16 +66,32 @@ export const REVENUE_TARGET_RATIOS: {
 ];
 
 /**
- * The ratio the goal bars measure against: the 40% floor, the lowest of the three targets.
+ * The 40% floor, lowest of the three targets, and the one the scoreboard reads a department
+ * against: "is it clear of the line it must not cross" is the question a single figure can answer.
  *
- * The bars answer "is this department clear of the line it must not cross", which is the question
- * a column of progress bars can actually answer at a glance. Measured against the 30% objective
- * instead, a department sitting comfortably above its floor still showed a part-filled bar, so the
- * bars read as failure nearly everywhere and said nothing about the one target that matters first.
- * The other two ratios are still shown in full as the target rows under the table.
+ * It is a revenue target in `departmentScoreboardExpected` and a threshold for the goal bars, which
+ * show the payroll budget as a share of what a period billed and colour it by which side of this
+ * line it falls on. All three ratios are still shown in full as the target rows under each table.
  */
 export const GOAL_BAR_REVENUE_TARGET_RATIO =
   REVENUE_TARGET_RATIOS.find((row) => row.key === 'minimum')?.ratio ?? 0.4;
+
+/** Past the 40% floor, so outside every band the firm manages to. */
+export type PayrollShareBand = RevenueTargetKey | 'over_floor';
+
+/**
+ * Which band a payroll-to-revenue percentage sits in: 30% or under is ideal, up to 35% intermediate,
+ * up to the 40% floor the minimum, anything higher past it.
+ *
+ * Shared by the dashboard goal bars and the Handler Management tables, which read a handler's cost
+ * against their contribution the same way, so both colour the same number identically.
+ */
+export function payrollShareBand(pct: number): PayrollShareBand {
+  for (const row of REVENUE_TARGET_RATIOS) {
+    if (pct <= Math.round(row.ratio * 100)) return row.key;
+  }
+  return 'over_floor';
+}
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;

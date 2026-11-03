@@ -1,6 +1,7 @@
 import type { HandlerEmailFlagTarget } from '../../lib/handlerEmailFlag';
 
-export type HandlerBucket = 'new' | 'active' | 'non_active' | 'closed';
+export type { HandlerBucket } from '../../lib/handlerCaseBuckets';
+import type { HandlerBucket } from '../../lib/handlerCaseBuckets';
 
 export type HandlerPipelineRow = {
   id: string;

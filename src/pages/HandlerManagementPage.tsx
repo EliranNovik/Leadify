@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
@@ -26,6 +26,47 @@ import {
   PIPELINE_THEAD_CLASS,
   pipelineRowClassName,
 } from '../components/pipeline/pipelineUi';
+import {
+  emptyHandlerLeadRefs,
+  emptyHandlerPeriodMetrics,
+  fetchApplicantsByLead,
+  fetchDueInRangeByLead,
+  fetchHandlerContributionRates,
+  fetchHandlerMonthlyCosts,
+  handlerPeriodCostNis,
+  receivedCountTone,
+  contributionTone,
+  costSharePctTone,
+  handlerContributionTargetNis,
+  CONTRIBUTION_TARGET_MARKUP,
+  COST_SHARE_TARGET_PCT,
+  COST_SHARE_WATCH_CEILING_PCT,
+  RECEIVED_TARGET,
+  RECEIVED_WATCH_FLOOR,
+  type HandlerMetricTone,
+  fetchLeadsReachingStageInRange,
+  handlerPeriodMetrics,
+  isDefaultHandlerPeriod,
+  lastThirtyDaysRange,
+  type HandlerLeadRefs,
+  type HandlerPeriodRange,
+} from '../lib/handlerPeriodMetrics';
+import {
+  calculateLegacyLeadFullAmount,
+  calculateNewLeadFullAmount,
+} from '../utils/salesContributionCalculator';
+import {
+  classifyHandlerBucket,
+  classifyRetentionBucket,
+  classifySupportBucket,
+  emptyHandlerBucketCounts,
+} from '../lib/handlerCaseBuckets';
+import { fetchAllPagedRows } from '../lib/invoicedInstallments';
+
+/** Handler Nominated / Handler Set: the stage that records a case arriving on a handler's desk. */
+const HANDLER_RECEIVED_STAGE = 105;
+/** Client signed agreement. */
+const CLIENT_SIGNED_STAGE = 60;
 
 interface Handler {
   id: number;
@@ -41,6 +82,16 @@ interface Handler {
   closedCasesCount?: number;
   inProcessCount?: number;
   applicationsSentCount?: number;
+  /** Cases that reached Handler Set inside the selected period. */
+  receivedCount?: number;
+  /** Value of those of their cases signed inside the period, in NIS. */
+  signedInRangeNis?: number;
+  /** Handler-pool contribution for the period, in NIS. */
+  contributionNis?: number;
+  /** Applicants across every case they currently hold, any date. */
+  applicantsTotal?: number;
+  /** Gross salary over the period, which is what Contribution has to cover. 0 when none on file. */
+  periodCostNis?: number;
   dueAmount?: number;
   firstPaymentDue?: number;
   intermediatePaymentDue?: number;
@@ -81,13 +132,47 @@ interface NextPayment {
 interface HandlerManagementPageData {
   handlers: Handler[];
   retentionHandlers: Handler[];
+  /** Employees holding cases as client support (`client_support_id`). */
+  supportHandlers: Handler[];
   handlerPoolCount: number;
   unassignedLeads: UnassignedLead[];
   nextPayments: NextPayment[];
   loadedAt: number | null;
 }
 
-type HandlerSortColumn = 'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases';
+/** The lead column that puts a case on an employee's table. */
+type HandlerRoleField = 'case_handler_id' | 'retainer_handler_id' | 'client_support_id';
+
+type HandlerSortColumn = 'due' | 'signed' | 'contribution' | 'received' | 'applicants' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases';
+
+/** Reading colours for the period figures: on target, short of it, or a problem. */
+const METRIC_TONE_CLASS: Record<HandlerMetricTone, string> = {
+  good: 'text-emerald-600',
+  watch: 'text-orange-500',
+  bad: 'text-rose-600',
+  unknown: 'text-gray-900',
+};
+
+/** Pill fill for the salary share beside the contribution. */
+const METRIC_TONE_BADGE_CLASS: Record<HandlerMetricTone, string> = {
+  good: 'bg-emerald-50 text-emerald-700',
+  watch: 'bg-orange-50 text-orange-700',
+  bad: 'bg-rose-50 text-rose-700',
+  unknown: 'bg-gray-50 text-gray-600',
+};
+
+/**
+ * The employee's cost as a share of their contribution for the period — payroll over billing, the
+ * way the dashboard states it.
+ *
+ * `null` when there is no salary or no contribution to divide, since a share of nothing says nothing.
+ */
+function handlerCostSharePct(handler: Handler): number | null {
+  const cost = handler.periodCostNis || 0;
+  const contribution = handler.contributionNis || 0;
+  if (!(cost > 0) || !(contribution > 0)) return null;
+  return Math.round((cost / contribution) * 100);
+}
 
 const summarizeHandlerTeam = (list: Handler[]) => {
   const teamSize = list.length;
@@ -110,21 +195,20 @@ const formatCompactIls = (value: number) => {
   }).format(value);
 };
 
-const handlerOpenLoad = (handler: Handler) =>
-  (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0);
-
-const topHandlersBy = (list: Handler[], getValue: (handler: Handler) => number, limit = 3) =>
-  [...list]
-    .map((handler) => ({ handler, value: getValue(handler) }))
-    .filter((row) => row.value > 0)
-    .sort((a, b) => b.value - a.value)
-    .slice(0, limit);
-
 // Module-level cache for table data - persists across SPA navigation, clears on page refresh
 // Bump CACHE_VERSION when data structure changes to invalidate stale cache
 // 7: handler rows carry whether the employee is still active, and leavers with cases are included.
-const CACHE_VERSION = 7;
-let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null = null;
+// 8: handler rows carry the period columns (received, signed, contribution, applicants).
+// 9: case counts come from the shared bucket rules, so they match the pipeline tabs.
+// 10: handler rows carry their salary cost for the period, which colours Contribution.
+// 11: client support rows (client_support_id) are loaded as a third table.
+const CACHE_VERSION = 11;
+/** The cached rows belong to one period, so a different range has to be refetched. */
+let handlerManagementCache:
+  | (HandlerManagementPageData & { _v?: number; _periodKey?: string })
+  | null = null;
+
+const periodCacheKey = (range: HandlerPeriodRange) => `${range.from}..${range.to}`;
 
 const HandlerManagementPage: React.FC = () => {
   const navigate = useNavigate();
@@ -133,18 +217,40 @@ const HandlerManagementPage: React.FC = () => {
     const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
     return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
   };
+  /*
+   * The period the Received / Signed / Contribution columns are measured over. Defaults to the last
+   * 30 days, which is the window the Due column has always read, so the table opens unchanged.
+   */
+  const periodDefaults = lastThirtyDaysRange();
+  const [periodFrom, setPeriodFrom] = usePersistedState('handlerManagement_periodFrom', periodDefaults.from, { storage: 'sessionStorage' });
+  const [periodTo, setPeriodTo] = usePersistedState('handlerManagement_periodTo', periodDefaults.to, { storage: 'sessionStorage' });
+  const periodRange = useMemo<HandlerPeriodRange>(
+    () => ({ from: periodFrom, to: periodTo }),
+    [periodFrom, periodTo],
+  );
+
   const [pageData, setPageData] = useState<HandlerManagementPageData>(() => {
-    if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
+    if (
+      handlerManagementCache?.loadedAt &&
+      handlerManagementCache?._v === CACHE_VERSION &&
+      handlerManagementCache?._periodKey === periodCacheKey({ from: periodFrom, to: periodTo })
+    ) {
       return handlerManagementCache;
     }
-    return { handlers: [], retentionHandlers: [], handlerPoolCount: 0, unassignedLeads: [], nextPayments: [], loadedAt: null };
+    return { handlers: [], retentionHandlers: [], supportHandlers: [], handlerPoolCount: 0, unassignedLeads: [], nextPayments: [], loadedAt: null };
   });
   const handlers = pageData.handlers;
   const retentionHandlers = pageData.retentionHandlers;
+  const supportHandlers = pageData.supportHandlers || [];
   const handlerPoolCount = pageData.handlerPoolCount;
   const unassignedLeads = pageData.unassignedLeads;
   const nextPayments = pageData.nextPayments;
   const [loading, setLoading] = useState(true);
+  /**
+   * A refetch that keeps the page on screen. Changing the period only changes table figures, so it
+   * must not drop the filter bar and scroll position behind the full-page spinner.
+   */
+  const [refreshing, setRefreshing] = useState(false);
   const [assigningLeadId, setAssigningLeadId] = useState<string | number | null>(null);
   const [selectedHandlerId, setSelectedHandlerId] = useState<number | null>(null);
   const [employees, setEmployees] = useState<Map<number, { id: number; display_name: string; photo_url?: string; photo?: string }>>(new Map());
@@ -161,10 +267,12 @@ const HandlerManagementPage: React.FC = () => {
   /** Searching employees still on staff, or the leavers who still hold cases. */
   const [employeeStateTab, setEmployeeStateTab] = useState<'active' | 'inactive'>('active');
   const [selectedDepartment, setSelectedDepartment] = usePersistedState('handlerManagement_selectedDepartment', '', { storage: 'sessionStorage' });
-  const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
+  const [sortColumn, setSortColumn] = usePersistedState<HandlerSortColumn | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
   const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_sortDirection', 'asc', { storage: 'sessionStorage' });
-  const [retentionSortColumn, setRetentionSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'nonActive' | 'inProcess' | 'applicationsSent' | 'totalCases' | 'closedCases' | null>('handlerManagement_retentionSortColumn', null, { storage: 'sessionStorage' });
+  const [retentionSortColumn, setRetentionSortColumn] = usePersistedState<HandlerSortColumn | null>('handlerManagement_retentionSortColumn', null, { storage: 'sessionStorage' });
   const [retentionSortDirection, setRetentionSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_retentionSortDirection', 'asc', { storage: 'sessionStorage' });
+  const [supportSortColumn, setSupportSortColumn] = usePersistedState<HandlerSortColumn | null>('handlerManagement_supportSortColumn', null, { storage: 'sessionStorage' });
+  const [supportSortDirection, setSupportSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_supportSortDirection', 'asc', { storage: 'sessionStorage' });
   const [selectedCategories, setSelectedCategories] = usePersistedState<string[]>('handlerManagement_selectedCategories', [], { storage: 'sessionStorage' });
   const [selectedStages, setSelectedStages] = usePersistedState<number[]>('handlerManagement_selectedStages', [], { storage: 'sessionStorage' });
   const [categorySearch, setCategorySearch] = useState<string>('');
@@ -274,31 +382,41 @@ const HandlerManagementPage: React.FC = () => {
     );
   };
 
+  // Reloads on mount and whenever the period changes: the period columns are fetched, not derived.
   useEffect(() => {
-    if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
+    if (
+      handlerManagementCache?.loadedAt &&
+      handlerManagementCache?._v === CACHE_VERSION &&
+      handlerManagementCache?._periodKey === periodCacheKey(periodRange)
+    ) {
+      setPageData(handlerManagementCache);
       setLoading(false);
       return;
     }
     handlerManagementCache = null;
-    fetchData();
-  }, []);
+    // Already showing a table, so a period change refreshes the rows in place.
+    fetchData({ silent: pageData.loadedAt != null });
+  }, [periodRange]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
     try {
       const [handlersResult, unassignedData, paymentsData] = await Promise.all([
-        fetchHandlers(),
+        fetchHandlers(periodRange),
         fetchUnassignedLeads(),
         fetchNextPayments()
       ]);
-      const newData: HandlerManagementPageData & { _v?: number } = {
+      const newData: HandlerManagementPageData & { _v?: number; _periodKey?: string } = {
         handlers: handlersResult.handlers,
         retentionHandlers: handlersResult.retentionHandlers,
+        supportHandlers: handlersResult.supportHandlers,
         handlerPoolCount: handlersResult.handlerPoolCount,
         unassignedLeads: unassignedData,
         nextPayments: paymentsData,
         loadedAt: Date.now(),
         _v: CACHE_VERSION,
+        _periodKey: periodCacheKey(periodRange),
       };
       handlerManagementCache = newData;
       setPageData(newData);
@@ -307,6 +425,7 @@ const HandlerManagementPage: React.FC = () => {
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -314,14 +433,16 @@ const HandlerManagementPage: React.FC = () => {
     const leadIdSet = new Set(leadIds.map(id => String(id)));
     const newUnassignedLeads = unassignedLeads.filter(lead => !leadIdSet.has(String(lead.id)));
     const newNextPayments = nextPayments.filter(p => !leadIdSet.has(String(p.lead_id)));
-    const newData: HandlerManagementPageData & { _v?: number } = {
+    const newData: HandlerManagementPageData & { _v?: number; _periodKey?: string } = {
       handlers,
       retentionHandlers,
+      supportHandlers,
       handlerPoolCount,
       unassignedLeads: newUnassignedLeads,
       nextPayments: newNextPayments,
       loadedAt: pageData.loadedAt,
       _v: CACHE_VERSION,
+      _periodKey: periodCacheKey(periodRange),
     };
     handlerManagementCache = newData;
     setPageData(newData);
@@ -359,8 +480,22 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
-  const fetchHandlers = async (): Promise<{ handlers: Handler[]; retentionHandlers: Handler[]; handlerPoolCount: number }> => {
+  const fetchHandlers = async (
+    range: HandlerPeriodRange,
+  ): Promise<{
+    handlers: Handler[];
+    retentionHandlers: Handler[];
+    supportHandlers: Handler[];
+    handlerPoolCount: number;
+  }> => {
     try {
+      /*
+       * Which leads each row holds, filled while the rows are built and read afterwards by the
+       * period pass. Keyed by role as well as handler: the same employee can appear in both tables
+       * holding different cases.
+       */
+      const leadRefsByRow = new Map<string, HandlerLeadRefs>();
+      const rowKey = (handlerId: number, roleField: string) => `${roleField}:${handlerId}`;
       const { data: bonusRoleEmployees } = await supabase
         .from('tenants_employee')
         .select('id, bonuses_role')
@@ -460,6 +595,9 @@ const HandlerManagementPage: React.FC = () => {
             id: Number(employee.id),
             display_name: employee.display_name,
             official_name: employee.official_name || null,
+            // The pipeline matches the legacy `leads.handler` text column on this, so it is needed
+            // here too for the two screens to see the same cases.
+            full_name: user.full_name || null,
             department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
             bonuses_role: employee.bonuses_role || null,
             is_active: user.is_active !== false,
@@ -470,28 +608,54 @@ const HandlerManagementPage: React.FC = () => {
       // For each handler, count their assigned cases (separated into new and active)
       const buildHandlerRow = async (
         handler: (typeof handlersData)[number],
-        roleField: 'case_handler_id' | 'retainer_handler_id',
+        roleField: HandlerRoleField,
       ): Promise<Handler> => {
           const handlerId = handler.id;
 
-          // Fetch all new leads assigned to this handler with category join (exclude stage 91 and inactive leads)
-          const { data: newLeads } = await supabase
+          const isRetentionRole = roleField === 'retainer_handler_id';
+          const isSupportRole = roleField === 'client_support_id';
+
+          /*
+           * Deliberately the same lead set the pipeline loads for this employee, down to the
+           * filters: the stage >= 60 and stage != 91 conditions this page used to add, and its
+           * exclusion of inactive leads, are what made these totals disagree with the handler and
+           * retention tabs. Inactive leads are now dropped by the shared classifier for the case
+           * handler and kept for the retention handler, exactly as the two pipelines do it.
+           *
+           * The case-handler side also has to match on the legacy `handler` text column, since some
+           * leads name their handler there and never got a `case_handler_id`.
+           */
+          const newLeadQuery = supabase
             .from('leads')
             .select(`
               id,
               stage,
-              handler_stage,
               category_id,
               case_handler_id,
+              retainer_handler_id,
               active_handler_type,
+              retention_handler_started,
+              unactivated_at,
+              balance,
+              balance_currency,
+              proposal_total,
+              proposal_currency,
               misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-            `)
-            .eq(roleField, handlerId)
-            .gte('stage', 60)
-            .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
-            .is('unactivated_at', null); // Only active leads (exclude inactive: unactivated_at IS NULL means active)
+            `);
+          const handlerNameMatches = [handler.full_name, handler.display_name, handler.official_name]
+            .map((name) => String(name || '').trim())
+            // A comma or bracket in a name would break the filter string PostgREST parses.
+            .filter((name) => name.length > 0 && !/[,()]/.test(name));
+          const { data: newLeads } = await (isRetentionRole || isSupportRole
+            ? newLeadQuery.eq(roleField, handlerId)
+            : newLeadQuery.or(
+                [
+                  `case_handler_id.eq.${handlerId}`,
+                  `handler.eq.${handlerId}`,
+                  ...handlerNameMatches.map((name) => `handler.eq.${name}`),
+                ].join(','),
+              ));
 
-          // Fetch all legacy leads assigned to this handler with category, currency, employee joins (exclude stage 91 and inactive leads)
           const { data: legacyLeads } = await supabase
             .from('leads_lead')
             .select(`
@@ -502,73 +666,64 @@ const HandlerManagementPage: React.FC = () => {
               currency_id,
               category_id,
               active_handler_type,
+              retention_handler_started,
+              status,
               accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
               misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
             `)
-            .eq(roleField, handlerId)
-            .gte('stage', 60)
-            .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
-            .or('status.eq.0,status.is.null'); // Only active leads (status 0 or null = active, status 10 = inactive)
+            .eq(roleField, handlerId);
 
-          // Categorize leads using the same bucket rules as the handlers / retention pipeline
-          let newCasesCount = 0;
-          let activeCasesCount = 0;
-          let nonActiveCount = 0;
-          let closedCasesCount = 0;
-          const isRetentionRole = roleField === 'retainer_handler_id';
+          // Lead ids and per-lead signed value, read later by the one period pass for the page.
+          const periodRefs = emptyHandlerLeadRefs();
+          (newLeads || []).forEach((lead) => {
+            const id = String(lead.id);
+            periodRefs.newLeadIds.push(id);
+            periodRefs.signedNisByNewLeadId.set(id, calculateNewLeadFullAmount(lead));
+          });
+          (legacyLeads || []).forEach((lead) => {
+            const id = Number(lead.id);
+            if (!Number.isFinite(id)) return;
+            periodRefs.legacyLeadIds.push(id);
+            periodRefs.signedNisByLegacyLeadId.set(id, calculateLegacyLeadFullAmount(lead));
+          });
+          leadRefsByRow.set(rowKey(handlerId, roleField), periodRefs);
 
+          // Bucketed by the rules the pipeline tabs use, from the one shared classifier.
           const allLeads = [
             ...(newLeads || []).map(l => ({
-              stage: (l as any).handler_stage || l.stage,
-              leadStage: l.stage,
-              lead_type: 'new',
+              stage: l.stage,
               active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+              started: (l as any).retention_handler_started === true,
+              isInactive: (l as any).unactivated_at != null,
             })),
             ...(legacyLeads || []).map(l => ({
               stage: l.stage,
-              leadStage: l.stage,
-              lead_type: 'legacy',
               active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+              started: (l as any).retention_handler_started === true,
+              isInactive: Number((l as any).status) === 10,
             })),
           ];
 
-          const isNonActiveLead = (lead: { active_handler_type: number }) =>
-            isRetentionRole ? lead.active_handler_type === 2 : lead.active_handler_type === 1;
-
-          allLeads.forEach(lead => {
-            const stageId = getStageId(lead.stage);
-            const leadStageId = getStageId(lead.leadStage);
-            if (stageId === 200 || leadStageId === 200) {
-              closedCasesCount++;
-              return;
-            }
-            if (isNonActiveLead(lead)) {
-              nonActiveCount++;
-              return;
-            }
-
-            if (stageId === null || stageId === undefined) {
-              newCasesCount++;
-            } else if (stageId <= 105) {
-              newCasesCount++;
-            } else if (stageId >= 110) {
-              activeCasesCount++;
-            } else {
-              newCasesCount++;
-            }
-          });
-
-          // Calculate "In Process" = New Cases (stage <= 105) + Active Cases (stage >= 110 AND stage < 150)
+          const bucketCounts = emptyHandlerBucketCounts();
+          // "In process" is the New bucket plus the Active cases that have not reached stage 150.
           let inProcessCount = 0;
           allLeads.forEach(lead => {
-            if (isNonActiveLead(lead)) return;
-            const stageId = getStageId(lead.stage);
-            if (stageId !== null && stageId !== undefined && stageId !== 200) {
-              if (stageId <= 105 || (stageId >= 110 && stageId < 150)) {
-                inProcessCount++;
-              }
+            const stageId = getStageId(lead.stage) ?? null;
+            const bucket = isSupportRole
+              ? classifySupportBucket(stageId, lead.isInactive)
+              : isRetentionRole
+                ? classifyRetentionBucket(stageId, lead.active_handler_type, lead.started)
+                : classifyHandlerBucket(stageId, lead.active_handler_type, lead.isInactive);
+            if (!bucket) return;
+            bucketCounts[bucket] += 1;
+            if (bucket === 'new' || (bucket === 'active' && stageId !== null && stageId < 150)) {
+              inProcessCount += 1;
             }
           });
+          const newCasesCount = bucketCounts.new;
+          const activeCasesCount = bucketCounts.active;
+          const nonActiveCount = bucketCounts.non_active;
+          const closedCasesCount = bucketCounts.closed;
 
           // Calculate "Applications Sent" = Count distinct leads from leads_leadstage where stage >= 150
           let applicationsSentCount = 0;
@@ -954,8 +1109,38 @@ const HandlerManagementPage: React.FC = () => {
         if (Number.isFinite(id) && id > 0) retentionIdSet.add(id);
       });
 
+      /*
+       * Client support is set on cases at every stage, so the ids are read in pages: a bare select
+       * would stop at the first thousand leads and lose whole employees.
+       */
+      const [newSupportRows, legacySupportRows] = await Promise.all([
+        fetchAllPagedRows<{ client_support_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads')
+            .select('client_support_id')
+            .not('client_support_id', 'is', null)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
+        fetchAllPagedRows<{ client_support_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads_lead')
+            .select('client_support_id')
+            .not('client_support_id', 'is', null)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
+      ]);
+      const supportIdSet = new Set<number>();
+      [...newSupportRows, ...legacySupportRows].forEach((row) => {
+        const id = Number(row.client_support_id);
+        if (Number.isFinite(id) && id > 0) supportIdSet.add(id);
+      });
+
       const handlersById = new Map(handlersData.map((handler) => [handler.id, handler]));
-      const missingRetentionIds = [...retentionIdSet].filter((id) => !handlersById.has(id));
+      const missingRetentionIds = [...retentionIdSet, ...supportIdSet].filter(
+        (id) => !handlersById.has(id),
+      );
       if (missingRetentionIds.length > 0) {
         const { data: extraEmployees } = await supabase
           .from('tenants_employee')
@@ -981,6 +1166,8 @@ const HandlerManagementPage: React.FC = () => {
             id: Number(emp.id),
             display_name: emp.display_name,
             official_name: emp.official_name || null,
+            // No staff user row, so no full name to match the legacy `leads.handler` column on.
+            full_name: null,
             department: departmentId ? (departmentsMap.get(departmentId) || 'Unknown') : 'Unknown',
             bonuses_role: emp.bonuses_role || null,
             // Holds retainer cases but has no staff user row, so there is nothing saying they left.
@@ -989,18 +1176,91 @@ const HandlerManagementPage: React.FC = () => {
         });
       }
 
-      const retentionEmployees = [...retentionIdSet]
-        .map((id) => handlersById.get(id))
-        .filter((handler): handler is (typeof handlersData)[number] => Boolean(handler));
-      const retentionHandlersWithCounts = (
-        await Promise.all(
-          retentionEmployees.map((handler) => buildHandlerRow(handler, 'retainer_handler_id')),
-        )
-      )
-        .filter((handler) => (handler.newCasesCount || 0) + (handler.activeCasesCount || 0) + (handler.nonActiveCount || 0) > 0)
-        .sort((a, b) => a.display_name.localeCompare(b.display_name));
+      const rowsForRole = async (ids: Set<number>, roleField: HandlerRoleField) => {
+        const employees = [...ids]
+          .map((id) => handlersById.get(id))
+          .filter((handler): handler is (typeof handlersData)[number] => Boolean(handler));
+        const rows = await Promise.all(
+          employees.map((handler) => buildHandlerRow(handler, roleField)),
+        );
+        return rows
+          .filter(
+            (handler) =>
+              (handler.newCasesCount || 0) +
+                (handler.activeCasesCount || 0) +
+                (handler.nonActiveCount || 0) >
+              0,
+          )
+          .sort((a, b) => a.display_name.localeCompare(b.display_name));
+      };
 
-      return { handlers: handlersWithCounts, retentionHandlers: retentionHandlersWithCounts, handlerPoolCount };
+      const [retentionHandlersWithCounts, supportHandlersWithCounts] = await Promise.all([
+        rowsForRole(retentionIdSet, 'retainer_handler_id'),
+        rowsForRole(supportIdSet, 'client_support_id'),
+      ]);
+
+      /*
+       * The period columns, in one pass for every row in both tables. Stage, payment and contact
+       * rows are read firm-wide and split by lead id, so the cost does not grow with headcount.
+       */
+      const everyNewLeadId = new Set<string>();
+      const everyLegacyLeadId = new Set<number>();
+      leadRefsByRow.forEach((refs) => {
+        refs.newLeadIds.forEach((id) => everyNewLeadId.add(id));
+        refs.legacyLeadIds.forEach((id) => everyLegacyLeadId.add(id));
+      });
+
+      let periodInputs: Parameters<typeof handlerPeriodMetrics>[1] | null = null;
+      try {
+        const [received, signed, due, applicants, rates] = await Promise.all([
+          fetchLeadsReachingStageInRange(HANDLER_RECEIVED_STAGE, range),
+          fetchLeadsReachingStageInRange(CLIENT_SIGNED_STAGE, range),
+          fetchDueInRangeByLead(range),
+          fetchApplicantsByLead(Array.from(everyNewLeadId), Array.from(everyLegacyLeadId)),
+          fetchHandlerContributionRates(),
+        ]);
+        periodInputs = { received, signed, due, applicants, rates };
+      } catch (error) {
+        // The established columns are worth showing on their own, so a failure here is not fatal.
+        console.error('Error loading handler period metrics:', error);
+      }
+
+      // Gross salary per month, which the Contribution column is coloured against.
+      let monthlyCosts = new Map<number, number>();
+      try {
+        const costIds = Array.from(
+          new Set(
+            [...handlersWithCounts, ...retentionHandlersWithCounts, ...supportHandlersWithCounts].map(
+              (row) => row.id,
+            ),
+          ),
+        );
+        monthlyCosts = await fetchHandlerMonthlyCosts(costIds, range);
+      } catch (error) {
+        console.error('Error loading handler salary costs:', error);
+      }
+
+      const withPeriodMetrics = (rows: Handler[], roleField: string): Handler[] =>
+        rows.map((row) => {
+          const refs = leadRefsByRow.get(rowKey(row.id, roleField));
+          const metrics =
+            refs && periodInputs ? handlerPeriodMetrics(refs, periodInputs) : emptyHandlerPeriodMetrics();
+          return {
+            ...row,
+            receivedCount: metrics.receivedCount,
+            signedInRangeNis: metrics.signedNis,
+            contributionNis: metrics.contributionNis,
+            applicantsTotal: metrics.applicantsTotal,
+            periodCostNis: handlerPeriodCostNis(monthlyCosts.get(row.id) || 0, range),
+          };
+        });
+
+      return {
+        handlers: withPeriodMetrics(handlersWithCounts, 'case_handler_id'),
+        retentionHandlers: withPeriodMetrics(retentionHandlersWithCounts, 'retainer_handler_id'),
+        supportHandlers: withPeriodMetrics(supportHandlersWithCounts, 'client_support_id'),
+        handlerPoolCount,
+      };
     } catch (error) {
       console.error('Error fetching handlers:', error);
       throw error;
@@ -1887,6 +2147,32 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
+  /** Says what the contribution colour is judged against, including when there is no salary to use. */
+  const contributionCostTitle = (handler: Handler) => {
+    const cost = handler.periodCostNis || 0;
+    if (!(cost > 0)) return 'No salary on file for this period, so nothing to compare the contribution with';
+    const target = handlerContributionTargetNis(cost);
+    return `Needs ${formatCurrency(target, 'NIS')} to be green: ${formatCurrency(cost, 'NIS')} of gross salary for this period with ${Math.round(
+      CONTRIBUTION_TARGET_MARKUP * 100,
+    )}% on top`;
+  };
+
+  /** Cost as a share of contribution, beside the contribution it is a share of. */
+  const renderCostShareBadge = (handler: Handler) => {
+    const pct = handlerCostSharePct(handler);
+    if (pct == null) return null;
+    return (
+      <span
+        className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums ${
+          METRIC_TONE_BADGE_CLASS[costSharePctTone(pct)]
+        }`}
+        title={`${formatCurrency(handler.periodCostNis || 0, 'NIS')} of gross salary is ${pct}% of this contribution. Up to ${COST_SHARE_TARGET_PCT}% is on target, up to ${COST_SHARE_WATCH_CEILING_PCT}% a warning.`}
+      >
+        {pct}%
+      </span>
+    );
+  };
+
   const renderStageBadge = (stage: number | string | null | undefined, stageName?: string) => {
     const stageStr = String(stage ?? '');
     const name = stageName || getStageName(stageStr) || stageStr || 'No Stage';
@@ -1964,6 +2250,12 @@ const HandlerManagementPage: React.FC = () => {
   const inactiveRetentionHandlersWithCases = retentionHandlers
     .filter((handler) => !isActiveHandler(handler))
     .filter((handler) => handlerOpenCases(handler) > 0);
+  const supportHandlersWithCases = supportHandlers
+    .filter(isActiveHandler)
+    .filter((handler) => handlerOpenCases(handler) > 0);
+  const inactiveSupportHandlersWithCases = supportHandlers
+    .filter((handler) => !isActiveHandler(handler))
+    .filter((handler) => handlerOpenCases(handler) > 0);
 
   const sortHandlerList = (
     list: Handler[],
@@ -1978,6 +2270,22 @@ const HandlerManagementPage: React.FC = () => {
         case 'due':
           valueA = a.dueAmount || 0;
           valueB = b.dueAmount || 0;
+          break;
+        case 'signed':
+          valueA = a.signedInRangeNis || 0;
+          valueB = b.signedInRangeNis || 0;
+          break;
+        case 'contribution':
+          valueA = a.contributionNis || 0;
+          valueB = b.contributionNis || 0;
+          break;
+        case 'received':
+          valueA = a.receivedCount || 0;
+          valueB = b.receivedCount || 0;
+          break;
+        case 'applicants':
+          valueA = a.applicantsTotal || 0;
+          valueB = b.applicantsTotal || 0;
           break;
         case 'newCases':
           valueA = a.newCasesCount;
@@ -2029,6 +2337,8 @@ const HandlerManagementPage: React.FC = () => {
     // So the filter still works on the Inactive tab, where a department may have only leavers.
     ...inactiveHandlersWithCases.map(h => h.department),
     ...inactiveRetentionHandlersWithCases.map(h => h.department),
+    ...supportHandlersWithCases.map(h => h.department),
+    ...inactiveSupportHandlersWithCases.map(h => h.department),
   ].filter(Boolean))).sort();
 
   /** Which employees the search bar looks through: those on staff, or the leavers. */
@@ -2036,6 +2346,8 @@ const HandlerManagementPage: React.FC = () => {
     employeeStateTab === 'inactive' ? inactiveHandlersWithCases : handlersWithCases;
   const searchedRetentionHandlers =
     employeeStateTab === 'inactive' ? inactiveRetentionHandlersWithCases : retentionHandlersWithCases;
+  const searchedSupportHandlers =
+    employeeStateTab === 'inactive' ? inactiveSupportHandlersWithCases : supportHandlersWithCases;
 
   const filteredHandlersForPage = sortHandlerList(
     searchedHandlers.filter(matchesPageHandlerFilter),
@@ -2049,12 +2361,23 @@ const HandlerManagementPage: React.FC = () => {
     retentionSortDirection,
   );
 
+  const filteredSupportHandlersForPage = sortHandlerList(
+    searchedSupportHandlers.filter(matchesPageHandlerFilter),
+    supportSortColumn,
+    supportSortDirection,
+  );
+
   /**
    * The names the search bar offers, which are the rows it can actually narrow to — so a name in
    * the list never leads to an empty page. Typing narrows the list; clicking a name searches it.
    */
   const employeeSearchOptions = (() => {
-    const pool = activeTab === 'retention' ? searchedRetentionHandlers : searchedHandlers;
+    const pool =
+      activeTab === 'retention'
+        ? searchedRetentionHandlers
+        : activeTab === 'client_support'
+          ? searchedSupportHandlers
+          : searchedHandlers;
     const query = pageEmployeeSearchQuery.trim().toLowerCase();
     const scoped = selectedDepartment
       ? pool.filter((handler) => handler.department === selectedDepartment)
@@ -2087,6 +2410,24 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
+  const handleSupportSort = (column: HandlerSortColumn) => {
+    if (supportSortColumn === column) {
+      setSupportSortDirection(supportSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSupportSortColumn(column);
+      setSupportSortDirection('asc');
+    }
+  };
+
+  const applySupportTeamSort = (column: HandlerSortColumn) => {
+    if (supportSortColumn === column) {
+      setSupportSortDirection(supportSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSupportSortColumn(column);
+      setSupportSortDirection('desc');
+    }
+  };
+
   const applyHandlerTeamSort = (column: HandlerSortColumn) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -2105,9 +2446,133 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
+  /**
+   * The employee table, shared by the handler, retention and client support tabs. They show the
+   * same figures about the same cases, so they are one table with its own sort state each.
+   */
+  const renderHandlerRowsTable = (params: {
+    rows: Handler[];
+    sortColumn: HandlerSortColumn | null;
+    sortDirection: 'asc' | 'desc';
+    onSort: (column: HandlerSortColumn) => void;
+    onRowClick?: (handler: Handler) => void;
+  }) => {
+    const { rows, sortColumn: column, sortDirection: direction, onSort, onRowClick } = params;
+    const sortArrow = (key: HandlerSortColumn) =>
+      column === key ? <span className="ml-1">{direction === 'asc' ? '▲' : '▼'}</span> : null;
+    const sortableHeader = (key: HandlerSortColumn, label: string, title?: string, muted = false) => (
+      <th
+        className={`cursor-pointer select-none px-2 py-3 text-left font-semibold ${muted ? '!text-gray-400' : ''}`}
+        title={title}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSort(key);
+        }}
+      >
+        {label} {sortArrow(key)}
+      </th>
+    );
+
+    return (
+      <div className={PIPELINE_TABLE_SHELL}>
+        <table className={PIPELINE_TABLE_CLASS}>
+          <thead className={PIPELINE_THEAD_CLASS}>
+            <tr>
+              <th className="px-2 py-3 text-left font-semibold">Employee</th>
+              <th className="px-2 py-3 text-left font-semibold">Department</th>
+              {sortableHeader('due', 'Due')}
+              {sortableHeader(
+                'signed',
+                'Signed',
+                'Value of the cases they hold that were signed in the period',
+              )}
+              {sortableHeader(
+                'contribution',
+                'Contribution',
+                'Handler pool: due in the period, normalised, at handler % of the Handlers department share. Green once it clears their gross salary for the period plus 40%. The pill is that salary as a share of this contribution.',
+              )}
+              {sortableHeader(
+                'received',
+                'Received',
+                `Cases that reached Handler Set between ${periodFrom} and ${periodTo}`,
+              )}
+              {sortableHeader(
+                'applicants',
+                'Applicants',
+                'Applicants across every case they currently hold',
+              )}
+              {sortableHeader('newCases', 'New Cases')}
+              {sortableHeader('activeCases', 'Active Cases')}
+              {sortableHeader('nonActive', 'Non-active')}
+              {sortableHeader('totalCases', 'Total Cases')}
+              {sortableHeader('closedCases', 'Closed Cases', undefined, true)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((handler) => (
+              <tr
+                key={handler.id}
+                className={pipelineRowClassName()}
+                onClick={onRowClick ? () => onRowClick(handler) : undefined}
+              >
+                <td className="px-2 py-3.5">
+                  <div className="flex items-center gap-3">
+                    <EmployeeAvatar employeeId={handler.id} size="md" />
+                    <span className="font-semibold text-gray-900">{handler.display_name}</span>
+                  </div>
+                </td>
+                <td className="px-2 py-3.5 text-sm text-gray-700">{handler.department || 'Unknown'}</td>
+                <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                  {formatCurrency(handler.dueAmount || 0, 'NIS')}
+                </td>
+                <td className="px-2 py-3.5 text-sm text-gray-400">
+                  {formatCurrency(handler.signedInRangeNis || 0, 'NIS')}
+                </td>
+                <td className="px-2 py-3.5 text-sm" title={contributionCostTitle(handler)}>
+                  {(() => {
+                    const tone = contributionTone(
+                      handler.contributionNis || 0,
+                      handler.periodCostNis || 0,
+                    );
+                    return (
+                      <div className="flex items-center gap-2">
+                        <span className={`font-semibold ${METRIC_TONE_CLASS[tone]}`}>
+                          {formatCurrency(handler.contributionNis || 0, 'NIS')}
+                        </span>
+                        {renderCostShareBadge(handler)}
+                      </div>
+                    );
+                  })()}
+                </td>
+                <td
+                  className={`px-2 py-3.5 text-sm font-semibold ${
+                    METRIC_TONE_CLASS[receivedCountTone(handler.receivedCount || 0)]
+                  }`}
+                  title={`${RECEIVED_TARGET} or more is on target, ${RECEIVED_WATCH_FLOOR}–${RECEIVED_TARGET - 1} is short of it`}
+                >
+                  {handler.receivedCount || 0}
+                </td>
+                <td className="px-2 py-3.5 text-sm text-gray-900">{handler.applicantsTotal || 0}</td>
+                <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
+                <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
+                <td className="px-2 py-3.5 text-sm text-gray-900">{handler.nonActiveCount || 0}</td>
+                <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
+                  {handlerOpenCases(handler)}
+                </td>
+                <td className="px-2 py-3.5 text-sm font-semibold text-gray-400">
+                  {handler.closedCasesCount || 0}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   const renderTeamSummary = (
     list: Handler[],
-    variant: 'handlers' | 'retention',
+    variant: 'handlers' | 'retention' | 'client_support',
     currentSort: HandlerSortColumn | null,
     onSort: (column: HandlerSortColumn) => void,
   ) => {
@@ -2121,24 +2586,26 @@ const HandlerManagementPage: React.FC = () => {
       icon: typeof UserGroupIcon;
       gradient: string;
       sort: HandlerSortColumn | null;
-      top: Array<{ handler: Handler; formatted: string }>;
     }> = [
       {
         key: 'handlers',
         value: summary.teamSize,
-        label: variant === 'retention' ? 'Retention Handlers' : 'Handlers',
+        label:
+          variant === 'retention'
+            ? 'Retention Handlers'
+            : variant === 'client_support'
+              ? 'Client Support'
+              : 'Handlers',
         hint: filteredView
           ? 'In the current search or department filter'
           : variant === 'retention'
             ? 'Retention handlers with open cases'
-            : 'Handlers with open cases',
+            : variant === 'client_support'
+              ? 'Client support with open cases'
+              : 'Handlers with open cases',
         icon: UserGroupIcon,
         gradient: PIPELINE_SUMMARY_GRADIENTS.missed_interaction,
         sort: null,
-        top: topHandlersBy(list, handlerOpenLoad).map((row) => ({
-          handler: row.handler,
-          formatted: String(row.value),
-        })),
       },
       {
         key: 'active',
@@ -2150,23 +2617,20 @@ const HandlerManagementPage: React.FC = () => {
         icon: BriefcaseIcon,
         gradient: PIPELINE_SUMMARY_GRADIENTS.upcoming_meeting,
         sort: 'activeCases',
-        top: topHandlersBy(list, (handler) => handler.activeCasesCount || 0).map((row) => ({
-          handler: row.handler,
-          formatted: String(row.value),
-        })),
       },
       {
         key: 'new',
         value: summary.newCases,
         label: 'New Cases',
-        hint: variant === 'retention' ? 'Newly assigned to retention' : 'Waiting for first handler action',
+        hint:
+          variant === 'retention'
+            ? 'Newly assigned to retention'
+            : variant === 'client_support'
+              ? 'Cases not yet past handler set'
+              : 'Waiting for first handler action',
         icon: DocumentTextIcon,
         gradient: PIPELINE_SUMMARY_GRADIENTS.lost_interaction,
         sort: 'newCases',
-        top: topHandlersBy(list, (handler) => handler.newCasesCount || 0).map((row) => ({
-          handler: row.handler,
-          formatted: String(row.value),
-        })),
       },
       {
         key: 'nonActive',
@@ -2176,10 +2640,6 @@ const HandlerManagementPage: React.FC = () => {
         icon: PauseCircleIcon,
         gradient: PIPELINE_SUMMARY_GRADIENTS.high_value,
         sort: 'nonActive',
-        top: topHandlersBy(list, (handler) => handler.nonActiveCount || 0).map((row) => ({
-          handler: row.handler,
-          formatted: String(row.value),
-        })),
       },
       {
         key: 'due',
@@ -2189,10 +2649,6 @@ const HandlerManagementPage: React.FC = () => {
         icon: CurrencyDollarIcon,
         gradient: 'bg-gradient-to-tr from-violet-600 via-purple-600 to-indigo-500',
         sort: 'due',
-        top: topHandlersBy(list, (handler) => handler.dueAmount || 0).map((row) => ({
-          handler: row.handler,
-          formatted: formatCompactIls(row.value),
-        })),
       },
     ];
 
@@ -2228,25 +2684,6 @@ const HandlerManagementPage: React.FC = () => {
                     {card.hint}
                   </p>
                 </div>
-              </div>
-              {/* Washed out over the gradient, so the employees read as their own half of the card. */}
-              <div className="mt-auto space-y-2 border-t border-white/25 bg-white/20 px-5 py-4">
-                {card.top.length === 0 ? (
-                  <p className="text-sm text-white/70">No employees in this section</p>
-                ) : (
-                  card.top.map((row, index) => (
-                    <div key={row.handler.id} className="flex items-center gap-2.5">
-                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/25 text-xs font-bold text-white shadow-sm backdrop-blur-md">
-                        {index + 1}
-                      </span>
-                      <EmployeeAvatar employeeId={row.handler.id} size="sm" />
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-white/90" title={row.handler.display_name}>
-                        {row.handler.display_name}
-                      </span>
-                      <span className="shrink-0 text-sm font-bold tabular-nums text-white">{row.formatted}</span>
-                    </div>
-                  ))
-                )}
               </div>
             </button>
           );
@@ -2385,7 +2822,7 @@ const HandlerManagementPage: React.FC = () => {
       )}
 
       {/* Employee Search Bar and Department Filter */}
-      {(activeTab === 'handlers' || activeTab === 'retention') && !showingHandlerPipeline && !showingRetentionPipeline && (
+      {(activeTab === 'handlers' || activeTab === 'retention' || activeTab === 'client_support') && !showingHandlerPipeline && !showingRetentionPipeline && (
       <div
         className={`mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between ${
           pageEmployeeSearchQuery.trim()
@@ -2513,6 +2950,51 @@ const HandlerManagementPage: React.FC = () => {
                 <option key={dept} value={dept}>{dept}</option>
               ))}
             </select>
+          </div>
+          {/* Drives Received, Signed and Contribution. Due keeps its own last-30-days reading. */}
+          <div className="w-full md:w-auto">
+            <label className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              Received / signed period
+              {refreshing && (
+                <span className="inline-flex items-center gap-1 normal-case tracking-normal text-primary">
+                  <span className="loading loading-spinner loading-xs" />
+                  Updating
+                </span>
+              )}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                className="input input-bordered w-full rounded-xl border-gray-200 bg-white text-sm md:w-[9.5rem]"
+                value={periodFrom}
+                max={periodTo}
+                onChange={(e) => setPeriodFrom(e.target.value)}
+                aria-label="Period from"
+              />
+              <span className="text-xs text-gray-400">to</span>
+              <input
+                type="date"
+                className="input input-bordered w-full rounded-xl border-gray-200 bg-white text-sm md:w-[9.5rem]"
+                value={periodTo}
+                min={periodFrom}
+                onChange={(e) => setPeriodTo(e.target.value)}
+                aria-label="Period to"
+              />
+              {!isDefaultHandlerPeriod(periodRange) && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs shrink-0"
+                  title="Back to the last 30 days"
+                  onClick={() => {
+                    const reset = lastThirtyDaysRange();
+                    setPeriodFrom(reset.from);
+                    setPeriodTo(reset.to);
+                  }}
+                >
+                  Last 30d
+                </button>
+              )}
+            </div>
           </div>
           {activeTab === 'handlers' && (
             <div className="inline-flex shrink-0 items-center gap-1 self-end rounded-full bg-gray-200/70 p-1">
@@ -3099,7 +3581,7 @@ const HandlerManagementPage: React.FC = () => {
                 key={handler.id}
                 className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
                 onClick={() => {
-                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                  void openEmployeePipeline(handler, 'handler');
                 }}
               >
                 <div className="mb-3 flex items-center gap-3">
@@ -3141,101 +3623,15 @@ const HandlerManagementPage: React.FC = () => {
             ))}
           </div>
         ) : (
-          <div className={PIPELINE_TABLE_SHELL}>
-            <table className={PIPELINE_TABLE_CLASS}>
-              <thead className={PIPELINE_THEAD_CLASS}>
-                <tr>
-                  <th className="px-2 py-3 text-left font-semibold">Employee</th>
-                  <th className="px-2 py-3 text-left font-semibold">Department</th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('due');
-                    }}
-                  >
-                    Due {sortColumn === 'due' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('newCases');
-                    }}
-                  >
-                    New Cases {sortColumn === 'newCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('activeCases');
-                    }}
-                  >
-                    Active Cases {sortColumn === 'activeCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('nonActive');
-                    }}
-                  >
-                    Non-active {sortColumn === 'nonActive' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('totalCases');
-                    }}
-                  >
-                    Total Cases {sortColumn === 'totalCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold !text-gray-400"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSort('closedCases');
-                    }}
-                  >
-                    Closed Cases {sortColumn === 'closedCases' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredHandlersForPage.map(handler => (
-                  <tr
-                    key={handler.id}
-                    className={pipelineRowClassName()}
-                    onClick={() => {
-                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
-                }}
-                  >
-                    <td className="px-2 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <EmployeeAvatar employeeId={handler.id} size="md" />
-                        <span className="font-semibold text-gray-900">{handler.display_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-2 py-3.5 text-sm text-gray-700">{handler.department || 'Unknown'}</td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {formatCurrency(handler.dueAmount || 0, 'NIS')}
-                    </td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.nonActiveCount || 0}</td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {handlerOpenCases(handler)}
-                    </td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-400">
-                      {handler.closedCasesCount || 0}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          renderHandlerRowsTable({
+            rows: filteredHandlersForPage,
+            sortColumn: sortColumn,
+            sortDirection: sortDirection,
+            onSort: handleSort,
+            onRowClick: (handler) => {
+              void openEmployeePipeline(handler, 'handler');
+            },
+          })
         )}
       </div>
       ) : null}
@@ -3286,7 +3682,7 @@ const HandlerManagementPage: React.FC = () => {
                 key={handler.id}
                 className="flex cursor-pointer flex-col justify-between rounded-2xl border border-gray-100 bg-white p-5 shadow-md transition-all duration-200 hover:-translate-y-1 hover:shadow-xl"
                 onClick={() => {
-                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
+                  void openEmployeePipeline(handler, 'retention');
                 }}
               >
                 <div className="mb-3 flex items-center gap-3">
@@ -3328,104 +3724,50 @@ const HandlerManagementPage: React.FC = () => {
             ))}
           </div>
         ) : (
-          <div className={PIPELINE_TABLE_SHELL}>
-            <table className={PIPELINE_TABLE_CLASS}>
-              <thead className={PIPELINE_THEAD_CLASS}>
-                <tr>
-                  <th className="px-2 py-3 text-left font-semibold">Employee</th>
-                  <th className="px-2 py-3 text-left font-semibold">Department</th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('due');
-                    }}
-                  >
-                    Due {retentionSortColumn === 'due' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('newCases');
-                    }}
-                  >
-                    New Cases {retentionSortColumn === 'newCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('activeCases');
-                    }}
-                  >
-                    Active Cases {retentionSortColumn === 'activeCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('nonActive');
-                    }}
-                  >
-                    Non-active {retentionSortColumn === 'nonActive' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('totalCases');
-                    }}
-                  >
-                    Total Cases {retentionSortColumn === 'totalCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th
-                    className="cursor-pointer select-none px-2 py-3 text-left font-semibold !text-gray-400"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRetentionSort('closedCases');
-                    }}
-                  >
-                    Closed Cases {retentionSortColumn === 'closedCases' && <span className="ml-1">{retentionSortDirection === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRetentionHandlersForPage.map(handler => (
-                  <tr
-                    key={handler.id}
-                    className={pipelineRowClassName()}
-                    onClick={() => {
-                  void openEmployeePipeline(handler, activeTab === 'retention' ? 'retention' : 'handler');
-                }}
-                  >
-                    <td className="px-2 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <EmployeeAvatar employeeId={handler.id} size="md" />
-                        <span className="font-semibold text-gray-900">{handler.display_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-2 py-3.5 text-sm text-gray-700">{handler.department || 'Unknown'}</td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {formatCurrency(handler.dueAmount || 0, 'NIS')}
-                    </td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.newCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.activeCasesCount}</td>
-                    <td className="px-2 py-3.5 text-sm text-gray-900">{handler.nonActiveCount || 0}</td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-900">
-                      {handlerOpenCases(handler)}
-                    </td>
-                    <td className="px-2 py-3.5 text-sm font-semibold text-gray-400">
-                      {handler.closedCasesCount || 0}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          renderHandlerRowsTable({
+            rows: filteredRetentionHandlersForPage,
+            sortColumn: retentionSortColumn,
+            sortDirection: retentionSortDirection,
+            onSort: handleRetentionSort,
+            onRowClick: (handler) => {
+              void openEmployeePipeline(handler, 'retention');
+            },
+          })
         )}
       </div>
       ) : null}
+
+      {/* Client Support and Their Cases. No pipeline to open into, so rows do not navigate. */}
+      {activeTab === 'client_support' && (
+      <div className="mb-8">
+        {renderTeamSummary(
+          filteredSupportHandlersForPage,
+          'client_support',
+          supportSortColumn,
+          applySupportTeamSort,
+        )}
+        {filteredSupportHandlersForPage.length === 0 ? (
+          <div className={PIPELINE_TABLE_SHELL}>
+            <table className={PIPELINE_TABLE_CLASS}>
+              <tbody>
+                <tr>
+                  <td className="bg-white px-4 py-12 text-center text-sm text-gray-500" style={PIPELINE_CELL_STYLE}>
+                    No client support employees with cases found
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          renderHandlerRowsTable({
+            rows: filteredSupportHandlersForPage,
+            sortColumn: supportSortColumn,
+            sortDirection: supportSortDirection,
+            onSort: handleSupportSort,
+          })
+        )}
+      </div>
+      )}
 
 
       {/* Next Payments */}

@@ -9,6 +9,7 @@ import {
   FIRM_MONTHLY_PAYROLL_BUDGET_NIS,
   isWorkingDay,
   monthlyTargetScale,
+  payrollShareBand,
   GOAL_BAR_REVENUE_TARGET_RATIO,
   REVENUE_TARGET_RATIOS,
   revenueTargetFromPayroll,
@@ -217,4 +218,14 @@ test('an unreadable date leaves the short columns without a target', () => {
       period,
     );
   }
+});
+
+test('a payroll share lands in the band it has reached', () => {
+  assert.equal(payrollShareBand(22), 'ideal');
+  assert.equal(payrollShareBand(30), 'ideal');
+  assert.equal(payrollShareBand(31), 'intermediate');
+  assert.equal(payrollShareBand(35), 'intermediate');
+  assert.equal(payrollShareBand(40), 'minimum');
+  assert.equal(payrollShareBand(41), 'over_floor');
+  assert.equal(payrollShareBand(180), 'over_floor');
 });

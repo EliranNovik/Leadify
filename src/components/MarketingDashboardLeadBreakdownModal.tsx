@@ -9,6 +9,8 @@ export interface MarketingDashboardLeadBreakdownModalProps {
   title: string;
   rows: MarketingLeadBreakdownRow[];
   formatMoney: (n: number) => string;
+  /** When true (external reports), lead numbers are plain text — not links. */
+  disableLeadLinks?: boolean;
 }
 
 const MarketingDashboardLeadBreakdownModal: React.FC<MarketingDashboardLeadBreakdownModalProps> = ({
@@ -17,6 +19,7 @@ const MarketingDashboardLeadBreakdownModal: React.FC<MarketingDashboardLeadBreak
   title,
   rows,
   formatMoney,
+  disableLeadLinks = false,
 }) => {
   const navigate = useNavigate();
   const totalValue = rows.reduce((sum, r) => sum + r.totalValueNis, 0);
@@ -76,6 +79,7 @@ const MarketingDashboardLeadBreakdownModal: React.FC<MarketingDashboardLeadBreak
                   <th className="whitespace-nowrap">Lead number</th>
                   <th>Client name</th>
                   <th>Category</th>
+                  <th className="whitespace-nowrap">Date signed</th>
                   <th className="text-right whitespace-nowrap">Total value</th>
                 </tr>
               </thead>
@@ -83,19 +87,30 @@ const MarketingDashboardLeadBreakdownModal: React.FC<MarketingDashboardLeadBreak
                 {rows.map((row) => (
                   <tr key={row.leadId}>
                     <td className="whitespace-nowrap">
-                      <button
-                        type="button"
-                        className="inline border-0 bg-transparent p-0 text-purple-600 dark:text-purple-400 text-base font-semibold leading-normal cursor-pointer rounded-sm hover:text-purple-700 dark:hover:text-purple-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-purple-500/50"
-                        onClick={(e) => openLead(row, e)}
-                      >
-                        {row.leadNumber}
-                      </button>
+                      {disableLeadLinks ? (
+                        <span className="text-base font-semibold leading-normal text-base-content">
+                          {row.leadNumber}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="inline border-0 bg-transparent p-0 text-purple-600 dark:text-purple-400 text-base font-semibold leading-normal cursor-pointer rounded-sm hover:text-purple-700 dark:hover:text-purple-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-purple-500/50"
+                          onClick={(e) => openLead(row, e)}
+                        >
+                          {row.leadNumber}
+                        </button>
+                      )}
                     </td>
                     <td className="max-w-[16rem]" title={row.clientName}>
                       {row.clientName}
                     </td>
                     <td className="max-w-[20rem]" title={row.category}>
                       {row.category}
+                    </td>
+                    <td className="whitespace-nowrap tabular-nums">
+                      {row.dateSigned
+                        ? new Date(`${row.dateSigned}T12:00:00`).toLocaleDateString('en-GB')
+                        : '—'}
                     </td>
                     <td className="text-right font-medium whitespace-nowrap tabular-nums">
                       {row.totalValueNis > 0 ? formatMoney(row.totalValueNis) : '—'}
@@ -105,7 +120,7 @@ const MarketingDashboardLeadBreakdownModal: React.FC<MarketingDashboardLeadBreak
               </tbody>
               <tfoot className="[&_td]:font-semibold">
                 <tr>
-                  <td colSpan={3} className="text-right">
+                  <td colSpan={4} className="text-right">
                     Total
                   </td>
                   <td className="text-right tabular-nums">{formatMoney(totalValue)}</td>

@@ -32,6 +32,7 @@ import {
   markHandlerReadyToPay,
 } from './HandlerCaseActions';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
+import { classifyRetentionBucket as sharedClassifyRetentionBucket } from '../../lib/handlerCaseBuckets';
 import { fetchHandlerEmailFlag5Targets } from '../../lib/handlerEmailFlag';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import {
@@ -118,18 +119,8 @@ function matchingRetentionSnapshot(viewAs: PipelineViewAs | null): RetentionSnap
   return snapshot;
 }
 
-function classifyRetentionBucket(
-  stageId: number | null,
-  activeHandlerType: number,
-  started: boolean,
-): HandlerBucket | null {
-  if (stageId == null || Number.isNaN(stageId)) return null;
-  if (stageId === 200) return 'closed';
-  if (Number(activeHandlerType) === 2) return 'non_active';
-  if (Number(activeHandlerType) === 1 && stageId <= 105 && !started) return 'new';
-  if (Number(activeHandlerType) === 1 && (stageId >= 110 || (stageId <= 105 && started))) return 'active';
-  return null;
-}
+/** Shared with the Handler Management tables so the two screens cannot count differently. */
+const classifyRetentionBucket = sharedClassifyRetentionBucket;
 
 function currencyFromLegacy(currencyId: number | null | undefined, currencyData: unknown): string {
   const currency = Array.isArray(currencyData) ? currencyData[0] : currencyData;

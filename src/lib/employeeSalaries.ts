@@ -15,6 +15,8 @@ export interface SalaryEntryRow {
   gross_salary: number;
   net_salary: number | null;
   min_hours: number;
+  /** The salary has been paid out, which is what keeps it out of the expense debt total. */
+  paid: boolean;
 }
 
 export interface ActiveStaffEmployee {
@@ -202,7 +204,7 @@ export async function fetchActiveStaffSalaryRows(
       .in('id', employeeIds),
     supabase
       .from('employee_salary')
-      .select('id, employee_id, gross_salary, net_salary')
+      .select('id, employee_id, gross_salary, net_salary, paid')
       .eq('salary_month', salaryMonth)
       .eq('salary_year', salaryYear),
   ]);
@@ -220,12 +222,22 @@ export async function fetchActiveStaffSalaryRows(
     }) => [emp.id, emp]),
   );
 
-  const salaryByEmployee = new Map<number, { id: number; gross_salary: number; net_salary: number | null }>();
-  salariesRes.data?.forEach((r: { employee_id: number; id: number; gross_salary: number; net_salary: number | null }) => {
+  const salaryByEmployee = new Map<
+    number,
+    { id: number; gross_salary: number; net_salary: number | null; paid: boolean }
+  >();
+  salariesRes.data?.forEach((r: {
+    employee_id: number;
+    id: number;
+    gross_salary: number;
+    net_salary: number | null;
+    paid?: unknown;
+  }) => {
     salaryByEmployee.set(r.employee_id, {
       id: r.id,
       gross_salary: r.gross_salary ?? 0,
       net_salary: r.net_salary,
+      paid: r.paid === true || r.paid === 't' || r.paid === 'true',
     });
   });
 
@@ -248,9 +260,24 @@ export async function fetchActiveStaffSalaryRows(
         gross_salary: existing?.gross_salary ?? 0,
         net_salary: existing?.net_salary ?? null,
         min_hours: normalizeEmployeeMinHours(meta?.min_hours),
+        paid: existing?.paid ?? false,
       };
     })
     .sort((a, b) => a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: 'base' }));
+}
+
+/**
+ * Marks one saved salary paid or unpaid.
+ *
+ * Only for rows that already exist; a salary that has not been saved yet carries its paid flag
+ * into the upsert instead.
+ */
+export async function setEmployeeSalaryPaid(recordId: number, paid: boolean): Promise<void> {
+  const { error } = await supabase
+    .from('employee_salary')
+    .update({ paid })
+    .eq('id', recordId);
+  if (error) throw error;
 }
 
 /** Bucket holding the uploaded payroll PDFs (private, so paths have to be signed to be viewed). */
@@ -316,6 +343,7 @@ export async function saveActiveStaffSalaryRows(
       document_url: existingRow?.document_url ?? null,
       extracted_data: existingRow?.extracted_data ?? null,
       approved: false,
+      paid: Boolean(row.paid),
       uploaded_by: user.id,
     };
 

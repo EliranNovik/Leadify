@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import GenericCRUDManager from './GenericCRUDManager';
+import { PAID_EXPENSE_FIELD } from './expenseManagerShared';
 import {
   FIRM_MANAGEMENT_DEFAULT_CURRENCY,
   applyBillingMonthFilter,
@@ -307,7 +308,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
   }, [loadAuxData]);
 
   const formatInvoiceColumn = useCallback(
-    (_value: unknown, record: { id?: string; firm_id?: string; billing_month?: string }) => {
+    (_value: unknown, record: Record<string, any>) => {
       if (!record.firm_id || !record.billing_month) return '—';
       const key = managementCostLineKey(record.id, record.firm_id, record.billing_month);
       const invoices = invoicesByKey.get(key) || [];
@@ -318,7 +319,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
 
   const formatCostDocumentColumn = useCallback(
     (column: FirmManagementCostDocColumn, label: string, docsByKey: Map<string, FirmManagementCostDocument[]>) =>
-      (_value: unknown, record: { id?: string; firm_id?: string; billing_month?: string }) => {
+      (_value: unknown, record: Record<string, any>) => {
         if (!record.firm_id || !record.billing_month) return '—';
         const key = managementCostLineKey(record.id, record.firm_id, record.billing_month);
         const docs = docsByKey.get(key) || [];
@@ -394,7 +395,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         type: 'number' as const,
         required: true,
         placeholder: 'e.g., 5000',
-        formatValue: (value: unknown, record: { currency?: string | null }) =>
+        formatValue: (value: unknown, record: Record<string, any>) =>
           formatFirmManagementAmount(value, record?.currency),
       },
       {
@@ -447,6 +448,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         prepareValueForSave: (value: unknown) =>
           (value && String(value).trim()) || FIRM_MANAGEMENT_DEFAULT_CURRENCY,
       },
+      PAID_EXPENSE_FIELD,
       {
         name: 'notes',
         label: 'Notes',

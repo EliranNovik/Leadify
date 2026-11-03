@@ -54,6 +54,7 @@ import {
   markScrollToFlaggedEmail,
 } from '../../lib/handlerEmailFlag';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
+import { classifyHandlerBucket } from '../../lib/handlerCaseBuckets';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import HandlerAssignedDateBadge from './HandlerAssignedDateBadge';
 import {
@@ -143,19 +144,8 @@ function matchingHandlerSnapshot(viewAs: PipelineViewAs | null): HandlerSnapshot
   return snapshot;
 }
 
-function classifyBucket(
-  stageId: number | null,
-  activeHandlerType: number,
-  isInactive: boolean,
-): HandlerBucket | null {
-  if (stageId == null || Number.isNaN(stageId)) return null;
-  if (stageId === 200) return 'closed';
-  if (Number(activeHandlerType) === 1) return 'non_active';
-  if (isInactive) return null;
-  if (Number(activeHandlerType) === 2 && stageId <= 105) return 'new';
-  if (Number(activeHandlerType) === 2 && stageId >= 110) return 'active';
-  return null;
-}
+/** Shared with the Handler Management tables so the two screens cannot count differently. */
+const classifyBucket = classifyHandlerBucket;
 
 function currencyFromLegacy(currencyId: number | null | undefined, currencyData: unknown): string {
   const currency = Array.isArray(currencyData) ? currencyData[0] : currencyData;

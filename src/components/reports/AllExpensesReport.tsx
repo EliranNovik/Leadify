@@ -3,6 +3,9 @@ import {
   BanknotesIcon,
   ChartBarIcon,
   ChevronDownIcon,
+  CreditCardIcon,
+  ExclamationTriangleIcon,
+  HandRaisedIcon,
   HomeModernIcon,
   MegaphoneIcon,
   ReceiptPercentIcon,
@@ -38,8 +41,12 @@ import {
   fetchSourceMediaCostsBySource,
   formatNis,
   monthKeysForYearMonth,
+  sumCategorySplits,
   sumCategoryTotals,
+  expenseDebtTotal,
+  marketingExpenseSplit,
   marketingExpenseTotal,
+  type ExpensePaidSplit,
 } from '../../lib/allExpensesReport';
 import { usePersistedFilters } from '../../hooks/usePersistedState';
 import { useAdminRole } from '../../hooks/useAdminRole';
@@ -49,10 +56,21 @@ import MarketingExpensesDetailModal from './expenses/MarketingExpensesDetailModa
 import OfficeExpensesDetailModal from './expenses/OfficeExpensesDetailModal';
 import OfficeRentExpensesDetailModal from './expenses/OfficeRentExpensesDetailModal';
 import PartnerDrawsDetailModal from './expenses/PartnerDrawsDetailModal';
+import LoansDetailModal from './expenses/LoansDetailModal';
+import PaidByOfficeDetailModal from './expenses/PaidByOfficeDetailModal';
 
 type SummaryDisplayKey = 'marketing' | ExpenseCategoryKey;
 
 type OpenExpenseDetailModal = SummaryDisplayKey | 'total' | null;
+
+/** Whether the boxes count every line, only what is paid, or only what is still owed. */
+type PaidView = 'all' | 'paid' | 'unpaid';
+
+const PAID_VIEW_OPTIONS: { value: PaidView; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'paid', label: 'Paid' },
+  { value: 'unpaid', label: 'Unpaid' },
+];
 
 const MARKETING_SUMMARY_COLOR = '#8b5cf6';
 
@@ -62,6 +80,8 @@ const SUMMARY_DISPLAY_ORDER: SummaryDisplayKey[] = [
   'partner_draws',
   'salaries',
   'office',
+  'loans',
+  'paid_by_office',
 ];
 
 const MONTH_OPTIONS = [
@@ -87,6 +107,8 @@ const CHART_COLORS: Record<ExpenseCategoryKey, string> = {
   partner_draws: '#14b8a6',
   salaries: '#f59e0b',
   office: '#94a3b8',
+  loans: '#d6336c',
+  paid_by_office: '#ea8a1f',
 };
 
 const buildYearOptions = (currentYear: number): string[] => {
@@ -114,7 +136,7 @@ type SummaryBoxTheme = {
   Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 };
 
-const SUMMARY_BOX_THEMES: Record<SummaryDisplayKey | 'total', SummaryBoxTheme> = {
+const SUMMARY_BOX_THEMES: Record<SummaryDisplayKey | 'total' | 'debt', SummaryBoxTheme> = {
   total: {
     bg: 'bg-[#f4ecff]',
     border: 'border-[#eadbff]',
@@ -162,6 +184,46 @@ const SUMMARY_BOX_THEMES: Record<SummaryDisplayKey | 'total', SummaryBoxTheme> =
     subtitle: 'text-[#64748b]',
     icon: 'text-[#64748b]',
     Icon: ReceiptPercentIcon,
+  },
+  loans: {
+    bg: 'bg-[#fdf0f4]',
+    border: 'border-[#f7d7e1]',
+    title: 'text-[#7a2f4a]',
+    subtitle: 'text-[#a4687f]',
+    icon: 'text-[#d6336c]',
+    Icon: CreditCardIcon,
+  },
+  paid_by_office: {
+    bg: 'bg-[#fff7ed]',
+    border: 'border-[#fde3c7]',
+    title: 'text-[#7c3a0f]',
+    subtitle: 'text-[#a9743c]',
+    icon: 'text-[#ea8a1f]',
+    Icon: HandRaisedIcon,
+  },
+  debt: {
+    bg: 'bg-[#fef2f2]',
+    border: 'border-[#fecaca]',
+    title: 'text-[#7f1d1d]',
+    subtitle: 'text-[#b05252]',
+    icon: 'text-[#dc2626]',
+    Icon: ExclamationTriangleIcon,
+  },
+  firm_management: {
+    bg: 'bg-[#eef2ff]',
+    border: 'border-[#dbe3ff]',
+    title: 'text-[#312e81]',
+    subtitle: 'text-[#5b61a8]',
+    icon: 'text-[#6366f1]',
+    Icon: BanknotesIcon,
+  },
+  source_media: {
+    bg: 'bg-[#f4ecff]',
+    border: 'border-[#eadbff]',
+    title: 'text-[#342b56]',
+    subtitle: 'text-[#6d6791]',
+    icon: 'text-[#8a63d2]',
+    Icon: MegaphoneIcon,
   },
 };
 
@@ -246,7 +308,9 @@ const ExpenseSummaryBox: React.FC<{
   note?: string;
   theme: SummaryBoxTheme;
   onClick?: () => void;
-}> = ({ label, amount, share, note, theme, onClick }) => {
+  /** Shown under the amount when the box is counting everything, so debt stays visible. */
+  split?: ExpensePaidSplit;
+}> = ({ label, amount, share, note, theme, onClick, split }) => {
   const { Icon } = theme;
   const interactive = Boolean(onClick);
   const Tag = interactive ? 'button' : 'div';
@@ -268,7 +332,11 @@ const ExpenseSummaryBox: React.FC<{
           <div className={`truncate text-base font-extrabold leading-tight ${theme.title}`}>{label}</div>
           <div className={`mt-1 text-lg font-bold tabular-nums ${theme.title}`}>{formatNis(amount)}</div>
           <div className={`mt-0.5 text-xs font-medium ${theme.subtitle}`}>
-            {share != null && share > 0 ? `${share.toFixed(1)}% of total` : note || '—'}
+            {split && split.unpaid > 0
+              ? `${formatNis(split.unpaid)} unpaid`
+              : share != null && share > 0
+                ? `${share.toFixed(1)}% of total`
+                : note || '—'}
           </div>
         </div>
       </div>
@@ -304,6 +372,7 @@ const AllExpensesReport: React.FC = () => {
   >([]);
   const [summaryTableOpen, setSummaryTableOpen] = useState(false);
   const [openDetailModal, setOpenDetailModal] = useState<OpenExpenseDetailModal>(null);
+  const [paidView, setPaidView] = useState<PaidView>('all');
 
   const yearOptions = useMemo(() => buildYearOptions(now.getFullYear()), [now]);
 
@@ -350,6 +419,7 @@ const AllExpensesReport: React.FC = () => {
   }, [load]);
 
   const categoryTotals = useMemo(() => sumCategoryTotals(monthlyRows), [monthlyRows]);
+  const categorySplits = useMemo(() => sumCategorySplits(monthlyRows), [monthlyRows]);
   const grandTotal = useMemo(
     () =>
       EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + categoryTotals[key], 0) +
@@ -357,36 +427,57 @@ const AllExpensesReport: React.FC = () => {
     [categoryTotals],
   );
 
+  /** Everything unpaid whose month has passed: what the firm owes right now. */
+  const debtTotal = useMemo(() => expenseDebtTotal(categorySplits), [categorySplits]);
+
   const marketingAmount = useMemo(
     () => marketingExpenseTotal(categoryTotals),
     [categoryTotals],
   );
 
   const summaryDisplayRows = useMemo(() => {
+    const amountFor = (split: ExpensePaidSplit) =>
+      paidView === 'paid' ? split.paid : paidView === 'unpaid' ? split.unpaid : split.total;
+
+    const marketing = marketingExpenseSplit(categorySplits);
     const rows: {
       key: SummaryDisplayKey;
       label: string;
       amount: number;
       share: number;
       color: string;
+      split: ExpensePaidSplit;
     }[] = [
       {
         key: 'marketing',
         label: 'Marketing',
-        amount: marketingAmount,
-        share: grandTotal > 0 ? (marketingAmount / grandTotal) * 100 : 0,
+        amount: amountFor(marketing),
+        share: 0,
         color: MARKETING_SUMMARY_COLOR,
+        split: marketing,
       },
       ...SUMMARY_DISPLAY_ORDER.filter(k => k !== 'marketing').map(key => ({
         key,
         label: EXPENSE_CATEGORY_LABELS[key],
-        amount: categoryTotals[key],
-        share: grandTotal > 0 ? (categoryTotals[key] / grandTotal) * 100 : 0,
+        amount: amountFor(categorySplits[key]),
+        share: 0,
         color: CHART_COLORS[key],
+        split: categorySplits[key],
       })),
     ];
-    return rows;
-  }, [categoryTotals, grandTotal, marketingAmount]);
+    // Shares are of what the boxes are currently showing, so they always add up to 100%.
+    const shown = rows.reduce((sum, row) => sum + row.amount, 0);
+    return rows.map(row => ({
+      ...row,
+      share: shown > 0 ? (row.amount / shown) * 100 : 0,
+    }));
+  }, [categorySplits, paidView]);
+
+  /** The total of what the boxes are showing, which is the grand total only in the All view. */
+  const shownTotal = useMemo(
+    () => summaryDisplayRows.reduce((sum, row) => sum + row.amount, 0),
+    [summaryDisplayRows],
+  );
 
   const categoryBarData = useMemo(
     () =>
@@ -512,9 +603,29 @@ const AllExpensesReport: React.FC = () => {
                 ))}
               </select>
             </label>
-            <button type="button" className="btn btn-sm btn-primary" onClick={load} disabled={loading}>
-              {loading ? <span className="loading loading-spinner loading-xs" /> : 'Refresh'}
-            </button>
+            {/* Which lines the boxes count. Debt stays on its own box either way, since it is the
+                part of Unpaid that is already due. */}
+            <div
+              role="group"
+              aria-label="Paid or unpaid"
+              className="inline-flex rounded-full bg-base-content/20 p-1"
+            >
+              {PAID_VIEW_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  aria-pressed={paidView === opt.value}
+                  className={`rounded-full px-4 py-1.5 text-sm transition ${
+                    paidView === opt.value
+                      ? 'bg-white font-semibold text-base-content shadow-sm'
+                      : 'font-medium text-base-content/60 hover:text-base-content/80'
+                  }`}
+                  onClick={() => setPaidView(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
             <button
               type="button"
               className="btn btn-ghost btn-sm gap-2"
@@ -531,18 +642,33 @@ const AllExpensesReport: React.FC = () => {
 
         <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
           <ExpenseSummaryBox
-            label="Total"
-            amount={grandTotal}
-            note={grandTotal > 0 ? 'All categories' : undefined}
+            label={paidView === 'paid' ? 'Total paid' : paidView === 'unpaid' ? 'Total unpaid' : 'Total'}
+            amount={shownTotal}
+            note={shownTotal > 0 ? 'All categories' : undefined}
             theme={SUMMARY_BOX_THEMES.total}
             onClick={() => setOpenDetailModal('total')}
+          />
+          <ExpenseSummaryBox
+            label="Debt"
+            amount={debtTotal}
+            note={debtTotal > 0 ? 'Unpaid and already due' : 'Nothing overdue'}
+            theme={SUMMARY_BOX_THEMES.debt}
+            onClick={() => setPaidView('unpaid')}
           />
           {summaryDisplayRows.map(row => (
             <ExpenseSummaryBox
               key={row.key}
               label={row.label}
               amount={row.amount}
-              share={grandTotal > 0 ? row.share : undefined}
+              share={shownTotal > 0 ? row.share : undefined}
+              split={paidView === 'all' ? row.split : undefined}
+              /* Loans total the monthly repayments, not the sum borrowed, so a loan on file with
+                 no repayment entered for the period reads as zero and has to say why. */
+              note={
+                row.key === 'loans' && row.amount === 0
+                  ? 'No repayment entered for this period'
+                  : undefined
+              }
               theme={SUMMARY_BOX_THEMES[row.key]}
               onClick={() => setOpenDetailModal(row.key)}
             />
@@ -555,7 +681,10 @@ const AllExpensesReport: React.FC = () => {
               <thead>
                 <tr className="text-base">
                   <th className="text-base">Category</th>
-                  <th className="text-right text-base">Amount (₪)</th>
+                  <th className="text-right text-base">Paid (₪)</th>
+                  <th className="text-right text-base">Unpaid (₪)</th>
+                  <th className="text-right text-base">Debt (₪)</th>
+                  <th className="text-right text-base">Total (₪)</th>
                   <th className="text-right text-base">Share</th>
                 </tr>
               </thead>
@@ -569,9 +698,14 @@ const AllExpensesReport: React.FC = () => {
                       />
                       {row.label}
                     </td>
-                    <td className="text-right">{formatNis(row.amount)}</td>
+                    <td className="text-right">{formatNis(row.split.paid)}</td>
+                    <td className="text-right">{formatNis(row.split.unpaid)}</td>
+                    <td className={`text-right ${row.split.overdue > 0 ? 'font-semibold text-error' : ''}`}>
+                      {formatNis(row.split.overdue)}
+                    </td>
+                    <td className="text-right">{formatNis(row.split.total)}</td>
                     <td className="text-right">
-                      {grandTotal > 0 ? `${row.share.toFixed(1)}%` : '—'}
+                      {shownTotal > 0 ? `${row.share.toFixed(1)}%` : '—'}
                     </td>
                   </tr>
                 ))}
@@ -579,6 +713,13 @@ const AllExpensesReport: React.FC = () => {
               <tfoot>
                 <tr className="text-base font-semibold">
                   <td>Total</td>
+                  <td className="text-right">
+                    {formatNis(summaryDisplayRows.reduce((sum, row) => sum + row.split.paid, 0))}
+                  </td>
+                  <td className="text-right">
+                    {formatNis(summaryDisplayRows.reduce((sum, row) => sum + row.split.unpaid, 0))}
+                  </td>
+                  <td className="text-right">{formatNis(debtTotal)}</td>
                   <td className="text-right">{formatNis(grandTotal)}</td>
                   <td className="text-right">100%</td>
                 </tr>
@@ -732,32 +873,63 @@ const AllExpensesReport: React.FC = () => {
         grandTotal={grandTotal}
         rows={summaryDisplayRows}
       />
+      {/* Each reloads on close, since rows are marked paid inside them and the boxes read that. */}
       <MarketingExpensesDetailModal
         open={openDetailModal === 'marketing'}
-        onClose={() => setOpenDetailModal(null)}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
         year={filters.year}
         month={filters.month}
       />
       <OfficeRentExpensesDetailModal
         open={openDetailModal === 'rent'}
-        onClose={() => setOpenDetailModal(null)}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
         year={filters.year}
         month={filters.month}
       />
       <PartnerDrawsDetailModal
         open={openDetailModal === 'partner_draws'}
-        onClose={() => setOpenDetailModal(null)}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
         year={filters.year}
         month={filters.month}
       />
       <EmployeeSalariesDetailModal
         open={openDetailModal === 'salaries'}
-        onClose={() => setOpenDetailModal(null)}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
         year={filters.year}
         month={filters.month}
       />
       <OfficeExpensesDetailModal
         open={openDetailModal === 'office'}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
+        year={filters.year}
+        month={filters.month}
+      />
+      <LoansDetailModal
+        open={openDetailModal === 'loans'}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
+        year={filters.year}
+        month={filters.month}
+      />
+      <PaidByOfficeDetailModal
+        open={openDetailModal === 'paid_by_office'}
         onClose={() => {
           setOpenDetailModal(null);
           void load();

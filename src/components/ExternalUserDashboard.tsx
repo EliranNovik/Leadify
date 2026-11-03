@@ -322,11 +322,11 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
     }, []);
 
     return (
-        <div className="min-h-screen bg-white pt-16">
-            <div className={EXTERNAL_USER_PAGE_INNER}>
+        <div className="min-h-[calc(100dvh-3.5rem)] w-full bg-white">
+            <div className={`${EXTERNAL_USER_PAGE_INNER} !pt-0 md:!pt-1`}>
                 {/* Welcome Message */}
-                <div className="mb-6">
-                    <div className="flex items-center gap-3 mb-2">
+                <div className="mb-3">
+                    <div className="flex items-center gap-3 mb-0.5">
                         <div className="h-11 w-11 overflow-hidden rounded-full border border-gray-200 bg-gray-100">
                             {userImage ? (
                                 <img src={userImage} alt="" className="h-full w-full object-cover" />
@@ -350,7 +350,7 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
                 </div>
 
                 {/* Summary Boxes - New Leads, Top Source, Access Logs */}
-                <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="mb-5 grid grid-cols-1 md:grid-cols-3 gap-6">
                     {/* New Leads Box */}
                     <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 rounded-xl p-6 shadow-lg">
                         <div className="flex items-center justify-between">

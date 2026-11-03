@@ -6,6 +6,7 @@ import {
 } from '../../lib/employeeSalaries';
 import ActiveEmployeeSelect, { EmployeeAvatarLabel } from './ActiveEmployeeSelect';
 import GenericCRUDManager from './GenericCRUDManager';
+import { PAID_EXPENSE_FIELD } from './expenseManagerShared';
 import type { ExpenseManagerEmbedProps } from '../reports/expenses/expenseDetailTypes';
 
 type CreatorInfo = {
@@ -422,6 +423,7 @@ const PartnerDrawsManager: React.FC<ExpenseManagerEmbedProps> = ({
         placeholder: 'e.g., 15000',
         formatValue: (value: unknown) => formatAmountNis(value),
       },
+      PAID_EXPENSE_FIELD,
       {
         name: 'created_at',
         label: 'Created At',

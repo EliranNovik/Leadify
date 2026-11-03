@@ -66,6 +66,8 @@ const KIND_TOTALS: Array<{
     'marketing',
     'rent',
     'partner_draws',
+    'loan',
+    'paid_by_office',
   ] as FinanceExpenseKind[]
 ).map((id) => ({
   id,
@@ -139,6 +141,22 @@ const EXPENSE_SUMMARY_THEMES: Record<
     title: 'text-[#2a5f50]',
     muted: 'text-[#578874]',
     icon: 'text-[#2d947b]',
+    iconBg: 'bg-white/70',
+  },
+  loan: {
+    bg: 'bg-[#fdf0f4]',
+    border: 'border-[#f7d7e1]',
+    title: 'text-[#7a2f4a]',
+    muted: 'text-[#a4687f]',
+    icon: 'text-[#d6336c]',
+    iconBg: 'bg-white/70',
+  },
+  paid_by_office: {
+    bg: 'bg-[#fff7ed]',
+    border: 'border-[#fde3c7]',
+    title: 'text-[#7c3a0f]',
+    muted: 'text-[#a9743c]',
+    icon: 'text-[#ea8a1f]',
     iconBg: 'bg-white/70',
   },
 };
@@ -305,6 +323,11 @@ function VendorRelatedCell({ row }: { row: FinanceExpenseEntryRow }) {
 
   if (row.kind === 'other_firm' || row.kind === 'office') {
     return name ? firmLink(name) : <span>—</span>;
+  }
+
+  // Taken over from a client, so the case it belongs to is what this names.
+  if (row.kind === 'paid_by_office') {
+    return leadLink(name || leadNumber || '—');
   }
 
   return <span>{name || '—'}</span>;

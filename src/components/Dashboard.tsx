@@ -47,7 +47,10 @@ import {
   allocateDepartmentPayrollBudget,
   departmentRevenueTarget,
   GOAL_BAR_REVENUE_TARGET_RATIO,
+  monthlyTargetScale,
+  payrollShareBand,
   REVENUE_TARGET_RATIOS,
+  type PayrollShareBand,
   type RevenueTargetPeriod,
 } from '../lib/dashboardRevenueTargets';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
@@ -383,6 +386,18 @@ const SCOREBOARD_TARGET_ROWS = REVENUE_TARGET_RATIOS.map((row) => ({
   label: row.label,
   ratio: row.ratio,
 }));
+
+/** Goal-bar colour per band reached: green at 30%, purple at 35%, orange at the 40% floor, red past it. */
+const GOAL_BAR_BAND_COLORS: Record<PayrollShareBand, { bar: string; text: string }> = {
+  ideal: { bar: 'bg-emerald-500', text: 'text-emerald-600' },
+  intermediate: { bar: 'bg-purple-500', text: 'text-purple-600' },
+  minimum: { bar: 'bg-orange-500', text: 'text-orange-600' },
+  over_floor: { bar: 'bg-rose-500', text: 'text-rose-600' },
+};
+
+function goalBarRatioColors(pct: number): { bar: string; text: string } {
+  return GOAL_BAR_BAND_COLORS[payrollShareBand(pct)];
+}
 
 const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0, expenseExcluded: 0 });
 
@@ -5628,9 +5643,6 @@ const Dashboard: React.FC = () => {
     const dataSource: { [key: string]: DashboardScoreboardRow[] } = scoreboardDataFor(tableType);
     const totalIndexToday = departmentNames.length + 1;
     const totalIndexMonth = departmentNames.length;
-    const accentBar = isAltTheme ? 'bg-emerald-500' : 'bg-blue-500';
-    const accentBarDone = 'bg-emerald-500';
-
     const openScoreboardDeals = (period: string, departmentName: string, count: number) => {
       if (!count) return;
       setScoreboardDealsModal({ tableType, period, departmentName });
@@ -5702,10 +5714,21 @@ const Dashboard: React.FC = () => {
     const getRatioTargetTotal = (ratio: number, periodKey: string) =>
       categories.reduce((sum, cat) => sum + getDeptRatioTarget(cat, ratio, periodKey), 0);
 
-    const getPeriodGoalTarget = (deptName: string, periodKey: string) =>
-      deptName === 'Total'
-        ? getRatioTargetTotal(GOAL_BAR_REVENUE_TARGET_RATIO, periodKey)
-        : getDeptRatioTarget(deptName, GOAL_BAR_REVENUE_TARGET_RATIO, periodKey);
+    /**
+     * The payroll budget the goal bar states as a share of the period's amount, rather than a
+     * revenue target derived from it. The bar therefore reads as the payroll-to-revenue ratio
+     * itself; the 30 / 35 / 40% revenue targets stay in the rows below.
+     *
+     * The Total adds its departments' budgets up, leaving out General and Other, which carry no
+     * budget — matching how the target rows total.
+     */
+    const getPeriodPayrollBase = (deptName: string, periodKey: string) => {
+      const monthly =
+        deptName === 'Total'
+          ? categories.reduce((sum, cat) => sum + getDeptCostBase(cat), 0)
+          : getDeptCostBase(deptName);
+      return monthly * monthlyTargetScale(targetPeriodFor(periodKey), todayDateKey);
+    };
 
     /** Goal-bar amount: Last 3m compares the displayed monthly average. */
     const getPeriodGoalAmount = (deptName: string, periodKey: string) =>
@@ -5797,23 +5820,31 @@ const Dashboard: React.FC = () => {
      */
     const getGoalPeriodAmount = (deptName: string) => getPeriodGoalAmount(deptName, goalPeriod);
 
-    const renderGoalBalken = (amount: number, target: number) => {
-      if (!(target > 0)) return null;
-      const pct = Math.max(0, Math.min(100, Math.round((amount / target) * 100)));
-      const nearOrMet = pct >= 90;
+    /**
+     * The payroll budget as a share of what the period billed — the ratio the firm manages to, so a
+     * *lower* percentage is better and the 40% floor is the line to stay under.
+     *
+     * The bar fills with that share, which makes a short bar the good one, and the colour says which
+     * of the three targets it has reached. A period that billed nothing has no ratio and no bar.
+     */
+    const renderGoalBalken = (amount: number, payrollBase: number) => {
+      if (!(payrollBase > 0) || !(amount > 0)) return null;
+      const pct = Math.round((payrollBase / amount) * 100);
+      const bandColors = goalBarRatioColors(pct);
       return (
         <div
           className="mt-1.5 w-full max-w-[7.5rem] mx-auto"
-          // Which target the percentage is of, since the table shows three of them.
-          title={`${pct}% of the 40% minimum target, ₪${Math.ceil(target).toLocaleString()}`}
+          title={`₪${Math.ceil(payrollBase).toLocaleString()} payroll budget is ${pct}% of this period's ₪${Math.ceil(
+            amount,
+          ).toLocaleString()}. The floor is ${Math.round(GOAL_BAR_REVENUE_TARGET_RATIO * 100)}%.`}
         >
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
             <div
-              className={`h-full rounded-full transition-all ${nearOrMet ? accentBarDone : accentBar}`}
-              style={{ width: `${pct}%` }}
+              className={`h-full rounded-full transition-all ${bandColors.bar}`}
+              style={{ width: `${Math.min(100, pct)}%` }}
             />
           </div>
-          <div className={`mt-0.5 text-right text-[10px] font-medium tabular-nums ${nearOrMet ? 'text-emerald-600' : 'text-slate-400'}`}>
+          <div className={`mt-0.5 text-right text-[10px] font-medium tabular-nums ${bandColors.text}`}>
             {pct}%
           </div>
         </div>
@@ -5826,7 +5857,8 @@ const Dashboard: React.FC = () => {
       periodKey: string;
       deptName: string;
       showGoal?: boolean;
-      target?: number;
+      /** Payroll budget for the period, which the goal bar states the amount as a share of. */
+      payrollBase?: number;
       /** When set (e.g. Last 3m raw total), progress bar uses this instead of displayed amount. */
       goalAmount?: number;
       isTotalCol?: boolean;
@@ -5839,7 +5871,7 @@ const Dashboard: React.FC = () => {
         periodKey,
         deptName,
         showGoal,
-        target = 0,
+        payrollBase = 0,
         goalAmount,
         isTotalCol,
         expenseExcluded = 0,
@@ -5884,7 +5916,7 @@ const Dashboard: React.FC = () => {
           >
             {count}
           </button>
-          {showGoal ? renderGoalBalken(goalAmount ?? amount, target) : null}
+          {showGoal ? renderGoalBalken(goalAmount ?? amount, payrollBase) : null}
         </div>
       );
     };
@@ -6011,7 +6043,7 @@ const Dashboard: React.FC = () => {
                      * are offered — see `SCOREBOARD_GOAL_PERIODS`.
                      */
                     const showGoal = p.dataKey === goalPeriod;
-                    const goalTarget = showGoal ? getPeriodGoalTarget(deptName, p.dataKey) : 0;
+                    const goalPayrollBase = showGoal ? getPeriodPayrollBase(deptName, p.dataKey) : 0;
                     const goalAmount = showGoal ? getPeriodGoalAmount(deptName, p.dataKey) : displayAmount;
                     // The Total row here is the mobile form of the desktop Total column.
                     const rawExpenseExcluded = deptName === 'Total' ? row.expenseExcluded || 0 : 0;
@@ -6023,7 +6055,7 @@ const Dashboard: React.FC = () => {
                           periodKey: p.dataKey,
                           deptName,
                           showGoal,
-                          target: goalTarget,
+                          payrollBase: goalPayrollBase,
                           goalAmount,
                           isTotalCol: deptName === 'Total',
                           expenseExcluded: p.key === SCOREBOARD_LAST_3M
@@ -6099,7 +6131,7 @@ const Dashboard: React.FC = () => {
                             periodKey: columnType,
                             deptName: category,
                             showGoal: isGoalRow,
-                            target: isGoalRow ? getPeriodGoalTarget(category, columnType) : 0,
+                            payrollBase: isGoalRow ? getPeriodPayrollBase(category, columnType) : 0,
                             goalAmount: displayAmount,
                           })}
                         </td>
@@ -6131,7 +6163,7 @@ const Dashboard: React.FC = () => {
                           periodKey: columnType,
                           deptName: 'Total',
                           showGoal: isGoalRow,
-                          target: isGoalRow ? getPeriodGoalTarget('Total', columnType) : 0,
+                          payrollBase: isGoalRow ? getPeriodPayrollBase('Total', columnType) : 0,
                           goalAmount: totalAmount,
                           isTotalCol: true,
                           // Averaged alongside the amount so the two numbers stay on one scale.
@@ -6985,6 +7017,36 @@ const Dashboard: React.FC = () => {
 
   const unreadBadgeLabel = inboxCounts.unread > 99 ? '99+' : String(inboxCounts.unread);
 
+  /*
+   * The four top boxes take the pipeline summary cards' shape: label, figure and a one-line hint on
+   * the left, the icon in a translucent bubble on the right. Only the gradient differs per box, and
+   * the dark theme keeps its flat panel instead.
+   */
+  const summaryBoxClass = (gradient: string) =>
+    `flex-shrink-0 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto flex items-center justify-between gap-3 rounded-2xl p-4 md:p-5 text-left transition-all duration-300 hover:scale-105 ${
+      isDark2Theme
+        ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+        : `bg-gradient-to-tr ${gradient} text-white shadow-xl hover:shadow-2xl`
+    }`;
+  const summaryBoxLabelClass = `text-sm font-medium ${
+    isDark2Theme ? 'text-base-content/70' : 'text-white/90'
+  }`;
+  const summaryBoxValueClass = 'text-3xl font-bold leading-tight';
+  const summaryBoxHintClass = `mt-1 truncate text-xs ${
+    isDark2Theme ? 'text-base-content/60' : 'text-white/80'
+  }`;
+  const summaryBoxIconWrapClass = `shrink-0 rounded-full p-3 ${
+    isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+  }`;
+
+  /** Every meeting starting within the hour, as one line each — the hint's hover text. */
+  const nextHourMeetingsTitle = nextHourMeetings
+    .map(
+      (meeting: any) =>
+        `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`,
+    )
+    .join('\n');
+
   const postLoginWelcomeActive = hasDashboardWelcomePending();
 
   return (
@@ -6998,18 +7060,19 @@ const Dashboard: React.FC = () => {
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0 ${
-            isDark2Theme
-              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
-              : `bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white`
-          }`}
+          className={`${summaryBoxClass(
+            isAltTheme
+              ? 'from-green-500 via-emerald-600 to-lime-600'
+              : 'from-pink-500 via-purple-500 to-purple-600',
+          )} relative overflow-visible cursor-pointer ml-4 md:ml-0`}
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
           {/* Meetings in Next Hour Badge - Desktop: top, Mobile: bottom */}
           {meetingsInNextHour > 0 && nextHourMeetings.length > 0 && (
             <>
               {/* Desktop: Top Right */}
-              <div className="hidden md:flex absolute top-1 right-2 z-10 group items-center gap-2 flex-wrap justify-end max-w-[calc(100%-1rem)]">
+              {/* Width leaves the icon bubble on the right of the card clear. */}
+              <div className="hidden md:flex absolute top-1 right-2 z-10 group items-center gap-2 flex-wrap justify-end max-w-[calc(100%-5rem)]">
                 {/* Text Badge - Active - Only show first meeting */}
                 <span
                   className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold whitespace-nowrap break-words ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
@@ -7021,9 +7084,7 @@ const Dashboard: React.FC = () => {
                   className={`inline-flex items-center justify-center min-w-[28px] h-7 px-2.5 text-red-500 text-xs font-bold rounded-full shadow-lg animate-pulse cursor-help flex-shrink-0 ${
                     isDark2Theme ? 'bg-base-200 ring-2 ring-base-300' : 'bg-white ring-2 ring-white ring-opacity-75'
                   }`}
-                  title={nextHourMeetings.map((meeting: any) =>
-                    `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
-                  ).join('\n')}
+                  title={nextHourMeetingsTitle}
                 >
                   {meetingsInNextHour}
                 </span>
@@ -7052,9 +7113,7 @@ const Dashboard: React.FC = () => {
                   className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-red-500 text-[10px] font-bold rounded-full shadow-lg animate-pulse cursor-help flex-shrink-0 ${
                     isDark2Theme ? 'bg-base-200 ring-2 ring-base-300' : 'bg-white ring-2 ring-white ring-opacity-75'
                   }`}
-                  title={nextHourMeetings.map((meeting: any) =>
-                    `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
-                  ).join('\n')}
+                  title={nextHourMeetingsTitle}
                 >
                   {meetingsInNextHour}
                 </span>
@@ -7089,136 +7148,52 @@ const Dashboard: React.FC = () => {
               </div>
             </>
           )}
-          <div className="flex items-center gap-2 md:gap-4">
-            <div
-              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
-                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
-              }`}
-            >
-              <CalendarIcon
-                className={`w-7 h-7 md:w-7 md:h-7 opacity-90 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              />
-            </div>
-            <div>
-              <div
-                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              >
-                {meetingsToday}
-              </div>
-              <div
-                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
-              >
-                Meetings Today
-              </div>
-            </div>
+          <div className="min-w-0">
+            <p className={summaryBoxLabelClass}>Meetings Today</p>
+            <p className={summaryBoxValueClass}>{meetingsToday}</p>
           </div>
-          {/* SVG Graph Placeholder */}
-          <svg
-            className={`absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            viewBox="0 0 64 32"
-          >
-            <path d="M2 28 Q16 8 32 20 T62 8" />
-          </svg>
+          <div className={summaryBoxIconWrapClass}>
+            <CalendarIcon className="h-7 w-7" />
+          </div>
         </div>
 
         {/* Follow ups */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
-            isDark2Theme
-              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
-              : `bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white`
-          }`}
+          className={`${summaryBoxClass(
+            isAltTheme
+              ? 'from-emerald-600 via-green-600 to-green-500'
+              : 'from-purple-600 via-blue-600 to-blue-500',
+          )} cursor-pointer`}
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
         >
-          <div className="flex items-center gap-2 md:gap-4">
-            <div
-              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
-                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
-              }`}
-            >
-              <ExclamationTriangleIcon
-                className={`w-7 h-7 md:w-7 md:h-7 opacity-90 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              />
-            </div>
-            <div>
-              <div
-                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              >
-                {overdueFollowups}
-              </div>
-              <div
-                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
-              >
-                Today's Follow ups
-              </div>
-            </div>
+          <div className="min-w-0">
+            <p className={summaryBoxLabelClass}>Today's Follow ups</p>
+            <p className={summaryBoxValueClass}>{overdueFollowups}</p>
           </div>
-          {/* SVG Bar Chart Placeholder */}
-          <svg
-            className={`absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            viewBox="0 0 48 32"
-          >
-            <rect x="2" y="20" width="4" height="10" />
-            <rect x="10" y="10" width="4" height="20" />
-            <rect x="18" y="16" width="4" height="14" />
-            <rect x="26" y="6" width="4" height="24" />
-            <rect x="34" y="14" width="4" height="16" />
-          </svg>
+          <div className={summaryBoxIconWrapClass}>
+            <ExclamationTriangleIcon className="h-7 w-7" />
+          </div>
         </div>
 
         {/* Communication inbox */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
-            isDark2Theme
-              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
-              : `bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white`
-          }`}
+          className={`${summaryBoxClass(
+            isAltTheme
+              ? 'from-green-500 via-emerald-500 to-lime-400'
+              : 'from-blue-500 via-cyan-500 to-teal-400',
+          )} cursor-pointer`}
           onClick={() => navigate('/communications')}
         >
-          <div className="flex items-center gap-2 md:gap-4">
-            <div
-              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
-                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
-              }`}
-            >
-              <ChatBubbleLeftRightIcon
-                className={`w-7 h-7 md:w-7 md:h-7 mr-1 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              />
-            </div>
-            <div>
-              <div
-                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              >
-                {inboxCounts.needsReply}
-              </div>
-              <div
-                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
-              >
-                Needs reply
-              </div>
-              <div className={`mt-1 text-[11px] ${isDark2Theme ? 'text-base-content/60' : 'text-white/75'}`}>
-                Unread {inboxCounts.unread} · Waiting {inboxCounts.waiting}
-              </div>
-            </div>
+          <div className="min-w-0">
+            <p className={summaryBoxLabelClass}>Needs reply</p>
+            <p className={summaryBoxValueClass}>{inboxCounts.needsReply}</p>
+            <p className={summaryBoxHintClass}>
+              Unread {unreadBadgeLabel} · Waiting {inboxCounts.waiting}
+            </p>
           </div>
-          <svg
-            className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            viewBox="0 0 32 32"
-          >
-            <circle cx="16" cy="16" r="12" />
-            <text x="16" y="21" textAnchor="middle" fontSize="10" fill="currentColor" opacity="0.7">
-              {unreadBadgeLabel}
-            </text>
-          </svg>
+          <div className={summaryBoxIconWrapClass}>
+            <ChatBubbleLeftRightIcon className="h-7 w-7" />
+          </div>
         </div>
 
         {/* Clock In / Out — commented out; 4th box is signed deals today */}
@@ -7231,51 +7206,20 @@ const Dashboard: React.FC = () => {
         )} */}
 
         {/* Signed deals today (same attribution as My Performance / closed deals) */}
-        <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
-            isDark2Theme
-              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
-              : `bg-gradient-to-tr ${isAltTheme ? 'from-violet-600 via-purple-600 to-indigo-500' : 'from-violet-600 via-purple-600 to-indigo-500'} text-white`
-          }`}
+        <button
+          type="button"
+          className={summaryBoxClass('from-violet-600 via-purple-600 to-indigo-500')}
           onClick={goToClosedDealsLast30}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              goToClosedDealsLast30();
-            }
-          }}
         >
-          <div className="flex items-center gap-2 md:gap-4">
-            <div
-              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
-                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
-              }`}
-            >
-              <DocumentCheckIcon
-                className={`w-7 h-7 md:w-7 md:h-7 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              />
-            </div>
-            <div>
-              <div
-                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
-              >
-                {performanceLoading ? '—' : contractsToday}
-              </div>
-              <div
-                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
-              >
-                Signed today
-              </div>
-            </div>
+          <div className="min-w-0">
+            <p className={summaryBoxLabelClass}>Signed today</p>
+            <p className={summaryBoxValueClass}>{performanceLoading ? '—' : contractsToday}</p>
+            <p className={summaryBoxHintClass}>Opens the last 30 days of closed deals</p>
           </div>
-          <DocumentCheckIcon
-            className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
-              isDark2Theme ? 'text-base-content/35' : 'text-white/40'
-            }`}
-          />
-        </div>
+          <div className={summaryBoxIconWrapClass}>
+            <DocumentCheckIcon className="h-7 w-7" />
+          </div>
+        </button>
       </div>
 
       {/* Expanded Content for Top Boxes */}

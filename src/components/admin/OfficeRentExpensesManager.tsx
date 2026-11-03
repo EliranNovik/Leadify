@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import GenericCRUDManager from './GenericCRUDManager';
+import { PAID_EXPENSE_FIELD } from './expenseManagerShared';
 import type { ExpenseManagerEmbedProps } from '../reports/expenses/expenseDetailTypes';
 
 type CreatorInfo = {
@@ -357,6 +358,7 @@ const OfficeRentExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
         placeholder: 'e.g., 25000',
         formatValue: (value: unknown) => formatAmountNis(value),
       },
+      PAID_EXPENSE_FIELD,
       {
         name: 'created_at',
         label: 'Created At',
