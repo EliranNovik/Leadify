@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   BuildingOffice2Icon,
   CalendarDaysIcon,
@@ -48,6 +48,9 @@ export function parseClientMeetingCard(raw: string): ChatMeetingCardData | null 
       parsed.kind === 'calendar_day' ||
       parsed.kind === 'signed_contracts' ||
       parsed.kind === 'paid_payments' ||
+      parsed.kind === 'due_payments' ||
+      parsed.kind === 'payment_reminders' ||
+      parsed.kind === 'send_invoices' ||
       parsed.kind === 'missed_comms' ||
       parsed.kind === 'expenses' ||
       parsed.kind === 'lead_summary'
@@ -209,6 +212,25 @@ export type ChatPaidPaymentsData = {
   rows: ChatPaidPaymentRow[];
 };
 
+export type ChatDuePaymentRow = {
+  leadNumber?: string | null;
+  name?: string | null;
+  value?: string | null;
+  dueAt?: string | null;
+  invoice?: string | null;
+  taxReceipt?: string | null;
+};
+
+export type ChatDuePaymentsData = {
+  kind: 'due_payments';
+  period?: string;
+  count?: number;
+  totals?: string | null;
+  more?: number;
+  showTaxReceipt?: boolean;
+  rows: ChatDuePaymentRow[];
+};
+
 export type ChatMissedCommsRow = {
   leadNumber?: string | null;
   name?: string | null;
@@ -243,6 +265,17 @@ export function parsePaidPaymentsCard(raw: string): ChatPaidPaymentsData | null 
   try {
     const parsed = JSON.parse(raw) as ChatPaidPaymentsData;
     if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'paid_payments') return null;
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function parseDuePaymentsCard(raw: string): ChatDuePaymentsData | null {
+  try {
+    const parsed = JSON.parse(raw) as ChatDuePaymentsData;
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== 'due_payments') return null;
     if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
     return parsed;
   } catch {
@@ -919,7 +952,123 @@ function paidDateOnly(paidAt: string): string {
   return raw.split(',')[0]?.trim() || raw;
 }
 
+type ChatSortDir = 'asc' | 'desc';
+
+function chatSortDateKey(value: string): string {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '—' || /^not sent$/i.test(raw) || /^sent$/i.test(raw)) return '';
+  const dmy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (dmy) {
+    return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+  }
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  return raw.toLowerCase();
+}
+
+function chatSortAmountKey(value: string): number {
+  const n = Number(String(value || '').replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function chatSortTextKey(value: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function useChatTableSort<T>(
+  rows: T[],
+  getValue: (row: T, key: string) => string | number,
+  initialKey = '',
+  initialDir: ChatSortDir = 'asc',
+) {
+  const [sortKey, setSortKey] = useState(initialKey);
+  const [sortDir, setSortDir] = useState<ChatSortDir>(initialDir);
+
+  const toggle = (key: string) => {
+    if (sortKey === key) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDir(key === 'amount' || key === 'value' ? 'desc' : 'asc');
+  };
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return rows;
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const av = getValue(a, sortKey);
+      const bv = getValue(b, sortKey);
+      const aEmpty = av === '' || av === null || av === undefined;
+      const bEmpty = bv === '' || bv === null || bv === undefined;
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
+      let cmp = 0;
+      if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
+      else {
+        cmp = String(av).localeCompare(String(bv), undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return copy;
+  }, [rows, sortKey, sortDir, getValue]);
+
+  return { sorted, sortKey, sortDir, toggle };
+}
+
+function ChatSortableTh({
+  label,
+  column,
+  sortKey,
+  sortDir,
+  onSort,
+  className,
+}: {
+  label: string;
+  column: string;
+  sortKey: string;
+  sortDir: ChatSortDir;
+  onSort: (key: string) => void;
+  className?: string;
+}) {
+  const active = sortKey === column;
+  return (
+    <th className={className}>
+      <button
+        type="button"
+        className={`ai-signed-sort${active ? ' is-active' : ''}`}
+        onClick={() => onSort(column)}
+        aria-label={`Sort by ${label}`}
+      >
+        <span>{label}</span>
+        <span className="ai-signed-sort-icon" aria-hidden="true">
+          {active ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 export function ChatPaidPaymentsTable({ data }: { data: ChatPaidPaymentsData }) {
+  const { sorted, sortKey, sortDir, toggle } = useChatTableSort(
+    data.rows,
+    (row, key) => {
+      if (key === 'lead') return chatSortTextKey(cleanCardText(row.leadNumber));
+      if (key === 'client') return chatSortTextKey(cleanCardText(row.name));
+      if (key === 'amount') return chatSortAmountKey(cleanCardText(row.value));
+      if (key === 'paid') return chatSortDateKey(paidDateOnly(cleanCardText(row.paidAt)));
+      return '';
+    },
+    'paid',
+    'desc',
+  );
+
   return (
     <div className="ai-meeting-stack ai-fullwidth-card-stack">
       <div className="ai-meeting-card ai-signed-card">
@@ -933,14 +1082,28 @@ export function ChatPaidPaymentsTable({ data }: { data: ChatPaidPaymentsData }) 
           <table className="ai-signed-table">
             <thead>
               <tr>
-                <th>Lead</th>
-                <th>Client</th>
-                <th className="ai-signed-value">Amount</th>
-                <th className="ai-signed-paid">Paid</th>
+                <ChatSortableTh label="Lead" column="lead" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh
+                  label="Amount"
+                  column="amount"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-value"
+                />
+                <ChatSortableTh
+                  label="Paid"
+                  column="paid"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-paid"
+                />
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((row, index) => {
+              {sorted.map((row, index) => {
                 const leadNumber = cleanCardText(row.leadNumber);
                 const name = cleanCardText(row.name);
                 const value = formatChatCurrencyText(cleanCardText(row.value));
@@ -969,12 +1132,22 @@ export function ChatPaidPaymentsTable({ data }: { data: ChatPaidPaymentsData }) 
   );
 }
 
-export function ChatMissedCommsTable({ data }: { data: ChatMissedCommsData }) {
-  const parts = [
-    data.whatsapp ? `${data.whatsapp} WhatsApp` : '',
-    data.email ? `${data.email} email` : '',
-    data.calls ? `${data.calls} call${Number(data.calls) === 1 ? '' : 's'}` : '',
-  ].filter(Boolean);
+export function ChatDuePaymentsTable({ data }: { data: ChatDuePaymentsData }) {
+  const showTax = data.showTaxReceipt !== false;
+  const { sorted, sortKey, sortDir, toggle } = useChatTableSort(
+    data.rows,
+    (row, key) => {
+      if (key === 'lead') return chatSortTextKey(cleanCardText(row.leadNumber));
+      if (key === 'client') return chatSortTextKey(cleanCardText(row.name));
+      if (key === 'amount') return chatSortAmountKey(cleanCardText(row.value));
+      if (key === 'due') return chatSortDateKey(paidDateOnly(cleanCardText(row.dueAt)));
+      if (key === 'invoice') return chatSortDateKey(paidDateOnly(cleanCardText(row.invoice)));
+      if (key === 'tax') return chatSortDateKey(paidDateOnly(cleanCardText(row.taxReceipt)));
+      return '';
+    },
+    showTax ? 'tax' : 'due',
+    showTax ? 'desc' : 'asc',
+  );
 
   return (
     <div className="ai-meeting-stack ai-fullwidth-card-stack">
@@ -989,15 +1162,120 @@ export function ChatMissedCommsTable({ data }: { data: ChatMissedCommsData }) {
           <table className="ai-signed-table">
             <thead>
               <tr>
-                <th>Lead</th>
-                <th>Client</th>
-                <th>Channel</th>
-                <th>Detail</th>
-                <th className="ai-signed-paid">When</th>
+                <ChatSortableTh label="Lead" column="lead" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh
+                  label="Amount"
+                  column="amount"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-value"
+                />
+                <ChatSortableTh
+                  label="Due"
+                  column="due"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-paid"
+                />
+                <ChatSortableTh label="Invoice" column="invoice" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                {showTax ? (
+                  <ChatSortableTh
+                    label="Tax receipt"
+                    column="tax"
+                    sortKey={sortKey}
+                    sortDir={sortDir}
+                    onSort={toggle}
+                    className="ai-signed-paid"
+                  />
+                ) : null}
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((row, index) => {
+              {sorted.map((row, index) => {
+                const leadNumber = cleanCardText(row.leadNumber);
+                const name = cleanCardText(row.name);
+                const value = formatChatCurrencyText(cleanCardText(row.value));
+                const dueAt = paidDateOnly(cleanCardText(row.dueAt));
+                const invoice = cleanCardText(row.invoice);
+                const taxReceipt = paidDateOnly(cleanCardText(row.taxReceipt));
+                return (
+                  <tr key={`${leadNumber || name || 'row'}-${index}`}>
+                    <td>{leadNumber ? <ChatLeadNumberText text={leadNumber} /> : '—'}</td>
+                    <td>{name || '—'}</td>
+                    <td className="ai-signed-value">{value || '—'}</td>
+                    <td className="ai-signed-paid">{dueAt}</td>
+                    <td>{invoice || '—'}</td>
+                    {showTax ? <td className="ai-signed-paid">{taxReceipt || '—'}</td> : null}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {data.totals || data.more || data.count ? (
+          <div className="ai-signed-footer">
+            {data.count ? <span>{data.count} rows</span> : null}
+            {data.totals ? <span>Total {formatChatCurrencyText(data.totals)}</span> : null}
+            {data.more ? <span>…and {data.more} more</span> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export function ChatMissedCommsTable({ data }: { data: ChatMissedCommsData }) {
+  const parts = [
+    data.whatsapp ? `${data.whatsapp} WhatsApp` : '',
+    data.email ? `${data.email} email` : '',
+    data.calls ? `${data.calls} call${Number(data.calls) === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+  const { sorted, sortKey, sortDir, toggle } = useChatTableSort(
+    data.rows,
+    (row, key) => {
+      if (key === 'lead') return chatSortTextKey(cleanCardText(row.leadNumber));
+      if (key === 'client') return chatSortTextKey(cleanCardText(row.name));
+      if (key === 'channel') return chatSortTextKey(cleanCardText(row.channel));
+      if (key === 'detail') return chatSortTextKey(cleanCardText(row.detail));
+      if (key === 'when') return chatSortDateKey(paidDateOnly(cleanCardText(row.when)));
+      return '';
+    },
+    'when',
+    'desc',
+  );
+
+  return (
+    <div className="ai-meeting-stack ai-fullwidth-card-stack">
+      <div className="ai-meeting-card ai-signed-card">
+        {data.period ? (
+          <div className="ai-meeting-card-head">
+            <span />
+            <span className="ai-meeting-card-lead">{data.period}</span>
+          </div>
+        ) : null}
+        <div className="ai-signed-table-wrap">
+          <table className="ai-signed-table">
+            <thead>
+              <tr>
+                <ChatSortableTh label="Lead" column="lead" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Channel" column="channel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Detail" column="detail" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh
+                  label="When"
+                  column="when"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-paid"
+                />
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((row, index) => {
                 const leadNumber = cleanCardText(row.leadNumber);
                 const name = cleanCardText(row.name);
                 const channel = cleanCardText(row.channel);
@@ -1035,6 +1313,19 @@ export function ChatSignedContractsTable({
   data: ChatSignedContractsData;
   employees?: ChatEmployeeHit[];
 }) {
+  const { sorted, sortKey, sortDir, toggle } = useChatTableSort(
+    data.rows,
+    (row, key) => {
+      if (key === 'lead') return chatSortTextKey(cleanCardText(row.leadNumber));
+      if (key === 'client') return chatSortTextKey(cleanCardText(row.name));
+      if (key === 'closer') return chatSortTextKey(cleanCardText(row.closer));
+      if (key === 'amount') return chatSortAmountKey(cleanCardText(row.value));
+      return '';
+    },
+    'amount',
+    'desc',
+  );
+
   return (
     <div className="ai-meeting-stack ai-fullwidth-card-stack">
       <div className="ai-meeting-card ai-signed-card">
@@ -1048,14 +1339,21 @@ export function ChatSignedContractsTable({
           <table className="ai-signed-table">
             <thead>
               <tr>
-                <th>Lead</th>
-                <th>Client name</th>
-                <th>Closer</th>
-                <th className="ai-signed-value">Total value</th>
+                <ChatSortableTh label="Lead" column="lead" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Client name" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Closer" column="closer" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh
+                  label="Total value"
+                  column="amount"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-value"
+                />
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((row, index) => {
+              {sorted.map((row, index) => {
                 const leadNumber = cleanCardText(row.leadNumber);
                 const name = cleanCardText(row.name);
                 const closer = cleanCardText(row.closer);
@@ -1182,6 +1480,21 @@ export function ChatExpensesTable({
   data: ChatExpensesData;
   employees?: ChatEmployeeHit[];
 }) {
+  const { sorted, sortKey, sortDir, toggle } = useChatTableSort(
+    data.rows,
+    (row, key) => {
+      if (key === 'lead') {
+        return chatSortTextKey(`${cleanCardText(row.leadNumber)} ${cleanCardText(row.name)}`);
+      }
+      if (key === 'category') return chatSortTextKey(cleanCardText(row.category));
+      if (key === 'amount') return chatSortAmountKey(cleanCardText(row.amount));
+      if (key === 'by') return chatSortTextKey(cleanCardText(row.by));
+      return '';
+    },
+    'amount',
+    'desc',
+  );
+
   return (
     <div className="ai-meeting-stack">
       <div className="ai-meeting-card ai-signed-card">
@@ -1195,14 +1508,21 @@ export function ChatExpensesTable({
           <table className="ai-signed-table">
             <thead>
               <tr>
-                <th>Lead</th>
-                <th>Category</th>
-                <th className="ai-signed-value">Amount</th>
-                <th>By</th>
+                <ChatSortableTh label="Lead" column="lead" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh label="Category" column="category" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <ChatSortableTh
+                  label="Amount"
+                  column="amount"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  onSort={toggle}
+                  className="ai-signed-value"
+                />
+                <ChatSortableTh label="By" column="by" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((row, index) => {
+              {sorted.map((row, index) => {
                 const leadNumber = cleanCardText(row.leadNumber);
                 const name = cleanCardText(row.name);
                 const category = cleanCardText(row.category);

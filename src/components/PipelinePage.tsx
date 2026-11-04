@@ -40,6 +40,7 @@ import PipelineRoleTabs, { type PipelineRoleTab } from './pipeline/PipelineRoleT
 import ExpertPipelineView from './pipeline/ExpertPipelineView';
 import HandlerPipelineView from './pipeline/HandlerPipelineView';
 import RetentionHandlerPipelineView from './pipeline/RetentionHandlerPipelineView';
+import ClientSupportPipelineView from './pipeline/ClientSupportPipelineView';
 import PipelineFollowUpButton from './pipeline/PipelineFollowUpButton';
 import { toPipelineFollowupLead } from './pipeline/PipelineFollowupAiCell';
 import PipelineActionSidebar from './pipeline/PipelineActionSidebar';
@@ -435,10 +436,12 @@ const PipelinePage: React.FC = () => {
     expert: number | null;
     handler: number | null;
     retention: number | null;
+    support: number | null;
   }>({
     expert: null,
     handler: null,
     retention: null,
+    support: null,
   });
   const [viewAs, setViewAs] = usePersistedState<PipelineViewAs | null>(
     'pipelinePage_viewAs',
@@ -493,6 +496,10 @@ const PipelinePage: React.FC = () => {
 
   const handleRetentionCount = useCallback((count: number) => {
     setExtraRoleCounts((prev) => (prev.retention === count ? prev : { ...prev, retention: count }));
+  }, []);
+
+  const handleSupportCount = useCallback((count: number) => {
+    setExtraRoleCounts((prev) => (prev.support === count ? prev : { ...prev, support: count }));
   }, []);
   
   // Helper to load persisted state for a key based on pipelineMode (needs mode as param for initial load)
@@ -5390,6 +5397,8 @@ const PipelinePage: React.FC = () => {
                   ? 'Handler Pipeline'
                   : activeTab === 'retention'
                     ? 'Retention Pipeline'
+                    : activeTab === 'support'
+                      ? 'Client Support Pipeline'
                   : showSignedAgreements
                     ? 'Signed Agreements'
                     : pipelineMode === 'scheduler'
@@ -5408,6 +5417,7 @@ const PipelinePage: React.FC = () => {
               expert: extraRoleCounts.expert,
               handler: extraRoleCounts.handler,
               retention: extraRoleCounts.retention,
+              support: extraRoleCounts.support,
             }}
             blockedTabs={isLoading && isOwnPipelineTab ? ['closer', 'scheduler'] : []}
           />
@@ -5527,6 +5537,18 @@ const PipelinePage: React.FC = () => {
         <RetentionHandlerPipelineView
           key={pipelineViewIdentityKey(viewAsForPipeline)}
           onCountChange={handleRetentionCount}
+          viewAs={viewAsForPipeline}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
+        />
+      ) : activeTab === 'support' ? (
+        <ClientSupportPipelineView
+          key={pipelineViewIdentityKey(viewAsForPipeline)}
+          onCountChange={handleSupportCount}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={pickedLeadIds}

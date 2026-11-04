@@ -10,7 +10,8 @@ import LoginHeroBackground from './LoginHeroBackground';
 import ClockInGateHelpBox from './ClockInGateHelpBox';
 import ClockInGateVideos from './ClockInGateVideos';
 import ClockInGateHeader from './ClockInGateHeader';
-import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
+// TEMP: "9 hours reached" modal hidden — re-enable with the monitor below.
+// import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
 import ClockInPresenceHeartbeat from './ClockInPresenceHeartbeat';
 import LeadAllocationReminderMonitor from './LeadAllocationReminderMonitor';
 
@@ -93,7 +94,8 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
       <>
         {children}
         <ClockInPresenceHeartbeat />
-        <NineHourOvertimeMonitor />
+        {/* TEMP: hide "9 hours reached" modal only */}
+        {/* <NineHourOvertimeMonitor /> */}
         <LeadAllocationReminderMonitor />
       </>
     );

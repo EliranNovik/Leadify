@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useMsal } from '@azure/msal-react';
 import { toast } from 'react-hot-toast';
@@ -6,7 +7,8 @@ import { supabase, isAuthError, tryRefreshThenExpire } from '../../lib/supabase'
 import { usePersistedFilters, usePersistedState } from '../../hooks/usePersistedState';
 import { getStageName, getStageColour, fetchStageNames } from '../../lib/stageUtils';
 import { convertToNIS } from '../../lib/currencyConversion';
-import { Bars3Icon, Squares2X2Icon } from '@heroicons/react/24/outline';
+import { normalizeActiveHandlerType, type ActiveHandlerType } from '../../lib/handlerCaseBuckets';
+import { Bars3Icon, CheckIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { PIPELINE_TABLE_SHELL } from '../pipeline/pipelineUi';
 import FloatingFilterBar from './FloatingFilterBar';
 import ReassignNotifyEmailModal from './ReassignNotifyEmailModal';
@@ -81,12 +83,61 @@ const leadHasRetentionHandler = (lead: any): boolean => {
     return String(id).trim() !== '';
 };
 
+const leadHasClientSupport = (lead: any): boolean => {
+    const id = lead.client_support_id;
+    if (id == null || id === '') return false;
+    const n = Number(id);
+    if (!Number.isNaN(n)) return n !== 0;
+    return String(id).trim() !== '';
+};
+
 const getRetentionEmployeeForLead = (lead: any, employeesList: { id: number; display_name: string; photo_url?: string | null }[]) => {
     const id = lead.retainer_handler_id;
     if (id == null || id === '') return null;
     const n = typeof id === 'number' ? id : parseInt(String(id), 10);
     if (Number.isNaN(n) || n === 0) return null;
     return employeesList.find(e => e.id === n) ?? null;
+};
+
+const getClientSupportEmployeeForLead = (
+    lead: any,
+    employeesList: { id: number; display_name: string; photo_url?: string | null }[],
+) => {
+    const id = lead.client_support_id;
+    if (id == null || id === '') return null;
+    const n = typeof id === 'number' ? id : parseInt(String(id), 10);
+    if (Number.isNaN(n) || n === 0) return null;
+    return employeesList.find(e => e.id === n) ?? null;
+};
+
+type ActiveMissingRole = 'handler' | 'retainer_handler' | 'client_support';
+
+const missingRoleForActiveChoice = (choice: ActiveHandlerType): ActiveMissingRole =>
+    choice === 1 ? 'retainer_handler' : choice === 3 ? 'client_support' : 'handler';
+
+const leadHasRoleForActiveChoice = (lead: any, choice: ActiveHandlerType): boolean => {
+    if (choice === 1) return leadHasRetentionHandler(lead);
+    if (choice === 3) return leadHasClientSupport(lead);
+    return leadHasCaseHandler(lead);
+};
+
+const activeChoiceSuccessSummary = (choice: ActiveHandlerType, plural: boolean): string => {
+    const cases = plural ? 'the selected cases' : 'this lead';
+    if (choice === 1) return `Retention handler is now active on ${cases}.`;
+    if (choice === 3) return `Client support is now active on ${cases}.`;
+    return `Case handler is now active on ${cases}.`;
+};
+
+const activeChoiceMissingTitle = (role: ActiveMissingRole): string => {
+    if (role === 'handler') return 'No case handler';
+    if (role === 'client_support') return 'No client support';
+    return 'No retention handler';
+};
+
+const activeChoiceAssignLabel = (role: ActiveMissingRole): string => {
+    if (role === 'handler') return 'case handler';
+    if (role === 'client_support') return 'client support';
+    return 'retention handler';
 };
 
 /** PostgREST `.or()` fragment for new-leads text columns that store a person name or placeholders. */
@@ -105,44 +156,79 @@ type ReassignRoleFilterTab =
     | 'client_support';
 
 /**
- * A lead's `active_handler_type`: which of its two handlers currently owns the case. This is the
- * split MyCasesPage is built around — its Active table is type 2, its Non-Active table is type 1.
+ * Filter on `active_handler_type` (1=retention, 2=handler, 3=client support).
+ *
+ * "Active X" is equality on that role's type. "Non-active X" is the other two types — with three
+ * owners, non-active is no longer the same as "the other role is active".
  */
-const ACTIVE_HANDLER_TYPE = { handler: 2, retention: 1 } as const;
-type ActiveHandlerFilterValue = '' | keyof typeof ACTIVE_HANDLER_TYPE;
+type ActiveHandlerFilterTab = 'handler' | 'retainer_handler' | 'client_support';
+type ActiveHandlerFilterValue =
+    | ''
+    | 'handler'
+    | 'retention'
+    | 'support'
+    | 'not_handler'
+    | 'not_retention'
+    | 'not_support';
 
-/**
- * The Handler and Retention tabs both filter on that one column, so they are two views of a single
- * setting rather than two filters: "active" on the Handler tab is the same condition as
- * "non-active" on the Retention tab. Keeping one value is what stops a user asking for leads where
- * both handlers are the active one, which no lead can be.
- */
 const activeHandlerFilterOptions = (
-    tab: 'handler' | 'retainer_handler',
-): Array<{ value: ActiveHandlerFilterValue; label: string }> =>
-    tab === 'handler'
-        ? [
+    tab: ActiveHandlerFilterTab,
+): Array<{ value: ActiveHandlerFilterValue; label: string }> => {
+    if (tab === 'handler') {
+        return [
             { value: '', label: 'Any' },
             { value: 'handler', label: 'Active handler' },
-            { value: 'retention', label: 'Non-active handler' },
-        ]
-        : [
+            { value: 'not_handler', label: 'Non-active handler' },
+        ];
+    }
+    if (tab === 'retainer_handler') {
+        return [
             { value: '', label: 'Any' },
             { value: 'retention', label: 'Active retention' },
-            { value: 'handler', label: 'Non-active retention' },
+            { value: 'not_retention', label: 'Non-active retention' },
         ];
+    }
+    return [
+        { value: '', label: 'Any' },
+        { value: 'support', label: 'Active client support' },
+        { value: 'not_support', label: 'Non-active support' },
+    ];
+};
+
+/** Apply the Active-state role filter to a Supabase query builder. */
+const applyActiveHandlerTypeFilter = <T extends { eq: Function; in: Function }>(
+    query: T,
+    filter: string | null | undefined,
+): T => {
+    switch (filter) {
+        case 'handler':
+            return query.eq('active_handler_type', 2);
+        case 'retention':
+            return query.eq('active_handler_type', 1);
+        case 'support':
+            return query.eq('active_handler_type', 3);
+        case 'not_handler':
+            return query.in('active_handler_type', [1, 3]);
+        case 'not_retention':
+            return query.in('active_handler_type', [2, 3]);
+        case 'not_support':
+            return query.in('active_handler_type', [1, 2]);
+        default:
+            return query;
+    }
+};
 
 /** Shared look for the small pill filters sitting under a role's employee picker. */
 const reassignPillClass = (selected: boolean): string =>
     `btn btn-sm rounded-full normal-case text-sm ${selected ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`;
 
 const ReassignActiveHandlerFilter: React.FC<{
-    tab: 'handler' | 'retainer_handler';
+    tab: ActiveHandlerFilterTab;
     value: ActiveHandlerFilterValue;
     onChange: (next: ActiveHandlerFilterValue) => void;
 }> = ({ tab, value, onChange }) => (
     <div className="mt-3">
-        <div role="group" aria-label="Active handler" className="flex flex-wrap gap-1">
+        <div role="group" aria-label="Active state" className="flex flex-wrap gap-1">
             {activeHandlerFilterOptions(tab).map(({ value: optionValue, label }) => (
                 <button
                     key={optionValue || 'any'}
@@ -406,41 +492,193 @@ const ReassignRoleFieldEmployee: React.FC<{
     </>
 );
 
+/** H | R | S order in the Active column (matches ClientHeader: Handler → Retention → Support). */
+const REASSIGN_ACTIVE_SEGMENTS: Array<{
+    type: ActiveHandlerType;
+    letter: string;
+    label: string;
+    pillClass: string;
+}> = [
+    { type: 2, letter: 'H', label: 'Handler', pillClass: 'bg-emerald-500' },
+    { type: 1, letter: 'R', label: 'Retention', pillClass: 'bg-blue-500' },
+    { type: 3, letter: 'S', label: 'Client Support', pillClass: 'bg-violet-500' },
+];
+
+const reassignActiveSegmentIndex = (type: ActiveHandlerType): number =>
+    REASSIGN_ACTIVE_SEGMENTS.findIndex(s => s.type === type);
+
 /**
- * The H | R switch for which of a lead's two handlers currently owns the case, i.e. its
- * `active_handler_type`. The sliding pill is a positioned element rather than a background change
- * so the movement reads as one control with two sides.
+ * Triple H | R | S indicator for `active_handler_type`. Click opens a dropdown (same idea as
+ * ClientHeader) listing all three roles so any one can be made active.
  */
 const ReassignActiveToggle: React.FC<{
-    activeType: 1 | 2;
+    activeType: ActiveHandlerType;
     disabled: boolean;
-    onPick: (type: 1 | 2, e: React.MouseEvent) => void;
+    onPick: (type: ActiveHandlerType, e: React.MouseEvent) => void;
     className?: string;
-}> = ({ activeType, disabled, onPick, className = 'h-[1.875rem] w-[5rem]' }) => (
-    <div
-        className={`relative grid ${className} shrink-0 grid-cols-2 rounded-full border border-base-content/[0.06] bg-base-300/25 p-[3px] shadow-inner`}
-        role="group"
-        aria-label="Who is active on the case"
-    >
-        <div
-            aria-hidden
-            className={`pointer-events-none absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(50%-4.5px)] rounded-full shadow-sm transition-[transform,background-color] duration-300 ease-[cubic-bezier(0.25,0.85,0.35,1)] will-change-transform ${activeType === 1 ? 'translate-x-[calc(100%+3px)] bg-blue-500' : 'translate-x-0 bg-emerald-500'}`}
-        />
-        {([2, 1] as const).map(type => (
+    roleNames?: { handler?: string | null; retention?: string | null; support?: string | null };
+}> = ({
+    activeType,
+    disabled,
+    onPick,
+    className = 'h-[1.875rem] w-[6.75rem]',
+    roleNames,
+}) => {
+    const [open, setOpen] = useState(false);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+    const rootRef = useRef<HTMLDivElement>(null);
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
+    const activeIndex = Math.max(0, reassignActiveSegmentIndex(activeType));
+    const activePill = REASSIGN_ACTIVE_SEGMENTS[activeIndex]?.pillClass ?? 'bg-emerald-500';
+
+    const closeMenu = () => setOpen(false);
+
+    useLayoutEffect(() => {
+        if (!open || !buttonRef.current) {
+            setMenuPos(null);
+            return;
+        }
+        const update = () => {
+            const btn = buttonRef.current;
+            const menu = menuRef.current;
+            if (!btn) return;
+            const rect = btn.getBoundingClientRect();
+            const menuWidth = menu?.offsetWidth || 220;
+            const menuHeight = menu?.offsetHeight || 180;
+            const gap = 6;
+            let left = rect.left + rect.width / 2 - menuWidth / 2;
+            left = Math.max(8, Math.min(left, window.innerWidth - menuWidth - 8));
+            const spaceBelow = window.innerHeight - rect.bottom - gap;
+            const openUp = spaceBelow < menuHeight && rect.top > spaceBelow;
+            const top = openUp
+                ? Math.max(8, rect.top - menuHeight - gap)
+                : Math.min(rect.bottom + gap, window.innerHeight - menuHeight - 8);
+            setMenuPos({ top, left });
+        };
+        update();
+        const raf = requestAnimationFrame(update);
+        window.addEventListener('resize', update);
+        window.addEventListener('scroll', update, true);
+        return () => {
+            cancelAnimationFrame(raf);
+            window.removeEventListener('resize', update);
+            window.removeEventListener('scroll', update, true);
+        };
+    }, [open]);
+
+    useEffect(() => {
+        if (!open) return;
+        const onDoc = (e: MouseEvent) => {
+            const t = e.target as Node;
+            if (rootRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+            closeMenu();
+        };
+        document.addEventListener('mousedown', onDoc);
+        return () => document.removeEventListener('mousedown', onDoc);
+    }, [open]);
+
+    const nameFor = (type: ActiveHandlerType): string => {
+        if (type === 2) return roleNames?.handler?.trim() || 'Not assigned';
+        if (type === 1) return roleNames?.retention?.trim() || 'Not assigned';
+        return roleNames?.support?.trim() || 'Not assigned';
+    };
+
+    return (
+        <div className="relative" ref={rootRef}>
             <button
-                key={type}
+                ref={buttonRef}
                 type="button"
                 disabled={disabled}
-                aria-pressed={activeType === type}
-                title={type === 2 ? 'Handler is active' : 'Retention is active'}
-                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${activeType === type ? 'text-white' : 'text-base-content/40 hover:text-base-content/65'}`}
-                onClick={e => onPick(type, e)}
+                aria-expanded={open}
+                aria-haspopup="menu"
+                title="Who is active on the case"
+                className={`relative grid ${className} shrink-0 cursor-pointer grid-cols-3 rounded-full border border-base-content/[0.06] bg-base-300/25 p-[3px] shadow-inner disabled:cursor-not-allowed disabled:opacity-60`}
+                onClick={e => {
+                    e.stopPropagation();
+                    if (disabled) return;
+                    setOpen(v => !v);
+                }}
             >
-                {type === 2 ? 'H' : 'R'}
+                <span
+                    aria-hidden
+                    className={`pointer-events-none absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(33.333%-3px)] rounded-full shadow-sm transition-[transform,background-color] duration-300 ease-[cubic-bezier(0.25,0.85,0.35,1)] will-change-transform ${activePill}`}
+                    style={{ transform: `translateX(calc(${activeIndex} * (100% + 3px)))` }}
+                />
+                {REASSIGN_ACTIVE_SEGMENTS.map(seg => (
+                    <span
+                        key={seg.type}
+                        aria-hidden
+                        className={`relative z-10 flex items-center justify-center rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${
+                            activeType === seg.type
+                                ? 'text-white'
+                                : 'text-base-content/40'
+                        }`}
+                    >
+                        {seg.letter}
+                    </span>
+                ))}
             </button>
-        ))}
-    </div>
-);
+            {open
+                ? createPortal(
+                      <div
+                          ref={menuRef}
+                          className="fixed z-[9999] min-w-[14rem] overflow-hidden rounded-2xl border border-black/[0.06] bg-white py-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-base-200"
+                          role="menu"
+                          style={{
+                              top: menuPos?.top ?? -9999,
+                              left: menuPos?.left ?? -9999,
+                              visibility: menuPos ? 'visible' : 'hidden',
+                          }}
+                          onClick={e => e.stopPropagation()}
+                      >
+                          <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
+                              Make active
+                          </p>
+                          {REASSIGN_ACTIVE_SEGMENTS.map(seg => {
+                              const isActive = activeType === seg.type;
+                              return (
+                                  <button
+                                      key={seg.type}
+                                      type="button"
+                                      role="menuitem"
+                                      className={`mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${
+                                          isActive
+                                              ? 'bg-primary/10'
+                                              : 'hover:bg-gray-100 dark:hover:bg-base-200/70'
+                                      }`}
+                                      onClick={e => {
+                                          closeMenu();
+                                          if (isActive) return;
+                                          onPick(seg.type, e);
+                                      }}
+                                  >
+                                      <span
+                                          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${seg.pillClass}`}
+                                      >
+                                          {seg.letter}
+                                      </span>
+                                      <span className="min-w-0 flex-1">
+                                          <span className="block text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                                              {seg.label}
+                                          </span>
+                                          <span className="block truncate text-sm font-semibold text-base-content/85">
+                                              {nameFor(seg.type)}
+                                          </span>
+                                      </span>
+                                      {isActive ? (
+                                          <CheckIcon className="h-4 w-4 shrink-0 text-primary" aria-hidden />
+                                      ) : null}
+                                  </button>
+                              );
+                          })}
+                      </div>,
+                      document.body,
+                  )
+                : null}
+        </div>
+    );
+};
 
 /** Narrows a role's leads to the ones where the *other* handler role has nobody assigned. */
 const ReassignMissingRoleFilter: React.FC<{
@@ -805,7 +1043,7 @@ const ReassignLeadsReport: React.FC = () => {
         retainer_handler: '',
         helper_handler: '',
         client_support: '',
-        /** '' | 'handler' | 'retention' — which of the two is the lead's active handler. */
+        /** '' | handler|retention|support|not_* — active_handler_type role filter. */
         activeHandlerType: '',
         eligibilityDeterminedOnly: false,
         selectedLeadIds: [] as string[]
@@ -847,14 +1085,14 @@ const ReassignLeadsReport: React.FC = () => {
     const [notifySending, setNotifySending] = useState(false);
     const [notifyProgress, setNotifyProgress] = useState<{ done: number; total: number } | null>(null);
     const [showActiveHandlerModal, setShowActiveHandlerModal] = useState(false);
-    const [activeHandlerTypeChoice, setActiveHandlerTypeChoice] = useState<1 | 2>(2);
+    const [activeHandlerTypeChoice, setActiveHandlerTypeChoice] = useState<ActiveHandlerType>(2);
     const [savingActiveHandlerType, setSavingActiveHandlerType] = useState(false);
     type ActiveHandlerMissingFlowState =
         | null
         | {
               step: 'ask' | 'assign';
-              activeChoice: 1 | 2;
-              missingRole: 'handler' | 'retainer_handler';
+              activeChoice: ActiveHandlerType;
+              missingRole: ActiveMissingRole;
               missingLeads: any[];
               allSelected: any[];
           };
@@ -868,7 +1106,7 @@ const ReassignLeadsReport: React.FC = () => {
         | {
               step: 'ask' | 'assign';
               lead: any;
-              targetChoice: 1 | 2;
+              targetChoice: ActiveHandlerType;
           };
     const [singleLeadActiveFlow, setSingleLeadActiveFlow] = useState<SingleLeadActiveFlowState>(null);
     const [singleActiveAssignSearch, setSingleActiveAssignSearch] = useState('');
@@ -1976,12 +2214,7 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
             if (reassignFilters.activeHandlerType) {
-                // Plain equality: the column holds 1 or 2 on every row of both lead tables, so
-                // there is no unset third state to fold in here.
-                leadsQuery = leadsQuery.eq(
-                    'active_handler_type',
-                    ACTIVE_HANDLER_TYPE[reassignFilters.activeHandlerType as keyof typeof ACTIVE_HANDLER_TYPE],
-                );
+                leadsQuery = applyActiveHandlerTypeFilter(leadsQuery, reassignFilters.activeHandlerType);
             }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
                 console.log('🔍 Adding selected lead IDs filter for new leads:', reassignFilters.selectedLeadIds);
@@ -2285,9 +2518,9 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
             if (reassignFilters.activeHandlerType) {
-                legacyLeadsQuery = legacyLeadsQuery.eq(
-                    'active_handler_type',
-                    ACTIVE_HANDLER_TYPE[reassignFilters.activeHandlerType as keyof typeof ACTIVE_HANDLER_TYPE],
+                legacyLeadsQuery = applyActiveHandlerTypeFilter(
+                    legacyLeadsQuery,
+                    reassignFilters.activeHandlerType,
                 );
             }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
@@ -2970,12 +3203,11 @@ const ReassignLeadsReport: React.FC = () => {
         }
         setSingleLeadActiveFlow(null);
         const first = reassignResults.find(lead => selectedLeads.has(lead.id?.toString() || ''));
-        const t = Number((first as any)?.active_handler_type);
-        setActiveHandlerTypeChoice(t === 1 ? 1 : 2);
+        setActiveHandlerTypeChoice(normalizeActiveHandlerType((first as any)?.active_handler_type));
         setShowActiveHandlerModal(true);
     };
 
-    const performBulkActiveHandlerUpdate = async (selectedList: any[], choice: 1 | 2) => {
+    const performBulkActiveHandlerUpdate = async (selectedList: any[], choice: ActiveHandlerType) => {
         const newLeads = selectedList.filter(lead => lead.lead_type === 'new');
         const legacyLeads = selectedList.filter(lead => lead.lead_type === 'legacy');
         const newIds = newLeads.map(l => l.id).filter(Boolean);
@@ -3026,7 +3258,7 @@ const ReassignLeadsReport: React.FC = () => {
 
     const assignMissingRoleToLeads = async (
         leads: any[],
-        role: 'handler' | 'retainer_handler',
+        role: ActiveMissingRole,
         employeeDisplayName: string
     ) => {
         const selectedEmployee = employees.find(emp => emp.display_name === employeeDisplayName);
@@ -3036,10 +3268,10 @@ const ReassignLeadsReport: React.FC = () => {
         const { stage_changed_by, stage_changed_at } = await resolveStageAttribution();
         const newLeads = leads.filter(l => l.lead_type === 'new');
         const legacyLeads = leads.filter(l => l.lead_type === 'legacy');
+        const newIds = newLeads.map(l => l.id).filter(Boolean);
+        const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
 
         if (role === 'handler') {
-            const newIds = newLeads.map(l => l.id).filter(Boolean);
-            const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
             if (newIds.length > 0) {
                 const { error } = await supabase
                     .from('leads')
@@ -3063,14 +3295,15 @@ const ReassignLeadsReport: React.FC = () => {
                     .in('id', legacyIds as (string | number)[]);
                 if (error) throw error;
             }
-        } else {
-            const newIds = newLeads.map(l => l.id).filter(Boolean);
-            const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
+            return;
+        }
+
+        if (role === 'client_support') {
             if (newIds.length > 0) {
                 const { error } = await supabase
                     .from('leads')
                     .update({
-                        retainer_handler_id: selectedEmployee.id,
+                        client_support_id: selectedEmployee.id,
                         stage_changed_by,
                         stage_changed_at,
                     })
@@ -3081,13 +3314,37 @@ const ReassignLeadsReport: React.FC = () => {
                 const { error } = await supabase
                     .from('leads_lead')
                     .update({
-                        retainer_handler_id: selectedEmployee.id,
+                        client_support_id: selectedEmployee.id,
                         stage_changed_by,
                         stage_changed_at,
                     })
                     .in('id', legacyIds as (string | number)[]);
                 if (error) throw error;
             }
+            return;
+        }
+
+        if (newIds.length > 0) {
+            const { error } = await supabase
+                .from('leads')
+                .update({
+                    retainer_handler_id: selectedEmployee.id,
+                    stage_changed_by,
+                    stage_changed_at,
+                })
+                .in('id', newIds as string[]);
+            if (error) throw error;
+        }
+        if (legacyIds.length > 0) {
+            const { error } = await supabase
+                .from('leads_lead')
+                .update({
+                    retainer_handler_id: selectedEmployee.id,
+                    stage_changed_by,
+                    stage_changed_at,
+                })
+                .in('id', legacyIds as (string | number)[]);
+            if (error) throw error;
         }
     };
 
@@ -3104,11 +3361,8 @@ const ReassignLeadsReport: React.FC = () => {
             await performBulkActiveHandlerUpdate(flow.allSelected, flow.activeChoice);
 
             const n = flow.allSelected.length;
-            const roleWord = flow.missingRole === 'handler' ? 'case handler' : 'retention handler';
-            const activeSummary =
-                flow.activeChoice === 2
-                    ? 'Case handler is now active on the selected cases.'
-                    : 'Retention handler is now active on the selected cases.';
+            const roleWord = activeChoiceAssignLabel(flow.missingRole);
+            const activeSummary = activeChoiceSuccessSummary(flow.activeChoice, true);
             toast.success(`Assigned ${missingFlowAssignName.trim()} as ${roleWord} on ${flow.missingLeads.length} lead(s), then updated active role. ${activeSummary} (${n} lead${n === 1 ? '' : 's'}).`);
 
             setActiveHandlerMissingFlow(null);
@@ -3128,14 +3382,12 @@ const ReassignLeadsReport: React.FC = () => {
         }
     };
 
-    const applySingleLeadActiveType = async (lead: any, choice: 1 | 2) => {
+    const applySingleLeadActiveType = async (lead: any, choice: ActiveHandlerType) => {
         const id = lead.id?.toString() || '';
         setSavingSingleLeadId(id);
         try {
             await performBulkActiveHandlerUpdate([lead], choice);
-            toast.success(
-                choice === 2 ? 'Case handler is now active on this lead.' : 'Retention handler is now active on this lead.'
-            );
+            toast.success(activeChoiceSuccessSummary(choice, false));
             await handleReassignSearch();
         } catch (e: any) {
             if (e?.message === 'NO_MATCHING_IDS') {
@@ -3149,22 +3401,16 @@ const ReassignLeadsReport: React.FC = () => {
         }
     };
 
-    const handleSingleLeadActivePick = (lead: any, targetChoice: 1 | 2, e: React.MouseEvent) => {
+    const handleSingleLeadActivePick = (lead: any, targetChoice: ActiveHandlerType, e: React.MouseEvent) => {
         e.stopPropagation();
         setActiveHandlerMissingFlow(null);
-        const current = Number((lead as any).active_handler_type) === 1 ? 1 : 2;
+        const current = normalizeActiveHandlerType((lead as any).active_handler_type);
         if (current === targetChoice) return;
 
-        if (targetChoice === 2 && !leadHasCaseHandler(lead)) {
+        if (!leadHasRoleForActiveChoice(lead, targetChoice)) {
             setSingleActiveAssignName('');
             setSingleActiveAssignSearch('');
-            setSingleLeadActiveFlow({ lead, targetChoice: 2, step: 'ask' });
-            return;
-        }
-        if (targetChoice === 1 && !leadHasRetentionHandler(lead)) {
-            setSingleActiveAssignName('');
-            setSingleActiveAssignSearch('');
-            setSingleLeadActiveFlow({ lead, targetChoice: 1, step: 'ask' });
+            setSingleLeadActiveFlow({ lead, targetChoice, step: 'ask' });
             return;
         }
         void applySingleLeadActiveType(lead, targetChoice);
@@ -3179,7 +3425,7 @@ const ReassignLeadsReport: React.FC = () => {
         }
         setSingleActiveModalSaving(true);
         try {
-            const missingRole = flow.targetChoice === 2 ? 'handler' : 'retainer_handler';
+            const missingRole = missingRoleForActiveChoice(flow.targetChoice);
             await assignMissingRoleToLeads([flow.lead], missingRole, singleActiveAssignName.trim());
             await performBulkActiveHandlerUpdate([flow.lead], flow.targetChoice);
             toast.success('Assigned and set active role on this lead.');
@@ -3206,20 +3452,12 @@ const ReassignLeadsReport: React.FC = () => {
         }
         const selectedList = reassignResults.filter(lead => selectedLeads.has(lead.id?.toString() || ''));
         const choice = activeHandlerTypeChoice;
-
-        const missingRole: 'handler' | 'retainer_handler' | null =
-            choice === 2
-                ? selectedList.some(l => !leadHasCaseHandler(l))
-                    ? 'handler'
-                    : null
-                : selectedList.some(l => !leadHasRetentionHandler(l))
-                  ? 'retainer_handler'
-                  : null;
+        const missingRole = selectedList.some(l => !leadHasRoleForActiveChoice(l, choice))
+            ? missingRoleForActiveChoice(choice)
+            : null;
 
         if (missingRole) {
-            const missingLeads = selectedList.filter(l =>
-                missingRole === 'handler' ? !leadHasCaseHandler(l) : !leadHasRetentionHandler(l)
-            );
+            const missingLeads = selectedList.filter(l => !leadHasRoleForActiveChoice(l, choice));
             setSingleLeadActiveFlow(null);
             setShowActiveHandlerModal(false);
             setMissingFlowAssignName('');
@@ -3240,11 +3478,7 @@ const ReassignLeadsReport: React.FC = () => {
             await performBulkActiveHandlerUpdate(selectedList, choice);
 
             const n = selectedLeads.size;
-            const summary =
-                choice === 2
-                    ? 'Case handler is now active on the selected cases.'
-                    : 'Retention handler is now active on the selected cases.';
-            toast.success(`${summary} (${n} lead${n === 1 ? '' : 's'}).`);
+            toast.success(`${activeChoiceSuccessSummary(choice, true)} (${n} lead${n === 1 ? '' : 's'}).`);
 
             setShowActiveHandlerModal(false);
             await handleReassignSearch();
@@ -3288,7 +3522,7 @@ const ReassignLeadsReport: React.FC = () => {
      * queries for both lead tables already handle it (including the placeholder names a new lead's
      * `handler` column uses for nobody), and the choice still lists itself under "Filtered by:".
      */
-    const otherRoleMissing = (roleKey: 'handler' | 'retainer_handler'): boolean =>
+    const otherRoleMissing = (roleKey: 'handler' | 'retainer_handler' | 'client_support'): boolean =>
         isReassignRoleNoneFilter(reassignFilters[roleKey] as string);
 
     /** The employee a role's filter names, if it names one rather than being blank or NONE. */
@@ -3376,6 +3610,8 @@ const ReassignLeadsReport: React.FC = () => {
         const handlerName =
             handlerEmployee?.display_name ||
             (!isUnassignedHandlerValue(lead.handler) ? String(lead.handler).trim() : null);
+        const retention = getRetentionEmployeeForLead(lead, employees);
+        const support = getClientSupportEmployeeForLead(lead, employees);
 
         return {
             leadId,
@@ -3384,8 +3620,9 @@ const ReassignLeadsReport: React.FC = () => {
             // placeholder that reads like a name.
             handlerName: leadHasCaseHandler(lead) ? handlerName : null,
             handlerPhoto: handlerEmployee?.photo_url ?? null,
-            retention: getRetentionEmployeeForLead(lead, employees),
-            activeType: (Number(lead.active_handler_type) === 1 ? 1 : 2) as 1 | 2,
+            retention,
+            support,
+            activeType: normalizeActiveHandlerType(lead.active_handler_type),
             busy: savingSingleLeadId === leadId,
             balance: getLeadBalance(lead),
             applicants: getLeadApplicants(lead),
@@ -3434,9 +3671,22 @@ const ReassignLeadsReport: React.FC = () => {
             ? `${balance.currency}${balance.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
             : 'N/A';
 
-    const setOtherRoleMissing = (roleKey: 'handler' | 'retainer_handler', missing: boolean) => {
-        const setSelected = roleKey === 'handler' ? setSelectedHandler : setSelectedRetainerHandler;
-        const setSearchTerm = roleKey === 'handler' ? setHandlerSearchTerm : setRetainerHandlerSearchTerm;
+    const setOtherRoleMissing = (
+        roleKey: 'handler' | 'retainer_handler' | 'client_support',
+        missing: boolean,
+    ) => {
+        const setSelected =
+            roleKey === 'handler'
+                ? setSelectedHandler
+                : roleKey === 'client_support'
+                  ? setSelectedClientSupport
+                  : setSelectedRetainerHandler;
+        const setSearchTerm =
+            roleKey === 'handler'
+                ? setHandlerSearchTerm
+                : roleKey === 'client_support'
+                  ? setClientSupportSearchTerm
+                  : setRetainerHandlerSearchTerm;
 
         if (missing) {
             setReassignFilters(prev => ({ ...prev, [roleKey]: REASSIGN_ROLE_FILTER_NONE }));
@@ -4386,6 +4636,12 @@ const ReassignLeadsReport: React.FC = () => {
                                         missing={otherRoleMissing('handler')}
                                         onChange={(missing) => setOtherRoleMissing('handler', missing)}
                                     />
+                                    <ReassignMissingRoleFilter
+                                        missingLabel="Missing client support"
+                                        fieldLabel="Client support role:"
+                                        missing={otherRoleMissing('client_support')}
+                                        onChange={(missing) => setOtherRoleMissing('client_support', missing)}
+                                    />
                                 </div>
                                 )}
                                 {roleFilterTab === 'helper_handler' && (
@@ -4443,7 +4699,15 @@ const ReassignLeadsReport: React.FC = () => {
                                             setShowClientSupportDropdown(false);
                                         }}
                                         onClear={() => clearRoleFilter('client_support')}
-                                    />
+                                    >
+                                        <ReassignActiveHandlerFilter
+                                            tab="client_support"
+                                            value={activeHandlerFilter}
+                                            onChange={(next) =>
+                                                setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))
+                                            }
+                                        />
+                                    </ReassignRoleFilterPanel>
                                 )}
                             </div>
                         </div>
@@ -4534,6 +4798,20 @@ const ReassignLeadsReport: React.FC = () => {
                                     <span className="mt-0.5 block text-xs text-base-content/60">The retention handler is the active role on the case.</span>
                                 </span>
                             </label>
+                            <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${activeHandlerTypeChoice === 3 ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}`}>
+                                <input
+                                    type="radio"
+                                    name="bulkActiveHandlerType"
+                                    className="radio radio-primary mt-0.5"
+                                    checked={activeHandlerTypeChoice === 3}
+                                    onChange={() => setActiveHandlerTypeChoice(3)}
+                                    disabled={savingActiveHandlerType}
+                                />
+                                <span>
+                                    <span className="font-medium">Client support active</span>
+                                    <span className="mt-0.5 block text-xs text-base-content/60">Client support is the active role on the case.</span>
+                                </span>
+                            </label>
                         </div>
                         <div className="modal-action mt-2 flex-wrap gap-2">
                             <button
@@ -4585,9 +4863,7 @@ const ReassignLeadsReport: React.FC = () => {
                         {activeHandlerMissingFlow.step === 'ask' ? (
                             <>
                                 <h3 className="shrink-0 text-lg font-bold">
-                                    {activeHandlerMissingFlow.missingRole === 'handler'
-                                        ? 'No case handler'
-                                        : 'No retention handler'}
+                                    {activeChoiceMissingTitle(activeHandlerMissingFlow.missingRole)}
                                     <span className="ml-1 font-semibold text-base-content/80">
                                         ({activeHandlerMissingFlow.missingLeads.length})
                                     </span>
@@ -4640,10 +4916,7 @@ const ReassignLeadsReport: React.FC = () => {
                         ) : (
                             <>
                                 <h3 className="shrink-0 text-lg font-bold">
-                                    Assign{' '}
-                                    {activeHandlerMissingFlow.missingRole === 'handler'
-                                        ? 'case handler'
-                                        : 'retention handler'}
+                                    Assign {activeChoiceAssignLabel(activeHandlerMissingFlow.missingRole)}
                                 </h3>
                                 <p className="mt-1 shrink-0 text-xs text-base-content/55">
                                     Then active role applies to all {activeHandlerMissingFlow.allSelected.length}{' '}
@@ -4764,9 +5037,9 @@ const ReassignLeadsReport: React.FC = () => {
                         {singleLeadActiveFlow.step === 'ask' ? (
                             <>
                                 <h3 className="shrink-0 text-lg font-bold">
-                                    {singleLeadActiveFlow.targetChoice === 2
-                                        ? 'No case handler'
-                                        : 'No retention handler'}
+                                    {activeChoiceMissingTitle(
+                                        missingRoleForActiveChoice(singleLeadActiveFlow.targetChoice),
+                                    )}
                                 </h3>
                                 <p className="mt-1 shrink-0 font-mono text-sm text-base-content/60">
                                     #
@@ -4802,9 +5075,9 @@ const ReassignLeadsReport: React.FC = () => {
                             <>
                                 <h3 className="shrink-0 text-lg font-bold">
                                     Assign{' '}
-                                    {singleLeadActiveFlow.targetChoice === 2
-                                        ? 'case handler'
-                                        : 'retention handler'}
+                                    {activeChoiceAssignLabel(
+                                        missingRoleForActiveChoice(singleLeadActiveFlow.targetChoice),
+                                    )}
                                 </h3>
                                 <p className="mt-1 shrink-0 font-mono text-xs text-base-content/55">
                                     #
@@ -5099,7 +5372,12 @@ const ReassignLeadsReport: React.FC = () => {
                                                                 activeType={info.activeType}
                                                                 disabled={info.busy || singleActiveModalSaving}
                                                                 onPick={(type, e) => handleSingleLeadActivePick(lead, type, e)}
-                                                                className="h-7 w-[4.25rem]"
+                                                                className="h-7 w-[5.75rem]"
+                                                                roleNames={{
+                                                                    handler: info.handlerName,
+                                                                    retention: info.retention?.display_name ?? null,
+                                                                    support: info.support?.display_name ?? null,
+                                                                }}
                                                             />
                                                         </div>
                                                     </td>
@@ -5223,6 +5501,11 @@ const ReassignLeadsReport: React.FC = () => {
                                                             activeType={activeTypeCard}
                                                             disabled={busyThisLead || singleActiveModalSaving}
                                                             onPick={(type, e) => handleSingleLeadActivePick(lead, type, e)}
+                                                            roleNames={{
+                                                                handler: info.handlerName,
+                                                                retention: info.retention?.display_name ?? null,
+                                                                support: info.support?.display_name ?? null,
+                                                            }}
                                                         />
                                                     </div>
 

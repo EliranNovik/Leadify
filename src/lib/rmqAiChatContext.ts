@@ -164,6 +164,40 @@ export function masterLeadToken(value: unknown): string {
   return normalizeLeadNumberToken(value).split('/')[0];
 }
 
+/** True when query looks like a lead / case number (with or without L/C). */
+export function looksLikeLeadNumberQuery(value: unknown): boolean {
+  const raw = String(value ?? '').trim();
+  if (!raw) return false;
+  return /^(?:l|c)?\d{3,}(?:\/\d+)?$/i.test(raw);
+}
+
+/**
+ * Match a CRM lead number or client name to a free-text query.
+ * Lead numbers compare after stripping leading L/C so L209994/3 ≡ 209994/3.
+ */
+export function matchesLeadNumberOrName(
+  leadNumber: unknown,
+  name: unknown,
+  query: unknown,
+): boolean {
+  const q = String(query ?? '').trim();
+  if (!q) return true;
+  const qLower = q.toLowerCase();
+  const nameLower = String(name ?? '').trim().toLowerCase();
+  if (nameLower && nameLower.includes(qLower)) return true;
+
+  const qToken = normalizeLeadNumberToken(q);
+  const leadToken = normalizeLeadNumberToken(leadNumber);
+  if (!qToken || !leadToken) {
+    return Boolean(nameLower && nameLower.includes(qLower));
+  }
+  if (leadToken === qToken) return true;
+  if (leadToken.includes(qToken) || qToken.includes(leadToken)) return true;
+  // Master-only query (209994) should hit subleads (L209994/3).
+  if (!qToken.includes('/') && masterLeadToken(leadNumber) === qToken) return true;
+  return false;
+}
+
 /** True when the text names a different L-number than the open client (sibling sublead counts). */
 export function queryNamesDifferentLead(
   query: unknown,

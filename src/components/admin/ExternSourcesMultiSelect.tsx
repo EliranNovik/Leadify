@@ -1,17 +1,55 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { XMarkIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { leadSourceIdToString } from '../../lib/leadSourceId';
+import { fetchMiscLeadsourcesByIds } from '../../lib/externalUserSources';
 
 interface Source {
-  id: number;
+  id: string;
   name: string;
 }
 
 interface ExternSourcesMultiSelectProps {
   value: unknown;
-  onChange: (value: number[]) => void;
+  onChange: (value: string[]) => void;
   record?: { id?: string; [key: string]: unknown } | null;
   readOnly?: boolean;
+}
+
+function normalizeIds(value: unknown): string[] {
+  if (value == null) return [];
+  const arr = Array.isArray(value) ? value : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of arr) {
+    const id = leadSourceIdToString(raw);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+async function fetchAllLeadSources(): Promise<Source[]> {
+  const combined: Source[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from('misc_leadsource')
+      .select('id, name')
+      .order('name', { ascending: true })
+      .range(offset, offset + 999);
+    if (error) throw error;
+    const batch = data || [];
+    for (const row of batch) {
+      const id = leadSourceIdToString((row as { id?: unknown }).id);
+      if (!id) continue;
+      combined.push({ id, name: String((row as { name?: string }).name ?? '') });
+    }
+    if (batch.length < 1000) break;
+    offset += 1000;
+  }
+  return combined;
 }
 
 const ExternSourcesMultiSelect: React.FC<ExternSourcesMultiSelectProps> = ({
@@ -21,41 +59,55 @@ const ExternSourcesMultiSelect: React.FC<ExternSourcesMultiSelectProps> = ({
 }) => {
   const [sources, setSources] = useState<Source[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedIds, setSelectedIds] = useState<number[]>(() => {
-    if (value == null) return [];
-    const arr = Array.isArray(value) ? value : [];
-    return arr.map((id) => Number(id)).filter((n) => !Number.isNaN(n));
-  });
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => normalizeIds(value));
   const [filter, setFilter] = useState('');
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const fetchSources = async () => {
+    const load = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_leadsource')
-          .select('id, name')
-          .order('name', { ascending: true });
-        if (error) throw error;
-        setSources((data as Source[]) || []);
+        const all = await fetchAllLeadSources();
+        setSources(all);
       } catch (err) {
         console.error('Error fetching lead sources:', err);
       } finally {
         setLoading(false);
       }
     };
-    fetchSources();
+    void load();
   }, []);
 
   useEffect(() => {
-    if (value == null) {
-      setSelectedIds([]);
-      return;
-    }
-    const arr = Array.isArray(value) ? value : [];
-    setSelectedIds(arr.map((id: unknown) => Number(id)).filter((n) => !Number.isNaN(n)));
+    setSelectedIds(normalizeIds(value));
   }, [value]);
+
+  // Ensure chips resolve even if a selected id was missing from the first page / stale cache.
+  useEffect(() => {
+    const missing = selectedIds.filter((id) => !sources.some((s) => s.id === id));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const extra = await fetchMiscLeadsourcesByIds(missing);
+        if (cancelled || extra.length === 0) return;
+        setSources((prev) => {
+          const byId = new Map(prev.map((s) => [s.id, s]));
+          for (const row of extra) {
+            byId.set(row.id, { id: row.id, name: row.name });
+          }
+          return Array.from(byId.values()).sort((a, b) =>
+            a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+          );
+        });
+      } catch (err) {
+        console.warn('ExternSourcesMultiSelect: failed to load selected sources', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedIds, sources]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -72,7 +124,7 @@ const ExternSourcesMultiSelect: React.FC<ExternSourcesMultiSelectProps> = ({
     ? sources.filter((s) => s.name.toLowerCase().includes(filterLower))
     : sources;
 
-  const toggle = (id: number) => {
+  const toggle = (id: string) => {
     if (readOnly) return;
     const next = selectedIds.includes(id)
       ? selectedIds.filter((x) => x !== id)
@@ -81,7 +133,7 @@ const ExternSourcesMultiSelect: React.FC<ExternSourcesMultiSelectProps> = ({
     onChange(next);
   };
 
-  const remove = (id: number) => {
+  const remove = (id: string) => {
     if (readOnly) return;
     const next = selectedIds.filter((x) => x !== id);
     setSelectedIds(next);
@@ -94,7 +146,10 @@ const ExternSourcesMultiSelect: React.FC<ExternSourcesMultiSelectProps> = ({
     onChange([]);
   };
 
-  const selectedSources = sources.filter((s) => selectedIds.includes(s.id));
+  const selectedSources = selectedIds.map((id) => {
+    const found = sources.find((s) => s.id === id);
+    return found || { id, name: `Source #${id}` };
+  });
 
   if (loading) {
     return <div className="text-sm text-base-content/70">Loading sources...</div>;

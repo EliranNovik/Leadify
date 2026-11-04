@@ -251,6 +251,47 @@ class UserService {
         safeUpdateData.employee_private_email = previousEmail;
       }
 
+      // External-user assignment fields (Admin → Users)
+      if (Object.prototype.hasOwnProperty.call(updateData, 'extern')) {
+        safeUpdateData.extern = Boolean(updateData.extern);
+      }
+      if (Object.prototype.hasOwnProperty.call(updateData, 'extern_firm_id')) {
+        const firmId = updateData.extern_firm_id;
+        safeUpdateData.extern_firm_id =
+          firmId == null || firmId === '' || firmId === '---' ? null : String(firmId);
+      }
+      if (Object.prototype.hasOwnProperty.call(updateData, 'extern_source_id')) {
+        const raw = updateData.extern_source_id;
+        if (raw == null || (Array.isArray(raw) && raw.length === 0)) {
+          safeUpdateData.extern_source_id = null;
+        } else if (Array.isArray(raw)) {
+          const ids = raw
+            .map((id) => {
+              if (id == null || id === '') return null;
+              if (typeof id === 'number' && Number.isFinite(id)) {
+                return Number.isSafeInteger(id) ? id : String(Math.trunc(id));
+              }
+              const s = String(id).trim();
+              if (!s) return null;
+              const n = Number(s);
+              return Number.isSafeInteger(n) ? n : s;
+            })
+            .filter((id) => id != null);
+          safeUpdateData.extern_source_id = ids.length > 0 ? ids : null;
+        } else {
+          safeUpdateData.extern_source_id = null;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(updateData, 'employee_id')) {
+        const empId = updateData.employee_id;
+        if (empId == null || empId === '' || empId === '---') {
+          safeUpdateData.employee_id = null;
+        } else {
+          const n = Number(empId);
+          safeUpdateData.employee_id = Number.isFinite(n) ? n : empId;
+        }
+      }
+
       const { data: user, error } = await supabase
         .from('users')
         .update(safeUpdateData)

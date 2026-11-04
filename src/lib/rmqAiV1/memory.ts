@@ -381,50 +381,18 @@ export async function ingestMemoriesFromChat(input: {
   conversationId?: string | null;
   workingNote?: string | null;
 }): Promise<void> {
-  const userTexts = userTextsFromMessages(input.messages);
-  const lastUser = userTexts[userTexts.length - 1] || '';
-  const seen = new Set<string>();
-
-  const add = async (
-    fact: string,
-    category: UserMemoryCategory,
-    extra?: { sourceType?: string; durability?: MemoryDurability; expiresAt?: string | null; explicit?: boolean },
-  ) => {
-    const key = fact.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    await upsertUserMemory({
-      fact,
-      category,
-      sourceType: extra?.sourceType || 'inferred',
-      sourceConversationId: input.conversationId || undefined,
-      durability: extra?.durability,
-      expiresAt: extra?.expiresAt,
-      explicit: extra?.explicit,
-    });
-  };
-
-  const preference = lastUser ? isPreferenceCorrection(lastUser) : null;
-  if (preference) {
-    await add(preference.fact, preference.category, { sourceType: 'feedback', explicit: true });
-  }
-  for (const text of userTexts.slice(-4)) {
-    for (const style of styleMemoriesFromText(text)) {
-      await add(style.fact, style.category, { sourceType: 'inferred' });
-    }
-  }
+  // Durable preferences are saved by the model via save_user_memory during the chat.
+  // On summary flush we only keep a short temporary working note — no keyword extraction.
   const note = String(input.workingNote || '').replace(/\s+/g, ' ').trim();
-  if (note.length >= 12) {
-    const expires = new Date();
-    expires.setDate(expires.getDate() + 30);
-    await add(`Recent work: ${note.slice(0, 180)}`, 'workflow', {
-      sourceType: 'chat_summary',
-      durability: 'temporary',
-      expiresAt: expires.toISOString(),
-    });
-  }
-  if (lastUser) {
-    const firm = isFirmWideLesson(lastUser);
-    if (firm) await proposeFirmLesson(firm);
-  }
+  if (note.length < 12) return;
+  const expires = new Date();
+  expires.setDate(expires.getDate() + 30);
+  await upsertUserMemory({
+    fact: `Recent work: ${note.slice(0, 180)}`,
+    category: 'workflow',
+    sourceType: 'chat_summary',
+    sourceConversationId: input.conversationId || undefined,
+    durability: 'temporary',
+    expiresAt: expires.toISOString(),
+  });
 }

@@ -9,9 +9,18 @@ import { insertClockInRevision } from './employeeClockInRevisions';
 import {
   assertManualDurationAllowed,
   clockSessionExceedsOvertimeBase,
+  fetchDayOvertimeApprovals,
   fetchOvertimeApprovalBaseHours,
+  segmentsTotalMinutes,
+  totalExistingDayMinutes,
+  type ClockInOutSegment,
   type ClockInOvertimeApprovalFileMeta,
 } from './employeeClockInOvertimeApproval';
+
+/** A same-day in/out pair, optionally with its own workplace. */
+export type ManualClockInSegment = ClockInOutSegment & {
+  workplaceLocationId?: number | null;
+};
 
 /** Notes tag for pending sessions created from the daily lead allocation page. */
 export const LEAD_ALLOCATION_HOURS_NOTE = 'Lead allocation hours';
@@ -30,6 +39,11 @@ export type ManualClockInPayload = {
   approvalDeferred?: boolean;
   /** Used when replacing derived standard hours that remain within the overtime limit. */
   approveAutomatically?: boolean;
+  /**
+   * Skip the per-row duration guard when the caller already checked the full day total
+   * (existing sessions + every new segment being inserted).
+   */
+  skipDurationCheck?: boolean;
 };
 
 function combineDateAndTime(date: string, time: string): Date {
@@ -74,13 +88,15 @@ export async function insertManualClockInRecord(
   await assertDateEditableForEmployee(payload.employeeId, payload.date);
   // Cap is read from tenants_employee.min_hours at save time only.
   // Stored clock_in_time / clock_out_time stay exactly as entered.
-  await assertManualDurationAllowed({
-    employeeId: payload.employeeId,
-    clockInTime: payload.clockInTime,
-    clockOutTime: payload.clockOutTime,
-    overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
-    approvalDeferred: payload.approvalDeferred,
-  });
+  if (!payload.skipDurationCheck) {
+    await assertManualDurationAllowed({
+      employeeId: payload.employeeId,
+      clockInTime: payload.clockInTime,
+      clockOutTime: payload.clockOutTime,
+      overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
+      approvalDeferred: payload.approvalDeferred,
+    });
+  }
 
   const employeeUserId = await resolveEmployeeAuthUserId(
     payload.employeeId,
@@ -135,18 +151,79 @@ export async function insertManualClockInRecord(
 }
 
 export async function insertManualClockInRecords(
-  payload: Omit<ManualClockInPayload, 'date'> & { dates: string[] },
+  payload: Omit<ManualClockInPayload, 'date' | 'clockInTime' | 'clockOutTime' | 'skipDurationCheck'> & {
+    dates: string[];
+    /** One or more in/out pairs applied to each selected date (each may have its own workplace). */
+    segments?: ManualClockInSegment[];
+    clockInTime?: string;
+    clockOutTime?: string;
+  },
 ): Promise<number> {
   const uniqueDates = [...new Set(payload.dates)].sort();
   if (uniqueDates.length === 0) {
     throw new Error('Select at least one date');
   }
 
-  for (const date of uniqueDates) {
-    await insertManualClockInRecord({ ...payload, date });
+  const segments: ManualClockInSegment[] =
+    payload.segments && payload.segments.length > 0
+      ? payload.segments
+      : payload.clockInTime && payload.clockOutTime
+        ? [{
+            clockInTime: payload.clockInTime,
+            clockOutTime: payload.clockOutTime,
+            workplaceLocationId: payload.clockInLocationId ?? null,
+          }]
+        : [];
+
+  if (segments.length === 0) {
+    throw new Error('Add at least one clock-in / out');
   }
 
-  return uniqueDates.length;
+  for (const seg of segments) {
+    const clockIn = combineDateAndTime('2000-01-01', seg.clockInTime);
+    const clockOut = combineDateAndTime('2000-01-01', seg.clockOutTime);
+    if (clockOut.getTime() <= clockIn.getTime()) {
+      throw new Error('Clock out must be after clock in for every segment');
+    }
+  }
+
+  const newMinutes = segmentsTotalMinutes(segments);
+  let inserted = 0;
+
+  for (const date of uniqueDates) {
+    const existing = await fetchDayOvertimeApprovals(payload.employeeId, date);
+    const totalDayMinutes = totalExistingDayMinutes(existing) + newMinutes;
+    await assertManualDurationAllowed({
+      employeeId: payload.employeeId,
+      totalDayMinutes,
+      overtimeApprovalStoragePath: payload.overtimeApproval?.storagePath,
+      approvalDeferred: payload.approvalDeferred,
+    });
+
+    for (const seg of segments) {
+      const locationId =
+        seg.workplaceLocationId !== undefined && seg.workplaceLocationId !== null
+          ? seg.workplaceLocationId
+          : payload.clockInLocationId ?? null;
+      await insertManualClockInRecord({
+        employeeId: payload.employeeId,
+        userId: payload.userId,
+        date,
+        clockInTime: seg.clockInTime,
+        clockOutTime: seg.clockOutTime,
+        notes: payload.notes,
+        clockInLocationId: locationId,
+        clockOutLocationId: locationId,
+        overtimeApproval: payload.overtimeApproval,
+        approvalDeferred: payload.approvalDeferred,
+        approveAutomatically: payload.approveAutomatically,
+        skipDurationCheck: true,
+      });
+      inserted += 1;
+    }
+  }
+
+  return inserted;
 }
 
 export type ClockInSessionUpdate = {
@@ -158,6 +235,13 @@ export type ClockInSessionUpdate = {
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
   overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
+  /** Caller already validated the day total (existing + all segments). */
+  skipDurationCheck?: boolean;
+  /**
+   * The day's combined hours are past base — keep this row pending for approval even when
+   * the segment alone is short.
+   */
+  dayExceedsOvertimeBase?: boolean;
 };
 
 function isoToTimeInput(iso: string): string {
@@ -235,15 +319,17 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
 
   const baseHours = await fetchOvertimeApprovalBaseHours(existing.employee_id);
 
-  await assertManualDurationAllowed({
-    employeeId: existing.employee_id,
-    clockInTime: update.clockInTime,
-    clockOutTime: update.clockOutTime,
-    overtimeApprovalStoragePath:
-      update.overtimeApproval?.storagePath
-      || existing.overtime_approval_storage_path
-      || null,
-  });
+  if (!update.skipDurationCheck) {
+    await assertManualDurationAllowed({
+      employeeId: existing.employee_id,
+      clockInTime: update.clockInTime,
+      clockOutTime: update.clockOutTime,
+      overtimeApprovalStoragePath:
+        update.overtimeApproval?.storagePath
+        || existing.overtime_approval_storage_path
+        || null,
+    });
+  }
 
   const previousForm = clockInSessionToFormValues({
     id: update.id,
@@ -266,11 +352,13 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     && (existing.manually !== true || existing.approved === true);
 
   const preserveApproval = wasEffectivelyApproved && materialFieldsUnchanged;
-  const requiresOvertimeApproval = clockSessionExceedsOvertimeBase(
-    update.clockInTime,
-    update.clockOutTime,
-    baseHours,
-  );
+  const requiresOvertimeApproval =
+    update.dayExceedsOvertimeBase === true
+    || clockSessionExceedsOvertimeBase(
+      update.clockInTime,
+      update.clockOutTime,
+      baseHours,
+    );
   const approveAutomatically = !requiresOvertimeApproval;
 
   if (!preserveApproval) {

@@ -14,7 +14,7 @@ import {
 } from '../_shared/webSearch.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
-const OPENAI_WEB_SEARCH_MODEL = Deno.env.get('OPENAI_WEB_SEARCH_MODEL') || 'gpt-5.6-sol';
+const OPENAI_WEB_SEARCH_MODEL = Deno.env.get('OPENAI_WEB_SEARCH_MODEL') || 'gpt-6.1-sol';
 
 type SearchBody = {
   query?: unknown;

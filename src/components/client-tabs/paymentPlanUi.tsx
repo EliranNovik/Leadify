@@ -68,6 +68,8 @@ export type PaymentPlanRowLike = {
   invoice_send_automation_active?: boolean;
   invoice_sent?: boolean;
   invoice_sent_at?: string | null;
+  payment_reminder_sent_count?: number | null;
+  payment_reminder_sent_at?: string | null;
 };
 
 export type CurrencyAmountMap = Record<string, { base: number; vat: number }>;
@@ -625,6 +627,19 @@ export function ContactPlanHeader({
   const scheduledCount = payments.filter(isScheduled).length;
   const paidCount = payments.filter((p) => !!p.paid).length;
   const unpaidCount = payments.filter((p) => !p.paid).length;
+  const reminderPayments = payments.filter(
+    (p) =>
+      (Number(p.payment_reminder_sent_count) || 0) > 0 || Boolean(p.payment_reminder_sent_at),
+  );
+  const reminderTotalCount = reminderPayments.reduce(
+    (sum, p) => sum + Math.max(1, Number(p.payment_reminder_sent_count) || 0),
+    0,
+  );
+  const latestReminderAt = reminderPayments
+    .map((p) => p.payment_reminder_sent_at)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
   const progressPct = scheduledCount > 0
     ? Math.round((payments.filter((p) => isScheduled(p) && p.paid).length / scheduledCount) * 100)
     : 0;
@@ -718,6 +733,28 @@ export function ContactPlanHeader({
               title="Scheduled invoice send on due date"
             >
               Auto invoice · {automationActiveCount}
+            </span>
+          )}
+          {reminderPayments.length > 0 && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700"
+              title={
+                latestReminderAt
+                  ? `Reminder sent ${new Date(latestReminderAt).toLocaleDateString()}${
+                      reminderTotalCount > 1 ? ` · ${reminderTotalCount}×` : ''
+                    }`
+                  : `Reminder sent${reminderTotalCount > 1 ? ` · ${reminderTotalCount}×` : ''}`
+              }
+            >
+              <span
+                className="inline-block h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.25)]"
+                aria-hidden
+              />
+              Reminder
+              {reminderTotalCount > 1 ? ` · ${reminderTotalCount}×` : ''}
+              {latestReminderAt
+                ? ` · ${new Date(latestReminderAt).toLocaleDateString()}`
+                : ''}
             </span>
           )}
           <span className="text-sm font-medium text-slate-500">Payment progress</span>

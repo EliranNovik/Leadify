@@ -6,14 +6,21 @@ import {
   CLOCK_IN_OVERTIME_DOC_MAX_BYTES,
   buildOvertimeApprovalWhatsAppMessage,
   clockSessionExceedsOvertimeBase,
+  dayTotalExceedsOvertimeBase,
   fetchMichaelDeckerWhatsAppUrl,
-  formatClockSessionDurationLabel,
+  formatDurationMinutesLabel,
   isAllowedOvertimeApprovalFile,
+  segmentsTotalMinutes,
+  type ClockInOutSegment,
 } from '../../lib/employeeClockInOvertimeApproval';
 
 interface ClockInOvertimeApprovalBoxProps {
-  clockInTime: string;
-  clockOutTime: string;
+  clockInTime?: string;
+  clockOutTime?: string;
+  /** Multiple in/out pairs for the day — preferred over a single clockIn/Out. */
+  segments?: ClockInOutSegment[];
+  /** Minutes already logged on the day(s), counted into the overtime total. */
+  existingMinutes?: number;
   dateKeys?: string[];
   notes?: string | null;
   /** The employee's contracted base hours, which is what this session has gone past. */
@@ -25,8 +32,10 @@ interface ClockInOvertimeApprovalBoxProps {
 }
 
 const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
-  clockInTime,
-  clockOutTime,
+  clockInTime = '',
+  clockOutTime = '',
+  segments,
+  existingMinutes = 0,
   dateKeys = [],
   notes = '',
   baseHours,
@@ -37,12 +46,22 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
 }) => {
   const [whatsAppUrl, setWhatsAppUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const durationLabel = formatClockSessionDurationLabel(clockInTime, clockOutTime);
+  const resolvedSegments: ClockInOutSegment[] =
+    segments && segments.length > 0
+      ? segments
+      : clockInTime && clockOutTime
+        ? [{ clockInTime, clockOutTime }]
+        : [];
+  const newMinutes = segmentsTotalMinutes(resolvedSegments);
+  const totalMinutes = Math.max(0, existingMinutes) + newMinutes;
+  const durationLabel = formatDurationMinutesLabel(totalMinutes);
   const message = buildOvertimeApprovalWhatsAppMessage({
-    clockInTime,
-    clockOutTime,
+    segments: resolvedSegments,
+    clockInTime: resolvedSegments[0]?.clockInTime,
+    clockOutTime: resolvedSegments[0]?.clockOutTime,
     dateKeys,
     notes,
+    existingMinutes,
     baseHours,
   });
 
@@ -69,11 +88,18 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   return (
     <div className="rounded-xl bg-red-50 px-3 py-3 space-y-3 text-sm text-red-950">
       <p className="font-medium">
-        This session is {durationLabel}, which is more than your {baseHours}h standard day.
+        This day totals {durationLabel}
+        {existingMinutes > 0
+          ? ` (${formatDurationMinutesLabel(existingMinutes)} already logged + ${formatDurationMinutesLabel(newMinutes)} new)`
+          : resolvedSegments.length > 1
+            ? ` across ${resolvedSegments.length} clock-in / out periods`
+            : ''}
+        , which is more than your {baseHours}h standard day.
       </p>
       <p>
-        Get approval from <strong>Michael Decker</strong> on WhatsApp first. After he approves,
-        upload a screenshot here, then click Submit for approval.
+        Get approval from <strong>Michael Decker</strong> on WhatsApp for all clock-in / outs on
+        this day together. After he approves, upload one screenshot here, then click Submit for
+        approval.
       </p>
       {whatsAppUrl ? (
         <a
@@ -175,6 +201,14 @@ export function clockInOutTimesExceedOvertimeBase(
   baseHours: number,
 ): boolean {
   return clockSessionExceedsOvertimeBase(clockInTime, clockOutTime, baseHours);
+}
+
+export function clockInSegmentsExceedOvertimeBase(
+  segments: ClockInOutSegment[],
+  existingMinutes: number,
+  baseHours: number,
+): boolean {
+  return dayTotalExceedsOvertimeBase(segments, existingMinutes, baseHours);
 }
 
 export default ClockInOvertimeApprovalBox;

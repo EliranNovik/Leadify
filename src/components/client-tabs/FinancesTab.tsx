@@ -153,6 +153,7 @@ import {
   sendProformaInvoiceBundle,
 } from '../../lib/proformaSendInvoice';
 import { paymentPlanInvoiceSentState } from '../../lib/markPaymentPlanInvoiceSent';
+import { paymentReminderSentFields } from '../../lib/paymentReminderAi';
 import { sentToFinanceStamp } from '../../lib/sentToFinanceStamp';
 import {
   paymentPlanTaxInvoiceFields,
@@ -210,6 +211,9 @@ interface PaymentPlan {
   tax_invoice_sent?: boolean | null;
   tax_invoice_sent_at?: string | null;
   tax_invoice_sent_by?: number | null;
+  /** WhatsApp payment reminders recorded against this unpaid invoiced row. */
+  payment_reminder_sent_count?: number;
+  payment_reminder_sent_at?: string | null;
 }
 
 interface FinancePlan {
@@ -2763,6 +2767,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
                 ...paymentPlanInvoiceSentState(plan),
                 ...paymentPlanTaxInvoiceFields(plan),
+                ...paymentReminderSentFields(plan),
               };
             });
           } else {
@@ -2864,6 +2869,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
                 ...paymentPlanInvoiceSentState(plan),
                 ...paymentPlanTaxInvoiceFields(plan),
+                ...paymentReminderSentFields(plan),
               };
             });
           }
@@ -3376,6 +3382,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               ...paymentPlanInvoiceSentState(plan),
               ...paymentPlanTaxInvoiceFields(plan),
+              ...paymentReminderSentFields(plan),
             };
           });
         } else {
@@ -3472,6 +3479,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               ...paymentPlanInvoiceSentState(plan),
               ...paymentPlanTaxInvoiceFields(plan),
+              ...paymentReminderSentFields(plan),
             };
           });
         }
@@ -7341,6 +7349,32 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     );
   };
 
+  const renderPaymentReminderBadge = (payment: PaymentPlan) => {
+    const count = Number(payment.payment_reminder_sent_count) || 0;
+    if (count <= 0 && !payment.payment_reminder_sent_at) return null;
+    const when = payment.payment_reminder_sent_at
+      ? formatDateDDMMYYYY(payment.payment_reminder_sent_at)
+      : null;
+    const title = when
+      ? `Reminder sent ${when}${count > 1 ? ` · ${count}×` : ''}`
+      : `Reminder sent${count > 1 ? ` · ${count}×` : ''}`;
+    return (
+      <span
+        className="inline-flex h-6 shrink-0 items-center gap-1"
+        title={title}
+        aria-label={title}
+      >
+        <span
+          className="inline-block h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.25)]"
+          aria-hidden
+        />
+        {count > 1 ? (
+          <span className="text-[10px] font-bold tabular-nums text-emerald-700">{count}×</span>
+        ) : null}
+      </span>
+    );
+  };
+
   const getTaxReceiptForPlan = (payment: PaymentPlan): PaymentPlanTaxReceiptInfo | null => {
     const planId = Number(payment.id);
     if (!Number.isFinite(planId)) return null;
@@ -8244,6 +8278,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 }
                                               />
                                               {renderInvoiceAutomationBadge(p)}
+                                              {renderPaymentReminderBadge(p)}
                                             </span>
                                             <span className="text-xs text-slate-400">{p.duePercent}</span>
                                           </div>
@@ -8857,6 +8892,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 }
                                               />
                                               {renderInvoiceAutomationBadge(p)}
+                                              {renderPaymentReminderBadge(p)}
                                             </span>
                                           </div>
                                           <p className="mt-2 text-sm font-medium text-slate-500">

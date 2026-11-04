@@ -64,25 +64,43 @@ function mapActiveStaffEmployee(emp: {
   };
 }
 
+let activeStaffEmployeesCache: ActiveStaffEmployee[] | null = null;
+let activeStaffEmployeesInflight: Promise<ActiveStaffEmployee[]> | null = null;
+
 /** Active staff: tenants_employee rows linked to users with is_staff + is_active. */
 export async function fetchActiveStaffEmployees(): Promise<ActiveStaffEmployee[]> {
-  const { data, error } = await supabase
-    .from('tenants_employee')
-    .select('id, display_name, photo_url, photo');
+  if (activeStaffEmployeesCache) return activeStaffEmployeesCache;
+  if (activeStaffEmployeesInflight) return activeStaffEmployeesInflight;
 
-  if (error) {
-    throw error;
+  activeStaffEmployeesInflight = (async () => {
+    const { data, error } = await supabase
+      .from('tenants_employee')
+      .select('id, display_name, photo_url, photo');
+
+    if (error) {
+      throw error;
+    }
+
+    const allEmployeeIds = (data || []).map((e: { id: number }) => e.id);
+    const staffEmployeeIds = await fetchActiveStaffEmployeeIds(allEmployeeIds);
+
+    const list = (data || [])
+      .filter((emp: { id: number }) => staffEmployeeIds.has(emp.id))
+      .map((emp: { id: number; display_name: string | null; photo_url: string | null; photo: string | null }) =>
+        mapActiveStaffEmployee(emp),
+      )
+      .sort((a, b) => a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }));
+
+    activeStaffEmployeesCache = list;
+    return list;
+  })();
+
+  try {
+    return await activeStaffEmployeesInflight;
+  } catch (err) {
+    activeStaffEmployeesInflight = null;
+    throw err;
   }
-
-  const allEmployeeIds = (data || []).map((e: { id: number }) => e.id);
-  const staffEmployeeIds = await fetchActiveStaffEmployeeIds(allEmployeeIds);
-
-  return (data || [])
-    .filter((emp: { id: number }) => staffEmployeeIds.has(emp.id))
-    .map((emp: { id: number; display_name: string | null; photo_url: string | null; photo: string | null }) =>
-      mapActiveStaffEmployee(emp),
-    )
-    .sort((a, b) => a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }));
 }
 
 /** Active staff with department name for reports. */

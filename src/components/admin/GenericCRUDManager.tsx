@@ -1342,6 +1342,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               is_superuser: updateData.is_superuser,
               groups: updateData.groups,
               user_permissions: updateData.user_permissions,
+              extern: updateData.extern,
+              extern_firm_id: updateData.extern_firm_id,
+              extern_source_id: updateData.extern_source_id,
+              employee_id: updateData.employee_id,
             }),
           });
           const profileResult = await profileResponse.json().catch(() => null);
@@ -1419,6 +1423,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 is_superuser: updateData.is_superuser,
                 groups: updateData.groups,
                 user_permissions: updateData.user_permissions,
+                extern: updateData.extern,
+                extern_firm_id: updateData.extern_firm_id,
+                extern_source_id: updateData.extern_source_id,
+                employee_id: updateData.employee_id,
               }),
             });
             const apiResult = await response.json().catch(() => null);
@@ -1671,12 +1679,31 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         }
       }
 
-      setRecords(prev => {
+      setRecords((prev) => {
         if (existingRecordId) {
-          return prev.map(r => String(r.id) === existingRecordId ? result : r);
-        } else {
-          return [result, ...prev];
+          return prev.map((r) => {
+            if (String(r.id) !== String(existingRecordId)) return r;
+            const merged: Record = { ...r, ...(result as Record) };
+            // Keep table columns (e.g. extern sources count) in sync immediately from the
+            // just-saved form payload — don't wait on a full page refresh.
+            if (tableName === 'users') {
+              if (Object.prototype.hasOwnProperty.call(record, 'extern_source_id')) {
+                merged.extern_source_id = (record as Record).extern_source_id;
+              }
+              if (Object.prototype.hasOwnProperty.call(record, 'extern')) {
+                merged.extern = (record as Record).extern;
+              }
+              if (Object.prototype.hasOwnProperty.call(record, 'extern_firm_id')) {
+                merged.extern_firm_id = (record as Record).extern_firm_id;
+              }
+              if (Object.prototype.hasOwnProperty.call(record, 'employee_id')) {
+                merged.employee_id = (record as Record).employee_id;
+              }
+            }
+            return merged;
+          });
         }
+        return result ? [result as Record, ...prev] : prev;
       });
 
       // Refresh the records to get updated data including preferred categories

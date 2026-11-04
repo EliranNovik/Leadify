@@ -24,19 +24,25 @@ test('a closed case stays closed even when inactive', () => {
   assert.equal(classifyHandlerBucket(200, 2, true), 'closed');
 });
 
-test('client support goes by stage, with a parked lead as non-active', () => {
-  assert.equal(classifySupportBucket(200, false), 'closed');
-  assert.equal(classifySupportBucket(130, true), 'non_active');
-  assert.equal(classifySupportBucket(105, false), 'new');
-  assert.equal(classifySupportBucket(110, false), 'active');
-  assert.equal(classifySupportBucket(107, false), null);
-  assert.equal(classifySupportBucket(null, false), null);
+test('client support owns the case only when active_handler_type is 3', () => {
+  assert.equal(classifySupportBucket(200, 3, false), 'closed');
+  assert.equal(classifySupportBucket(130, 2, false), 'non_active');
+  assert.equal(classifySupportBucket(130, 3, true), 'non_active');
+  assert.equal(classifySupportBucket(105, 3, false), 'new');
+  assert.equal(classifySupportBucket(110, 3, false), 'active');
+  assert.equal(classifySupportBucket(107, 3, false), null);
+  assert.equal(classifySupportBucket(null, 3, false), null);
 });
 
 test('retention handler mirrors the case handler and reads the started flag', () => {
   assert.equal(classifyRetentionBucket(130, 2, false), 'non_active');
+  assert.equal(classifyRetentionBucket(130, 3, false), 'non_active');
   assert.equal(classifyRetentionBucket(105, 1, false), 'new');
   assert.equal(classifyRetentionBucket(105, 1, true), 'active');
   assert.equal(classifyRetentionBucket(110, 1, false), 'active');
   assert.equal(classifyRetentionBucket(107, 1, false), null);
+});
+
+test('case handler treats client-support ownership as non-active', () => {
+  assert.equal(classifyHandlerBucket(130, 3, false), 'non_active');
 });

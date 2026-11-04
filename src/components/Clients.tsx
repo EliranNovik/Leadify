@@ -3357,7 +3357,10 @@ const Clients: React.FC<ClientsProps> = ({
             meeting_collection_id: (data as any).meeting_collection_id ?? null,
             marketing_officer_id: (data as any).marketing_officer_id ?? null,
             retention_handler_started: data.retention_handler_started === true || (data as any).retention_handler_started === 'true',
-            active_handler_type: Number(data.active_handler_type) === 1 ? 1 : 2,
+            active_handler_type: (() => {
+              const n = Number(data.active_handler_type);
+              return n === 1 || n === 3 ? n : 2;
+            })(),
             description: data.description || null,
             description_last_edited_by: data.description_last_edited_by || null,
             description_last_edited_at: data.description_last_edited_at || null,
@@ -3683,10 +3686,26 @@ const Clients: React.FC<ClientsProps> = ({
                 }
 
                 if (currentMatches) {
-                  // Already have the correct client loaded
+                  // Same lead identity, but schedule/reschedule subpages may have moved the stage
+                  // while Clients was unmounted — App still holds the pre-meeting snapshot.
                   setLocalLoading(false);
                   lastRouteRef.current = currentRoute;
-                  return; // Skip fetch - already have correct client
+                  const optimisticStage = consumeOptimisticLeadStage(selectedClient.id);
+                  if (
+                    optimisticStage != null &&
+                    Number(selectedClient.stage) !== Number(optimisticStage)
+                  ) {
+                    setSelectedClient((prev: any) => {
+                      if (!prev) return prev;
+                      const next = applyLocalLeadStage(prev, optimisticStage);
+                      persistClientData(next);
+                      return next;
+                    });
+                  }
+                  // Always silent-sync so the badge (and other lead fields) catch up from DB.
+                  const syncId = selectedClient.id ?? selectedClient.lead_number;
+                  if (syncId != null) void syncClientFromServer(syncId, { silent: true });
+                  return;
                 }
               }
 
@@ -3736,7 +3755,16 @@ const Clients: React.FC<ClientsProps> = ({
                   sources: sourceOptions,
                 }),
               );
-              setSelectedClient(normalizedPersistedData);
+              // Session cache can predate a meeting stage write from schedule/reschedule pages.
+              const optimisticStage = consumeOptimisticLeadStage(
+                normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number,
+              );
+              const clientForUi =
+                optimisticStage != null
+                  ? applyLocalLeadStage(normalizedPersistedData, optimisticStage)
+                  : normalizedPersistedData;
+              if (optimisticStage != null) persistClientData(clientForUi);
+              setSelectedClient(clientForUi);
               // Restore duplicate contacts from cache if available, otherwise fetch
               const dupKey = `clientsPage_duplicateContacts_${effectiveLeadNumber}`;
               try {
@@ -4281,7 +4309,10 @@ const Clients: React.FC<ClientsProps> = ({
                   meeting_collection_id: (legacyLead as any).meeting_collection_id ?? null,
                   marketing_officer_id: (legacyLead as any).marketing_officer_id ?? null,
                   retention_handler_started: legacyLead.retention_handler_started === true || (legacyLead as any).retention_handler_started === 'true',
-                  active_handler_type: Number(legacyLead.active_handler_type) === 1 ? 1 : 2,
+                  active_handler_type: (() => {
+                    const n = Number(legacyLead.active_handler_type);
+                    return n === 1 || n === 3 ? n : 2;
+                  })(),
                   vat: (legacyLead as any).vat || null,
                   potential_total: legacyLead.potential_total || null,
                   description: legacyLead.description || null,

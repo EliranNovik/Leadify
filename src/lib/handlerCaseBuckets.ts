@@ -17,10 +17,19 @@ export function emptyHandlerBucketCounts(): HandlerBucketCounts {
   return { new: 0, active: 0, non_active: 0, closed: 0 };
 }
 
+/** 1 = retention handler, 2 = case handler, 3 = client support. */
+export type ActiveHandlerType = 1 | 2 | 3;
+
+export function normalizeActiveHandlerType(value: unknown): ActiveHandlerType {
+  const n = Number(value);
+  if (n === 1 || n === 3) return n;
+  return 2;
+}
+
 /**
  * Case-handler bucket.
  *
- * `active_handler_type` 1 means the retention handler owns the case, so it is non-active work for
+ * `active_handler_type` 1 or 3 means another role owns the case, so it is non-active work for
  * the case handler however far along it is. An inactive lead is counted nowhere.
  */
 export function classifyHandlerBucket(
@@ -30,26 +39,27 @@ export function classifyHandlerBucket(
 ): HandlerBucket | null {
   if (stageId == null || Number.isNaN(stageId)) return null;
   if (stageId === 200) return 'closed';
-  if (Number(activeHandlerType) === 1) return 'non_active';
+  if (Number(activeHandlerType) !== 2) return 'non_active';
   if (isInactive) return null;
-  if (Number(activeHandlerType) === 2 && stageId <= 105) return 'new';
-  if (Number(activeHandlerType) === 2 && stageId >= 110) return 'active';
+  if (stageId <= 105) return 'new';
+  if (stageId >= 110) return 'active';
   return null;
 }
 
 /**
  * Client-support bucket.
  *
- * `active_handler_type` says which of the two handlers owns a case, which has no bearing on client
- * support, so the stage alone places a case. Non-active here means the lead itself is parked, the
- * one state that stops support work on it.
+ * `active_handler_type` 3 means client support owns the case. Otherwise the row is non-active
+ * support work. An inactive lead stays visible under non-active.
  */
 export function classifySupportBucket(
   stageId: number | null,
+  activeHandlerType: number,
   isInactive: boolean,
 ): HandlerBucket | null {
   if (stageId == null || Number.isNaN(stageId)) return null;
   if (stageId === 200) return 'closed';
+  if (Number(activeHandlerType) !== 3) return 'non_active';
   if (isInactive) return 'non_active';
   if (stageId <= 105) return 'new';
   if (stageId >= 110) return 'active';
@@ -57,7 +67,7 @@ export function classifySupportBucket(
 }
 
 /**
- * Retention-handler bucket, the mirror of the above: type 2 is the case handler's work.
+ * Retention-handler bucket: type 1 owns the case; 2 or 3 is non-active for retention.
  *
  * `started` is `retention_handler_started`, which moves a case the retention handler has picked up
  * into Active even before its stage has moved on.
@@ -69,9 +79,9 @@ export function classifyRetentionBucket(
 ): HandlerBucket | null {
   if (stageId == null || Number.isNaN(stageId)) return null;
   if (stageId === 200) return 'closed';
-  if (Number(activeHandlerType) === 2) return 'non_active';
-  if (Number(activeHandlerType) === 1 && stageId <= 105 && !started) return 'new';
-  if (Number(activeHandlerType) === 1 && (stageId >= 110 || (stageId <= 105 && started))) {
+  if (Number(activeHandlerType) !== 1) return 'non_active';
+  if (stageId <= 105 && !started) return 'new';
+  if (stageId >= 110 || (stageId <= 105 && started)) {
     return 'active';
   }
   return null;

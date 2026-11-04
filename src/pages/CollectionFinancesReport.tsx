@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, CheckBadgeIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ReceiptPercentIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
+import { paymentReminderSentFields } from '../lib/paymentReminderAi';
 import { PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import * as XLSX from 'xlsx';
@@ -101,6 +102,9 @@ export type PaymentRow = {
   taxInvoiceSent?: boolean;
   taxInvoiceSentAt?: string | null;
   taxInvoiceSentByName?: string | null;
+  /** WhatsApp payment reminders from AI chat / collection chase. */
+  paymentReminderSentCount?: number;
+  paymentReminderSentAt?: string | null;
   collectedDate: string | null;
   dueDate: string | null;
   /** Legacy only: the `date` column (used for date filter when Due = Ignore). New leads: null. */
@@ -518,6 +522,41 @@ function InvoiceAutomationBadge({ row }: { row: PaymentRow }) {
       )}
     </span>
   );
+}
+
+function PaymentReminderBadge({ row }: { row: PaymentRow }) {
+  const count = Number(row.paymentReminderSentCount) || 0;
+  if (count <= 0 && !row.paymentReminderSentAt) return null;
+  const when = row.paymentReminderSentAt ? formatRowDate(row.paymentReminderSentAt) : null;
+  const title = when
+    ? `Reminder sent ${when}${count > 1 ? ` · ${count}×` : ''}`
+    : `Reminder sent${count > 1 ? ` · ${count}×` : ''}`;
+  return (
+    <span
+      className="inline-flex h-6 shrink-0 items-center gap-1"
+      title={title}
+      aria-label={title}
+    >
+      <span
+        className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.25)]"
+        aria-hidden
+      />
+      {count > 1 ? (
+        <span className="text-[10px] font-bold tabular-nums text-emerald-700">{count}×</span>
+      ) : null}
+    </span>
+  );
+}
+
+function paymentReminderRowFields(plan: {
+  payment_reminder_sent_count?: unknown;
+  payment_reminder_sent_at?: unknown;
+}): Pick<PaymentRow, 'paymentReminderSentCount' | 'paymentReminderSentAt'> {
+  const fields = paymentReminderSentFields(plan);
+  return {
+    paymentReminderSentCount: fields.payment_reminder_sent_count,
+    paymentReminderSentAt: fields.payment_reminder_sent_at,
+  };
 }
 
 const todayIso = new Date().toISOString().split('T')[0];
@@ -3817,6 +3856,7 @@ const loadPayments = async ({
                           <CheckCircleIcon className="h-6 w-6 shrink-0" />
                           {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
                           <InvoiceAutomationBadge row={row} />
+                          <PaymentReminderBadge row={row} />
                         </span>
                       ) : row.hasProforma && row.invoiceSent ? (
                         <span
@@ -3826,18 +3866,21 @@ const loadPayments = async ({
                           <PaperAirplaneIcon className="h-6 w-6 shrink-0" />
                           Pending (Proforma sent)
                           <InvoiceAutomationBadge row={row} />
+                          <PaymentReminderBadge row={row} />
                         </span>
                       ) : row.hasProforma ? (
                         <span className="inline-flex items-center gap-1.5 text-yellow-600 font-semibold">
                           <ExclamationTriangleIcon className="h-6 w-6 shrink-0" />
                           Pending (Proforma)
                           <InvoiceAutomationBadge row={row} />
+                          <PaymentReminderBadge row={row} />
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-red-600 font-semibold">
                           <XCircleIcon className="h-6 w-6 shrink-0" />
                           Pending
                           <InvoiceAutomationBadge row={row} />
+                          <PaymentReminderBadge row={row} />
                         </span>
                       )}
                     </span>
@@ -3950,7 +3993,7 @@ export default CollectionFinancesReport;
 async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by');
+    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, ready_to_pay_by, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, payment_reminder_sent_count, payment_reminder_sent_at');
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
@@ -4065,6 +4108,7 @@ async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope):
         return sentById != null ? sentByNames.get(sentById) || null : null;
       })(),
       ...taxInvoiceRowFields(plan, sentByNames),
+      ...paymentReminderRowFields(plan),
       collectedDate: paidAt,
       dueDate,
       planDate: null, // New leads have no separate "date" column; date filter uses due_date
@@ -4174,7 +4218,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, ready_to_pay_by, due_by_id, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, ready_to_pay_by, due_by_id, invoice_sent, invoice_sent_at, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, payment_reminder_sent_count, payment_reminder_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
   // Always filter out cancelled plans
@@ -4338,6 +4382,7 @@ async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope):
         return sentById != null ? sentByNames.get(sentById) || null : null;
       })(),
       ...taxInvoiceRowFields(plan, sentByNames),
+      ...paymentReminderRowFields(plan),
       collectedDate: actualDate,
       dueDate,
       planDate,
@@ -4837,7 +4882,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const { data: plans, error } = await supabase
       .from('payment_plans')
       .select(
-        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by'
+        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, payment_reminder_sent_count, payment_reminder_sent_at'
       )
       .eq('lead_id', params.leadUuid)
       .is('cancel_date', null);
@@ -4882,6 +4927,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
         invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
       invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
         ...taxInvoiceRowFields(plan),
+        ...paymentReminderRowFields(plan),
         collectedDate: paidAt,
         dueDate,
         planDate: null,
@@ -4907,7 +4953,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
   const { data: plans, error } = await supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_sent, invoice_sent_at, invoice_send_automation_sent_at, tax_invoice_sent, tax_invoice_sent_at, tax_invoice_sent_by, payment_reminder_sent_count, payment_reminder_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
     )
     .eq('lead_id', legacyId)
     .is('cancel_date', null);
@@ -5005,6 +5051,7 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       invoiceSent: Boolean(plan.invoice_sent) || Boolean(plan.invoice_sent_at) || Boolean(plan.invoice_send_automation_sent_at),
       invoiceSentAt: plan.invoice_sent_at || plan.invoice_send_automation_sent_at || null,
       ...taxInvoiceRowFields(plan),
+      ...paymentReminderRowFields(plan),
       collectedDate: actualDate,
       dueDate,
       planDate,

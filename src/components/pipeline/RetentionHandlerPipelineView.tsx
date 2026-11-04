@@ -26,6 +26,7 @@ import {
   HandlerCaseOverlays,
   HandlerCountryHoursDot,
   RetentionActionsColumn,
+  createPipelineEmployeeLookup,
   openHandlerRmqForCloser,
   setRetentionHandlerStarted,
   toggleHandlerRetention,
@@ -198,7 +199,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           .from('leads')
           .select(`
             id, lead_number, name, stage, category_id, category, created_at,
-            balance, balance_currency, case_handler_id, retainer_handler_id,
+            balance, balance_currency, case_handler_id, retainer_handler_id, client_support_id,
             retention_handler_started, active_handler_type, language, country_id,
             unactivated_at, phone, mobile, email,
             misc_country!country_id ( id, name, timezone ),
@@ -215,7 +216,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           .select(`
             id, name, stage, category_id, cdate, no_of_applicants, total, currency_id,
             language_id, active_handler_type, retainer_handler_id, retention_handler_started,
-            case_handler_id, status, phone,
+            case_handler_id, client_support_id, status, phone,
             accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
             misc_category!category_id (
               id, name, parent_id,
@@ -226,7 +227,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           .order('cdate', { ascending: false })
           .limit(1000),
         supabase.from('misc_language').select('id, name'),
-        supabase.from('tenants_employee').select('id, display_name'),
+        supabase.from('tenants_employee').select('id, display_name, photo_url, photo'),
         supabase.from('misc_country').select('id, name, timezone'),
       ]);
 
@@ -239,10 +240,30 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
       (languagesResult.data || []).forEach((lang) => {
         if (lang.id != null) languageMap.set(String(lang.id), lang.name || '');
       });
-      const employeeName = (id: unknown) => {
-        if (id == null || id === '') return null;
-        const emp = (employeesResult.data || []).find((row) => String(row.id) === String(id));
-        return emp?.display_name || null;
+      const employeeLookup = createPipelineEmployeeLookup(employeesResult.data || []);
+      const roleFields = (lead: {
+        case_handler_id?: unknown;
+        retainer_handler_id?: unknown;
+        client_support_id?: unknown;
+        handler?: unknown;
+      }) => {
+        const handlerEmp = employeeLookup(lead.case_handler_id);
+        const retentionEmp = employeeLookup(lead.retainer_handler_id);
+        const supportEmp = employeeLookup(lead.client_support_id);
+        const handlerDisplay =
+          handlerEmp.name ||
+          (typeof lead.handler === 'string' && lead.handler.trim() ? lead.handler.trim() : null);
+        return {
+          caseHandlerId: handlerEmp.id,
+          handlerName: handlerDisplay,
+          handlerPhotoUrl: handlerEmp.photoUrl,
+          retainerHandlerId: retentionEmp.id,
+          retentionHandlerName: retentionEmp.name,
+          retentionPhotoUrl: retentionEmp.photoUrl,
+          clientSupportId: supportEmp.id,
+          clientSupportName: supportEmp.name,
+          clientSupportPhotoUrl: supportEmp.photoUrl,
+        };
       };
 
       const newLeadIds = (newResult.data || []).map((lead) => lead.id);
@@ -353,7 +374,10 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
 
       for (const lead of newResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = Number(lead.active_handler_type) === 1 ? 1 : 2;
+        const activeHandlerType = (() => {
+          const n = Number(lead.active_handler_type);
+          return n === 1 || n === 3 ? n : 2;
+        })();
         const started = lead.retention_handler_started === true;
         const bucketId = classifyRetentionBucket(stageId, activeHandlerType, started);
         if (!bucketId) continue;
@@ -381,20 +405,22 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           valueNis: valueToNis(lead.balance ?? null, lead.balance_currency),
           stage: String(lead.stage ?? ''),
           stageId,
-          retentionHandlerName: employeeName(lead.retainer_handler_id),
-          handlerName: employeeName(lead.case_handler_id),
           retentionHandlerStarted: started,
           bucket: bucketId,
           isInactive: lead.unactivated_at != null,
           isNewLead: true,
-          active_handler_type: activeHandlerType as 1 | 2,
+          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          ...roleFields(lead),
           ...pay,
         });
       }
 
       for (const lead of legacyResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = Number(lead.active_handler_type) === 1 ? 1 : 2;
+        const activeHandlerType = (() => {
+          const n = Number(lead.active_handler_type);
+          return n === 1 || n === 3 ? n : 2;
+        })();
         const started = lead.retention_handler_started === true;
         const bucketId = classifyRetentionBucket(stageId, activeHandlerType, started);
         if (!bucketId) continue;
@@ -422,13 +448,12 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           valueNis: valueToNis(lead.total ?? null, currencyFromLegacy(lead.currency_id, lead.accounting_currencies)),
           stage: String(lead.stage ?? ''),
           stageId,
-          retentionHandlerName: employeeName(lead.retainer_handler_id),
-          handlerName: employeeName(lead.case_handler_id),
           retentionHandlerStarted: started,
           bucket: bucketId,
           isInactive: Number(lead.status) === 10,
           isNewLead: false,
-          active_handler_type: activeHandlerType as 1 | 2,
+          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          ...roleFields(lead),
           ...pay,
         });
       }
@@ -750,6 +775,9 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
                         <RetentionActionsColumn
                           row={row}
                           handlers={{
+                            onReload: () => {
+                              void load({ silent: true });
+                            },
                             onOpenRmq: (target) => {
                               void openHandlerRmqForCloser(target)
                                 .then((next) => setRmqTarget(next))
@@ -786,7 +814,13 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
                               e.stopPropagation();
                               void toggleHandlerRetention(target, nextType)
                                 .then(() => {
-                                  toast.success(nextType === 2 ? 'Transferred to Handler' : 'Case marked as active for you');
+                                  const label =
+                                    nextType === 1
+                                      ? 'Retention'
+                                      : nextType === 3
+                                        ? 'Client Support'
+                                        : 'Handler';
+                                  toast.success(`Active role set to ${label}`);
                                   return load({ silent: true });
                                 })
                                 .catch((err) => {

@@ -13,6 +13,8 @@ export function validateToolResult(name: string, result: string): { ok: true } |
     name === 'list_meetings' ||
     name === 'list_signed_contracts' ||
     name === 'list_paid_payments' ||
+    name === 'list_due_payments' ||
+    name === 'prepare_payment_reminders' ||
     name === 'list_missed_client_comms' ||
     name === 'list_expenses' ||
     name === 'list_employee_presence' ||

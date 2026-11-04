@@ -48,6 +48,57 @@ export function resolveEmployeePhotoUrl(
   return null;
 }
 
+/**
+ * Prefer a small Supabase image transform for avatar-sized displays so dropdowns
+ * do not download full-resolution staff photos.
+ */
+export function toEmployeeAvatarSrc(
+  url: string | null | undefined,
+  sizePx = 96,
+): string | null {
+  const trimmed = typeof url === 'string' ? url.trim() : '';
+  if (!trimmed) return null;
+  if (trimmed.startsWith('data:image/')) return trimmed;
+
+  try {
+    const objectMarker = '/storage/v1/object/';
+    const idx = trimmed.indexOf(objectMarker);
+    if (idx !== -1) {
+      const base = trimmed.slice(0, idx);
+      const rest = trimmed.slice(idx + objectMarker.length); // public/... or sign/...
+      if (rest.startsWith('public/')) {
+        const transformed = new URL(`${base}/storage/v1/render/image/${rest}`);
+        transformed.searchParams.set('width', String(sizePx));
+        transformed.searchParams.set('height', String(sizePx));
+        transformed.searchParams.set('resize', 'cover');
+        transformed.searchParams.set('quality', '65');
+        return transformed.toString();
+      }
+    }
+  } catch {
+    /* use original */
+  }
+  return trimmed;
+}
+
+const prefetchedAvatarSrcs = new Set<string>();
+
+/** Warm the browser cache for avatar URLs (idempotent). */
+export function prefetchEmployeePhotos(
+  urls: Array<string | null | undefined>,
+  sizePx = 96,
+): void {
+  if (typeof Image === 'undefined') return;
+  for (const url of urls) {
+    const src = toEmployeeAvatarSrc(url, sizePx);
+    if (!src || prefetchedAvatarSrcs.has(src)) continue;
+    prefetchedAvatarSrcs.add(src);
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = src;
+  }
+}
+
 /** Look up a saved employee photo by work email first, then display name. */
 export function lookupEmployeePhotoFromMap(
   photoMap: Map<string, string> | undefined,

@@ -174,6 +174,10 @@ export function labelForTool(name: string, argsRaw?: unknown): string {
       return 'Checking signed deals';
     case 'list_paid_payments':
       return 'Checking payments';
+    case 'list_due_payments':
+      return 'Checking due payments';
+    case 'prepare_payment_reminders':
+      return 'Preparing payment reminders';
     case 'list_missed_client_comms':
       return 'Checking missed messages';
     case 'list_employee_presence':

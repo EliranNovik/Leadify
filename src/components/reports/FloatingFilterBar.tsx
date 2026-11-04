@@ -201,7 +201,9 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         ) : null;
     const showActiveHandlerBulk =
         Boolean(onOpenActiveHandlerModal) &&
-        (selectedRoleForReassign === 'handler' || selectedRoleForReassign === 'retainer_handler');
+        (selectedRoleForReassign === 'handler' ||
+            selectedRoleForReassign === 'retainer_handler' ||
+            selectedRoleForReassign === 'client_support');
     const roleDropdownRef = React.useRef<HTMLDivElement>(null);
     const assignEmployeeDropdownRef = React.useRef<HTMLDivElement>(null);
 
@@ -348,7 +350,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         <button
                             type="button"
                             className="btn btn-outline btn-sm rounded-full px-3 text-sm flex-shrink-0 border-primary/30"
-                            title="Set whether the case handler or retention handler is active on the case"
+                            title="Set whether handler, retention, or client support is active on the case"
                             onClick={() => onOpenActiveHandlerModal?.()}
                             disabled={selectedLeadsCount === 0}
                         >
@@ -476,7 +478,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         <button
                             type="button"
                             className="btn btn-outline btn-sm shrink-0 whitespace-nowrap rounded-full px-3 text-sm border-primary/30"
-                            title="Set whether the case handler or retention handler is active on the case"
+                            title="Set whether handler, retention, or client support is active on the case"
                             onClick={() => onOpenActiveHandlerModal?.()}
                             disabled={selectedLeadsCount === 0}
                         >

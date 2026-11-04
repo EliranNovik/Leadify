@@ -1,5 +1,5 @@
 export const OPENAI_CHAT_COMPLETIONS_URL = 'https://api.openai.com/v1/chat/completions';
-export const OPENAI_CHAT_MODEL = 'gpt-5.6-sol';
+export const OPENAI_CHAT_MODEL = 'gpt-6.1-sol';
 
 export type OpenAiReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -13,6 +13,11 @@ export type ChatCompletionBodyInput = {
   stream?: boolean;
   reasoningEffort?: OpenAiReasoningEffort;
 };
+
+/** gpt-5.6 / gpt-6.x Sol only accept the default temperature (1); custom values are rejected. */
+function modelSupportsCustomTemperature(model: string): boolean {
+  return !/^gpt-(5\.6|6(\.|$))/i.test(model);
+}
 
 export function buildChatCompletionBody(input: ChatCompletionBodyInput): Record<string, unknown> {
   const hasTools = Array.isArray(input.tools) && input.tools.length > 0;
@@ -30,7 +35,11 @@ export function buildChatCompletionBody(input: ChatCompletionBodyInput): Record<
   if (input.maxTokens != null) {
     body.max_completion_tokens = input.maxTokens;
   }
-  if (input.temperature != null && (input.reasoningEffort == null || input.reasoningEffort === 'none')) {
+  if (
+    input.temperature != null &&
+    (input.reasoningEffort == null || input.reasoningEffort === 'none') &&
+    modelSupportsCustomTemperature(OPENAI_CHAT_MODEL)
+  ) {
     body.temperature = input.temperature;
   }
   if (hasTools) {

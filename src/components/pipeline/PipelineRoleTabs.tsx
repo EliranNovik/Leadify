@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  HANDLING_PIPELINE_TABS,
   PIPELINE_TAB_LABELS,
   type PipelineRoleTab,
 } from './pipelineUi';
@@ -14,7 +15,6 @@ type Props = {
 };
 
 const SALES_TABS: PipelineRoleTab[] = ['closer', 'scheduler', 'manager', 'helper', 'expert'];
-const HANDLING_TABS: PipelineRoleTab[] = ['handler', 'retention'];
 
 const PipelineRoleTabs: React.FC<Props> = ({
   activeTab,
@@ -58,7 +58,7 @@ const PipelineRoleTabs: React.FC<Props> = ({
   return (
     <div className="flex flex-wrap items-end gap-5" role="tablist" aria-label="Pipeline role">
       {renderGroup('Sales', SALES_TABS)}
-      {renderGroup('Handling', HANDLING_TABS)}
+      {renderGroup('Handling', HANDLING_PIPELINE_TABS)}
     </div>
   );
 };

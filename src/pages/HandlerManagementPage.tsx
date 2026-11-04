@@ -17,6 +17,7 @@ import HandlerManagementSidebar, {
 import { PIPELINE_SUMMARY_GRADIENTS } from '../components/PipelineSummaryCards';
 import HandlerPipelineView from '../components/pipeline/HandlerPipelineView';
 import RetentionHandlerPipelineView from '../components/pipeline/RetentionHandlerPipelineView';
+import ClientSupportPipelineView from '../components/pipeline/ClientSupportPipelineView';
 import type { PipelineViewAs } from '../lib/resolvePipelineIdentity';
 import { pipelineViewIdentityKey } from '../lib/pipelineLiveCache';
 import {
@@ -258,6 +259,8 @@ const HandlerManagementPage: React.FC = () => {
   const [activeTab, setActiveTab] = usePersistedState<HandlerPageTab>('handlerManagement_activeTab', 'dashboard', { storage: 'sessionStorage' });
   const [handlerPipelineViewAs, setHandlerPipelineViewAs] = useState<PipelineViewAs | null>(null);
   const [retentionPipelineViewAs, setRetentionPipelineViewAs] = useState<PipelineViewAs | null>(null);
+  const [clientSupportPipelineViewAs, setClientSupportPipelineViewAs] =
+    useState<PipelineViewAs | null>(null);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedLeadForAssign, setSelectedLeadForAssign] = useState<string | number | null>(null);
   const [employeeSearchQuery, setEmployeeSearchQuery] = useState('');
@@ -689,16 +692,20 @@ const HandlerManagementPage: React.FC = () => {
           leadRefsByRow.set(rowKey(handlerId, roleField), periodRefs);
 
           // Bucketed by the rules the pipeline tabs use, from the one shared classifier.
+          const parseActiveType = (raw: unknown): 1 | 2 | 3 => {
+            const n = Number(raw);
+            return n === 1 || n === 3 ? n : 2;
+          };
           const allLeads = [
             ...(newLeads || []).map(l => ({
               stage: l.stage,
-              active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+              active_handler_type: parseActiveType((l as any).active_handler_type),
               started: (l as any).retention_handler_started === true,
               isInactive: (l as any).unactivated_at != null,
             })),
             ...(legacyLeads || []).map(l => ({
               stage: l.stage,
-              active_handler_type: Number((l as any).active_handler_type) === 1 ? 1 : 2,
+              active_handler_type: parseActiveType((l as any).active_handler_type),
               started: (l as any).retention_handler_started === true,
               isInactive: Number((l as any).status) === 10,
             })),
@@ -710,7 +717,7 @@ const HandlerManagementPage: React.FC = () => {
           allLeads.forEach(lead => {
             const stageId = getStageId(lead.stage) ?? null;
             const bucket = isSupportRole
-              ? classifySupportBucket(stageId, lead.isInactive)
+              ? classifySupportBucket(stageId, lead.active_handler_type, lead.isInactive)
               : isRetentionRole
                 ? classifyRetentionBucket(stageId, lead.active_handler_type, lead.started)
                 : classifyHandlerBucket(stageId, lead.active_handler_type, lead.isInactive);
@@ -2715,7 +2722,10 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
-  const openEmployeePipeline = async (handler: Handler, target: 'handler' | 'retention') => {
+  const openEmployeePipeline = async (
+    handler: Handler,
+    target: 'handler' | 'retention' | 'client_support',
+  ) => {
     const { data } = await supabase
       .from('users')
       .select('id, full_name')
@@ -2729,11 +2739,14 @@ const HandlerManagementPage: React.FC = () => {
       photoUrl: null,
     };
     if (target === 'handler') setHandlerPipelineViewAs(viewAs);
-    else setRetentionPipelineViewAs(viewAs);
+    else if (target === 'retention') setRetentionPipelineViewAs(viewAs);
+    else setClientSupportPipelineViewAs(viewAs);
   };
 
   const showingHandlerPipeline = activeTab === 'handlers' && handlerPipelineViewAs != null;
   const showingRetentionPipeline = activeTab === 'retention' && retentionPipelineViewAs != null;
+  const showingClientSupportPipeline =
+    activeTab === 'client_support' && clientSupportPipelineViewAs != null;
 
   const scrollToUnassignedLeads = () => {
     unassignedLeadsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2784,6 +2797,7 @@ const HandlerManagementPage: React.FC = () => {
         onChange={(tab) => {
           if (tab === activeTab && tab === 'handlers') setHandlerPipelineViewAs(null);
           if (tab === activeTab && tab === 'retention') setRetentionPipelineViewAs(null);
+          if (tab === activeTab && tab === 'client_support') setClientSupportPipelineViewAs(null);
           setActiveTab(tab);
         }}
       />
@@ -2793,6 +2807,7 @@ const HandlerManagementPage: React.FC = () => {
         onChange={(tab) => {
           if (tab === activeTab && tab === 'handlers') setHandlerPipelineViewAs(null);
           if (tab === activeTab && tab === 'retention') setRetentionPipelineViewAs(null);
+          if (tab === activeTab && tab === 'client_support') setClientSupportPipelineViewAs(null);
           setActiveTab(tab);
         }}
       />
@@ -2822,7 +2837,10 @@ const HandlerManagementPage: React.FC = () => {
       )}
 
       {/* Employee Search Bar and Department Filter */}
-      {(activeTab === 'handlers' || activeTab === 'retention' || activeTab === 'client_support') && !showingHandlerPipeline && !showingRetentionPipeline && (
+      {(activeTab === 'handlers' || activeTab === 'retention' || activeTab === 'client_support') &&
+        !showingHandlerPipeline &&
+        !showingRetentionPipeline &&
+        !showingClientSupportPipeline && (
       <div
         className={`mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between ${
           pageEmployeeSearchQuery.trim()
@@ -3737,8 +3755,33 @@ const HandlerManagementPage: React.FC = () => {
       </div>
       ) : null}
 
-      {/* Client Support and Their Cases. No pipeline to open into, so rows do not navigate. */}
-      {activeTab === 'client_support' && (
+      {/* Client Support and Their Cases */}
+      {activeTab === 'client_support' && showingClientSupportPipeline && clientSupportPipelineViewAs ? (
+      <div className="mb-8">
+        <div className="mb-4 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setClientSupportPipelineViewAs(null)}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
+            aria-label="Back to client support"
+            title="Back to client support"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+            Back
+          </button>
+          <div className="min-w-0">
+            <h2 className="truncate text-xl font-bold text-gray-900">
+              {clientSupportPipelineViewAs.displayName}
+            </h2>
+            <p className="text-sm text-gray-500">Client support pipeline</p>
+          </div>
+        </div>
+        <ClientSupportPipelineView
+          key={pipelineViewIdentityKey(clientSupportPipelineViewAs)}
+          viewAs={clientSupportPipelineViewAs}
+        />
+      </div>
+      ) : activeTab === 'client_support' ? (
       <div className="mb-8">
         {renderTeamSummary(
           filteredSupportHandlersForPage,
@@ -3764,10 +3807,13 @@ const HandlerManagementPage: React.FC = () => {
             sortColumn: supportSortColumn,
             sortDirection: supportSortDirection,
             onSort: handleSupportSort,
+            onRowClick: (handler) => {
+              void openEmployeePipeline(handler, 'client_support');
+            },
           })
         )}
       </div>
-      )}
+      ) : null}
 
 
       {/* Next Payments */}

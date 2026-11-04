@@ -368,6 +368,7 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
 
   useEffect(() => {
     let cancelled = false;
+    let debounceTimer: number | null = null;
 
     const loadSourceMetadata = async () => {
       const [sourcesRes, firmsRes] = await Promise.all([
@@ -447,10 +448,35 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       setSourceFirmById(firmMap);
     };
 
-    loadSourceMetadata();
+    const scheduleReload = () => {
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        debounceTimer = null;
+        void loadSourceMetadata();
+      }, 350);
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') scheduleReload();
+    };
+
+    void loadSourceMetadata();
+
+    const channel = supabase
+      .channel('source-media-expenses:source-channel-meta')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, scheduleReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, scheduleReload)
+      .subscribe();
+
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       cancelled = true;
+      if (debounceTimer != null) window.clearTimeout(debounceTimer);
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
+      void supabase.removeChannel(channel);
     };
   }, []);
 

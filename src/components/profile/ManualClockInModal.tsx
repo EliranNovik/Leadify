@@ -8,22 +8,29 @@ import {
   isRamatGanClockInLocation,
   type ClockInLocationOption,
 } from '../../lib/clockInLocations';
-import { insertManualClockInRecords } from '../../lib/employeeClockInManual';
+import {
+  insertManualClockInRecords,
+  type ManualClockInSegment,
+} from '../../lib/employeeClockInManual';
 import { toDateInputValue } from '../../lib/employeeClockInFormat';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
+import {
+  fetchDayOvertimeApprovals,
+  fetchOvertimeApprovalBaseHours,
+  DEFAULT_OVERTIME_APPROVAL_BASE_HOURS,
+  formatDurationMinutesLabel,
+  overtimeApprovalRequiredError,
+  segmentsTotalMinutes,
+  totalExistingDayMinutes,
+  uploadClockInOvertimeApprovalDocument,
+} from '../../lib/employeeClockInOvertimeApproval';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import ClockInOvertimeApprovalBox, {
-  clockInOutTimesExceedOvertimeBase,
+  clockInSegmentsExceedOvertimeBase,
 } from './ClockInOvertimeApprovalBox';
-import {
-  DEFAULT_OVERTIME_APPROVAL_BASE_HOURS,
-  fetchOvertimeApprovalBaseHours,
-  overtimeApprovalRequiredError,
-  uploadClockInOvertimeApprovalDocument,
-} from '../../lib/employeeClockInOvertimeApproval';
 
 interface ManualClockInModalProps {
   isOpen: boolean;
@@ -40,8 +47,18 @@ type DatePickerRow = {
   value: string;
 };
 
+type SegmentRow = ManualClockInSegment & { id: string };
+
 function newDateRow(value: string): DatePickerRow {
   return { id: crypto.randomUUID(), value };
+}
+
+function newSegmentRow(
+  clockInTime = '09:00',
+  clockOutTime = '17:00',
+  workplaceLocationId: number | null = null,
+): SegmentRow {
+  return { id: crypto.randomUUID(), clockInTime, clockOutTime, workplaceLocationId };
 }
 
 function sortDates(dates: string[]): string[] {
@@ -57,12 +74,10 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   onSaved,
 }) => {
   const [dateRows, setDateRows] = useState<DatePickerRow[]>([]);
-  const [clockInTime, setClockInTime] = useState('09:00');
-  const [clockOutTime, setClockOutTime] = useState('17:00');
+  const [segmentRows, setSegmentRows] = useState<SegmentRow[]>([newSegmentRow()]);
   const [notes, setNotes] = useState('');
   const [workplaces, setWorkplaces] = useState<ClockInLocationOption[]>([]);
   const [worksFromHome, setWorksFromHome] = useState(false);
-  const [workplaceLocationId, setWorkplaceLocationId] = useState<number | ''>('');
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
@@ -74,16 +89,17 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
    * employee as having none, then replaced once the contract loads.
    */
   const [baseHours, setBaseHours] = useState(DEFAULT_OVERTIME_APPROVAL_BASE_HOURS);
+  /** Existing finished minutes keyed by YYYY-MM-DD for the selected dates. */
+  const [existingMinutesByDate, setExistingMinutesByDate] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (!isOpen) return;
     const t = initialDateKey?.trim() || toDateInputValue(new Date());
     setDateRows([newDateRow(t)]);
-    setClockInTime('09:00');
-    setClockOutTime('17:00');
+    setSegmentRows([newSegmentRow()]);
     setNotes('');
-    setWorkplaceLocationId('');
     setOvertimeFile(null);
+    setExistingMinutesByDate({});
     void Promise.all([
       fetchActiveClockInLocations(),
       fetchEmployeeWorksFromHome(employeeId),
@@ -95,21 +111,74 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     });
   }, [isOpen, employeeId, initialDateKey]);
 
-  const selectedWorkplace = useMemo(
-    () => workplaces.find((wp) => wp.id === (workplaceLocationId === '' ? null : workplaceLocationId)) ?? null,
-    [workplaces, workplaceLocationId],
-  );
-  const homeNeedsApproval =
-    selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace) && !worksFromHome;
-  const ramatGanSelected =
-    selectedWorkplace != null && isRamatGanClockInLocation(selectedWorkplace);
-
   const datesToSave = useMemo(() => {
     const filled = dateRows.map((row) => row.value).filter(Boolean);
     return sortDates(filled);
   }, [dateRows]);
 
-  const exceedsOvertimeBase = clockInOutTimesExceedOvertimeBase(clockInTime, clockOutTime, baseHours);
+  const segments: ManualClockInSegment[] = useMemo(
+    () =>
+      segmentRows.map(({ clockInTime, clockOutTime, workplaceLocationId }) => ({
+        clockInTime,
+        clockOutTime,
+        workplaceLocationId: workplaceLocationId ?? null,
+      })),
+    [segmentRows],
+  );
+
+  const selectedWorkplaces = useMemo(
+    () =>
+      segments
+        .map((seg) =>
+          workplaces.find((wp) => wp.id === (seg.workplaceLocationId ?? null)) ?? null,
+        )
+        .filter((wp): wp is ClockInLocationOption => wp != null),
+    [segments, workplaces],
+  );
+  const homeNeedsApproval = selectedWorkplaces.some(
+    (wp) => isHomeClockInLocation(wp) && !worksFromHome,
+  );
+  const ramatGanSelected = selectedWorkplaces.some((wp) => isRamatGanClockInLocation(wp));
+
+  useEffect(() => {
+    if (!isOpen || datesToSave.length === 0) {
+      setExistingMinutesByDate({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      datesToSave.map(async (date) => {
+        const rows = await fetchDayOvertimeApprovals(employeeId, date);
+        return [date, totalExistingDayMinutes(rows)] as const;
+      }),
+    )
+      .then((entries) => {
+        if (!cancelled) setExistingMinutesByDate(Object.fromEntries(entries));
+      })
+      .catch((err) => {
+        console.error('ManualClockInModal existing hours:', err);
+        if (!cancelled) setExistingMinutesByDate({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, employeeId, datesToSave.join(',')]);
+
+  const maxExistingMinutes = useMemo(
+    () =>
+      datesToSave.reduce((max, date) => Math.max(max, existingMinutesByDate[date] || 0), 0),
+    [datesToSave, existingMinutesByDate],
+  );
+
+  const exceedsOvertimeBase = useMemo(
+    () =>
+      datesToSave.some((date) =>
+        clockInSegmentsExceedOvertimeBase(segments, existingMinutesByDate[date] || 0, baseHours),
+      ),
+    [datesToSave, segments, existingMinutesByDate, baseHours],
+  );
+
+  const newMinutes = segmentsTotalMinutes(segments);
 
   if (!isOpen) return null;
 
@@ -127,6 +196,23 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     );
   };
 
+  const addSegmentRow = () => {
+    setSegmentRows((prev) => {
+      const lastWorkplace = prev[prev.length - 1]?.workplaceLocationId ?? null;
+      return [...prev, newSegmentRow('13:00', '17:00', lastWorkplace)];
+    });
+  };
+
+  const removeSegmentRow = (id: string) => {
+    setSegmentRows((prev) => (prev.length > 1 ? prev.filter((row) => row.id !== id) : prev));
+  };
+
+  const updateSegmentRow = (id: string, patch: Partial<Omit<SegmentRow, 'id'>>) => {
+    setSegmentRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+  };
+
   const performSave = async () => {
     setSaving(true);
     try {
@@ -135,7 +221,6 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         : '';
       const mergedNotes = [notes?.trim(), wfhNote].filter(Boolean).join('\n');
 
-      const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
       let overtimeApproval = null;
       if (exceedsOvertimeBase) {
         if (!overtimeFile) throw overtimeApprovalRequiredError(baseHours);
@@ -145,11 +230,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         employeeId,
         userId,
         dates: datesToSave,
-        clockInTime,
-        clockOutTime,
+        segments,
         notes: mergedNotes,
-        clockInLocationId: locationId,
-        clockOutLocationId: locationId,
         overtimeApproval,
       });
       toast.success(
@@ -182,12 +264,12 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
       toast.error('Remove duplicate dates before saving');
       return;
     }
-    if (!clockInTime || !clockOutTime) {
-      toast.error('Please fill in clock in and clock out times');
+    if (segments.some((seg) => !seg.clockInTime || !seg.clockOutTime)) {
+      toast.error('Please fill in every clock in and clock out');
       return;
     }
-    if (workplaces.length > 0 && workplaceLocationId === '') {
-      toast.error('Please choose a workplace');
+    if (workplaces.length > 0 && segments.some((seg) => seg.workplaceLocationId == null)) {
+      toast.error('Please choose a workplace for every clock-in / out');
       return;
     }
     if (ramatGanSelected && !notes.trim()) {
@@ -211,13 +293,14 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
   const hasDuplicateDates =
     dateRows.map((row) => row.value).filter(Boolean).length !== datesToSave.length;
-  const workplaceMissing = workplaces.length > 0 && workplaceLocationId === '';
+  const workplaceMissing =
+    workplaces.length > 0 && segments.some((seg) => seg.workplaceLocationId == null);
   const notesMissing = ramatGanSelected && !notes.trim();
   const overtimeDocMissing = exceedsOvertimeBase && !overtimeFile;
   const submitDisabled =
     saving || datesToSave.length === 0 || hasDuplicateDates || workplaceMissing || notesMissing || overtimeDocMissing;
   const submitBlockedReason = workplaceMissing
-    ? 'Choose a workplace first'
+    ? 'Choose a workplace for every period first'
     : notesMissing
       ? 'Add notes for Ramat Gan first'
       : overtimeDocMissing
@@ -322,52 +405,98 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <label className="form-control w-full">
-              <span className="label-text font-medium text-gray-600 mb-1">Clock in</span>
-              <input
-                type="time"
-                className="input input-bordered w-full"
-                value={clockInTime}
-                onChange={(e) => setClockInTime(e.target.value)}
-                disabled={saving}
-              />
-            </label>
-            <label className="form-control w-full">
-              <span className="label-text font-medium text-gray-600 mb-1">Clock out</span>
-              <input
-                type="time"
-                className="input input-bordered w-full"
-                value={clockOutTime}
-                onChange={(e) => setClockOutTime(e.target.value)}
-                disabled={saving}
-              />
-            </label>
+          <div className="space-y-2">
+            <span className="label-text font-medium text-gray-600">Clock-in / out periods</span>
+            <div className="space-y-3">
+              {segmentRows.map((row, index) => (
+                <div
+                  key={row.id}
+                  className="rounded-xl border border-base-200 bg-base-50/60 p-3 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+                      Period{segmentRows.length > 1 ? ` ${index + 1}` : ''}
+                    </span>
+                    {segmentRows.length > 1 && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs btn-square text-error shrink-0"
+                        onClick={() => removeSegmentRow(row.id)}
+                        disabled={saving}
+                        title="Remove period"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="form-control min-w-0">
+                      <span className="label-text text-xs text-base-content/55 mb-1">Clock in</span>
+                      <input
+                        type="time"
+                        className="input input-bordered w-full"
+                        value={row.clockInTime}
+                        onChange={(e) => updateSegmentRow(row.id, { clockInTime: e.target.value })}
+                        disabled={saving}
+                      />
+                    </label>
+                    <label className="form-control min-w-0">
+                      <span className="label-text text-xs text-base-content/55 mb-1">Clock out</span>
+                      <input
+                        type="time"
+                        className="input input-bordered w-full"
+                        value={row.clockOutTime}
+                        onChange={(e) => updateSegmentRow(row.id, { clockOutTime: e.target.value })}
+                        disabled={saving}
+                      />
+                    </label>
+                  </div>
+                  {workplaces.length > 0 && (
+                    <label className="form-control w-full">
+                      <span className="label-text text-xs text-base-content/55 mb-1">Workplace</span>
+                      <select
+                        className="select select-bordered w-full"
+                        value={row.workplaceLocationId ?? ''}
+                        onChange={(e) =>
+                          updateSegmentRow(row.id, {
+                            workplaceLocationId: e.target.value ? Number(e.target.value) : null,
+                          })
+                        }
+                        disabled={saving}
+                      >
+                        <option value="">—</option>
+                        {workplaces.map((wp) => (
+                          <option key={wp.id} value={wp.id}>{wp.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm gap-1"
+              onClick={addSegmentRow}
+              disabled={saving}
+            >
+              <PlusIcon className="w-4 h-4" />
+              Add clock-in / out
+            </button>
+            {(maxExistingMinutes > 0 || segmentRows.length > 1) && (
+              <p className="text-xs text-base-content/55">
+                New periods: {formatDurationMinutesLabel(newMinutes)}
+                {maxExistingMinutes > 0
+                  ? ` · Already on day: ${formatDurationMinutesLabel(maxExistingMinutes)} · Combined: ${formatDurationMinutesLabel(maxExistingMinutes + newMinutes)}`
+                  : ''}
+              </p>
+            )}
           </div>
-
-          {workplaces.length > 0 && (
-            <label className="form-control w-full">
-              <span className="label-text font-medium text-gray-600 mb-1">Workplace</span>
-              <select
-                className="select select-bordered w-full"
-                value={workplaceLocationId}
-                onChange={(e) =>
-                  setWorkplaceLocationId(e.target.value ? Number(e.target.value) : '')
-                }
-                disabled={saving}
-              >
-                <option value="">—</option>
-                {workplaces.map((wp) => (
-                  <option key={wp.id} value={wp.id}>{wp.name}</option>
-                ))}
-              </select>
-            </label>
-          )}
 
           {exceedsOvertimeBase && (
             <ClockInOvertimeApprovalBox
-              clockInTime={clockInTime}
-              clockOutTime={clockOutTime}
+              segments={segments}
+              existingMinutes={maxExistingMinutes}
               dateKeys={datesToSave}
               notes={notes}
               baseHours={baseHours}

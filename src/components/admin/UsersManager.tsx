@@ -222,15 +222,27 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
         }>,
         prepareValueForForm: (v: unknown) => {
           if (v == null) return [];
-          if (Array.isArray(v)) return v;
+          if (Array.isArray(v)) return v.map((id) => String(id)).filter(Boolean);
           if (typeof v === 'object' && !Array.isArray(v)) return [];
           return [];
         },
         prepareValueForSave: (v: unknown) => {
           if (v == null) return null;
-          if (Array.isArray(v) && v.length === 0) return null;
-          if (Array.isArray(v)) return v.map((id) => (typeof id === 'number' ? id : Number(id)));
-          return null;
+          if (!Array.isArray(v) || v.length === 0) return null;
+          const ids = v
+            .map((id) => {
+              if (id == null || id === '') return null;
+              if (typeof id === 'number' && Number.isFinite(id)) {
+                return Number.isSafeInteger(id) ? id : String(Math.trunc(id));
+              }
+              const s = String(id).trim();
+              if (!s) return null;
+              const n = Number(s);
+              // Prefer number when safe so JSONB stays numeric; keep string for true bigints.
+              return Number.isSafeInteger(n) ? n : s;
+            })
+            .filter((id): id is string | number => id != null);
+          return ids.length > 0 ? ids : null;
         },
         formatValue: (v: unknown) => {
           if (v == null) return '—';

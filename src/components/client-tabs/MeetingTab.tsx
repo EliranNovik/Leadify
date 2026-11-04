@@ -4800,6 +4800,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             lead: client as any,
             stage: 21, // Meeting rescheduling
           });
+          rememberOptimisticLeadStage(client.id, 21);
         }
       } catch (stageError) {
         console.error('Error updating stage after cancel:', stageError);
@@ -5247,6 +5248,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             actor: stageActor,
             timestamp: stageTimestamp,
           });
+          rememberOptimisticLeadStage(client.id, targetStageId);
         } else if (Object.keys(roleFields).length > 0) {
           const legacyIdNumeric =
             legacyId != null && /^\d+$/.test(String(legacyId))

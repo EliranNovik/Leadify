@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, HandThumbDownIcon as HandThumbDownSolid, HandThumbUpIcon as HandThumbUpSolid } from '@heroicons/react/24/solid';
-import { AcademicCapIcon, ArrowDownTrayIcon, ArrowPathIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EllipsisHorizontalIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, ArrowDownTrayIcon, ArrowPathIcon, BanknotesIcon, CalendarDaysIcon, ChatBubbleLeftRightIcon as ChatOutlineIcon, CheckIcon, ClockIcon as ClockOutlineIcon, DocumentCheckIcon, DocumentTextIcon, EllipsisHorizontalIcon, EnvelopeIcon, HandThumbDownIcon, HandThumbUpIcon, LinkIcon, MicrophoneIcon, MoonIcon, PencilSquareIcon, PlusIcon, SparklesIcon, Square2StackIcon, SunIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { RmqAiLogo, RMQ_AI_HEADER_LOGO_SRC } from './RmqAiLogo';
@@ -39,14 +39,9 @@ import {
   evidenceFromTools,
   filterToolsForRole,
   finishAiTrace,
-  forgetUserMemory,
   inferFailureOrigin,
   ingestKnowledgeText,
   backfillMissingChatSummaries,
-  isFirmWideLesson,
-  isForgetMemoryRequest,
-  isPreferenceCorrection,
-  memoriesFromUserText,
   persistAnswerEvidence,
   persistFeedback,
   persistIncident,
@@ -55,12 +50,10 @@ import {
   persistStructuredChatSummary,
   extractLeadNumbers,
   formatChatHistoryPreview,
-  proposeFirmLesson,
   recordRecommendationOutcome,
   resolveRmqAiRolePack,
   shouldRefreshChatSummary,
   subjectChanged,
-  upsertUserMemory,
   type ChatSummary,
 } from '../lib/rmqAiV1';
 import {
@@ -105,11 +98,13 @@ import {
   ChatMeetingBookedCards,
   ChatMeetingCards,
   ChatMissedCommsTable,
+  ChatDuePaymentsTable,
   ChatPaidPaymentsTable,
   ChatRisksBox,
   ChatSignedContractsTable,
   parseCalendarDayCards,
   parseClientMeetingCard,
+  parseDuePaymentsCard,
   parseEmployeePresenceCard,
   parseExpensesCard,
   parseLeadSummaryCard,
@@ -120,6 +115,7 @@ import {
   splitLeadSummaryParts,
   stripMeetingBookedMarker,
   type ChatCalendarDayData,
+  type ChatDuePaymentsData,
   type ChatEmployeePresenceData,
   type ChatExpensesData,
   type ChatLeadSummaryData,
@@ -130,6 +126,15 @@ import {
   type ChatSignedContractsData,
   LEAD_SUMMARY_ROLES,
 } from './ChatMeetingCard';
+import {
+  ChatPaymentReminderCard,
+  parsePaymentRemindersCard,
+  type ChatPaymentRemindersData,
+} from './ChatPaymentReminderCard';
+import {
+  ChatSendInvoiceCard,
+  type ChatSendInvoicesData,
+} from './ChatSendInvoiceCard';
 import { ChatWebSources } from './ChatWebSources';
 import {
   parseWebSearchCard,
@@ -183,6 +188,9 @@ interface Message {
   calendarMeetings?: ChatCalendarDayData;
   signedContracts?: ChatSignedContractsData;
   paidPayments?: ChatPaidPaymentsData;
+  duePayments?: ChatDuePaymentsData;
+  paymentReminders?: ChatPaymentRemindersData;
+  sendInvoices?: ChatSendInvoicesData;
   missedComms?: ChatMissedCommsData;
   expenses?: ChatExpensesData;
   employeePresence?: ChatEmployeePresenceData;
@@ -298,7 +306,7 @@ type WelcomeAction = {
   prompt: string;
   Icon: typeof CalendarDaysIcon;
   /** Opens a form instead of asking the model, for the few things a person just fills in. */
-  opens?: 'create_meeting';
+  opens?: 'create_meeting' | 'payment_reminder' | 'send_invoice';
 };
 
 const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
@@ -331,6 +339,20 @@ const WELCOME_LEAD_ACTIONS: WelcomeAction[] = [
       'Draft a detailed professional follow-up for this client. Call draft_client_message with intent follow_up. Read the full case file (meetings, last messages, contracts, payments, next steps) and write 4–7 short paragraphs in the client language — not a short check-in. Reply with only the ready-to-send draft. Stop after Best regards / בברכה. Do not add a signature.',
     Icon: PencilSquareIcon,
   },
+  {
+    label: 'Payment reminder',
+    hint: 'Chase unpaid invoices on WhatsApp',
+    prompt: 'Payment reminder',
+    Icon: BanknotesIcon,
+    opens: 'payment_reminder',
+  },
+  {
+    label: 'Send invoice',
+    hint: 'Invoice rows sent to finance',
+    prompt: 'Send invoice',
+    Icon: PaperAirplaneIcon,
+    opens: 'send_invoice',
+  },
 ];
 
 const WELCOME_GENERAL_ACTIONS: WelcomeAction[] = [
@@ -360,6 +382,20 @@ const WELCOME_GENERAL_ACTIONS: WelcomeAction[] = [
     hint: 'Closed deals from today',
     prompt: 'Show signed contracts today. Call list_signed_contracts. Reply with one short sentence only — the UI shows the table.',
     Icon: DocumentCheckIcon,
+  },
+  {
+    label: 'Payment reminder',
+    hint: 'Chase unpaid invoices on WhatsApp',
+    prompt: 'Payment reminder',
+    Icon: BanknotesIcon,
+    opens: 'payment_reminder',
+  },
+  {
+    label: 'Send invoice',
+    hint: 'Invoice rows sent to finance',
+    prompt: 'Send invoice',
+    Icon: PaperAirplaneIcon,
+    opens: 'send_invoice',
   },
 ];
 
@@ -633,6 +669,8 @@ function ChatWelcomeHome({
   disabled,
   onAction,
   onOpenCreateMeeting,
+  onOpenPaymentReminder,
+  onOpenSendInvoice,
   signals = [],
   driveDocument = null,
   driveDocumentAsks = [],
@@ -642,6 +680,8 @@ function ChatWelcomeHome({
   disabled?: boolean;
   onAction: (prompt: string, label?: string) => void;
   onOpenCreateMeeting: () => void;
+  onOpenPaymentReminder: () => void;
+  onOpenSendInvoice: () => void;
   signals?: Array<{ id: string; title: string; reason: string; actions: Array<{ label: string; prompt: string }> }>;
   /** The file the documents drive has picked out, which takes the suggested questions' place. */
   driveDocument?: RmqAiDriveDocument | null;
@@ -693,7 +733,12 @@ function ChatWelcomeHome({
             type="button"
             className="ai-welcome-card"
             disabled={disabled}
-            onClick={() => (opens === 'create_meeting' ? onOpenCreateMeeting() : onAction(prompt, label))}
+            onClick={() => {
+              if (opens === 'create_meeting') onOpenCreateMeeting();
+              else if (opens === 'payment_reminder') onOpenPaymentReminder();
+              else if (opens === 'send_invoice') onOpenSendInvoice();
+              else onAction(prompt, label);
+            }}
           >
             <span className="ai-welcome-card-icon">
               <Icon className="h-6 w-6 max-md:h-7 max-md:w-7" />
@@ -1166,6 +1211,109 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       return;
     }
     setCreateMeetingOpen(true);
+  };
+
+  const openPaymentReminderWorkflow = () => {
+    setAttachMenuOpen(false);
+    const lead = currentLead || getRmqAiCurrentLead();
+    const leadQuery =
+      lead?.lead_number != null && String(lead.lead_number).trim() !== ''
+        ? String(lead.lead_number).trim()
+        : '';
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: 'Payment reminder' },
+      leadQuery
+        ? {
+            role: 'assistant' as const,
+            content: 'Send reminders for this lead, or pick a wider period?',
+            paymentReminders: {
+              kind: 'payment_reminders' as const,
+              phase: 'pick_scope' as const,
+              leadQuery,
+              rows: [],
+            },
+          }
+        : {
+            role: 'assistant' as const,
+            content: 'What period should I check for unpaid invoices?',
+            paymentReminders: {
+              kind: 'payment_reminders' as const,
+              phase: 'pick_period' as const,
+              rows: [],
+            },
+          },
+    ]);
+  };
+
+  const openSendInvoiceWorkflow = () => {
+    setAttachMenuOpen(false);
+    const lead = currentLead || getRmqAiCurrentLead();
+    const leadQuery =
+      lead?.lead_number != null && String(lead.lead_number).trim() !== ''
+        ? String(lead.lead_number).trim()
+        : '';
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: 'Send invoice' },
+      leadQuery
+        ? {
+            role: 'assistant' as const,
+            content: 'Send invoices for this lead, or pick a wider period?',
+            sendInvoices: {
+              kind: 'send_invoices' as const,
+              phase: 'pick_scope' as const,
+              leadQuery,
+              rows: [],
+            },
+          }
+        : {
+            role: 'assistant' as const,
+            content:
+              'What period should I check for payments sent to finance without an invoice?',
+            sendInvoices: {
+              kind: 'send_invoices' as const,
+              phase: 'pick_period' as const,
+              rows: [],
+            },
+          },
+    ]);
+  };
+
+  const updatePaymentReminderMessage = (
+    messageKey: string,
+    next: ChatPaymentRemindersData,
+    assistantText?: string,
+  ) => {
+    setMessages((prev) =>
+      prev.map((message, index) => {
+        const key = `${index}-${message.role}`;
+        if (key !== messageKey) return message;
+        return {
+          ...message,
+          content: assistantText || message.content,
+          paymentReminders: next,
+        };
+      }),
+    );
+  };
+
+  const updateSendInvoiceMessage = (
+    messageKey: string,
+    next: ChatSendInvoicesData,
+    assistantText?: string,
+  ) => {
+    setMessages((prev) =>
+      prev.map((message, index) => {
+        const key = `${index}-${message.role}`;
+        if (key !== messageKey) return message;
+        return {
+          ...message,
+          content: assistantText || message.content,
+          sendInvoices: next,
+        };
+      }),
+    );
   };
 
   /** Show the bookings in the thread, so the chat (and its saved history) records what happened. */
@@ -1743,6 +1891,9 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         calendarMeetings: _calendarMeetings,
         signedContracts: _signedContracts,
         paidPayments: _paidPayments,
+        duePayments: _duePayments,
+        paymentReminders: _paymentReminders,
+        sendInvoices: _sendInvoices,
         missedComms: _missedComms,
         expenses: _expenses,
         employeePresence: _employeePresence,
@@ -1834,6 +1985,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       let calendarMeetings: ChatCalendarDayData | undefined;
       let signedContracts: ChatSignedContractsData | undefined;
       let paidPayments: ChatPaidPaymentsData | undefined;
+      let duePayments: ChatDuePaymentsData | undefined;
+      let paymentReminders: ChatPaymentRemindersData | undefined;
       let missedComms: ChatMissedCommsData | undefined;
       let expenses: ChatExpensesData | undefined;
       let employeePresence: ChatEmployeePresenceData | undefined;
@@ -1962,6 +2115,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             if (fnName === 'list_paid_payments') {
               paidPayments = parsePaidPaymentsCard(toolResult) || paidPayments;
               if (paidPayments) holdTypewriter = true;
+            }
+            if (fnName === 'list_due_payments') {
+              duePayments = parseDuePaymentsCard(toolResult) || duePayments;
+              if (duePayments) holdTypewriter = true;
+            }
+            if (fnName === 'prepare_payment_reminders') {
+              paymentReminders = parsePaymentRemindersCard(toolResult) || paymentReminders;
+              if (paymentReminders) holdTypewriter = true;
             }
             if (fnName === 'list_missed_client_comms') {
               missedComms = parseMissedCommsCard(toolResult) || missedComms;
@@ -2104,6 +2265,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           calendarMeetings,
           signedContracts,
           paidPayments,
+          duePayments,
+          paymentReminders,
           missedComms,
           expenses,
           employeePresence,
@@ -2171,34 +2334,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       data: imagePreviews[index],
     }));
 
-    if (isForgetMemoryRequest(messageToSend)) {
-      void forgetUserMemory(messageToSend).then((count) => {
-        if (count > 0) toast.success('I will not keep that preference.');
-      });
-    }
-    const preference = isPreferenceCorrection(messageToSend);
-    const memories = memoriesFromUserText(messageToSend);
-    if (preference || memories.length > 0) {
-      void Promise.all(
-        (memories.length ? memories : preference ? [preference] : []).map((item) =>
-          upsertUserMemory({
-            fact: item.fact,
-            category: item.category,
-            sourceType: 'feedback',
-            sourceConversationId: currentChatId || undefined,
-            explicit: true,
-          }),
-        ),
-      ).then((rows) => {
-        if (rows.some((row) => row)) {
-          toast.success(rows.some((row) => row?.reinforced) ? 'Updated that preference.' : 'I’ll remember that.');
-        }
-      });
-    }
-    const firmLesson = isFirmWideLesson(messageToSend);
-    if (firmLesson) {
-      void proposeFirmLesson(firmLesson);
-    }
+    // Personal memory is saved by the model via save_user_memory / forget_user_memory /
+    // propose_firm_lesson tools — not by client-side keyword matching.
     if (detectPossibleUserCorrection(messageToSend)) {
       void persistQualityEvents(['possible_user_correction'], {
         conversationId: currentChatId,
@@ -3362,6 +3499,32 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         </span>
       </button>
       <div className="ai-plus-divider" />
+      <p className="ai-plus-section">Financial actions</p>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => openPaymentReminderWorkflow()}
+      >
+        <BanknotesIcon className="ai-plus-icon ai-plus-icon-muted" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Payment reminder</span>
+          <span className="ai-plus-hint">WhatsApp unpaid invoiced clients</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="ai-plus-item"
+        onClick={() => openSendInvoiceWorkflow()}
+      >
+        <PaperAirplaneIcon className="ai-plus-icon ai-plus-icon-muted" />
+        <span className="ai-plus-copy">
+          <span className="ai-plus-title">Send invoice</span>
+          <span className="ai-plus-hint">Email + WhatsApp for finance-ready rows</span>
+        </span>
+      </button>
+      <div className="ai-plus-divider" />
       <p className="ai-plus-section">Quick asks</p>
       {READY_ASKS.map(({ label, hint, prompt, Icon }) => (
         <button
@@ -4097,6 +4260,128 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           text-align: left;
           padding: 0 0.65rem 0.5rem 0;
           white-space: nowrap;
+        }
+        .ai-signed-sort {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.28rem;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          color: inherit;
+          font: inherit;
+          letter-spacing: inherit;
+          text-transform: inherit;
+          cursor: pointer;
+          user-select: none;
+        }
+        .ai-signed-sort:hover,
+        .ai-signed-sort.is-active {
+          color: var(--ai-text);
+        }
+        .ai-signed-sort-icon {
+          font-size: 0.72rem;
+          line-height: 1;
+          opacity: 0.55;
+        }
+        .ai-signed-sort.is-active .ai-signed-sort-icon {
+          opacity: 0.95;
+        }
+        .ai-signed-table th.ai-signed-value .ai-signed-sort {
+          width: 100%;
+          justify-content: flex-end;
+        }
+        .ai-payment-remind-copy {
+          margin: 0 0 0.75rem;
+          color: var(--ai-text);
+          font-size: 0.9rem;
+          line-height: 1.45;
+        }
+        .ai-payment-remind-periods,
+        .ai-payment-remind-custom,
+        .ai-payment-remind-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+          align-items: flex-end;
+          margin-bottom: 0.75rem;
+        }
+        .ai-payment-remind-toolbar-bottom {
+          margin-top: 0.75rem;
+          margin-bottom: 0;
+          justify-content: space-between;
+        }
+        .ai-payment-remind-chip,
+        .ai-payment-remind-confirm {
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          background: rgba(148, 163, 184, 0.08);
+          color: var(--ai-text);
+          font-size: 0.82rem;
+          font-weight: 600;
+          padding: 0.4rem 0.85rem;
+          cursor: pointer;
+        }
+        .ai-payment-remind-confirm {
+          background: var(--ai-accent, #2563eb);
+          border-color: transparent;
+          color: #fff;
+        }
+        .ai-payment-remind-chip:disabled,
+        .ai-payment-remind-confirm:disabled {
+          opacity: 0.55;
+          cursor: not-allowed;
+        }
+        .ai-payment-remind-custom label {
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+          font-size: 0.72rem;
+          font-weight: 600;
+          letter-spacing: 0.04em;
+          text-transform: uppercase;
+          color: var(--ai-text-muted);
+        }
+        .ai-payment-remind-custom input {
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          border-radius: 0.55rem;
+          background: transparent;
+          color: var(--ai-text);
+          padding: 0.35rem 0.55rem;
+          font-size: 0.85rem;
+        }
+        .ai-payment-remind-check {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          font-size: 0.85rem;
+          color: var(--ai-text);
+        }
+        .ai-payment-remind-lead {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+        }
+        .ai-payment-remind-sent-dot {
+          display: inline-block;
+          width: 0.5rem;
+          height: 0.5rem;
+          border-radius: 999px;
+          background: #22c55e;
+          box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.25);
+          flex-shrink: 0;
+          cursor: help;
+        }
+        .ai-payment-remind-status {
+          margin: 0.35rem 0 0;
+          color: var(--ai-text-muted);
+          font-size: 0.82rem;
+        }
+        .ai-payment-remind-error {
+          margin: 0.5rem 0 0;
+          color: #dc2626;
+          font-size: 0.82rem;
         }
         .ai-signed-table td {
           padding: 0.5rem 0.65rem 0.5rem 0;
@@ -5907,6 +6192,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   disabled={isLoading}
                   onAction={handleQuickAction}
                   onOpenCreateMeeting={openCreateMeeting}
+                  onOpenPaymentReminder={openPaymentReminderWorkflow}
+                  onOpenSendInvoice={openSendInvoiceWorkflow}
                   signals={
                     onClientPage && openClientChip?.id
                       ? buildLeadSignals({
@@ -5937,7 +6224,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   Boolean(msg.draftAction) || looksLikeEmailDraft(plainTextFromMessage(msg));
                 const assistantText = asEmailDraft
                   ? stripAiEmailSignature(String(msg.content || ''))
-                  : msg.calendarMeetings || msg.signedContracts || msg.paidPayments || msg.missedComms || msg.expenses || msg.employeePresence
+                  : msg.calendarMeetings || msg.signedContracts || msg.paidPayments || msg.duePayments || msg.paymentReminders || msg.sendInvoices || msg.missedComms || msg.expenses || msg.employeePresence
                     ? calendarDayIntro(String(msg.content || ''))
                     : stripMeetingBookedMarker(String(msg.content || ''));
                 const summaryText = msg.leadSummary ? String(msg.content || '') : '';
@@ -5956,7 +6243,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                   key={idx}
                   ref={isLatestAnswer ? latestAnswerRef : undefined}
                   className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} ${
-                    msg.paidPayments || msg.signedContracts || msg.missedComms ? 'w-full' : ''
+                    msg.paidPayments || msg.duePayments || msg.paymentReminders || msg.sendInvoices || msg.signedContracts || msg.missedComms ? 'w-full' : ''
                     } ${isLatestAnswer ? 'ai-msg-anchor scroll-mt-3' : ''}`}
                 >
                   <div
@@ -5964,7 +6251,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                       msg.role === 'user'
                         ? 'ai-bubble-user max-w-[85%] rounded-2xl px-5 py-4'
                         : `ai-bubble-assistant ${
-                            msg.paidPayments || msg.signedContracts || msg.missedComms
+                            msg.paidPayments || msg.duePayments || msg.paymentReminders || msg.sendInvoices || msg.signedContracts || msg.missedComms
                               ? 'w-full max-w-full'
                               : msg.calendarMeetings || msg.expenses || msg.employeePresence || msg.leadSummary
                                 ? 'max-w-full'
@@ -6037,6 +6324,25 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
                     ) : null}
                     {msg.role === 'assistant' && msg.paidPayments ? (
                       <ChatPaidPaymentsTable data={msg.paidPayments} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.duePayments ? (
+                      <ChatDuePaymentsTable data={msg.duePayments} />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.paymentReminders ? (
+                      <ChatPaymentReminderCard
+                        data={msg.paymentReminders}
+                        onChange={(next, assistantText) =>
+                          updatePaymentReminderMessage(bubbleKey, next, assistantText)
+                        }
+                      />
+                    ) : null}
+                    {msg.role === 'assistant' && msg.sendInvoices ? (
+                      <ChatSendInvoiceCard
+                        data={msg.sendInvoices}
+                        onChange={(next, assistantText) =>
+                          updateSendInvoiceMessage(bubbleKey, next, assistantText)
+                        }
+                      />
                     ) : null}
                     {msg.role === 'assistant' && msg.missedComms ? (
                       <ChatMissedCommsTable data={msg.missedComms} />

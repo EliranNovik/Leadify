@@ -67,7 +67,7 @@ import { ChartBar, Search } from 'lucide-react';
 type ChannelRow = { id: string; code: string; label: string; is_active: boolean };
 /** misc_leadsource.id is bigint: keep as string to avoid precision loss */
 type SourceRow = { id: string; name: string; channel_id: string | null };
-type FirmRow = { id: string; name: string };
+type FirmRow = { id: string; name: string; profile_image_url?: string | null };
 type CountryRow = { id: number; name: string; phone_code?: string | null };
 type MainCategoryRow = { id: string; name: string };
 
@@ -464,6 +464,24 @@ function resolveLeadSourceRow(
   sourceNameToRow: Map<string, SourceRow>,
   sourceIdToRow: Map<string, SourceRow>,
 ): SourceRow | null {
+  // Prefer live misc_leadsource rows (allSources) so channel_id changes apply immediately
+  // without waiting for a full lead re-fetch (embedded join can be stale).
+  const sid =
+    lead.misc_leadsource?.id != null
+      ? String(lead.misc_leadsource.id)
+      : lead.source_id != null && String(lead.source_id).trim() !== ''
+        ? String(lead.source_id)
+        : null;
+  if (sid && sourceIdToRow.has(sid)) {
+    const live = sourceIdToRow.get(sid)!;
+    return {
+      id: live.id,
+      name: live.name || lead.misc_leadsource?.name || lead.source || live.id,
+      channel_id: live.channel_id,
+    };
+  }
+  const nameKey = normalizeSourceName(lead.misc_leadsource?.name || lead.source);
+  if (nameKey && sourceNameToRow.has(nameKey)) return sourceNameToRow.get(nameKey)!;
   if (lead.misc_leadsource) {
     return {
       id: String(lead.misc_leadsource.id),
@@ -471,10 +489,7 @@ function resolveLeadSourceRow(
       channel_id: lead.misc_leadsource.channel_id,
     };
   }
-  const sid = lead.source_id != null && String(lead.source_id).trim() !== '' ? String(lead.source_id) : null;
-  if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
-  const key = normalizeSourceName(lead.source);
-  return key ? sourceNameToRow.get(key) || null : null;
+  return null;
 }
 
 function leadChannelId(
@@ -482,7 +497,6 @@ function leadChannelId(
   sourceNameToRow: Map<string, SourceRow>,
   sourceIdToRow: Map<string, SourceRow>,
 ): string | null {
-  if (lead.misc_leadsource?.channel_id) return lead.misc_leadsource.channel_id;
   return resolveLeadSourceRow(lead, sourceNameToRow, sourceIdToRow)?.channel_id ?? null;
 }
 
@@ -1134,7 +1148,16 @@ function applyMarketingLeadFilters(
     fromDate: string;
     toDate: string;
     channelIds: string[];
-    sourceIdsForSql: string[] | null;
+    /**
+     * Explicit Source dropdown selection (not channel/firm intersection).
+     * Empty = no source filter. Used for client-side filtering.
+     */
+    selectedSourceIds: string[];
+    /**
+     * SQL/effective source scope. `null` = no SQL source scope.
+     * `[]` = filters resolve to nothing (exclude all). Prefer `selectedSourceIds` for UI filters.
+     */
+    sourceIdsForSql?: string[] | null;
     countryIds: string[];
     firmIds: string[];
     mainCategoryIds: string[];
@@ -1148,6 +1171,7 @@ function applyMarketingLeadFilters(
 ): LeadRow[] {
   const lookup = buildSourceLookupMaps(opts.allSources);
   const requireCreatedInRange = opts.requireCreatedInRange !== false;
+  const selectedSourceIds = opts.selectedSourceIds ?? [];
   return rows.filter((lead) => {
     if (requireCreatedInRange && !timestampInCalendarRange(lead.created_at, opts.fromDate, opts.toDate)) {
       return false;
@@ -1157,17 +1181,21 @@ function applyMarketingLeadFilters(
       const cid = leadChannelId(lead, lookup.sourceNameToRow, lookup.sourceIdToRow);
       if (!cid || !opts.channelIds.includes(cid)) return false;
     }
-    if (
-      opts.sourceIdsForSql != null &&
-      opts.sourceIdsForSql.length > 0 &&
-      !leadMatchesSourceFilter(
-        lead,
-        opts.sourceIdsForSql,
-        opts.allSources,
-        lookup.sourceNameToRow,
-        lookup.sourceIdToRow,
-      )
-    ) {
+    // Source dropdown only — do not conflate with channel/firm effective SQL ids.
+    if (selectedSourceIds.length > 0) {
+      if (
+        !leadMatchesSourceFilter(
+          lead,
+          selectedSourceIds,
+          opts.allSources,
+          lookup.sourceNameToRow,
+          lookup.sourceIdToRow,
+        )
+      ) {
+        return false;
+      }
+    } else if (opts.sourceIdsForSql != null && opts.sourceIdsForSql.length === 0) {
+      // Explicit empty effective scope (conflicting filters) → match nothing.
       return false;
     }
     if (!leadMatchesCountryFilter(lead, opts.countryIds, opts.countries)) return false;
@@ -1448,7 +1476,41 @@ function MacroSortableTh({
   );
 }
 
-type MultiFilterOption = { id: string; label: string };
+type MultiFilterOption = {
+  id: string;
+  label: string;
+  /** Optional rich label (e.g. channel icon + name). Search still uses `label`. */
+  labelNode?: React.ReactNode;
+};
+
+/** Firm logo for Provider dropdown — image with initials fallback. */
+function FirmFilterAvatar({ name, imageUrl }: { name: string; imageUrl?: string | null }) {
+  const [failedUrl, setFailedUrl] = useState('');
+  const url = (imageUrl || '').trim();
+  if (url && failedUrl !== url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        className="h-6 w-6 shrink-0 rounded-full border border-base-300 bg-white object-cover"
+        onError={() => setFailedUrl(url)}
+      />
+    );
+  }
+  const initials =
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0])
+      .join('')
+      .toUpperCase() || '?';
+  return (
+    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-base-200 text-[10px] font-bold text-base-content/70">
+      {initials}
+    </span>
+  );
+}
 
 /** Shared label style above engraved fields — spacing + hierarchy without crowding the control. */
 const FILTER_FIELD_LABEL_CLASS =
@@ -1464,8 +1526,8 @@ const MARKETING_REPORT_INTRO = (
   <>
     Compare lead volume and funnel conversion by <strong>source</strong> or <strong>channel</strong> for leads
     created in the date range you choose (calendar dates in Asia/Jerusalem, same as Lead Search). The cohort
-    includes new leads and legacy leads (including subleads). Use the filters, then click{' '}
-    <strong>Search</strong> to load results.
+    includes new leads and legacy leads (including subleads). Set the date range and click{' '}
+    <strong>Search</strong>; other filters refresh the table as you change them.
   </>
 );
 
@@ -1580,6 +1642,8 @@ function MarketingSearchMultiFilter({
     } else {
       onChange([...selected, id]);
     }
+    // Drop typed search text once a choice is made so the field shows the selection placeholder.
+    setFilter('');
   };
 
   const inputPlaceholder =
@@ -1616,6 +1680,7 @@ function MarketingSearchMultiFilter({
               onMouseDown={(e) => {
                 e.preventDefault();
                 onChange([]);
+                setFilter('');
                 inputRef.current?.focus();
               }}
             >
@@ -1673,7 +1738,13 @@ function MarketingSearchMultiFilter({
                         >
                           {isOn && <span className="text-[8px] leading-none text-white">✓</span>}
                         </span>
-                        <span className={wide ? 'whitespace-normal break-words' : 'truncate'}>{opt.label}</span>
+                        {opt.labelNode ? (
+                          <span className={`min-w-0 ${wide ? '' : 'truncate'}`}>{opt.labelNode}</span>
+                        ) : (
+                          <span className={wide ? 'whitespace-normal break-words' : 'truncate'}>
+                            {opt.label}
+                          </span>
+                        )}
                       </button>
                     </li>
                   );
@@ -1756,10 +1827,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const [mainCategoryIds, setMainCategoryIds] = useState<string[]>([]);
   const [groupMode, setGroupMode] = useState<GroupMode>('source');
   const showSourceCol = groupMode === 'source';
-  const showProviderCol = !isExternalVariant;
+  /** Provider is source-level; hide when grouped by channel (and always on external). */
+  const showProviderCol = !isExternalVariant && groupMode === 'source';
   /** Sticky left columns: Channel → Source → Provider; metrics scroll underneath. */
   const stickyEdgeClass =
-    'border-r border-base-300 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.12)]';
+    'border-r border-base-200 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.08)]';
   const stickyChannelClass =
     'macro-sticky-col sticky left-0 z-[22] min-w-[8rem] w-[8rem] bg-white';
   const stickySourceClass =
@@ -1774,7 +1846,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const macroLabelColClass = `${macroLabelAlign} whitespace-normal break-words [overflow-wrap:anywhere] align-middle leading-snug`;
   const macroLabelTextClass =
     'block break-words [overflow-wrap:anywhere] leading-snug line-clamp-2';
-  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed !border-separate border-spacing-0 w-full min-w-[67rem] border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-words [&_td:not(.macro-label-col)]:whitespace-nowrap [&_thead_th]:border-0 [&_thead_th]:border-b [&_thead_th]:border-base-300 [&_tbody_td]:border-0 [&_tbody_td]:border-b [&_tbody_td]:border-base-200 [&_tfoot_td]:border-0 [&_tfoot_td]:border-t-2 [&_tfoot_td]:border-base-300 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_tfoot_tr]:bg-base-200 [&_th]:bg-white [&_td]:bg-white [&_tfoot_td]:bg-base-200`;
+  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed !border-separate border-spacing-0 w-full min-w-[67rem] border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-words [&_td:not(.macro-label-col)]:whitespace-nowrap [&_thead_th]:border-0 [&_thead_th]:border-b [&_thead_th]:border-base-200 [&_tbody_td]:border-0 [&_tbody_td]:border-b [&_tbody_td]:border-base-200/70 [&_tfoot_td]:border-0 [&_tfoot_td]:border-t [&_tfoot_td]:border-base-300 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_tfoot_tr]:bg-base-200 [&_th]:bg-white [&_td]:bg-white [&_tfoot_td]:bg-base-200`;
+  const macroColCount =
+    1 +
+    (showSourceCol ? 1 : 0) +
+    (showProviderCol ? 1 : 0) +
+    9 +
+    3 +
+    (isExternalVariant ? 0 : 4);
   const macroColGroup = (
     <colgroup>
       <col className="w-[8rem]" />
@@ -1827,10 +1906,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   >([]);
   const [countries, setCountries] = useState<CountryRow[]>([]);
   const [mainCategories, setMainCategories] = useState<MainCategoryRow[]>([]);
-  const [leads, setLeads] = useState<LeadRow[]>([]);
-  /** Leads that reached stage 60 (Client signed agreement) with sign date in the report range. */
-  const [signedDealLeads, setSignedDealLeads] = useState<LeadRow[]>([]);
-  /** Invoiced installment NIS totals keyed by LeadRow.id for signedDealLeads. */
+  /** Date-range cohort (unfiltered by channel/source/firm/country/category). Filters apply client-side. */
+  const [cohortLeads, setCohortLeads] = useState<LeadRow[]>([]);
+  /** Signed-in-range deals for the date cohort (marketing filters applied client-side). */
+  const [cohortSignedDealLeads, setCohortSignedDealLeads] = useState<LeadRow[]>([]);
+  /** Invoiced installment NIS totals keyed by LeadRow.id for signed deals in the cohort. */
   const [invoicedNisByLeadId, setInvoicedNisByLeadId] = useState<Map<string, number>>(() => new Map());
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -1861,8 +1941,13 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   // Targeted debug for a known failing source↔channel link.
   const didDebugSource39Ref = useRef(false);
 
-  const runReportRef = useRef<() => Promise<void>>(async () => {});
+  const runReportRef = useRef<(opts?: { soft?: boolean }) => Promise<void>>(async () => {});
   const searchedRef = useRef(false);
+  const loadingRef = useRef(false);
+  /** Separate generations so soft filter refreshes never cancel Search / leave loading stuck. */
+  const fullReportGenRef = useRef(0);
+  const softReportGenRef = useRef(0);
+  const legacyCountryIdsCacheRef = useRef<Map<string, number> | null>(null);
   const realtimeDebounceRef = useRef<{ ref: number | null; report: number | null }>({ ref: null, report: null });
 
   useEffect(() => {
@@ -1897,6 +1982,81 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     return m;
   }, [sourceFirmLinks]);
 
+  /** Source filter options: when provider(s) are selected, only linked sources. */
+  const sourceFilterOptions = useMemo(() => {
+    if (firmIds.length === 0) {
+      return sources.map((s) => ({ id: String(s.id), label: s.name }));
+    }
+    const allowed = new Set<string>();
+    for (const firmId of firmIds) {
+      for (const sid of firmIdToSourceIds.get(firmId) || []) {
+        allowed.add(String(sid));
+      }
+    }
+    return sources
+      .filter((s) => allowed.has(String(s.id)))
+      .map((s) => ({ id: String(s.id), label: s.name }));
+  }, [sources, firmIds, firmIdToSourceIds]);
+
+  // Drop source selections that no longer belong to the chosen provider(s).
+  useEffect(() => {
+    if (firmIds.length === 0 || sourceIds.length === 0) return;
+    const allowed = new Set(sourceFilterOptions.map((o) => o.id));
+    const next = sourceIds.filter((id) => allowed.has(id));
+    if (next.length !== sourceIds.length) setSourceIds(next);
+  }, [firmIds, sourceFilterOptions, sourceIds]);
+
+  /** Active marketing filters → derived from date cohort (instant table update, no reload). */
+  const marketingFilterOpts = useMemo(() => {
+    // Exact Source dropdown selection (empty = no source filter).
+    const selectedSourceIds =
+      isExternalVariant && lockedSourceIdSet.size > 0
+        ? sourceIds.filter((id) => lockedSourceIdSet.has(String(id)))
+        : sourceIds.map(String);
+    const scopedFirmIds = isExternalVariant ? [] : firmIds;
+    return {
+      fromDate,
+      toDate,
+      channelIds,
+      selectedSourceIds,
+      countryIds,
+      firmIds: scopedFirmIds,
+      mainCategoryIds,
+      allSources,
+      countries,
+      firmIdToSourceIds,
+      sourceIdToFirmIds,
+    };
+  }, [
+    isExternalVariant,
+    lockedSourceIdSet,
+    sourceIds,
+    firmIds,
+    channelIds,
+    allSources,
+    firmIdToSourceIds,
+    sourceIdToFirmIds,
+    fromDate,
+    toDate,
+    countryIds,
+    mainCategoryIds,
+    countries,
+  ]);
+
+  const leads = useMemo(
+    () => applyMarketingLeadFilters(cohortLeads, marketingFilterOpts),
+    [cohortLeads, marketingFilterOpts],
+  );
+
+  const signedDealLeads = useMemo(
+    () =>
+      applyMarketingLeadFilters(cohortSignedDealLeads, {
+        ...marketingFilterOpts,
+        requireCreatedInRange: false,
+      }).filter((l) => !isMarketingStage91(l)),
+    [cohortSignedDealLeads, marketingFilterOpts],
+  );
+
   const loadReferenceData = useCallback(async () => {
     const lockedIds = Array.from(lockedSourceIdSet);
     // External: fetch assigned sources by id (chunked). A full-table select is capped ~1000 rows
@@ -1911,7 +2071,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       // We’ll filter inactive channels out of the filter dropdown UI separately.
       supabase.from('channels').select('id, code, label, is_active').order('sort_order'),
       sourcePromise,
-      supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
+      supabase.from('firms').select('id, name, profile_image_url').eq('is_active', true).order('name'),
       supabase.from('misc_country').select('id, name, phone_code').order('name'),
       supabase.from('misc_maincategory').select('id, name').order('name'),
     ]);
@@ -2004,13 +2164,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     });
   }, [sources, channels]);
 
-  const runReport = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    setSearched(true);
-    setFetchTruncated(false);
+  const runReport = useCallback(async (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
+    // Soft refreshes must not interrupt an in-flight Search (and must not touch loading).
+    if (soft && loadingRef.current) return;
+    const gen = soft ? ++softReportGenRef.current : ++fullReportGenRef.current;
+    const isCurrent = () =>
+      soft ? gen === softReportGenRef.current : gen === fullReportGenRef.current;
+    if (!soft) {
+      loadingRef.current = true;
+      setLoading(true);
+      setLoadError(null);
+      setSearched(true);
+      setFetchTruncated(false);
+    }
     try {
       const maxRows = 30000;
+      // SQL scope by current source/channel/firm (and locked sources for external).
+      // Country/category still apply client-side; filter changes soft-refresh without a full-page loader.
       const scopedSourceIds =
         isExternalVariant && lockedSourceIdSet.size > 0
           ? sourceIds.length > 0
@@ -2029,61 +2200,57 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         ? null
         : effectiveSourceIds;
 
-      let legacyContactCountryIds = new Map<string, number>();
-      if (countryIds.length > 0) {
+      // Country map is large — cache once; only fetch when country filter is active.
+      let legacyContactCountryIds = legacyCountryIdsCacheRef.current;
+      if (legacyContactCountryIds == null && countryIds.length > 0) {
         try {
           legacyContactCountryIds = await fetchLegacyLeadMainContactCountryIds();
+          legacyCountryIdsCacheRef.current = legacyContactCountryIds;
         } catch (e) {
           console.warn('lead_leadcontact country lookup:', e);
+          legacyContactCountryIds = new Map();
         }
       }
+      if (legacyContactCountryIds == null) legacyContactCountryIds = new Map();
+
+      if (!isCurrent()) return;
 
       const [{ rows: newLeadRows, truncated: newTruncated }, legacyLeadRowsRaw] = await Promise.all([
         fetchPaginatedNewLeads(fromDate, toDate, maxRows, allSources, sourceIdsForSql),
         fetchLegacyLeadRows(fromDate, toDate, maxRows, allSources, sourceIdsForSql),
       ]);
 
-      const legacyLeadRows = legacyLeadRowsRaw.map((lead) => {
+      if (!isCurrent()) return;
+
+      const enrichLegacyCountry = (lead: LeadRow): LeadRow => {
         const numericId = legacyLeadNumericId(lead);
         if (numericId == null) return lead;
-        const contactCountryId = legacyContactCountryIds.get(String(numericId));
+        const contactCountryId = legacyContactCountryIds!.get(String(numericId));
         if (contactCountryId == null) return lead;
         return { ...lead, country_id: contactCountryId };
-      });
-
-      const marketingFilterOpts = {
-        fromDate,
-        toDate,
-        channelIds,
-        sourceIdsForSql,
-        countryIds,
-        firmIds: scopedFirmIds,
-        mainCategoryIds,
-        allSources,
-        countries,
-        firmIdToSourceIds,
-        sourceIdToFirmIds,
       };
 
-      let rows = applyMarketingLeadFilters([...newLeadRows, ...legacyLeadRows], marketingFilterOpts);
+      const legacyLeadRows = legacyLeadRowsRaw.map(enrichLegacyCountry);
+      const rows = [...newLeadRows, ...legacyLeadRows];
 
       let signedDealRows: LeadRow[] = [];
       try {
         if (fromDate || toDate) {
           let signedRaw = await fetchSignedDealLeadRowsInRange(fromDate, toDate);
           if (legacyContactCountryIds.size > 0) {
-            signedRaw = signedRaw.map((lead) => {
-              const numericId = legacyLeadNumericId(lead);
-              if (numericId == null) return lead;
-              const contactCountryId = legacyContactCountryIds.get(String(numericId));
-              if (contactCountryId == null) return lead;
-              return { ...lead, country_id: contactCountryId };
+            signedRaw = signedRaw.map(enrichLegacyCountry);
+          }
+          // Keep full signed-in-range set; marketing filters applied in signedDealLeads useMemo.
+          signedDealRows = signedRaw.filter((l) => !isMarketingStage91(l));
+          if (isExternalVariant && lockedSourceIdSet.size > 0) {
+            const lookup = buildSourceLookupMaps(allSources);
+            signedDealRows = signedDealRows.filter((l) => {
+              const sid =
+                resolveLeadSourceRow(l, lookup.sourceNameToRow, lookup.sourceIdToRow)?.id ??
+                (l.source_id != null ? String(l.source_id) : '');
+              return Boolean(sid && lockedSourceIdSet.has(String(sid)));
             });
           }
-          signedDealRows = applyMarketingLeadFilters(signedRaw, {
-            ...marketingFilterOpts,
-            requireCreatedInRange: false,
-          }).filter((l) => !isMarketingStage91(l));
         } else {
           // No date range: fall back to cohort leads currently at/after signed.
           signedDealRows = rows.filter((l) => !isMarketingStage91(l) && stageRank(l) >= HIST_STAGE.signed);
@@ -2092,6 +2259,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         console.warn('signed deal (stage 60) fetch:', e);
         signedDealRows = [];
       }
+
+      if (!isCurrent()) return;
 
       setFetchTruncated(newTruncated || legacyLeadRows.length >= maxRows);
 
@@ -2141,10 +2310,40 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         });
       }
 
+      // Show the table as soon as the date cohort is ready — heavy follow-up loads continue in background.
+      setCohortLeads(rows);
+      setCohortSignedDealLeads(signedDealRows);
+
+      const filterOptsForSecondary = {
+        fromDate,
+        toDate,
+        channelIds,
+        // Same as UI: only explicit Source dropdown picks (not locked-all expansion).
+        selectedSourceIds:
+          isExternalVariant && lockedSourceIdSet.size > 0
+            ? sourceIds.filter((id) => lockedSourceIdSet.has(String(id)))
+            : sourceIds.map(String),
+        sourceIdsForSql,
+        countryIds,
+        firmIds: scopedFirmIds,
+        mainCategoryIds,
+        allSources,
+        countries,
+        firmIdToSourceIds,
+        sourceIdToFirmIds,
+      };
+      const filteredForSecondary = applyMarketingLeadFilters(rows, filterOptsForSecondary);
+      const filteredSignedForSecondary = applyMarketingLeadFilters(signedDealRows, {
+        ...filterOptsForSecondary,
+        requireCreatedInRange: false,
+      }).filter((l) => !isMarketingStage91(l));
+
       let invoicedByLead = new Map<string, number>();
       try {
-        const signedNewIds = signedDealRows.filter((r) => !isLegacyLeadId(r.id)).map((r) => r.id);
-        const signedLegacyIds = signedDealRows
+        const signedNewIds = filteredSignedForSecondary
+          .filter((r) => !isLegacyLeadId(r.id))
+          .map((r) => r.id);
+        const signedLegacyIds = filteredSignedForSecondary
           .map((r) => legacyLeadNumericId(r))
           .filter((n): n is number => n != null);
         invoicedByLead = await fetchInvoicedNisByDealLeadId(signedNewIds, signedLegacyIds);
@@ -2152,15 +2351,23 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         console.warn('signed deal invoiced amounts:', e);
         invoicedByLead = new Map();
       }
+      if (!isCurrent()) return;
 
-      setLeads(rows);
-      setSignedDealLeads(signedDealRows);
-      setInvoicedNisByLeadId(invoicedByLead);
+      setInvoicedNisByLeadId((prev) => {
+        if (soft && prev.size > 0) {
+          const merged = new Map(prev);
+          for (const [k, v] of invoicedByLead) merged.set(k, v);
+          return merged;
+        }
+        return invoicedByLead;
+      });
+
       if (!isExternalVariant) {
         const [mediaBySource, managementByFirm] = await Promise.all([
           fetchMediaExpensesBySource(fromDate, toDate),
           fetchManagementExpensesByFirm(fromDate, toDate),
         ]);
+        if (!isCurrent()) return;
         setMediaExpenseBySourceId(mediaBySource);
         setManagementExpenseByFirmId(managementByFirm);
       } else {
@@ -2168,16 +2375,25 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         setManagementExpenseByFirmId({});
       }
 
+      // Primary data ready — end the full-page loader (table visible while history/calls finish).
+      if (!soft && isCurrent()) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+
       setCallLogsError(null);
-      setCallLogsRows([]);
-      setMeetingsError(null);
-      setLeadIdsWithMeeting(new Set());
-      setSchedulerDisplayNames({});
-      setEmployeeDisplayNameToId(new Map());
+      if (!soft) {
+        setCallLogsRows([]);
+        setMeetingsError(null);
+        setLeadIdsWithMeeting(new Set());
+        setHistoryError(null);
+        setHistoryByLead(new Map());
+      }
 
       const { data: allEmployees } = await supabase
         .from('tenants_employee')
         .select('id, display_name, photo_url, photo');
+      if (!isCurrent()) return;
       const nameToId = new Map<string, number>();
       const idToName: Record<string, string> = {};
       const idToPhoto: Record<string, string> = {};
@@ -2199,8 +2415,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       setSchedulerDisplayNames(idToName);
       setEmployeeIdToPhotoUrl(idToPhoto);
 
-      const newLeadIds = rows.filter((r) => !isLegacyLeadId(r.id)).map((r) => r.id).filter(Boolean);
-      const legacyLeadNumericIds = rows
+      const secondaryLeads = filteredForSecondary.length > 0 ? filteredForSecondary : rows;
+      const newLeadIds = secondaryLeads.filter((r) => !isLegacyLeadId(r.id)).map((r) => r.id).filter(Boolean);
+      const legacyLeadNumericIds = secondaryLeads
         .map((r) => legacyLeadNumericId(r))
         .filter((n): n is number => n != null);
 
@@ -2208,14 +2425,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         let callFrom =
           fromDate != null && fromDate !== ''
             ? buildJerusalemStartOfDayIso(fromDate)
-            : rows.length > 0
-              ? new Date(Math.min(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
+            : secondaryLeads.length > 0
+              ? new Date(Math.min(...secondaryLeads.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
         let callTo =
           toDate != null && toDate !== ''
             ? buildJerusalemEndOfDayIso(toDate)
-            : rows.length > 0
-              ? new Date(Math.max(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
+            : secondaryLeads.length > 0
+              ? new Date(Math.max(...secondaryLeads.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
         if (callFrom && callTo && new Date(callFrom) > new Date(callTo)) {
           const t = callFrom;
@@ -2227,6 +2444,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             fetchCallLogsForCohort(newLeadIds, legacyLeadNumericIds, callFrom, callTo),
             fetchLeadIdsWithMeetingsFromTable(newLeadIds, legacyLeadNumericIds),
           ]);
+        if (!isCurrent()) return;
         if (cErr) {
           setCallLogsError(cErr);
         } else {
@@ -2235,12 +2453,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         if (mErr) {
           setMeetingsError(mErr);
         } else {
-          setLeadIdsWithMeeting(meetingLeadIds);
+          setLeadIdsWithMeeting((prev) => {
+            if (!soft || prev.size === 0) return meetingLeadIds;
+            const merged = new Set(prev);
+            for (const id of meetingLeadIds) merged.add(id);
+            return merged;
+          });
         }
       }
-
-      setHistoryError(null);
-      setHistoryByLead(new Map());
 
       const loadHistoryChunk = async (
         table: 'history_leads' | 'history_leads_lead',
@@ -2293,59 +2513,67 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             : Promise.resolve({ combined: [] as HistoryLeadRow[], histErr: null }),
         ]);
 
+        if (!isCurrent()) return;
         const histErr = newHist.histErr || legacyHist.histErr;
         if (histErr) {
           setHistoryError(histErr);
         } else {
-          const map = new Map<string, HistoryLeadRow[]>();
-          for (const h of newHist.combined) {
-            const oid = String(h.original_id);
-            if (!map.has(oid)) map.set(oid, []);
-            map.get(oid)!.push(h);
-          }
-          for (const h of legacyHist.combined) {
-            const oid = `legacy-${h.original_id}`;
-            if (!map.has(oid)) map.set(oid, []);
-            map.get(oid)!.push(h);
-          }
-          setHistoryByLead(map);
+          setHistoryByLead((prev) => {
+            const map = soft ? new Map(prev) : new Map<string, HistoryLeadRow[]>();
+            for (const h of newHist.combined) {
+              const oid = String(h.original_id);
+              if (!map.has(oid)) map.set(oid, []);
+              map.get(oid)!.push(h);
+            }
+            for (const h of legacyHist.combined) {
+              const oid = `legacy-${h.original_id}`;
+              if (!map.has(oid)) map.set(oid, []);
+              map.get(oid)!.push(h);
+            }
+            return map;
+          });
         }
       }
     } catch (e: any) {
+      if (!isCurrent()) return;
       console.error(e);
       setLoadError(e?.message || 'Failed to load leads');
-      setLeads([]);
-      setSignedDealLeads([]);
-      setInvoicedNisByLeadId(new Map());
-      setMediaExpenseBySourceId({});
-      setManagementExpenseByFirmId({});
-      setFetchTruncated(false);
-      setHistoryByLead(new Map());
-      setHistoryError(null);
-      setCallLogsRows([]);
-      setCallLogsError(null);
-      setLeadIdsWithMeeting(new Set());
-      setMeetingsError(null);
-      setSchedulerDisplayNames({});
-      setEmployeeDisplayNameToId(new Map());
-      setFetchTruncated(false);
+      if (!soft) {
+        setCohortLeads([]);
+        setCohortSignedDealLeads([]);
+        setInvoicedNisByLeadId(new Map());
+        setMediaExpenseBySourceId({});
+        setManagementExpenseByFirmId({});
+        setFetchTruncated(false);
+        setHistoryByLead(new Map());
+        setHistoryError(null);
+        setCallLogsRows([]);
+        setCallLogsError(null);
+        setLeadIdsWithMeeting(new Set());
+        setMeetingsError(null);
+        setSchedulerDisplayNames({});
+        setEmployeeDisplayNameToId(new Map());
+      }
     } finally {
-      setLoading(false);
+      if (!soft && isCurrent()) {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     }
   }, [
     fromDate,
     toDate,
-    channelIds,
-    sourceIds,
-    countryIds,
-    firmIds,
-    mainCategoryIds,
-    firmIdToSourceIds,
-    sourceIdToFirmIds,
     allSources,
-    countries,
     isExternalVariant,
     lockedSourceIdSet,
+    countryIds,
+    channelIds,
+    sourceIds,
+    firmIds,
+    mainCategoryIds,
+    countries,
+    firmIdToSourceIds,
+    sourceIdToFirmIds,
   ]);
 
   useEffect(() => {
@@ -2353,6 +2581,29 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   }, [runReport]);
 
   searchedRef.current = searched;
+
+  // Non-date filters: update rows via client-side filter immediately; soft-refresh cohort in background (no loader).
+  const autoFilterDebounceRef = useRef<number | null>(null);
+  const skipAutoFilterRunRef = useRef(true);
+  useEffect(() => {
+    if (skipAutoFilterRunRef.current) {
+      skipAutoFilterRunRef.current = false;
+      return;
+    }
+    if (!searchedRef.current) return;
+    if (typeof window === 'undefined') return;
+    if (autoFilterDebounceRef.current != null) window.clearTimeout(autoFilterDebounceRef.current);
+    autoFilterDebounceRef.current = window.setTimeout(() => {
+      autoFilterDebounceRef.current = null;
+      void runReportRef.current({ soft: true });
+    }, 320);
+    return () => {
+      if (autoFilterDebounceRef.current != null) {
+        window.clearTimeout(autoFilterDebounceRef.current);
+        autoFilterDebounceRef.current = null;
+      }
+    };
+  }, [channelIds, sourceIds, firmIds, countryIds, mainCategoryIds]);
 
   // Live updates: filters/metadata (channels, sources, firms, links) + optional report refresh when already loaded.
   useEffect(() => {
@@ -2371,8 +2622,13 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       if (realtimeDebounceRef.current.report != null) window.clearTimeout(realtimeDebounceRef.current.report);
       realtimeDebounceRef.current.report = window.setTimeout(() => {
         realtimeDebounceRef.current.report = null;
-        void runReportRef.current();
+        void runReportRef.current({ soft: true });
       }, 1200);
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      scheduleRefetch();
     };
 
     const channel = supabase
@@ -2392,6 +2648,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, scheduleReportRefresh)
       .subscribe();
 
+    window.addEventListener('focus', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       if (realtimeDebounceRef.current.ref != null && typeof window !== 'undefined') {
         window.clearTimeout(realtimeDebounceRef.current.ref);
@@ -2399,6 +2658,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       if (realtimeDebounceRef.current.report != null && typeof window !== 'undefined') {
         window.clearTimeout(realtimeDebounceRef.current.report);
       }
+      window.removeEventListener('focus', onVisible);
+      document.removeEventListener('visibilitychange', onVisible);
       void supabase.removeChannel(channel);
     };
   }, [loadReferenceData]);
@@ -2545,13 +2806,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       row.revenueNis += leadRevenueNis(l);
     }
 
-    const seedEmptySourceRow = (sid: string) => {
-      const srcRow = lookup.sourceIdToRow.get(sid);
-      const channel = channelLabel(srcRow?.channel_id ?? null);
-      const source = srcRow?.name || `Source #${sid}`;
-      const key = `${channel}|||${source}`;
+    const seedEmptyAggRow = (key: string, channel: string, source: string, sourceId?: string) => {
       if (map.has(key)) return;
-      const providerName = sourceIdToFirmName.get(sid) || '—';
+      const providerName = sourceId ? sourceIdToFirmName.get(sourceId) || '—' : '—';
       map.set(key, {
         key,
         channel,
@@ -2571,13 +2828,51 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         mediaNis: 0,
         managementNis: 0,
         _providerNames: new Set(providerName !== '—' ? [providerName] : []),
-        _sourceIds: new Set([sid]),
-        _firmIds: new Set(sourceIdToFirmIds.get(sid) || []),
+        _sourceIds: new Set(sourceId ? [sourceId] : []),
+        _firmIds: new Set(sourceId ? sourceIdToFirmIds.get(sourceId) || [] : []),
         _countedMeetingLeadIds: new Set<string>(),
       });
     };
 
+    const seedEmptySourceRow = (sid: string) => {
+      const srcRow = lookup.sourceIdToRow.get(sid);
+      const channel = channelLabel(srcRow?.channel_id ?? null);
+      const source = srcRow?.name || `Source #${sid}`;
+      seedEmptyAggRow(`${channel}|||${source}`, channel, source, sid);
+    };
+
+    // Group by channel: list every active channel (or selected ones), even with 0 leads.
+    if (groupMode === 'channel') {
+      let channelsToSeed = channels.filter((c) => c.is_active);
+      if (channelIds.length > 0) {
+        const selected = new Set(channelIds);
+        channelsToSeed = channels.filter((c) => selected.has(c.id));
+      }
+      // Source dropdown: only channels that own the selected source(s).
+      if (sourceIds.length > 0) {
+        const fromSources = new Set<string>();
+        for (const sid of sourceIds) {
+          const srcRow = lookup.sourceIdToRow.get(String(sid));
+          if (srcRow?.channel_id) fromSources.add(String(srcRow.channel_id));
+        }
+        channelsToSeed = channelsToSeed.filter((c) => fromSources.has(c.id));
+      }
+      if (isExternalVariant && lockedSourceIdSet.size > 0) {
+        const fromLocked = new Set<string>();
+        for (const sid of lockedSourceIdSet) {
+          const srcRow = lookup.sourceIdToRow.get(sid);
+          if (srcRow?.channel_id) fromLocked.add(String(srcRow.channel_id));
+        }
+        channelsToSeed = channelsToSeed.filter((c) => fromLocked.has(c.id));
+      }
+      for (const c of channelsToSeed) {
+        const label = channelLabel(c.id);
+        seedEmptyAggRow(label, label, '—');
+      }
+    }
+
     // Firm filter: show every source linked to the selected firm(s), even with 0 leads in range.
+    // Still respect Source / Channel dropdowns when set.
     if (firmIds.length > 0 && groupMode === 'source') {
       const linkedSourceIds = new Set<string>();
       for (const firmId of firmIds) {
@@ -2585,7 +2880,15 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           linkedSourceIds.add(String(sid));
         }
       }
-      for (const sid of linkedSourceIds) seedEmptySourceRow(sid);
+      for (const sid of linkedSourceIds) {
+        if (sourceIds.length > 0 && !sourceIds.map(String).includes(String(sid))) continue;
+        if (channelIds.length > 0) {
+          const srcRow = lookup.sourceIdToRow.get(String(sid));
+          const cid = srcRow?.channel_id ? String(srcRow.channel_id) : '';
+          if (!cid || !channelIds.includes(cid)) continue;
+        }
+        seedEmptySourceRow(sid);
+      }
     }
 
     // External: always list every assigned source (incl. 0 leads), matching the user's extern_source_id set.
@@ -3251,7 +3554,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             <MarketingSearchMultiFilter
               label="Channel"
               placeholder="Search channels…"
-              options={channels.filter((c) => c.is_active).map((c) => ({ id: c.id, label: c.label }))}
+              options={channels
+                .filter((c) => c.is_active)
+                .map((c) => ({
+                  id: c.id,
+                  label: c.label,
+                  labelNode: (
+                    <ChannelLabel
+                      label={c.label}
+                      seed={c.code || c.id}
+                      className="text-sm font-medium"
+                    />
+                  ),
+                }))}
               selected={channelIds}
               onChange={setChannelIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
@@ -3261,8 +3576,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           <div className={filterColClass}>
             <MarketingSearchMultiFilter
               label="Source"
-              placeholder="Search sources…"
-              options={sources.map((s) => ({ id: String(s.id), label: s.name }))}
+              placeholder={
+                firmIds.length > 0 ? 'Search sources for selected provider(s)…' : 'Search sources…'
+              }
+              options={sourceFilterOptions}
               selected={sourceIds}
               onChange={setSourceIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
@@ -3274,7 +3591,16 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               <MarketingSearchMultiFilter
                 label="Provider (firm)"
                 placeholder="Search firms…"
-                options={firms.map((f) => ({ id: f.id, label: f.name }))}
+                options={firms.map((f) => ({
+                  id: f.id,
+                  label: f.name,
+                  labelNode: (
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      <FirmFilterAvatar name={f.name} imageUrl={f.profile_image_url} />
+                      <span className="truncate">{f.name}</span>
+                    </span>
+                  ),
+                }))}
                 selected={firmIds}
                 onChange={setFirmIds}
                 inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
@@ -3646,77 +3972,93 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {sortedAggregates.map((r) => {
-                  const pctLeads = totals.leads ? ((r.leads / totals.leads) * 100).toFixed(1) : '0.0';
-                  const offerDealDenom = r.leadsExclStage91;
-                  const totalCostNis = r.mediaNis + r.managementNis;
-                  return (
-                    <tr key={r.key}>
-                      <td
-                        className={`whitespace-nowrap ${macroCellAlign} ${stickyChannelClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
-                      >
-                        <div className="flex justify-center">
-                          <ChannelLabel
-                            label={r.channel}
-                            seed={r.channel}
-                            inactive={r.channel.toLowerCase().includes('(inactive)')}
-                          />
-                        </div>
-                      </td>
-                      {showSourceCol && (
+                {sortedAggregates.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={macroColCount}
+                      className="border-b border-base-200/70 bg-white px-6 py-16 text-center"
+                    >
+                      <p className="text-base font-medium text-base-content/70">
+                        No data match these filters
+                      </p>
+                      <p className="mt-1 text-sm text-base-content/45">
+                        Try another date range or clear one of the filters above.
+                      </p>
+                    </td>
+                  </tr>
+                ) : (
+                  sortedAggregates.map((r) => {
+                    const pctLeads = totals.leads ? ((r.leads / totals.leads) * 100).toFixed(1) : '0.0';
+                    const offerDealDenom = r.leadsExclStage91;
+                    const totalCostNis = r.mediaNis + r.managementNis;
+                    return (
+                      <tr key={r.key}>
                         <td
-                          className={`${stickySourceClass} ${macroLabelColClass}${sourceIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                          className={`whitespace-nowrap ${macroCellAlign} ${stickyChannelClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
                         >
-                          <span className={macroLabelTextClass} title={r.source}>
-                            {r.source}
-                          </span>
+                          <div className="flex justify-center">
+                            <ChannelLabel
+                              label={r.channel}
+                              seed={r.channel}
+                              inactive={r.channel.toLowerCase().includes('(inactive)')}
+                            />
+                          </div>
                         </td>
-                      )}
-                      {showProviderCol && (
-                        <td
-                          className={`text-base-content/50 ${stickyProviderClass} ${macroLabelColClass}${providerIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
-                        >
-                          <span className={macroLabelTextClass} title={r.provider}>
-                            {r.provider}
-                          </span>
-                        </td>
-                      )}
-                      <td className={macroCellAlign}>{r.leads}</td>
-                      <td className={macroCellAlign}>{r.eligible}</td>
-                      <td className={macroCellAlign}>{r.meetings}</td>
-                      <td className={macroCellAlign}>{r.offers}</td>
-                      <td className={`${macroCellAlign} text-blue-600`}>
-                        {r.deals > 0 ? (
-                          <button
-                            type="button"
-                            className="inline border-0 bg-transparent p-0 text-inherit text-sm md:text-base font-normal leading-normal cursor-pointer rounded-sm hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content/30"
-                            onClick={() => openDealsBreakdown(r)}
-                            title="View signed deals for this row"
+                        {showSourceCol && (
+                          <td
+                            className={`${stickySourceClass} ${macroLabelColClass}${sourceIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
                           >
-                            {r.deals}
-                          </button>
-                        ) : (
-                          r.deals
+                            <span className={macroLabelTextClass} title={r.source}>
+                              {r.source}
+                            </span>
+                          </td>
                         )}
-                      </td>
-                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.eligible, r.leads)}</td>
-                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.meetings, r.leads)}</td>
-                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.offers, offerDealDenom)}</td>
-                      <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.deals, offerDealDenom)}</td>
-                      <td className={macroCellAlign}>{fmtMoney(r.invoicedNis)}</td>
-                      <td className={`${macroCellAlign} !text-green-600`}>{fmtMoney(r.revenueNis)}</td>
-                      <td className={macroCellAlign}>{r.inactive}</td>
-                      {!isExternalVariant && (
-                        <>
-                          <td className={macroCellAlign}>{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
-                          <td className={macroCellAlign}>{r.managementNis > 0 ? fmtMoney(r.managementNis) : '—'}</td>
-                          <td className={macroCellAlign}>{totalCostNis > 0 ? fmtMoney(totalCostNis) : '—'}</td>
-                          <td className={macroCellAlign}>{pctLeads}%</td>
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
+                        {showProviderCol && (
+                          <td
+                            className={`text-base-content/50 ${stickyProviderClass} ${macroLabelColClass}${providerIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+                          >
+                            <span className={macroLabelTextClass} title={r.provider}>
+                              {r.provider}
+                            </span>
+                          </td>
+                        )}
+                        <td className={macroCellAlign}>{r.leads}</td>
+                        <td className={macroCellAlign}>{r.eligible}</td>
+                        <td className={macroCellAlign}>{r.meetings}</td>
+                        <td className={macroCellAlign}>{r.offers}</td>
+                        <td className={`${macroCellAlign} text-blue-600`}>
+                          {r.deals > 0 ? (
+                            <button
+                              type="button"
+                              className="inline border-0 bg-transparent p-0 text-inherit text-sm md:text-base font-normal leading-normal cursor-pointer rounded-sm hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content/30"
+                              onClick={() => openDealsBreakdown(r)}
+                              title="View signed deals for this row"
+                            >
+                              {r.deals}
+                            </button>
+                          ) : (
+                            r.deals
+                          )}
+                        </td>
+                        <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.eligible, r.leads)}</td>
+                        <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.meetings, r.leads)}</td>
+                        <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.offers, offerDealDenom)}</td>
+                        <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.deals, offerDealDenom)}</td>
+                        <td className={macroCellAlign}>{fmtMoney(r.invoicedNis)}</td>
+                        <td className={`${macroCellAlign} !text-green-600`}>{fmtMoney(r.revenueNis)}</td>
+                        <td className={macroCellAlign}>{r.inactive}</td>
+                        {!isExternalVariant && (
+                          <>
+                            <td className={macroCellAlign}>{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
+                            <td className={macroCellAlign}>{r.managementNis > 0 ? fmtMoney(r.managementNis) : '—'}</td>
+                            <td className={macroCellAlign}>{totalCostNis > 0 ? fmtMoney(totalCostNis) : '—'}</td>
+                            <td className={macroCellAlign}>{pctLeads}%</td>
+                          </>
+                        )}
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
               {sortedAggregates.length > 0 && (
                 <tfoot>
@@ -3905,8 +4247,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       {!searched && (
         <div className="px-4 py-10 text-center">
           <p className="text-base leading-relaxed text-base-content/55">
-            Set your filters above, then click <span className="font-semibold text-base-content/75">Search</span> to
-            load results.
+            Set the date range, then click <span className="font-semibold text-base-content/75">Search</span> to
+            load results. Other filters update the table automatically.
           </p>
         </div>
       )}

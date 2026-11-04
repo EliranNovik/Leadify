@@ -7,7 +7,8 @@ export type PipelineRoleTab =
   | 'helper'
   | 'expert'
   | 'handler'
-  | 'retention';
+  | 'retention'
+  | 'support';
 
 export const PIPELINE_TAB_LABELS: Record<PipelineRoleTab, string> = {
   closer: 'Closer',
@@ -17,7 +18,10 @@ export const PIPELINE_TAB_LABELS: Record<PipelineRoleTab, string> = {
   expert: 'Expert',
   handler: 'Handler',
   retention: 'Retention Handler',
+  support: 'Client Support',
 };
+
+export const HANDLING_PIPELINE_TABS: PipelineRoleTab[] = ['handler', 'retention', 'support'];
 
 export type { PipelineViewAs } from '../../lib/resolvePipelineIdentity';
 

@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 import {
   clockSessionDurationMinutes,
   clockSessionExceedsOvertimeBase,
+  dayTotalExceedsOvertimeBase,
+  segmentsTotalMinutes,
 } from './employeeClockInOvertimeApproval';
 
 test('a session up to base hours needs no approval', () => {
@@ -45,4 +47,21 @@ test('an unparseable or reversed session is not treated as overtime', () => {
   assert.equal(clockSessionDurationMinutes('', ''), 0);
   assert.equal(clockSessionExceedsOvertimeBase('', '', 8), false);
   assert.equal(clockSessionExceedsOvertimeBase('17:00', '09:00', 8), false);
+});
+
+test('multiple short segments together can cross the overtime base', () => {
+  const segments = [
+    { clockInTime: '09:00', clockOutTime: '13:00' },
+    { clockInTime: '14:00', clockOutTime: '18:30' },
+  ];
+  assert.equal(segmentsTotalMinutes(segments), 8 * 60 + 30);
+  assert.equal(dayTotalExceedsOvertimeBase(segments, 0, 8), true);
+  assert.equal(dayTotalExceedsOvertimeBase(segments, 0, 9), false);
+});
+
+test('a short top-up on top of existing hours can require overtime approval', () => {
+  const topUp = [{ clockInTime: '17:00', clockOutTime: '18:00' }];
+  assert.equal(dayTotalExceedsOvertimeBase(topUp, 0, 8), false);
+  assert.equal(dayTotalExceedsOvertimeBase(topUp, 7 * 60 + 30, 8), true);
+  assert.equal(dayTotalExceedsOvertimeBase(topUp, 7 * 60, 8), false);
 });

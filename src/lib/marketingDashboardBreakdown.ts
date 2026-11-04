@@ -230,6 +230,23 @@ function resolveLeadSourceRow(
   sourceNameToRow: Map<string, SourceRow>,
   sourceIdToRow: Map<string, SourceRow>,
 ): SourceRow | null {
+  // Prefer live misc_leadsource rows so channel reassignment updates without a lead re-fetch.
+  const sid =
+    lead.misc_leadsource?.id != null
+      ? String(lead.misc_leadsource.id)
+      : lead.source_id != null && String(lead.source_id).trim() !== ''
+        ? String(lead.source_id)
+        : null;
+  if (sid && sourceIdToRow.has(sid)) {
+    const live = sourceIdToRow.get(sid)!;
+    return {
+      id: live.id,
+      name: live.name || lead.misc_leadsource?.name || lead.source || live.id,
+      channel_id: live.channel_id,
+    };
+  }
+  const nameKey = normalizeSourceName(lead.misc_leadsource?.name || lead.source);
+  if (nameKey && sourceNameToRow.has(nameKey)) return sourceNameToRow.get(nameKey)!;
   if (lead.misc_leadsource) {
     return {
       id: String(lead.misc_leadsource.id),
@@ -237,10 +254,7 @@ function resolveLeadSourceRow(
       channel_id: lead.misc_leadsource.channel_id,
     };
   }
-  const sid = lead.source_id != null && String(lead.source_id).trim() !== '' ? String(lead.source_id) : null;
-  if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
-  const key = normalizeSourceName(lead.source);
-  return key ? sourceNameToRow.get(key) || null : null;
+  return null;
 }
 
 function leadChannelId(
@@ -248,7 +262,6 @@ function leadChannelId(
   sourceNameToRow: Map<string, SourceRow>,
   sourceIdToRow: Map<string, SourceRow>,
 ): string | null {
-  if (lead.misc_leadsource?.channel_id) return lead.misc_leadsource.channel_id;
   return resolveLeadSourceRow(lead, sourceNameToRow, sourceIdToRow)?.channel_id ?? null;
 }
 

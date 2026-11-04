@@ -71,13 +71,48 @@ export function clockSessionExceedsOvertimeBase(
   return minutes > normalizeMinHours(baseHours) * 60;
 }
 
-export function formatClockSessionDurationLabel(clockInTime: string, clockOutTime: string): string {
-  const minutes = Math.max(0, clockSessionDurationMinutes(clockInTime, clockOutTime));
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
+export type ClockInOutSegment = { clockInTime: string; clockOutTime: string };
+
+/** Sum of same-day segment lengths (negative / empty segments count as 0). */
+export function segmentsTotalMinutes(segments: ClockInOutSegment[]): number {
+  return segments.reduce(
+    (sum, seg) => sum + Math.max(0, clockSessionDurationMinutes(seg.clockInTime, seg.clockOutTime)),
+    0,
+  );
+}
+
+/** Minutes already stored on a day (finished, non-declined sessions). */
+export function totalExistingDayMinutes(
+  sessions: Array<{ clockInTime: string; clockOutTime: string }>,
+): number {
+  return segmentsTotalMinutes(sessions);
+}
+
+/**
+ * Overtime when new segments plus anything already on the day go past the employee's base hours.
+ * Short top-up entries that alone look fine still need approval once the day total crosses.
+ */
+export function dayTotalExceedsOvertimeBase(
+  newSegments: ClockInOutSegment[],
+  existingMinutes: number,
+  baseHours: number,
+): boolean {
+  const total =
+    Math.max(0, existingMinutes) + segmentsTotalMinutes(newSegments);
+  return total > normalizeMinHours(baseHours) * 60;
+}
+
+export function formatDurationMinutesLabel(minutes: number): string {
+  const m = Math.max(0, Math.floor(minutes));
+  const hours = Math.floor(m / 60);
+  const mins = m % 60;
   if (hours <= 0) return `${mins}m`;
   if (mins === 0) return `${hours}h`;
   return `${hours}h ${mins}m`;
+}
+
+export function formatClockSessionDurationLabel(clockInTime: string, clockOutTime: string): string {
+  return formatDurationMinutesLabel(clockSessionDurationMinutes(clockInTime, clockOutTime));
 }
 
 export function formatOvertimeSessionDateLabel(dateKey: string): string {
@@ -92,23 +127,42 @@ export function formatOvertimeSessionDateLabel(dateKey: string): string {
 }
 
 export function buildOvertimeApprovalWhatsAppMessage(params: {
-  clockInTime: string;
-  clockOutTime: string;
+  clockInTime?: string;
+  clockOutTime?: string;
+  /** When set, these replace a single clock-in/out in the message. */
+  segments?: ClockInOutSegment[];
   dateKeys?: string[];
   notes?: string | null;
+  /** Already logged on the day(s), which is included in the overtime total. */
+  existingMinutes?: number;
   /** The employee's own base hours, which is what the request is asking to go beyond. */
   baseHours: number;
 }): string {
-  const durationLabel = formatClockSessionDurationLabel(params.clockInTime, params.clockOutTime);
+  const segments: ClockInOutSegment[] =
+    params.segments && params.segments.length > 0
+      ? params.segments
+      : params.clockInTime && params.clockOutTime
+        ? [{ clockInTime: params.clockInTime, clockOutTime: params.clockOutTime }]
+        : [];
+  const newMinutes = segmentsTotalMinutes(segments);
+  const existingMinutes = Math.max(0, params.existingMinutes || 0);
+  const totalLabel = formatDurationMinutesLabel(existingMinutes + newMinutes);
+  const segmentsLabel = segments
+    .map((seg) => `${seg.clockInTime}–${seg.clockOutTime} (${formatClockSessionDurationLabel(seg.clockInTime, seg.clockOutTime)})`)
+    .join(', ');
   const dateLabels = [...new Set((params.dateKeys || []).filter(Boolean))]
     .sort()
     .map(formatOvertimeSessionDateLabel);
   const datePart = dateLabels.join(', ');
+  const existingPart =
+    existingMinutes > 0
+      ? ` already logged ${formatDurationMinutesLabel(existingMinutes)} + new ${formatDurationMinutesLabel(newMinutes)} = ${totalLabel}`
+      : ` ${totalLabel}`;
   const session = datePart
-    ? `${datePart}, ${params.clockInTime}–${params.clockOutTime} (${durationLabel})`
-    : `${params.clockInTime}–${params.clockOutTime} (${durationLabel})`;
+    ? `${datePart}: ${segmentsLabel || 'session'} (${existingPart.trim()})`
+    : `${segmentsLabel || 'session'} (${existingPart.trim()})`;
   const initial =
-    `Hi Michael, I need overtime approval to clock in more than my ${normalizeMinHours(params.baseHours)}h standard day. Planned session: ${session}.`;
+    `Hi Michael, I need overtime approval to clock in more than my ${normalizeMinHours(params.baseHours)}h standard day. Planned: ${session}.`;
   const extraNotes = params.notes?.trim();
   if (!extraNotes) return initial;
   return `${initial}\n\nAdditional notes:\n${extraNotes}`;
@@ -157,8 +211,13 @@ export function overtimeApprovalRequiredError(baseHours: number): Error {
  */
 export async function assertManualDurationAllowed(params: {
   employeeId: number;
-  clockInTime: string;
-  clockOutTime: string;
+  clockInTime?: string;
+  clockOutTime?: string;
+  /**
+   * When set, overtime is judged on this day total (existing + new segments) rather than one
+   * session alone — so a short top-up that pushes the day over still needs approval.
+   */
+  totalDayMinutes?: number;
   overtimeApprovalStoragePath?: string | null;
   /**
    * Let the session through without its screenshot, which only the daily lead allocation page asks
@@ -169,7 +228,15 @@ export async function assertManualDurationAllowed(params: {
   approvalDeferred?: boolean;
 }): Promise<void> {
   const baseHours = await fetchOvertimeApprovalBaseHours(params.employeeId);
-  if (!clockSessionExceedsOvertimeBase(params.clockInTime, params.clockOutTime, baseHours)) return;
+  const exceeds =
+    params.totalDayMinutes != null
+      ? params.totalDayMinutes > normalizeMinHours(baseHours) * 60
+      : clockSessionExceedsOvertimeBase(
+          params.clockInTime || '',
+          params.clockOutTime || '',
+          baseHours,
+        );
+  if (!exceeds) return;
   if (params.overtimeApprovalStoragePath?.trim()) return;
   if (params.approvalDeferred) return;
   throw overtimeApprovalRequiredError(baseHours);
