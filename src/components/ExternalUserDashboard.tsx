@@ -149,8 +149,8 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
 
                 const allowedSourceNames = allowedSources.map((s) => String((s as any).name));
                 const sourceIdsFromMisc = allowedSources
-                    .map((s) => Number((s as any).id))
-                    .filter((n) => Number.isFinite(n));
+                    .map((s) => String((s as any).id ?? '').trim())
+                    .filter((id) => id !== '');
                 const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
                 // Count new leads: source_id OR text source (aligned with lead search / graphs).
@@ -255,8 +255,11 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
                 }
 
                 const allowedTyped = allowedSources
-                    .map((s: any) => ({ id: Number(s?.id), name: String(s?.name ?? '').trim() }))
-                    .filter((s: any) => Number.isFinite(s.id) && s.name !== '');
+                    .map((s: any) => ({
+                        id: String(s?.id ?? '').trim(),
+                        name: String(s?.name ?? '').trim(),
+                    }))
+                    .filter((s: any) => s.id !== '' && s.name !== '');
 
                 const allowedSourceNames = allowedTyped.map((s: any) => s.name);
                 const allowedSourceIdsFromMisc = allowedTyped.map((s: any) => s.id);

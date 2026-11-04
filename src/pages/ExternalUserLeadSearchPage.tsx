@@ -844,7 +844,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
-  const [allowedSourceIds, setAllowedSourceIds] = useState<number[]>([]);
+  const [allowedSourceIds, setAllowedSourceIds] = useState<string[]>([]);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -1946,8 +1946,8 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         if (!sourcesError && allowedSources && allowedSources.length > 0) {
           const allowedSourceNames = allowedSources.map((s: any) => String(s?.name ?? '')).filter(Boolean);
           const allowedSourceIdsFromMisc = allowedSources
-            .map((s: any) => Number(s?.id))
-            .filter((n: number) => Number.isFinite(n));
+            .map((s: any) => String(s?.id ?? '').trim())
+            .filter((id: string) => id !== '');
           
           // If user has selected specific sources, filter by those; otherwise use all allowed sources
           const sourcesToFilter = filters.source && filters.source.length > 0 
@@ -1968,8 +1968,8 @@ const ExternalUserLeadSearchPage: React.FC = () => {
                 .eq('active', true);
               if (selectedErr) throw selectedErr;
               const selectedIds = (selectedRows || [])
-                .map((r: any) => Number(r?.id))
-                .filter((n: number) => Number.isFinite(n));
+                .map((r: any) => String(r?.id ?? '').trim())
+                .filter((id: string) => id !== '');
               idsToUse = selectedIds;
             }
 
@@ -2369,7 +2369,9 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             .eq('active', true);
           
           if (!selectedError && selectedSources && selectedSources.length > 0) {
-            sourceIdsToFilter = selectedSources.map(s => s.id);
+            sourceIdsToFilter = selectedSources
+              .map((s) => String((s as { id?: unknown }).id ?? '').trim())
+              .filter(Boolean);
             console.log('📡 Filtering legacy leads by selected source IDs:', sourceIdsToFilter);
           } else {
             console.log('⚠️ No valid selected sources found, filtering out all legacy leads');

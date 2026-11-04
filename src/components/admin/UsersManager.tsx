@@ -131,6 +131,16 @@ const UsersManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
         formatValue: formatEmail,
       },
       {
+        name: 'employee_private_email',
+        label: 'Employee private email',
+        type: 'email' as const,
+        required: false,
+        placeholder: 'e.g., personal@gmail.com',
+        hideInAdd: false,
+        hideInTable: false,
+        hideInEdit: false,
+      },
+      {
         name: 'first_name',
         label: 'First Name',
         type: 'text' as const,

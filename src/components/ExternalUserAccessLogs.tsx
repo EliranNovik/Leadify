@@ -27,15 +27,15 @@ interface ExternalUserAccessLogsProps {
 
 function logMatchesAllowedSources(
     log: { request_body?: string | null; response_body?: string | null },
-    allowedIdsSet: Set<number>,
-    allowedCodesSet: Set<number>,
+    allowedIdsSet: Set<string>,
+    allowedCodesSet: Set<string>,
     allowedNamesSet: Set<string>,
 ): boolean {
     if (log?.response_body) {
         try {
             const parsed = JSON.parse(String(log.response_body));
             const sid = parsed?.data?.source_id;
-            if (sid != null && allowedIdsSet.has(Number(sid))) return true;
+            if (sid != null && allowedIdsSet.has(String(sid).trim())) return true;
             const sourceName = parsed?.data?.source ?? parsed?.data?.source_name ?? parsed?.data?.sourceName;
             if (typeof sourceName === 'string' && allowedNamesSet.has(sourceName.trim().toLowerCase())) return true;
         } catch {
@@ -48,8 +48,10 @@ function logMatchesAllowedSources(
             const q = parsedReq?.query && typeof parsedReq.query === 'object' ? parsedReq.query : parsedReq;
             const sourceCode = q?.source_code ?? q?.sourceCode ?? q?.source;
             const sourceId = q?.source_id ?? q?.sourceId;
-            if (sourceId != null && allowedIdsSet.has(Number(sourceId))) return true;
-            if (sourceCode != null && allowedCodesSet.size > 0 && allowedCodesSet.has(Number(sourceCode))) return true;
+            if (sourceId != null && allowedIdsSet.has(String(sourceId).trim())) return true;
+            if (sourceCode != null && allowedCodesSet.size > 0 && allowedCodesSet.has(String(sourceCode).trim())) {
+                return true;
+            }
             const sourceName = q?.source_name ?? q?.sourceName ?? (typeof q?.source === 'string' ? q?.source : null);
             if (typeof sourceName === 'string' && allowedNamesSet.has(sourceName.trim().toLowerCase())) return true;
         } catch {
@@ -68,7 +70,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
     const [loading, setLoading] = useState(true);
     const [loadingLogs, setLoadingLogs] = useState(false);
     const [expandedRows, setExpandedRows] = useState<ExpandedRow>({});
-    const [allowedSourceIds, setAllowedSourceIds] = useState<number[]>([]);
+    const [allowedSourceIds, setAllowedSourceIds] = useState<string[]>([]);
     const hasInitializedRef = useRef(false);
 
     useEffect(() => {
@@ -193,7 +195,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                 const startTimestamp = thirtyDaysAgo.toISOString();
                 const endTimestamp = now.toISOString();
 
-                const allowedIdsSet = new Set(allowedSourceIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)));
+                const allowedIdsSet = new Set(allowedSourceIds.map((id) => String(id).trim()).filter(Boolean));
                 // Map allowed misc_leadsource.id -> misc_leadsource.code, so logs can be matched by request source_code too.
                 const { data: srcRows, error: srcErr } = await supabase
                     .from('misc_leadsource')
@@ -202,12 +204,11 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                 if (srcErr) {
                     console.warn('Access logs: failed to load misc_leadsource codes:', srcErr);
                 }
-                const allowedCodesSet = new Set<number>();
+                const allowedCodesSet = new Set<string>();
                 const allowedNamesSet = new Set<string>();
                 (srcRows || []).forEach((r: any) => {
                     const c = r?.code;
-                    const n = typeof c === 'string' ? Number(c) : c;
-                    if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
+                    if (c != null && String(c).trim() !== '') allowedCodesSet.add(String(c).trim());
                     const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
                     if (name) allowedNamesSet.add(name);
                 });
@@ -294,17 +295,16 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                 return;
             }
 
-            const allowedIdsSet = new Set(allowedSourceIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)));
+            const allowedIdsSet = new Set(allowedSourceIds.map((id) => String(id).trim()).filter(Boolean));
             const { data: srcRows } = await supabase
                 .from('misc_leadsource')
                 .select('id, code, name')
                 .in('id', allowedSourceIds);
-            const allowedCodesSet = new Set<number>();
+            const allowedCodesSet = new Set<string>();
             const allowedNamesSet = new Set<string>();
             (srcRows || []).forEach((r: any) => {
                 const c = r?.code;
-                const n = typeof c === 'string' ? Number(c) : c;
-                if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
+                if (c != null && String(c).trim() !== '') allowedCodesSet.add(String(c).trim());
                 const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
                 if (name) allowedNamesSet.add(name);
             });

@@ -15,6 +15,7 @@ import {
   syncEmployeeConnectedUser,
 } from '../../lib/employeeUserLink';
 import { buildApiUrl } from '../../lib/api';
+import { applyHireWorkEmail } from '../../lib/recruitmentHireEmail';
 import { getEmployeeRoleDisplayName } from '../../lib/employeeRoles';
 
 /** Quote PostgREST `.or()` / filter values so spaces and commas don't break parsing. */
@@ -208,19 +209,28 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [preferredCategoryData, setPreferredCategoryData] = useState<{[employeeId: string]: string[]}>({}); // For employees preferred category
   const [searchTerms, setSearchTerms] = useState<{[key: string]: string}>({});
   const [searchDropdownOpen, setSearchDropdownOpen] = useState<{[key: string]: boolean}>({});
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const fetchGenerationRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
 
   // Debounce table search so we don't spam PostgREST / FK refetch on every keystroke.
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      setDebouncedSearchTerm(searchTerm.trim());
-      setCurrentPage(1);
-    }, 280);
+      const next = searchTerm.trim();
+      setDebouncedSearchTerm((prev) => {
+        if (prev !== next) setCurrentPage(1);
+        return next;
+      });
+    }, 320);
     return () => window.clearTimeout(handle);
   }, [searchTerm]);
 
   // Fetch records
   const fetchRecords = async () => {
-    setLoading(true);
+    const fetchGeneration = ++fetchGenerationRef.current;
+    const showFullLoader = !hasLoadedOnceRef.current;
+    if (showFullLoader) setLoading(true);
+    else setIsRefreshing(true);
     try {
       // For tenants_employee table, we need to join with users table to filter by user active status
       // But only if the user_id column exists and userActiveFilter is not 'all'
@@ -236,63 +246,115 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         const term = debouncedSearchTerm;
         const escaped = escapeIlikePattern(term);
         const quotedContains = quotePostgrestFilterValue(`%${escaped}%`);
+        const tokens = term
+          .split(/\s+/)
+          .map((t) => t.trim())
+          .filter(Boolean)
+          .map(escapeIlikePattern);
         const searchConditions: string[] = [];
 
-        const textFields = fields.filter((f) => {
-          if (f.searchable === false) return false;
-          if (f.type !== 'text' && f.type !== 'email' && f.type !== 'textarea') return false;
-          if (NON_SEARCHABLE_COLUMN_NAMES.has(f.name)) return false;
-          // Prefer columns visible in the table (skip giant hideInTable blobs like photo).
-          if (f.hideInTable && f.searchable !== true) return false;
-          return true;
-        });
+        const buildTokenAnd = (column: string) => {
+          if (tokens.length <= 1) {
+            return `${column}.ilike.${quotedContains}`;
+          }
+          return `and(${tokens
+            .map((t) => `${column}.ilike.${quotePostgrestFilterValue(`%${t}%`)}`)
+            .join(',')})`;
+        };
 
-        for (const field of textFields) {
-          searchConditions.push(`${field.name}.ilike.${quotedContains}`);
-        }
+        if (tableName === 'tenants_employee') {
+          // Reliable employee search: names (multi-token), contacts, worker id, linked user.
+          searchConditions.push(buildTokenAnd('display_name'));
+          searchConditions.push(buildTokenAnd('official_name'));
+          for (const col of ['worker_id', 'mobile', 'employee_mobile', 'phone']) {
+            searchConditions.push(`${col}.ilike.${quotedContains}`);
+          }
 
-        // Resolve employee name → ids for FK / employee_id columns (common across admin managers).
-        const employeeFkFields = fields.filter((f) => {
-          if (f.searchable === false) return false;
-          if (f.name === 'employee_id') return true;
-          return f.foreignKey?.table === 'tenants_employee';
-        });
+          const userOr = [
+            buildTokenAnd('full_name'),
+            buildTokenAnd('first_name'),
+            buildTokenAnd('last_name'),
+            `email.ilike.${quotedContains}`,
+          ].join(',');
+          const { data: matchingUsers, error: userSearchError } = await supabase
+            .from('users')
+            .select('employee_id')
+            .or(userOr)
+            .not('employee_id', 'is', null)
+            .limit(100);
+          if (userSearchError) {
+            console.error('Employee linked-user search failed:', userSearchError);
+          } else {
+            const ids = Array.from(
+              new Set(
+                (matchingUsers || [])
+                  .map((u: { employee_id?: number | string | null }) => u.employee_id)
+                  .filter((id) => id != null && String(id).trim() !== ''),
+              ),
+            );
+            if (ids.length > 0) {
+              searchConditions.push(`id.in.(${ids.join(',')})`);
+            }
+          }
+        } else {
+          const textFields = fields.filter((f) => {
+            if (f.searchable === false) return false;
+            if (f.type !== 'text' && f.type !== 'email' && f.type !== 'textarea') return false;
+            if (NON_SEARCHABLE_COLUMN_NAMES.has(f.name)) return false;
+            // Prefer columns visible in the table (skip giant hideInTable blobs like photo).
+            if (f.hideInTable && f.searchable !== true) return false;
+            return true;
+          });
 
-        if (employeeFkFields.length > 0) {
-          const { data: matchingEmployees, error: empSearchError } = await supabase
-            .from('tenants_employee')
-            .select('id')
-            .ilike('display_name', `%${escaped}%`)
-            .limit(80);
+          for (const field of textFields) {
+            searchConditions.push(
+              tokens.length > 1 ? buildTokenAnd(field.name) : `${field.name}.ilike.${quotedContains}`,
+            );
+          }
 
-          if (empSearchError) {
-            console.error('Employee name search failed:', empSearchError);
-          } else if (matchingEmployees && matchingEmployees.length > 0) {
-            const ids = matchingEmployees
-              .map((e: { id: number | string }) => e.id)
-              .filter((id) => id != null && id !== '')
-              .join(',');
-            if (ids) {
-              for (const field of employeeFkFields) {
-                searchConditions.push(`${field.name}.in.(${ids})`);
+          // Resolve employee name → ids for FK / employee_id columns (common across admin managers).
+          const employeeFkFields = fields.filter((f) => {
+            if (f.searchable === false) return false;
+            if (f.name === 'employee_id') return true;
+            return f.foreignKey?.table === 'tenants_employee';
+          });
+
+          if (employeeFkFields.length > 0) {
+            const { data: matchingEmployees, error: empSearchError } = await supabase
+              .from('tenants_employee')
+              .select('id')
+              .or([buildTokenAnd('display_name'), buildTokenAnd('official_name')].join(','))
+              .limit(100);
+
+            if (empSearchError) {
+              console.error('Employee name search failed:', empSearchError);
+            } else if (matchingEmployees && matchingEmployees.length > 0) {
+              const ids = matchingEmployees
+                .map((e: { id: number | string }) => e.id)
+                .filter((id) => id != null && id !== '')
+                .join(',');
+              if (ids) {
+                for (const field of employeeFkFields) {
+                  searchConditions.push(`${field.name}.in.(${ids})`);
+                }
               }
             }
           }
-        }
 
-        // Also resolve firm name for firm_id FKs when searching.
-        const firmFkFields = fields.filter((f) => f.foreignKey?.table === 'firms' && f.searchable !== false);
-        if (firmFkFields.length > 0) {
-          const { data: matchingFirms } = await supabase
-            .from('firms')
-            .select('id')
-            .ilike('name', `%${escaped}%`)
-            .limit(80);
-          if (matchingFirms && matchingFirms.length > 0) {
-            const ids = matchingFirms.map((f: { id: number | string }) => f.id).join(',');
-            if (ids) {
-              for (const field of firmFkFields) {
-                searchConditions.push(`${field.name}.in.(${ids})`);
+          // Also resolve firm name for firm_id FKs when searching.
+          const firmFkFields = fields.filter((f) => f.foreignKey?.table === 'firms' && f.searchable !== false);
+          if (firmFkFields.length > 0) {
+            const { data: matchingFirms } = await supabase
+              .from('firms')
+              .select('id')
+              .ilike('name', `%${escaped}%`)
+              .limit(80);
+            if (matchingFirms && matchingFirms.length > 0) {
+              const ids = matchingFirms.map((f: { id: number | string }) => f.id).join(',');
+              if (ids) {
+                for (const field of firmFkFields) {
+                  searchConditions.push(`${field.name}.in.(${ids})`);
+                }
               }
             }
           }
@@ -335,6 +397,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       query = query.order(columnToSort, { ascending: sortAscending });
 
       const { data, error, count } = await query;
+      if (fetchGeneration !== fetchGenerationRef.current) return;
 
       if (error) {
         console.error(`Error fetching ${tableName}:`, error);
@@ -355,27 +418,35 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         
         setRecords(transformedData);
         setTotalRecords(count || 0);
+        hasLoadedOnceRef.current = true;
         
         // Fetch foreign key data
         await fetchForeignKeyData(transformedData);
+        if (fetchGeneration !== fetchGenerationRef.current) return;
         
         // Fetch preferred category data for employees table
         if (tableName === 'tenants_employee' && fields.some(f => f.name === 'preferred_category')) {
           await fetchPreferredCategoryData(transformedData);
+          if (fetchGeneration !== fetchGenerationRef.current) return;
         }
 
         if (tableName === 'firms' && fields.some((f) => f.name === 'firm_type_ids')) {
           await enrichFirmTypesForRecords(transformedData);
+          if (fetchGeneration !== fetchGenerationRef.current) return;
           setRecords([...transformedData]);
         }
 
         onRecordsLoaded?.();
       }
     } catch (error) {
+      if (fetchGeneration !== fetchGenerationRef.current) return;
       console.error(`Error fetching ${tableName}:`, error);
       toast.error(`Failed to load ${title}`);
     } finally {
-      setLoading(false);
+      if (fetchGeneration === fetchGenerationRef.current) {
+        setLoading(false);
+        setIsRefreshing(false);
+      }
     }
   };
 
@@ -907,15 +978,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   // Create user with auth user first
   const createUserWithAuth = async (record: Partial<Record>) => {
-    const API_BASE_URL = 'https://leadify-crm-backend.onrender.com/api';
-    
     // Check if password is provided for new users
     if (!record.password) {
       throw new Error('Password is required for new users');
     }
 
-    // Create user via API (handles both auth user and database record creation)
-    const response = await fetch(`${API_BASE_URL}/users`, {
+    // Create user via API (handles both auth user and database record creation).
+    // Backend stores the create email on auth + users.email + users.employee_private_email.
+    const response = await fetch(buildApiUrl('/api/users'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -923,8 +993,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       body: JSON.stringify({
         email: record.email,
         password: record.password,
+        employee_private_email: record.employee_private_email,
         first_name: record.first_name,
         last_name: record.last_name,
+        full_name: record.full_name,
         role: record.role,
         is_active: record.is_active,
         is_staff: record.is_staff,
@@ -938,20 +1010,20 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       throw new Error(result.error || 'Failed to create user');
     }
 
-    // The API handles both auth user creation and database record creation
-    // We just need to refresh the records to show the new user
     toast.success(`${title} created successfully`);
-    
-    // Return a mock record for the UI (the real record will be fetched on refresh)
+
+    const created = result.user || {};
     return {
-      id: result.user_id || result.auth_id || 'new',
-      email: record.email,
-      first_name: record.first_name,
-      last_name: record.last_name,
-      role: record.role,
-      is_active: record.is_active,
-      is_staff: record.is_staff,
-      is_superuser: record.is_superuser
+      id: created.id || result.user_id || result.auth_id,
+      auth_id: created.auth_id || result.auth_id,
+      email: created.email || record.email,
+      employee_private_email: created.employee_private_email || record.email,
+      first_name: created.first_name ?? record.first_name,
+      last_name: created.last_name ?? record.last_name,
+      role: created.role ?? record.role,
+      is_active: created.is_active ?? record.is_active,
+      is_staff: created.is_staff ?? record.is_staff,
+      is_superuser: created.is_superuser ?? record.is_superuser
     };
   };
 
@@ -1010,6 +1082,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     // Connected User is stored on users.employee_id — never on tenants_employee.user_id.
     let connectedUserId: string | null | undefined;
     let shouldSyncConnectedUser = false;
+    let hireWorkEmail: string | undefined;
+    if (tableName === 'tenants_employee' && 'hire_work_email' in record) {
+      const rawHireEmail = String((record as any).hire_work_email || '').trim().toLowerCase();
+      hireWorkEmail = rawHireEmail || undefined;
+      delete (record as any).hire_work_email;
+    }
     if (tableName === 'tenants_employee' && 'connected_user_id' in record) {
       shouldSyncConnectedUser = true;
       const raw = record.connected_user_id;
@@ -1245,126 +1323,33 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             throw new Error(passwordResult?.error || 'Failed to update password');
           }
 
-          // Update other fields via Supabase - remove fields that shouldn't be updated
-          const { 
-            password,
-            id, 
-            created_at, 
-            updated_at, 
-            auth_id, 
-            date_joined, 
-            last_login, 
-            groups, 
-            user_permissions, 
-            password_hash,
-            updated_by,
-            ...updateDataWithoutId 
-          } = updateData;
-          
-          // First, check if the record exists and get its structure
-          const { data: existingRecord, error: checkError } = await supabase
-            .from(tableName)
-            .select('*')
-            .eq('id', existingRecordId)
-            .single();
-          
-          if (checkError) {
-            console.error(`Record check error for ${tableName}:`, checkError);
-            throw new Error(`Record with ID ${existingRecordId} not found`);
-          }
-          
-          console.log(`Record exists:`, existingRecord);
-          
-          // Only set updated_by if the table has that column
-          const hasUpdatedByColumn = existingRecord && 'updated_by' in existingRecord;
-          if (auditUserId && hasUpdatedByColumn) {
-            updateDataWithoutId.updated_by = auditUserId;
-          } else {
-            delete updateDataWithoutId.updated_by;
-          }
-          
-          console.log(`Updating ${tableName} record with ID: ${existingRecordId}`, updateDataWithoutId);
-          
-          console.log(`Attempting update with query:`, {
-            table: tableName,
-            id: existingRecordId,
-            updateData: updateDataWithoutId
+          // After password change, sync remaining user fields (incl. email ↔ auth) via backend
+          const profileResponse = await fetch(buildApiUrl(`/api/users/${existingRecordId}`), {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              email: updateData.email,
+              employee_private_email: updateData.employee_private_email,
+              first_name: updateData.first_name,
+              last_name: updateData.last_name,
+              full_name: updateData.full_name,
+              role: updateData.role,
+              is_active: updateData.is_active,
+              is_staff: updateData.is_staff,
+              is_superuser: updateData.is_superuser,
+              groups: updateData.groups,
+              user_permissions: updateData.user_permissions,
+            }),
           });
-          
-          const { data, error } = await supabase
-            .from(tableName)
-            .update(updateDataWithoutId)
-            .eq('id', existingRecordId)
-            .select();
-          
-          console.log(`Update result:`, { data, error });
-
-          if (error) {
-            console.error(`Update error for ${tableName}:`, error);
-            throw error;
+          const profileResult = await profileResponse.json().catch(() => null);
+          if (!profileResponse.ok || !profileResult?.success) {
+            throw new Error(profileResult?.error || 'Password updated, but failed to update other user fields');
           }
 
-          if (!data || data.length === 0) {
-            // Try to get more information about why the update failed
-            console.log(`Update failed for ${tableName} record with ID ${existingRecordId}. Attempting to fetch current user info...`);
-            
-            const { data: currentUser, error: userError } = await supabase.auth.getUser();
-            console.log(`Current user:`, currentUser);
-            
-            // Check the current user's role in the users table (auth.users.id matches users.auth_id, not users.id)
-            let currentUserRecord = null;
-            if (currentUser?.user?.id) {
-              const { data: userRecord, error: currentUserError } = await supabase
-                .from('users')
-                .select('id, email, role, is_staff, is_superuser')
-                .eq('auth_id', currentUser.user.id)
-                .maybeSingle();
-              
-              currentUserRecord = userRecord;
-              console.log(`Current user record from users table:`, { currentUserRecord, currentUserError });
-            }
-            
-            // Try a simple select to see if we can read the record
-            const { data: selectData, error: selectError } = await supabase
-              .from(tableName)
-              .select('*')
-              .eq('id', existingRecordId);
-            
-            console.log(`Select test result:`, { selectData, selectError });
-            
-            if (existingRecord && 'updated_at' in existingRecord) {
-              console.log(`Testing minimal update with updated_at...`);
-              const { data: testUpdateData, error: testUpdateError } = await supabase
-                .from(tableName)
-                .update({ updated_at: new Date().toISOString() })
-                .eq('id', existingRecordId)
-                .select();
-              console.log(`Test update result:`, { testUpdateData, testUpdateError });
-            } else {
-              console.log(`Skipping minimal update test (no updated_at column on ${tableName})`);
-            }
-            
-            // Show user-friendly error message based on available information
-            if (currentUserRecord) {
-              // We have user record information
-              const userRole = currentUserRecord.role || 'user';
-              const isStaff = currentUserRecord.is_staff;
-              const isSuperuser = currentUserRecord.is_superuser;
-              
-              if (userRole === 'admin' || isStaff || isSuperuser) {
-                toast.error(`Access denied: Your account has ${userRole} role but still cannot update ${title.toLowerCase()} records. Please contact your system administrator.`);
-              } else {
-                toast.error(`Access denied: You don't have permission to update ${title.toLowerCase()} records. Only admin or superuser accounts can perform this action.`);
-              }
-            } else {
-              // We don't have user record information
-              toast.error(`Access denied: You don't have permission to update ${title.toLowerCase()} records. Only admin or superuser accounts can perform this action.`);
-            }
-            
-            throw new Error(`Update failed: No rows were updated for ${tableName} record with ID ${existingRecordId}. This is likely due to Row Level Security policies. Current user: ${currentUser?.user?.email || 'unknown'}`);
-          }
-
-          result = data[0];
+          result = profileResult.user;
           toast.success(`${title} updated successfully`);
         } else {
           // Regular update - remove fields that shouldn't be updated
@@ -1400,6 +1385,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           if (tableName === 'tenants_employee') {
             delete (updateData as any).connected_user_id;
             delete (updateData as any).user_id;
+            delete (updateData as any).hire_work_email;
           }
           if (tableName === 'firm_contacts') {
             if (updateData.password_hash == null || updateData.password_hash === '') {
@@ -1407,6 +1393,41 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             }
           }
 
+          // users.email must stay in sync with auth — update via backend admin API
+          if (tableName === 'users') {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (!session?.access_token) {
+              throw new Error('Your admin session has expired. Please sign in again.');
+            }
+            const response = await fetch(buildApiUrl(`/api/users/${existingRecordId}`), {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({
+                email: updateData.email,
+                employee_private_email: updateData.employee_private_email,
+                first_name: updateData.first_name,
+                last_name: updateData.last_name,
+                full_name: updateData.full_name,
+                role: updateData.role,
+                is_active: updateData.is_active,
+                is_staff: updateData.is_staff,
+                is_superuser: updateData.is_superuser,
+                groups: updateData.groups,
+                user_permissions: updateData.user_permissions,
+              }),
+            });
+            const apiResult = await response.json().catch(() => null);
+            if (!response.ok || !apiResult?.success) {
+              throw new Error(apiResult?.error || 'Failed to update user');
+            }
+            result = apiResult.user;
+            toast.success(`${title} updated successfully`);
+          } else {
           // First, check if the record exists and get its structure
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
@@ -1523,6 +1544,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
           result = data[0];
           toast.success(`${title} updated successfully`);
+          }
         }
         
       } else {
@@ -1681,6 +1703,26 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               'Employee saved, but linking the Connected User failed. You can edit the employee to retry.',
             );
           }
+        }
+      }
+
+      // Hire: switch linked user's auth + users.email to Outlook/work email; keep private email.
+      if (
+        tableName === 'tenants_employee' &&
+        !existingRecordId &&
+        hireWorkEmail &&
+        connectedUserId
+      ) {
+        try {
+          await applyHireWorkEmail(connectedUserId, hireWorkEmail);
+          toast.success(`Login email set to ${hireWorkEmail}`);
+        } catch (emailErr) {
+          console.error('Failed to apply hire work email:', emailErr);
+          toast.error(
+            emailErr instanceof Error
+              ? `Employee created, but work email sync failed: ${emailErr.message}`
+              : 'Employee created, but work email sync failed',
+          );
         }
       }
 
@@ -2360,13 +2402,23 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       <div className="mb-4 flex flex-col sm:flex-row gap-4 sm:items-center">
         {/* Search Input */}
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-          <input
-            type="text"
-            placeholder={`Search ${title}...`}
-            className="input input-bordered w-full max-w-md"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+          <div className="relative w-full max-w-md">
+            <input
+              type="text"
+              placeholder={
+                tableName === 'tenants_employee'
+                  ? 'Search by name, email, phone, or worker ID…'
+                  : `Search ${title}...`
+              }
+              className="input input-bordered w-full"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              aria-busy={isRefreshing}
+            />
+            {isRefreshing && (
+              <span className="loading loading-spinner loading-sm absolute right-3 top-1/2 -translate-y-1/2 text-primary" />
+            )}
+          </div>
           {searchBarExtra}
         </div>
         
@@ -2414,7 +2466,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       </div>
 
       {/* Records Table — avoid overflow-hidden so row shadows aren’t clipped */}
-      <div className="w-full py-2">
+      <div className={`w-full py-2 ${isRefreshing ? 'opacity-70 transition-opacity' : ''}`}>
         {loading ? (
           <div className="flex justify-center py-8">
             <div className="loading loading-spinner loading-lg"></div>

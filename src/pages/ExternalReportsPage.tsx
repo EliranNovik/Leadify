@@ -1,15 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
 import { useExternalUser } from '../hooks/useExternalUser';
 import { EXTERNAL_USER_PAGE_INNER } from '../lib/externalUserLayout';
 import MarketingDashboardReport from './MarketingDashboardReport';
+import ExternalMySourcesBox from '../components/ExternalMySourcesBox';
 import { fetchCurrentUserExternSourceIds } from '../lib/externalUserSources';
 
 export default function ExternalReportsPage() {
   const { isExternalUser, isLoading } = useExternalUser();
   const [lockedSourceIds, setLockedSourceIds] = useState<string[] | null>(null);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
+  const lockedIdsKey = useMemo(() => (lockedSourceIds ?? []).join('|'), [lockedSourceIds]);
 
   useEffect(() => {
     if (!isExternalUser) return;
@@ -46,11 +48,16 @@ export default function ExternalReportsPage() {
   return (
     <div className={`min-h-[calc(100dvh-3.5rem)] w-full bg-white ${EXTERNAL_USER_PAGE_INNER} py-8 md:py-10`}>
       <div className="w-full space-y-8 pb-12">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-base-content md:text-3xl">Reports</h1>
-          <p className="mt-2 text-sm text-base-content/60">
-            Marketing performance for your assigned lead sources.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold tracking-tight text-base-content md:text-3xl">Reports</h1>
+            <p className="mt-2 text-sm text-base-content/60">
+              Marketing performance for your assigned lead sources.
+            </p>
+          </div>
+          {lockedSourceIds && lockedSourceIds.length > 0 && (
+            <ExternalMySourcesBox key={lockedIdsKey} sourceIds={lockedSourceIds} />
+          )}
         </div>
 
         {sourcesError && (

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
+import { useExternalUser } from '../hooks/useExternalUser';
 import { getMailboxStatus, runMailboxCatchUpSync } from '../lib/mailboxApi';
 
 const DISMISS_KEY_PREFIX = 'mailbox_oos_dismiss_until_v1_';
@@ -54,13 +55,22 @@ function cleanMsalQuery() {
  */
 const MailboxHealthMonitor = () => {
   const { user } = useAuthContext();
-  const { showSyncPrompt, showReconnectModal, clearMailboxConnectPending, markMailboxConnectPending } =
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
+  const { showSyncPrompt, showReconnectModal, clearMailboxConnectPending, markMailboxConnectPending, hideReconnectModal, hideSyncPrompt } =
     useMailboxReconnect();
   const location = useLocation();
   const userId = user?.id ?? null;
   const catchupAttemptedRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!isExternalUser || isLoadingExternal) return;
+    hideReconnectModal();
+    hideSyncPrompt();
+    clearMailboxConnectPending();
+  }, [isExternalUser, isLoadingExternal, hideReconnectModal, hideSyncPrompt, clearMailboxConnectPending]);
+
+  useEffect(() => {
+    if (isExternalUser || isLoadingExternal) return;
     const params = new URLSearchParams(location.search);
     const msal = params.get('msal');
     if (!msal) return;
@@ -97,10 +107,11 @@ const MailboxHealthMonitor = () => {
         'Connect your Outlook mailbox so emails sync automatically. Use the same Microsoft account as your CRM email.',
       );
     }
-  }, [location.search, userId, showReconnectModal, clearMailboxConnectPending]);
+  }, [location.search, userId, showReconnectModal, clearMailboxConnectPending, isExternalUser, isLoadingExternal]);
 
   const evaluate = useCallback(async () => {
     if (!userId) return;
+    if (isExternalUser || isLoadingExternal) return;
     if (location.pathname === '/login') return;
     if (new URLSearchParams(location.search).get('msal')) return;
 
@@ -168,14 +179,23 @@ const MailboxHealthMonitor = () => {
       /* ignore */
     }
     showSyncPrompt(buildOutOfSyncMessage(status));
-  }, [userId, location.pathname, showSyncPrompt, showReconnectModal, clearMailboxConnectPending, markMailboxConnectPending]);
+  }, [
+    userId,
+    location.pathname,
+    showSyncPrompt,
+    showReconnectModal,
+    clearMailboxConnectPending,
+    markMailboxConnectPending,
+    isExternalUser,
+    isLoadingExternal,
+  ]);
 
   useEffect(() => {
     catchupAttemptedRef.current = null;
   }, [userId]);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || isExternalUser || isLoadingExternal) return;
     void evaluate();
     const t = window.setInterval(() => void evaluate(), POLL_MS);
     const onResume = () => {
@@ -189,7 +209,7 @@ const MailboxHealthMonitor = () => {
       window.removeEventListener('focus', onResume);
       document.removeEventListener('visibilitychange', onResume);
     };
-  }, [userId, evaluate]);
+  }, [userId, evaluate, isExternalUser, isLoadingExternal]);
 
   return null;
 };

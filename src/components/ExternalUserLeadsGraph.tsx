@@ -2,42 +2,32 @@ import React, { useState, useEffect } from 'react';
 import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
+import { leadSourceIdToString } from '../lib/leadSourceId';
+import { parseExternSourceIdStrings } from '../lib/externalUserSources';
 
 interface LeadsGraphData {
     source: string;
     count: number;
 }
 
-/** Parse `users.extern_source_id` (array or JSON string); allow numeric strings. */
-export function parseExternSourceIds(raw: unknown): number[] {
-    const out: number[] = [];
-    const push = (v: unknown) => {
-        if (typeof v === 'number' && Number.isFinite(v)) out.push(v);
-        else if (typeof v === 'string' && v.trim() !== '') {
-            const n = Number(v.trim());
-            if (Number.isFinite(n)) out.push(n);
-        }
-    };
-    if (Array.isArray(raw)) raw.forEach(push);
-    else if (typeof raw === 'string') {
-        try {
-            const p = JSON.parse(raw);
-            if (Array.isArray(p)) p.forEach(push);
-        } catch {
-            /* ignore */
-        }
-    }
-    return out;
+/**
+ * Parse `users.extern_source_id` (array or JSON string) as string ids (bigint-safe).
+ * @deprecated Prefer {@link parseExternSourceIdStrings}; kept for existing call sites.
+ */
+export function parseExternSourceIds(raw: unknown): string[] {
+    return parseExternSourceIdStrings(raw);
 }
 
 /** PostgREST `.or()`: match `source_id` OR legacy text `source` (same pattern as ExternalUserLeadSearchPage). */
-export function buildLeadSourcesOrFilter(sourceIds: number[], sourceNames: string[]): string {
+export function buildLeadSourcesOrFilter(sourceIds: Array<string | number>, sourceNames: string[]): string {
     const orParts: string[] = [];
-    const numericIds = sourceIds.filter((n) => Number.isFinite(n));
-    if (numericIds.length === 1) {
-        orParts.push(`source_id.eq.${numericIds[0]}`);
-    } else if (numericIds.length > 1) {
-        orParts.push(`source_id.in.(${numericIds.join(',')})`);
+    const idStrings = sourceIds
+        .map((id) => leadSourceIdToString(id))
+        .filter((id): id is string => Boolean(id));
+    if (idStrings.length === 1) {
+        orParts.push(`source_id.eq.${idStrings[0]}`);
+    } else if (idStrings.length > 1) {
+        orParts.push(`source_id.in.(${idStrings.join(',')})`);
     }
 
     const cleanedNames = sourceNames.map((s) => String(s ?? '').trim()).filter((s) => s !== '');
@@ -56,7 +46,7 @@ export function buildLeadSourcesOrFilter(sourceIds: number[], sourceNames: strin
     return orParts.join(',');
 }
 
-function initSourceCounts(allowedSources: { id: number; name: string }[]): Record<string, number> {
+function initSourceCounts(allowedSources: { id: string; name: string }[]): Record<string, number> {
     const sourceCounts: Record<string, number> = {};
     allowedSources.forEach((s) => {
         sourceCounts[s.name] = 0;
@@ -67,7 +57,7 @@ function initSourceCounts(allowedSources: { id: number; name: string }[]): Recor
 /** Map a lead row to the canonical misc_leadsource.name bucket, or null if out of scope. */
 function bucketLeadByAllowedSource(
     lead: { source_id?: unknown; source?: string | null },
-    allowedSources: { id: number; name: string }[],
+    allowedSources: { id: string; name: string }[],
 ): string | null {
     const idToName = new Map<string, string>();
     const nameNormToCanonical = new Map<string, string>();
@@ -187,12 +177,15 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                const allowedTyped = allowedSources.map((s) => ({
-                    id: Number((s as any).id),
-                    name: String((s as any).name),
-                }));
+                const allowedTyped = allowedSources
+                    .map((s) => {
+                        const id = leadSourceIdToString((s as { id?: unknown }).id);
+                        if (!id) return null;
+                        return { id, name: String((s as { name?: string }).name ?? '') };
+                    })
+                    .filter((s): s is { id: string; name: string } => Boolean(s));
                 const allowedSourceNames = allowedTyped.map((s) => s.name);
-                const sourceIdsFromMisc = allowedTyped.map((s) => s.id).filter((n) => Number.isFinite(n));
+                const sourceIdsFromMisc = allowedTyped.map((s) => s.id);
                 const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
                 // Fetch leads: include rows keyed by source_id OR text source (aligned with lead search).
@@ -338,12 +331,15 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                const allowedTyped = allowedSources.map((s) => ({
-                    id: Number((s as any).id),
-                    name: String((s as any).name),
-                }));
+                const allowedTyped = allowedSources
+                    .map((s) => {
+                        const id = leadSourceIdToString((s as { id?: unknown }).id);
+                        if (!id) return null;
+                        return { id, name: String((s as { name?: string }).name ?? '') };
+                    })
+                    .filter((s): s is { id: string; name: string } => Boolean(s));
                 const allowedSourceNames = allowedTyped.map((s) => s.name);
-                const sourceIdsFromMisc = allowedTyped.map((s) => s.id).filter((n) => Number.isFinite(n));
+                const sourceIdsFromMisc = allowedTyped.map((s) => s.id);
                 const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
                 // Get date range for last 30 days

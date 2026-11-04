@@ -171,6 +171,17 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       searchableSelect: true,
     },
     {
+      name: 'hire_work_email',
+      label: 'Work email (Outlook)',
+      type: 'email' as const,
+      required: false,
+      placeholder: 'e.g., name@lawoffice.org.il',
+      hideInTable: true,
+      hideInAdd: false,
+      hideInEdit: true,
+      searchable: false,
+    },
+    {
       name: 'official_name',
       label: 'Official Name',
       type: 'text' as const,
@@ -206,7 +217,8 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       label: 'Mobile',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., +972-50-123-4567'
+      placeholder: 'e.g., +972-50-123-4567',
+      searchable: true,
     },
     {
       name: 'employee_mobile',
@@ -217,20 +229,23 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       hideInTable: false,
       hideInAdd: false,
       hideInEdit: false,
+      searchable: true,
     },
     {
       name: 'phone',
       label: 'Phone',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., +972-50-123-4567'
+      placeholder: 'e.g., +972-50-123-4567',
+      searchable: true,
     },
     {
       name: 'phone_ext',
       label: 'Phone Ext',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., 123'
+      placeholder: 'e.g., 123',
+      searchable: false,
     },
     {
       name: 'mobile_ext',
@@ -238,7 +253,8 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       type: 'text' as const,
       required: false,
       placeholder: 'e.g., 456',
-      hideInEdit: true // Hide in edit drawer only
+      hideInEdit: true, // Hide in edit drawer only
+      searchable: false,
     },
     {
       name: 'last_call_from',
@@ -246,7 +262,8 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       type: 'text' as const,
       required: false,
       placeholder: 'e.g., +972-50-123-4567',
-      hideInEdit: true // Hide in edit drawer only
+      hideInEdit: true, // Hide in edit drawer only
+      searchable: false,
     },
     {
       name: 'photo',

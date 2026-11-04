@@ -4,6 +4,7 @@ import { getMailboxLoginUrl, runMailboxCatchUpSync } from '../lib/mailboxApi';
 import { useLocation } from 'react-router-dom';
 import { XMarkIcon, EnvelopeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useExternalUser } from '../hooks/useExternalUser';
 import toast from 'react-hot-toast';
 
 const DISMISS_KEY_PREFIX = 'mailbox_oos_dismiss_until_v1_';
@@ -19,6 +20,7 @@ const MailboxReconnectModal: React.FC = () => {
   } = useMailboxReconnect();
   const location = useLocation();
   const { user } = useAuthContext();
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -79,6 +81,7 @@ const MailboxReconnectModal: React.FC = () => {
     hideSyncPrompt();
   }, [user?.id, hideSyncPrompt]);
 
+  if (isExternalUser || isLoadingExternal) return null;
   if (!isModalOpen && !isSyncPromptOpen) return null;
 
   return (

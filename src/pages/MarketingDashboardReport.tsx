@@ -30,6 +30,8 @@ import {
   timestampInCalendarRange,
   type SourceRowLike,
 } from '../lib/leadDateFilters';
+import { fetchMiscLeadsourcesByIds } from '../lib/externalUserSources';
+import { leadSourceIdToString } from '../lib/leadSourceId';
 import {
   fetchStage60RecordsInRange,
   resolveStage60SignTimestamp,
@@ -1742,7 +1744,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const macroTableScrollRef = useRef<HTMLDivElement | null>(null);
   const macroTableSectionRef = useRef<HTMLDivElement | null>(null);
   const macroBottomScrollbarRef = useRef<HTMLDivElement | null>(null);
-  const syncingMacroHScrollRef = useRef(false);
+  /** Prevents table↔bottom scroll sync from fighting while the user drags either scrollbar. */
+  const macroHScrollLockRef = useRef<'table' | 'bottom' | null>(null);
+  const macroBottomDraggingRef = useRef(false);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [channelIds, setChannelIds] = useState<string[]>([]);
@@ -1759,23 +1763,23 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const stickyChannelClass =
     'macro-sticky-col sticky left-0 z-[22] min-w-[8rem] w-[8rem] bg-white';
   const stickySourceClass =
-    'macro-sticky-col macro-label-col sticky left-[8rem] z-[22] min-w-[12rem] w-[12rem] sm:min-w-[14rem] sm:w-[14rem] bg-white';
+    'macro-sticky-col macro-label-col sticky left-[8rem] z-[22] min-w-[8.5rem] w-[8.5rem] bg-white';
   const stickyProviderLeftClass = showSourceCol
-    ? 'sticky left-[20rem] sm:left-[22rem]'
+    ? 'sticky left-[16.5rem]'
     : 'sticky left-[8rem]';
-  const stickyProviderClass = `macro-sticky-col macro-label-col ${stickyProviderLeftClass} z-[22] min-w-[12rem] w-[12rem] sm:min-w-[14rem] sm:w-[14rem] bg-white`;
+  const stickyProviderClass = `macro-sticky-col macro-label-col ${stickyProviderLeftClass} z-[22] min-w-[8.5rem] w-[8.5rem] bg-white`;
   const channelIsLastSticky = !showSourceCol && !showProviderCol;
   const sourceIsLastSticky = showSourceCol && !showProviderCol;
   const providerIsLastSticky = showProviderCol;
-  const macroLabelColClass = `${macroLabelAlign} whitespace-normal break-normal [overflow-wrap:normal] [word-break:keep-all] hyphens-none align-middle leading-snug`;
+  const macroLabelColClass = `${macroLabelAlign} whitespace-normal break-words [overflow-wrap:anywhere] align-middle leading-snug`;
   const macroLabelTextClass =
-    'block break-normal [overflow-wrap:normal] [word-break:keep-all] hyphens-none';
-  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed !border-separate border-spacing-0 w-full min-w-[78rem] border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-normal [&_td:not(.macro-label-col)]:whitespace-nowrap [&_thead_th]:border-0 [&_thead_th]:border-b [&_thead_th]:border-base-300 [&_tbody_td]:border-0 [&_tbody_td]:border-b [&_tbody_td]:border-base-200 [&_tfoot_td]:border-0 [&_tfoot_td]:border-t-2 [&_tfoot_td]:border-base-300 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_tfoot_tr]:bg-base-200 [&_th]:bg-white [&_td]:bg-white [&_tfoot_td]:bg-base-200`;
+    'block break-words [overflow-wrap:anywhere] leading-snug line-clamp-2';
+  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed !border-separate border-spacing-0 w-full min-w-[67rem] border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-words [&_td:not(.macro-label-col)]:whitespace-nowrap [&_thead_th]:border-0 [&_thead_th]:border-b [&_thead_th]:border-base-300 [&_tbody_td]:border-0 [&_tbody_td]:border-b [&_tbody_td]:border-base-200 [&_tfoot_td]:border-0 [&_tfoot_td]:border-t-2 [&_tfoot_td]:border-base-300 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_tfoot_tr]:bg-base-200 [&_th]:bg-white [&_td]:bg-white [&_tfoot_td]:bg-base-200`;
   const macroColGroup = (
     <colgroup>
       <col className="w-[8rem]" />
-      {showSourceCol ? <col className="w-[12rem] sm:w-[14rem]" /> : null}
-      {showProviderCol ? <col className="w-[12rem] sm:w-[14rem]" /> : null}
+      {showSourceCol ? <col className="w-[8.5rem]" /> : null}
+      {showProviderCol ? <col className="w-[8.5rem]" /> : null}
       <col className="w-[4.5rem]" />
       <col className="w-[4.5rem]" />
       <col className="w-[5rem]" />
@@ -1894,11 +1898,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   }, [sourceFirmLinks]);
 
   const loadReferenceData = useCallback(async () => {
+    const lockedIds = Array.from(lockedSourceIdSet);
+    // External: fetch assigned sources by id (chunked). A full-table select is capped ~1000 rows
+    // by PostgREST, so many assigned sources (often large bigint ids) never appeared after client filter.
+    const sourcePromise =
+      isExternalVariant && lockedIds.length > 0
+        ? fetchMiscLeadsourcesByIds(lockedIds).then((rows) => ({ data: rows, error: null as Error | null }))
+        : supabase.from('misc_leadsource').select('id, name, channel_id, active').order('name');
+
     const [ch, src, fr, co, mc] = await Promise.all([
       // Load ALL channels so sources linked to inactive channels still resolve (avoid "Unassigned channel").
       // We’ll filter inactive channels out of the filter dropdown UI separately.
       supabase.from('channels').select('id, code, label, is_active').order('sort_order'),
-      supabase.from('misc_leadsource').select('id, name, channel_id, active').order('name'),
+      sourcePromise,
       supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
       supabase.from('misc_country').select('id, name, phone_code').order('name'),
       supabase.from('misc_maincategory').select('id, name').order('name'),
@@ -1916,34 +1928,48 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     }
     if (!src.error && src.data) {
       const rawRows = src.data as { id: number | string; name: string; channel_id: string | null; active?: boolean }[];
-      let rows = rawRows.map((r) => ({
-        id: String(r.id),
-        name: r.name,
-        channel_id: r.channel_id,
-      }));
+      let rows = rawRows
+        .map((r) => {
+          const id = leadSourceIdToString(r.id);
+          if (!id) return null;
+          return {
+            id,
+            name: r.name,
+            channel_id: r.channel_id,
+            active: r.active,
+          };
+        })
+        .filter((r): r is { id: string; name: string; channel_id: string | null; active?: boolean } => Boolean(r));
       if (isExternalVariant && lockedSourceIdSet.size > 0) {
-        rows = rows.filter((r) => lockedSourceIdSet.has(String(r.id)));
+        rows = rows.filter((r) => lockedSourceIdSet.has(r.id));
       }
-      setAllSources(rows);
-      setSources(rows.filter((r) => {
-        const raw = rawRows.find((x) => String(x.id) === r.id);
-        return raw?.active !== false;
-      }));
+      setAllSources(rows.map(({ id, name, channel_id }) => ({ id, name, channel_id })));
+      // External: show all assigned sources (incl. inactive). Staff: active only in the filter UI.
+      setSources(
+        isExternalVariant
+          ? rows.map(({ id, name, channel_id }) => ({ id, name, channel_id }))
+          : rows
+              .filter((r) => r.active !== false)
+              .map(({ id, name, channel_id }) => ({ id, name, channel_id })),
+      );
     }
     if (!isExternalVariant && !fr.error && fr.data) setFirms(fr.data as FirmRow[]);
     if (!co.error && co.data) setCountries(co.data as CountryRow[]);
     if (!mc.error && mc.data) {
       setMainCategories(
-        (mc.data as { id: number | string; name: string }[]).map((r) => ({
-          id: String(r.id),
-          name: r.name,
-        })),
+        (mc.data as { id: number | string; name: string }[])
+          .map((r) => {
+            const id = leadSourceIdToString(r.id);
+            if (!id) return null;
+            return { id, name: r.name };
+          })
+          .filter((r): r is { id: string; name: string } => Boolean(r)),
       );
     }
     if (sfRows.length > 0) {
       const rows = sfRows.map((r) => ({
         firm_id: r.firm_id,
-        source_id: String(r.source_id),
+        source_id: leadSourceIdToString(r.source_id) || String(r.source_id),
         firm_name: (
           (Array.isArray(r.firms) ? r.firms[0]?.name : r.firms?.name) || ''
         ).trim() || '—',
@@ -2519,6 +2545,38 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       row.revenueNis += leadRevenueNis(l);
     }
 
+    const seedEmptySourceRow = (sid: string) => {
+      const srcRow = lookup.sourceIdToRow.get(sid);
+      const channel = channelLabel(srcRow?.channel_id ?? null);
+      const source = srcRow?.name || `Source #${sid}`;
+      const key = `${channel}|||${source}`;
+      if (map.has(key)) return;
+      const providerName = sourceIdToFirmName.get(sid) || '—';
+      map.set(key, {
+        key,
+        channel,
+        source,
+        provider: '—',
+        leads: 0,
+        eligible: 0,
+        meetings: 0,
+        offers: 0,
+        deals: 0,
+        leadsExclStage91: 0,
+        stage91: 0,
+        invoicedNis: 0,
+        revenueNis: 0,
+        inactive: 0,
+        notEligible: 0,
+        mediaNis: 0,
+        managementNis: 0,
+        _providerNames: new Set(providerName !== '—' ? [providerName] : []),
+        _sourceIds: new Set([sid]),
+        _firmIds: new Set(sourceIdToFirmIds.get(sid) || []),
+        _countedMeetingLeadIds: new Set<string>(),
+      });
+    };
+
     // Firm filter: show every source linked to the selected firm(s), even with 0 leads in range.
     if (firmIds.length > 0 && groupMode === 'source') {
       const linkedSourceIds = new Set<string>();
@@ -2527,36 +2585,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           linkedSourceIds.add(String(sid));
         }
       }
-      for (const sid of linkedSourceIds) {
-        const srcRow = lookup.sourceIdToRow.get(sid);
-        const channel = channelLabel(srcRow?.channel_id ?? null);
-        const source = srcRow?.name || `Source #${sid}`;
-        const key = `${channel}|||${source}`;
-        if (map.has(key)) continue;
-        const providerName = sourceIdToFirmName.get(sid) || '—';
-        map.set(key, {
-          key,
-          channel,
-          source,
-          provider: '—',
-          leads: 0,
-          eligible: 0,
-          meetings: 0,
-          offers: 0,
-          deals: 0,
-          leadsExclStage91: 0,
-          stage91: 0,
-          invoicedNis: 0,
-          revenueNis: 0,
-          inactive: 0,
-          notEligible: 0,
-          mediaNis: 0,
-          managementNis: 0,
-          _providerNames: new Set(providerName !== '—' ? [providerName] : []),
-          _sourceIds: new Set([sid]),
-          _firmIds: new Set(sourceIdToFirmIds.get(sid) || []),
-          _countedMeetingLeadIds: new Set<string>(),
-        });
+      for (const sid of linkedSourceIds) seedEmptySourceRow(sid);
+    }
+
+    // External: always list every assigned source (incl. 0 leads), matching the user's extern_source_id set.
+    if (isExternalVariant && lockedSourceIdSet.size > 0 && groupMode === 'source') {
+      for (const sid of lockedSourceIdSet) {
+        if (sourceIds.length > 0 && !sourceIds.includes(sid)) continue;
+        if (channelIds.length > 0) {
+          const srcRow = lookup.sourceIdToRow.get(sid);
+          const cid = srcRow?.channel_id ? String(srcRow.channel_id) : '';
+          if (!cid || !channelIds.includes(cid)) continue;
+        }
+        seedEmptySourceRow(sid);
       }
     }
 
@@ -2588,7 +2629,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         _firmIds: r._firmIds,
       };
     });
-  }, [leads, signedDealLeads, invoicedNisByLeadId, leadIdsWithMeeting, groupMode, channels, firmIds, firmIdToSourceIds, sourceIdToFirmName, sourceIdToFirmIds, mediaExpenseBySourceId, allSources]);
+  }, [
+    leads,
+    signedDealLeads,
+    invoicedNisByLeadId,
+    leadIdsWithMeeting,
+    groupMode,
+    channels,
+    firmIds,
+    firmIdToSourceIds,
+    sourceIdToFirmName,
+    sourceIdToFirmIds,
+    mediaExpenseBySourceId,
+    allSources,
+    isExternalVariant,
+    lockedSourceIdSet,
+    sourceIds,
+    channelIds,
+  ]);
 
   const sortedAggregates = useMemo(() => {
     const rows = [...aggregates];
@@ -2814,6 +2872,17 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     };
   }, [leads, callLogsRows, schedulerDisplayNames, employeeDisplayNameToId]);
 
+  const clearMacroHScrollLock = useCallback((source: 'table' | 'bottom') => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (macroBottomDraggingRef.current && source === 'bottom') return;
+        if (macroHScrollLockRef.current === source) {
+          macroHScrollLockRef.current = null;
+        }
+      });
+    });
+  }, []);
+
   const updateMacroScrollState = useCallback(() => {
     const el = macroTableScrollRef.current;
     if (!el) {
@@ -2823,16 +2892,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     }
     const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
     setMacroNeedsHScroll(maxLeft > 4);
-    setMacroScrollWidth(el.scrollWidth);
     const bottom = macroBottomScrollbarRef.current;
-    if (bottom && !syncingMacroHScrollRef.current && bottom.scrollLeft !== el.scrollLeft) {
-      syncingMacroHScrollRef.current = true;
+    // Bottom bar is viewport-wide; table scroller is narrower (sidebar/padding).
+    // Spacer = tableMaxScroll + bottomClient so both share the same max scrollLeft.
+    const bottomClient = bottom?.clientWidth || window.innerWidth || el.clientWidth;
+    setMacroScrollWidth(maxLeft + bottomClient);
+    // Never push table → bottom while the user is dragging the fixed scrollbar
+    // (or while a bottom-driven sync is in flight); that fight cancels click-drag.
+    if (
+      bottom &&
+      !macroBottomDraggingRef.current &&
+      macroHScrollLockRef.current !== 'bottom' &&
+      bottom.scrollLeft !== el.scrollLeft
+    ) {
+      macroHScrollLockRef.current = 'table';
       bottom.scrollLeft = el.scrollLeft;
-      requestAnimationFrame(() => {
-        syncingMacroHScrollRef.current = false;
-      });
+      clearMacroHScrollLock('table');
     }
-  }, []);
+  }, [clearMacroHScrollLock]);
 
   const updateMacroTableOnScreen = useCallback(() => {
     const section = macroTableSectionRef.current;
@@ -2849,11 +2926,26 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const syncMacroHScrollFromBottom = useCallback(() => {
     const bottom = macroBottomScrollbarRef.current;
     const el = macroTableScrollRef.current;
-    if (!bottom || !el || syncingMacroHScrollRef.current) return;
-    syncingMacroHScrollRef.current = true;
+    if (!bottom || !el) return;
+    if (macroHScrollLockRef.current === 'table' && !macroBottomDraggingRef.current) return;
+    macroHScrollLockRef.current = 'bottom';
     el.scrollLeft = bottom.scrollLeft;
+    clearMacroHScrollLock('bottom');
+  }, [clearMacroHScrollLock]);
+
+  const onMacroBottomPointerDown = useCallback(() => {
+    macroBottomDraggingRef.current = true;
+    macroHScrollLockRef.current = 'bottom';
+  }, []);
+
+  const onMacroBottomPointerUp = useCallback(() => {
+    macroBottomDraggingRef.current = false;
     requestAnimationFrame(() => {
-      syncingMacroHScrollRef.current = false;
+      requestAnimationFrame(() => {
+        if (!macroBottomDraggingRef.current && macroHScrollLockRef.current === 'bottom') {
+          macroHScrollLockRef.current = null;
+        }
+      });
     });
   }, []);
 
@@ -2899,10 +2991,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
   useEffect(() => {
     if (!macroNeedsHScroll || !macroTableOnScreen) return;
-    const el = macroTableScrollRef.current;
-    const bottom = macroBottomScrollbarRef.current;
-    if (el && bottom) bottom.scrollLeft = el.scrollLeft;
-  }, [macroNeedsHScroll, macroTableOnScreen, macroScrollWidth]);
+    // Remeasure after the fixed bar mounts so spacer width uses its real clientWidth.
+    const id = requestAnimationFrame(() => updateMacroScrollState());
+    return () => cancelAnimationFrame(id);
+  }, [macroNeedsHScroll, macroTableOnScreen, updateMacroScrollState]);
+
+  useEffect(() => {
+    const endDrag = () => {
+      if (!macroBottomDraggingRef.current) return;
+      macroBottomDraggingRef.current = false;
+      if (macroHScrollLockRef.current === 'bottom') macroHScrollLockRef.current = null;
+    };
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+    return () => {
+      window.removeEventListener('pointerup', endDrag);
+      window.removeEventListener('pointercancel', endDrag);
+    };
+  }, []);
 
   const fmtMoney = (n: number) =>
     `₪ ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -2938,10 +3044,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   };
 
   /** Same sticky Channel/Source/Provider cells as the main table so the floating total aligns. */
+  const macroTotalTextClass = 'text-sm md:text-base font-bold';
   const renderMacroStickyTotalLabelCells = (bgClass: string) => (
     <>
       <td
-        className={`whitespace-nowrap font-extrabold ${macroCellAlign} ${stickyChannelClass} ${bgClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
+        className={`whitespace-nowrap ${macroTotalTextClass} ${macroCellAlign} ${stickyChannelClass} ${bgClass}${channelIsLastSticky ? ` ${stickyEdgeClass}` : ''}`}
       >
         Total
       </td>
@@ -2966,32 +3073,32 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
   const renderMacroTotalMetricCells = () => (
     <>
-      <td className={`${macroMetricCell} font-extrabold`}>{totals.leads}</td>
-      <td className={`${macroMetricCell} font-extrabold`}>{totals.eligible}</td>
-      <td className={`${macroMetricCell} font-extrabold`}>{totals.meetings}</td>
-      <td className={`${macroMetricCell} font-extrabold`}>{totals.offers}</td>
-      <td className={`${macroMetricCell} font-extrabold text-blue-600`}>{totals.deals}</td>
-      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.eligible, totals.leads)}</td>
-      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.meetings, totals.leads)}</td>
-      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.offers, totals.leadsExclStage91)}</td>
-      <td className={`${macroPctCell} font-extrabold`}>{macroPct(totals.deals, totals.leadsExclStage91)}</td>
-      <td className={`${macroMoneyCell} font-extrabold`}>{fmtMoney(totals.invoiced)}</td>
-      <td className={`${macroMoneyCell} font-extrabold !text-green-600`}>{fmtMoney(totals.revenue)}</td>
-      <td className={`${macroMetricCell} font-extrabold`}>{totals.inactive}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass}`}>{totals.leads}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass}`}>{totals.eligible}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass}`}>{totals.meetings}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass}`}>{totals.offers}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass} text-blue-600`}>{totals.deals}</td>
+      <td className={`${macroPctCell} ${macroTotalTextClass}`}>{macroPct(totals.eligible, totals.leads)}</td>
+      <td className={`${macroPctCell} ${macroTotalTextClass}`}>{macroPct(totals.meetings, totals.leads)}</td>
+      <td className={`${macroPctCell} ${macroTotalTextClass}`}>{macroPct(totals.offers, totals.leadsExclStage91)}</td>
+      <td className={`${macroPctCell} ${macroTotalTextClass}`}>{macroPct(totals.deals, totals.leadsExclStage91)}</td>
+      <td className={`${macroMoneyCell} ${macroTotalTextClass}`}>{fmtMoney(totals.invoiced)}</td>
+      <td className={`${macroMoneyCell} ${macroTotalTextClass} !text-green-600`}>{fmtMoney(totals.revenue)}</td>
+      <td className={`${macroMetricCell} ${macroTotalTextClass}`}>{totals.inactive}</td>
       {!isExternalVariant && (
         <>
-          <td className={`${macroMoneyCell} font-extrabold`}>
+          <td className={`${macroMoneyCell} ${macroTotalTextClass}`}>
             {totals.mediaNis > 0 ? fmtMoney(totals.mediaNis) : '—'}
           </td>
-          <td className={`${macroMoneyCell} font-extrabold`}>
+          <td className={`${macroMoneyCell} ${macroTotalTextClass}`}>
             {totals.managementNis > 0 ? fmtMoney(totals.managementNis) : '—'}
           </td>
-          <td className={`${macroMoneyCell} font-extrabold`}>
+          <td className={`${macroMoneyCell} ${macroTotalTextClass}`}>
             {totals.mediaNis + totals.managementNis > 0
               ? fmtMoney(totals.mediaNis + totals.managementNis)
               : '—'}
           </td>
-          <td className={`${macroPctCell} font-extrabold`}>100.0%</td>
+          <td className={`${macroPctCell} ${macroTotalTextClass}`}>100.0%</td>
         </>
       )}
     </>
@@ -3236,7 +3343,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
       {searched && !loading && (
         <>
-          {!isExternalVariant && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             {[
               {
@@ -3251,7 +3357,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 label: 'Eligible',
                 value: totals.eligible,
                 icon: CheckCircleIcon,
-                targetId: 'marketing-kpi-timing',
+                targetId: isExternalVariant ? 'marketing-kpi-macro' : 'marketing-kpi-timing',
                 className:
                   'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white',
               },
@@ -3267,7 +3373,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 label: 'Deals (signed)',
                 value: totals.deals,
                 icon: CheckCircleIcon,
-                targetId: 'marketing-kpi-sales',
+                targetId: isExternalVariant ? 'marketing-kpi-macro' : 'marketing-kpi-sales',
                 className:
                   'bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-400 text-white',
               },
@@ -3298,30 +3404,35 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 className={`rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl shadow-xl relative overflow-hidden p-5 min-h-[7.5rem] text-left flex flex-col ${k.className}`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center justify-center w-14 h-14 shrink-0 -mt-1 -ml-1 rounded-full bg-white/20 shadow">
+                  <div className="min-w-0 flex-1 text-left">
+                    <div className="text-3xl font-extrabold text-white leading-none break-words">
+                      {k.value}
+                    </div>
+                    <div className="mt-0.5 text-base font-semibold text-white/90 leading-tight">
+                      {k.label}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-center w-14 h-14 shrink-0 -mt-1 -mr-1 rounded-full bg-white/20 shadow">
                     <k.icon className="w-8 h-8 text-white opacity-95" />
                   </div>
-                  <div className="text-3xl font-extrabold text-white leading-none min-w-0 break-words text-right">
-                    {k.value}
-                  </div>
-                </div>
-                <div className="mt-auto pt-3 text-sm font-semibold text-white/85">
-                  {k.label}
                 </div>
               </button>
             ))}
           </div>
-          )}
 
           {/* Main macro table — Channel/Source/Provider stay pinned; metrics scroll horizontally */}
           <div
             id="marketing-kpi-macro"
             ref={macroTableSectionRef}
-            className={`scroll-mt-24 w-full max-w-full min-w-0 ${isExternalVariant ? 'bg-white' : REPORT_WHITE_PANEL}`}
+            className={`scroll-mt-24 w-full max-w-full min-w-0 ${
+              isExternalVariant
+                ? 'bg-white'
+                : 'rounded-2xl bg-white px-1 py-2 shadow-sm ring-1 ring-gray-100 sm:px-1.5 sm:py-2.5'
+            }`}
           >
             <div
               ref={macroTableScrollRef}
-              className="w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain"
+              className="scrollbar-hide w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain"
               onScroll={() => updateMacroScrollState()}
             >
             <table className={macroTableClass}>
@@ -3330,17 +3441,15 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 <tr className="border-b border-base-300 bg-base-100 text-[11px] uppercase tracking-wide">
                   <th
                     colSpan={(showSourceCol ? 2 : 1) + (showProviderCol ? 1 : 0)}
-                    className={`sticky left-0 z-[23] bg-white text-center text-base-content/50 ${stickyEdgeClass}`}
-                    style={{ letterSpacing: '0.08em' }}
-                  >
-                    Performance
-                  </th>
+                    className={`sticky left-0 z-[23] bg-white ${stickyEdgeClass}`}
+                    aria-hidden
+                  />
                   <th
                     colSpan={9}
                     className="text-center text-base-content/50"
                     style={{ letterSpacing: '0.08em' }}
                   >
-                    Funnel
+                    Performance
                   </th>
                   <th
                     colSpan={3}
@@ -3446,7 +3555,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     align={macroSortAlign}
                     className={macroCellAlign}
                   >
-                    Lead→Elig %
+                    <span className="inline-flex flex-col items-center leading-tight">
+                      <span>Lead→Elig</span>
+                      <span>%</span>
+                    </span>
                   </MacroSortableTh>
                   <MacroSortableTh
                     sortKey="pctMtg"
@@ -3457,7 +3569,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     align={macroSortAlign}
                     className={macroCellAlign}
                   >
-                    Lead→Mtg %
+                    <span className="inline-flex flex-col items-center leading-tight">
+                      <span>Lead→Mtg</span>
+                      <span>%</span>
+                    </span>
                   </MacroSortableTh>
                   <MacroSortableTh
                     sortKey="pctOffer"
@@ -3468,7 +3583,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     align={macroSortAlign}
                     className={macroCellAlign}
                   >
-                    Lead→Offer %
+                    <span className="inline-flex flex-col items-center leading-tight">
+                      <span>Lead→Offer</span>
+                      <span>%</span>
+                    </span>
                   </MacroSortableTh>
                   <MacroSortableTh
                     sortKey="pctDeal"
@@ -3479,7 +3597,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     align={macroSortAlign}
                     className={macroCellAlign}
                   >
-                    Lead→Deal %
+                    <span className="inline-flex flex-col items-center leading-tight">
+                      <span>Lead→Deal</span>
+                      <span>%</span>
+                    </span>
                   </MacroSortableTh>
                   <MacroSortableTh
                     sortKey="invoiced"
@@ -3582,8 +3703,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                       <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.meetings, r.leads)}</td>
                       <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.offers, offerDealDenom)}</td>
                       <td className={`${macroCellAlign} !text-gray-400`}>{macroPct(r.deals, offerDealDenom)}</td>
-                      <td className={`${macroCellAlign} text-sm font-semibold`}>{fmtMoney(r.invoicedNis)}</td>
-                      <td className={`${macroCellAlign} text-sm font-semibold !text-green-600`}>{fmtMoney(r.revenueNis)}</td>
+                      <td className={macroCellAlign}>{fmtMoney(r.invoicedNis)}</td>
+                      <td className={`${macroCellAlign} !text-green-600`}>{fmtMoney(r.revenueNis)}</td>
                       <td className={macroCellAlign}>{r.inactive}</td>
                       {!isExternalVariant && (
                         <>
@@ -3599,7 +3720,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               </tbody>
               {sortedAggregates.length > 0 && (
                 <tfoot>
-                  <tr className="border-t-2 border-base-300 bg-base-200 font-extrabold">
+                  <tr className="border-t-2 border-base-300 bg-base-200 text-sm md:text-base">
                     {renderMacroStickyTotalLabelCells('!bg-base-200')}
                     {renderMacroTotalMetricCells()}
                   </tr>
@@ -3616,11 +3737,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             >
               <div
                 ref={macroBottomScrollbarRef}
-                className="w-full overflow-x-auto overflow-y-hidden"
+                className="h-4 w-full overflow-x-auto overflow-y-hidden overscroll-x-contain"
                 onScroll={syncMacroHScrollFromBottom}
+                onPointerDown={onMacroBottomPointerDown}
+                onPointerUp={onMacroBottomPointerUp}
+                onPointerCancel={onMacroBottomPointerUp}
                 aria-label="Table horizontal scrollbar"
               >
-                <div style={{ width: macroScrollWidth, height: 1 }} />
+                <div style={{ width: macroScrollWidth, height: '100%' }} />
               </div>
             </div>
           )}

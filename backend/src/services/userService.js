@@ -11,6 +11,7 @@ class UserService {
       const {
         email,
         password,
+        employee_private_email,
         full_name,
         first_name,
         last_name,
@@ -25,11 +26,13 @@ class UserService {
         throw new Error('Email and password are required');
       }
 
+      const createEmail = String(email).trim().toLowerCase();
+
       // Check if user already exists
       const { data: existingUser } = await supabase
         .from('users')
         .select('id, email')
-        .eq('email', email)
+        .eq('email', createEmail)
         .single();
 
       if (existingUser) {
@@ -38,7 +41,7 @@ class UserService {
 
       // Create user in Supabase Auth
       const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
-        email,
+        email: createEmail,
         password,
         email_confirm: true,
         user_metadata: {
@@ -53,12 +56,20 @@ class UserService {
         throw new Error(`Failed to create auth user: ${authError.message}`);
       }
 
-      // Create user in custom users table
+      const privateEmailRaw = String(employee_private_email || '').trim().toLowerCase();
+      const privateEmail =
+        privateEmailRaw && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(privateEmailRaw)
+          ? privateEmailRaw
+          : createEmail;
+
+      // Create user in custom users table.
+      // Default private email to login email (recruitment); admin can set a distinct private address.
       const { data: customUser, error: customError } = await supabase
         .from('users')
         .insert({
           auth_id: authUser.user.id,
-          email,
+          email: createEmail,
+          employee_private_email: privateEmail,
           full_name: full_name || `${first_name || ''} ${last_name || ''}`.trim(),
           first_name,
           last_name,
@@ -89,6 +100,7 @@ class UserService {
           id: customUser.id,
           auth_id: authUser.user.id,
           email: customUser.email,
+          employee_private_email: customUser.employee_private_email,
           full_name: customUser.full_name,
           role: customUser.role,
           is_active: customUser.is_active,
@@ -184,7 +196,7 @@ class UserService {
     try {
       const { data: existingUser, error: fetchError } = await supabase
         .from('users')
-        .select('id, auth_id, email')
+        .select('id, auth_id, email, employee_private_email')
         .eq('id', userId)
         .single();
 
@@ -197,7 +209,8 @@ class UserService {
         throw new Error('A valid email address is required');
       }
 
-      const emailChanged = nextEmail !== String(existingUser.email || '').trim().toLowerCase();
+      const previousEmail = String(existingUser.email || '').trim().toLowerCase();
+      const emailChanged = nextEmail !== previousEmail;
       if (emailChanged && !existingUser.auth_id) {
         throw new Error('This CRM user is not linked to a Supabase Auth user');
       }
@@ -225,6 +238,18 @@ class UserService {
         user_permissions: updateData.user_permissions,
         updated_at: new Date().toISOString()
       };
+
+      // Keep / update private email. If login email changes and private was empty, preserve the old login email.
+      const existingPrivate = String(existingUser.employee_private_email || '').trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(updateData, 'employee_private_email')) {
+        const nextPrivate = String(updateData.employee_private_email || '').trim().toLowerCase();
+        if (nextPrivate && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextPrivate)) {
+          throw new Error('Employee private email must be a valid email address');
+        }
+        safeUpdateData.employee_private_email = nextPrivate || null;
+      } else if (emailChanged && !existingPrivate && previousEmail) {
+        safeUpdateData.employee_private_email = previousEmail;
+      }
 
       const { data: user, error } = await supabase
         .from('users')
