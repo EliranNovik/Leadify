@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChevronRightIcon } from '@heroicons/react/24/outline';
+import { useTranslation } from 'react-i18next';
+import '../i18n/portalI18n';
 
 export const PORTAL_SHELL_CLASS =
   'portal-brand portal-page-shell min-h-[100dvh] bg-gradient-to-b from-[#f7f7fb] to-[#f1f2f6]';
@@ -173,17 +175,19 @@ export function isPaymentOverdue(dueDate: string | null | undefined): boolean {
 }
 
 export function PortalOverdueBadge() {
+  const { t } = useTranslation();
   return (
     <span className="inline-flex rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-semibold text-red-700 md:text-sm">
-      Overdue
+      {t('common.badges.overdue')}
     </span>
   );
 }
 
 export function PortalPaidBadge() {
+  const { t } = useTranslation();
   return (
     <span className="inline-flex rounded-full bg-emerald-500/12 px-2.5 py-0.5 text-xs font-semibold text-emerald-700">
-      Paid
+      {t('common.badges.paid')}
     </span>
   );
 }
@@ -204,6 +208,7 @@ export function PortalDueDateBadge({
   date: string | null | undefined;
   overdue?: boolean;
 }) {
+  const { t } = useTranslation();
   const formatted = formatPortalBadgeDate(date);
   if (!formatted) return null;
   const tone = overdue ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-800';
@@ -211,29 +216,31 @@ export function PortalDueDateBadge({
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold md:text-sm ${tone}`}
     >
-      <span className="font-medium opacity-75">Due</span>
+      <span className="font-medium opacity-75">{t('common.badges.due')}</span>
       <span>{formatted}</span>
     </span>
   );
 }
 
 export function PortalPaidDateBadge({ date }: { date: string | null | undefined }) {
+  const { t } = useTranslation();
   const formatted = formatPortalBadgeDate(date);
   if (!formatted) return null;
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 md:text-sm">
-      <span className="font-medium opacity-75">Paid</span>
+      <span className="font-medium opacity-75">{t('common.badges.paid')}</span>
       <span>{formatted}</span>
     </span>
   );
 }
 
 export function PortalOriginallyDueText({ date }: { date: string | null | undefined }) {
+  const { t } = useTranslation();
   const formatted = formatPortalBadgeDate(date);
   if (!formatted) return null;
   return (
     <p className="mt-2 text-xs text-gray-400 md:text-sm">
-      Originally due {formatted}
+      {t('common.badges.originallyDue', { date: formatted })}
     </p>
   );
 }

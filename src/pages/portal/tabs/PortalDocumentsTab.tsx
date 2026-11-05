@@ -15,6 +15,9 @@ import {
 } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
+import { translatePortalDynamicLabel } from '../i18n/portalDynamicLabels';
 import {
   DocumentPreviewModal,
   type DocumentPreviewItem,
@@ -54,37 +57,40 @@ type PortalDocumentTab = {
 
 const PORTAL_DOCUMENT_TAB_DEFS: ReadonlyArray<{
   key: PortalDocumentTabKey;
-  label: string;
+  labelKey: string;
   slugs: readonly string[];
   labelMatches: readonly string[];
 }> = [
   {
     key: 'sequence',
-    label: 'Sequence of Events',
+    labelKey: 'documents.categoryTabs.sequenceOfEvents',
     slugs: ['sequence_of_events', 'sequence-of-events'],
     labelMatches: ['sequence of events'],
   },
   {
     key: 'expert',
-    label: 'Expert',
+    labelKey: 'documents.categoryTabs.expert',
     slugs: ['expert'],
     labelMatches: ['expert'],
   },
   {
     key: 'legal_claims',
-    label: 'Legal claims',
+    labelKey: 'documents.categoryTabs.legalClaims',
     slugs: ['legal_claims', 'legal-claims'],
     labelMatches: ['legal claims'],
   },
   {
     key: 'contract',
-    label: 'Contract',
+    labelKey: 'documents.categoryTabs.contract',
     slugs: ['contract'],
     labelMatches: ['contract'],
   },
 ];
 
-function resolvePortalDocumentTabs(classifications: PortalDocumentClassification[]): PortalDocumentTab[] {
+function resolvePortalDocumentTabs(
+  classifications: PortalDocumentClassification[],
+  t: TFunction,
+): PortalDocumentTab[] {
   return PORTAL_DOCUMENT_TAB_DEFS.map((def) => {
     const match = classifications.find((c) => {
       const slug = c.slug.toLowerCase();
@@ -94,7 +100,7 @@ function resolvePortalDocumentTabs(classifications: PortalDocumentClassification
     return {
       key: def.key,
       id: match?.id ?? def.key,
-      label: match?.label ?? def.label,
+      label: t(def.labelKey),
     };
   });
 }
@@ -163,6 +169,8 @@ function asDownloadUrl(url: string, fileName: string): string {
 }
 
 const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ sessionContactId = null }) => {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   const { data, initialLoading, refresh } = usePortalTabData();
   const classifications = data?.documents?.classifications ?? [];
   const documents = data?.documents?.documents ?? [];
@@ -261,16 +269,19 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       try {
         await refresh('documents');
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Failed to load documents');
+        toast.error(e instanceof Error ? e.message : t('documents.uploadModal.loadFailed'));
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
-  const documentTabs = useMemo(() => resolvePortalDocumentTabs(classifications), [classifications]);
+  const documentTabs = useMemo(
+    () => resolvePortalDocumentTabs(classifications, t),
+    [classifications, t],
+  );
 
   const activeTab = useMemo(
-    () => documentTabs.find((t) => t.key === activeTabKey) ?? documentTabs[0] ?? null,
+    () => documentTabs.find((tab) => tab.key === activeTabKey) ?? documentTabs[0] ?? null,
     [documentTabs, activeTabKey],
   );
 
@@ -417,7 +428,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         await reloadDocuments({ selectSequenceCategory: true });
       } catch (err) {
         stopProgressSimulation(file.name);
-        const errorMessage = err instanceof Error ? err.message : 'Upload failed';
+        const errorMessage = err instanceof Error ? err.message : t('common.uploadFailed');
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.name === file.name
@@ -425,7 +436,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
               : f,
           ),
         );
-        toast.error(`${file.name}: ${errorMessage}`);
+        toast.error(t('documents.toastUploadError', { fileName: file.name, message: errorMessage }));
       }
     }
 
@@ -444,8 +455,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
     if (!modalCanSubmit) {
       toast.error(
         documentTypes.length === 0
-          ? 'Please choose a contact'
-          : 'Please choose a contact and document type',
+          ? t('documents.uploadModal.validationContactOnly')
+          : t('documents.uploadModal.validationContactAndType'),
       );
       return;
     }
@@ -545,8 +556,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
   return (
     <PortalTabFrame
-      title="Documents"
-      subtitle="Download shared files or upload documents for our team."
+      title={t('documents.title')}
+      subtitle={t('documents.subtitle')}
       headerCoverImage={getPortalTabHeaderCoverImage('documents')}
     >
       <input
@@ -579,8 +590,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         <DocumentArrowUpIcon className="mx-auto mb-4 h-12 w-12 text-gray-400" />
         <div className="mb-4 text-base text-gray-600">
           {isUploading
-            ? 'Processing files...'
-            : 'Drag and drop files here, or click to select files'}
+            ? t('documents.uploadZone.processing')
+            : t('documents.uploadZone.prompt')}
         </div>
         <button
           type="button"
@@ -589,7 +600,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
           onClick={() => fileInputRef.current?.click()}
         >
           <PaperClipIcon className="h-5 w-5" />
-          Upload Files
+          {t('documents.uploadZone.button')}
         </button>
       </div>
 
@@ -619,20 +630,20 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                     >
                       <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
                     </div>
-                    <div className="text-xs font-medium text-gray-500">Uploading...</div>
+                    <div className="text-xs font-medium text-gray-500">{t('documents.uploadZone.uploadingProgress')}</div>
                   </div>
                 ) : null}
                 {file.status === 'success' ? (
                   <div className="flex items-center gap-2">
                     <CheckCircleIcon className="h-6 w-6 text-green-500" />
-                    <span className="text-xs font-medium text-green-600">Complete</span>
+                    <span className="text-xs font-medium text-green-600">{t('common.complete')}</span>
                   </div>
                 ) : null}
                 {file.status === 'error' ? (
                   <div className="tooltip tooltip-error" data-tip={file.error}>
                     <div className="flex items-center gap-2">
                       <XCircleIcon className="h-6 w-6 text-red-500" />
-                      <span className="text-xs font-medium text-red-600">Failed</span>
+                      <span className="text-xs font-medium text-red-600">{t('common.failed')}</span>
                     </div>
                   </div>
                 ) : null}
@@ -645,7 +656,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
       <div className="flex w-full min-w-0 items-center gap-2 border-b border-base-200 pb-2">
         <nav
           className="flex min-w-0 flex-1 touch-pan-x flex-nowrap items-stretch gap-2 overflow-x-auto [-webkit-overflow-scrolling:touch]"
-          aria-label="Document categories"
+          aria-label={t('documents.categoriesAria')}
         >
           {documentTabs.map((category) => {
             const count = countDocumentsForTab(category);
@@ -677,8 +688,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         </nav>
         <div className="flex shrink-0 items-center gap-1 rounded-full bg-base-200 p-1">
           {([
-            { id: 'table' as const, label: 'Table view', icon: ListBulletIcon },
-            { id: 'grid' as const, label: 'Box view', icon: Squares2X2Icon },
+            { id: 'table' as const, label: t('documents.views.table'), icon: ListBulletIcon },
+            { id: 'grid' as const, label: t('documents.views.grid'), icon: Squares2X2Icon },
           ]).map((option) => (
             <button
               key={option.id}
@@ -701,14 +712,14 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
       {/* Where in the case you are standing, and the way back up out of it. */}
       {folderTrail.length > 0 ? (
-        <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm" aria-label="Folder path">
+        <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm" aria-label={t('documents.folderPathAria')}>
           <button
             type="button"
             className="inline-flex items-center gap-1.5 font-semibold text-primary"
             onClick={() => setFolderTrail([])}
           >
             <ChevronLeftIcon className="h-4 w-4" />
-            {activeTab?.label ?? 'Documents'}
+            {activeTab?.label ?? t('documents.title')}
           </button>
           {folderTrail.map((folder, index) => (
             <span key={folder.id} className="flex min-w-0 items-center gap-1">
@@ -733,16 +744,16 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
       {documents.length === 0 && folders.length === 0 ? (
         <PortalCard className={emptyStateColumn}>
-          <p className="text-sm text-base-content/45">No documents yet. Upload files using the area above.</p>
+          <p className="text-sm text-base-content/45">{t('documents.empty.noneYet')}</p>
         </PortalCard>
       ) : documentsInActiveCategory.length === 0 && foldersInActiveCategory.length === 0 ? (
         <PortalCard className={emptyStateColumn}>
-          <p className="text-sm text-base-content/45">No documents in this category.</p>
+          <p className="text-sm text-base-content/45">{t('documents.empty.noneInCategory')}</p>
         </PortalCard>
       ) : foldersAtThisLevel.length === 0 && visibleDocuments.length === 0 ? (
         <PortalCard className={emptyStateColumn}>
           <p className="text-sm text-base-content/45">
-            {activeFolder ? 'This folder is empty.' : 'No documents in this category.'}
+            {activeFolder ? t('documents.empty.folderEmpty') : t('documents.empty.noneInCategory')}
           </p>
         </PortalCard>
       ) : view === 'grid' ? (
@@ -763,7 +774,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                     {folder.title}
                   </span>
                   <span className="block truncate text-xs text-base-content/50">
-                    {count} {count === 1 ? 'file' : 'files'}
+                    {t('stages.timeline.documentCount', { count })}
                   </span>
                 </span>
               </button>
@@ -801,8 +812,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                       download={doc.file_name}
                       rel="noopener noreferrer"
                       className="btn btn-ghost btn-sm btn-square shrink-0 text-primary"
-                      title="Download"
-                      aria-label={`Download ${doc.file_name}`}
+                      title={t('documents.download.title')}
+                      aria-label={t('documents.download.aria', { fileName: doc.file_name })}
                       onClick={(e) => e.stopPropagation()}
                     >
                       <ArrowDownTrayIcon className="h-5 w-5" />
@@ -811,7 +822,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                     /* Kept in place so every card reads the same, and plainly out of use. */
                     <span
                       className="btn btn-ghost btn-sm btn-square btn-disabled shrink-0"
-                      title="This file is not available to download"
+                      title={t('documents.download.unavailableTitle')}
                       aria-hidden="true"
                     >
                       <ArrowDownTrayIcon className="h-5 w-5" />
@@ -833,7 +844,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                     {doc.classification_label || doc.document_type_name || activeTab?.label || ''}
                   </span>
                   <span className="shrink-0 tabular-nums">
-                    {new Date(doc.created_at).toLocaleDateString()}
+                    {new Date(doc.created_at).toLocaleDateString(locale)}
                   </span>
                 </div>
               </div>
@@ -847,10 +858,9 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
             <table className="table w-full">
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-base-content/45">
-                  <th className="w-[60%] font-semibold">Name</th>
-                  <th className="hidden font-semibold sm:table-cell">Size</th>
-                  <th className="font-semibold">Date</th>
-                  <th className="text-right font-semibold">Actions</th>
+                  <th className="w-[60%] font-semibold">{t('documents.table.name')}</th>
+                  <th className="hidden font-semibold sm:table-cell">{t('documents.table.size')}</th>
+                  <th className="text-right font-semibold">{t('documents.table.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -871,22 +881,22 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                             </span>
                             {folder.sub_effort_name || folder.note ? (
                               <span className="block truncate text-xs text-base-content/45">
-                                {[folder.sub_effort_name, folder.note].filter(Boolean).join(' · ')}
+                                {[
+                                  translatePortalDynamicLabel(i18n.language, folder.sub_effort_name),
+                                  folder.note,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
                               </span>
                             ) : null}
                           </span>
                         </span>
                       </td>
                       <td className="hidden text-sm text-base-content/60 sm:table-cell">
-                        {count} {count === 1 ? 'file' : 'files'}
-                      </td>
-                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/60">
-                        {folder.created_at
-                          ? new Date(folder.created_at).toLocaleDateString()
-                          : '—'}
+                        {t('stages.timeline.documentCount', { count })}
                       </td>
                       <td className="whitespace-nowrap text-right text-sm font-medium text-primary">
-                        Open
+                        {t('documents.table.open')}
                       </td>
                     </tr>
                   );
@@ -895,7 +905,11 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                 {visibleDocuments.map((doc) => {
                   const url = resolveDownloadUrl(doc);
                   const mimeType = inferPortalDocumentMimeType(doc);
-                  const meta = [doc.contact_name, doc.document_type_name, doc.sub_effort_name]
+                  const meta = [
+                    doc.contact_name,
+                    doc.document_type_name,
+                    translatePortalDynamicLabel(i18n.language, doc.sub_effort_name),
+                  ]
                     .filter(Boolean)
                     .join(' · ');
                   return (
@@ -928,10 +942,9 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                         </span>
                       </td>
                       <td className="hidden whitespace-nowrap text-sm tabular-nums text-base-content/60 sm:table-cell">
-                        {doc.file_size ? `${(doc.file_size / 1024).toFixed(0)} KB` : '—'}
-                      </td>
-                      <td className="whitespace-nowrap text-sm tabular-nums text-base-content/60">
-                        {new Date(doc.created_at).toLocaleDateString()}
+                        {doc.file_size
+                          ? t('documents.table.sizeKb', { sizeKb: (doc.file_size / 1024).toFixed(0) })
+                          : '—'}
                       </td>
                       <td className="whitespace-nowrap text-right">
                         {url ? (
@@ -939,8 +952,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                             <button
                               type="button"
                               className="btn btn-ghost btn-sm btn-square text-primary"
-                              title="View"
-                              aria-label={`View ${doc.file_name}`}
+                              title={t('documents.view.title')}
+                              aria-label={t('documents.view.aria', { fileName: doc.file_name })}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openDocumentPreview(doc);
@@ -953,8 +966,8 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                               download={doc.file_name}
                               rel="noopener noreferrer"
                               className="btn btn-ghost btn-sm btn-square text-primary"
-                              title="Download"
-                              aria-label={`Download ${doc.file_name}`}
+                              title={t('documents.download.title')}
+                              aria-label={t('documents.download.aria', { fileName: doc.file_name })}
                               onClick={(e) => e.stopPropagation()}
                             >
                               <ArrowDownTrayIcon className="h-5 w-5" />
@@ -992,7 +1005,9 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                   {peek.doc.document_type_name || peek.doc.classification_label || '—'}
                 </span>
                 <span className="shrink-0 tabular-nums">
-                  {peek.doc.file_size ? `${(peek.doc.file_size / 1024).toFixed(0)} KB` : ''}
+                  {peek.doc.file_size
+                    ? t('documents.table.sizeKb', { sizeKb: (peek.doc.file_size / 1024).toFixed(0) })
+                    : ''}
                 </span>
               </p>
             </div>,
@@ -1015,9 +1030,9 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
           <div className="modal-box max-w-lg">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-lg font-bold text-gray-900">Upload documents</h3>
+                <h3 className="text-lg font-bold text-gray-900">{t('documents.uploadModal.title')}</h3>
                 <p className="mt-1 text-sm text-base-content/60">
-                  Choose who the documents belong to and what type they are.
+                  {t('documents.uploadModal.description')}
                 </p>
               </div>
               <button
@@ -1025,7 +1040,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                 className="btn btn-ghost btn-sm btn-square"
                 onClick={closeUploadModal}
                 disabled={isUploading}
-                aria-label="Close"
+                aria-label={t('documents.uploadModal.closeAria')}
               >
                 <XMarkIcon className="h-5 w-5" />
               </button>
@@ -1044,25 +1059,27 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
 
             <div className="mt-4 grid gap-3">
               <label className="form-control w-full">
-                <span className="label-text mb-1 text-sm font-medium text-base-content/80">Contact</span>
+                <span className="label-text mb-1 text-sm font-medium text-base-content/80">{t('documents.uploadModal.contactLabel')}</span>
                 <select
                   className="select select-bordered w-full"
                   value={modalContactId === '' ? '' : String(modalContactId)}
                   onChange={(e) => setModalContactId(e.target.value ? Number(e.target.value) : '')}
                   disabled={isUploading}
                 >
-                  <option value="">Select contact…</option>
+                  <option value="">{t('documents.uploadModal.contactPlaceholder')}</option>
                   {portalContacts.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
-                      {c.is_main ? ' (main)' : ''}
+                      {c.is_main ? ` (${t('common.mainContactBadge')})` : ''}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="form-control w-full">
                 <span className="label-text mb-1 text-sm font-medium text-base-content/80">
-                  Document type{documentTypes.length === 0 ? ' (optional)' : ''}
+                  {documentTypes.length === 0
+                    ? t('documents.uploadModal.documentTypeOptional')
+                    : t('documents.uploadModal.documentTypeLabel')}
                 </span>
                 <select
                   className="select select-bordered w-full"
@@ -1071,11 +1088,13 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                   disabled={isUploading || documentTypes.length === 0}
                 >
                   <option value="">
-                    {documentTypes.length === 0 ? 'No type required' : 'Select type…'}
+                    {documentTypes.length === 0
+                      ? t('documents.uploadModal.typePlaceholderOptional')
+                      : t('documents.uploadModal.typePlaceholderRequired')}
                   </option>
-                  {documentTypes.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
+                  {documentTypes.map((docType) => (
+                    <option key={docType.id} value={docType.id}>
+                      {docType.name}
                     </option>
                   ))}
                 </select>
@@ -1089,7 +1108,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                 onClick={closeUploadModal}
                 disabled={isUploading}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -1100,12 +1119,12 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
                 {isUploading ? (
                   <>
                     <span className="loading loading-spinner loading-sm" />
-                    Uploading…
+                    {t('common.uploading')}
                   </>
                 ) : (
                   <>
                     <DocumentArrowUpIcon className="h-4 w-4" />
-                    Upload
+                    {t('common.upload')}
                   </>
                 )}
               </button>
@@ -1114,7 +1133,7 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
           <button
             type="button"
             className="modal-backdrop"
-            aria-label="Close upload dialog"
+            aria-label={t('documents.uploadModal.closeDialogAria')}
             onClick={closeUploadModal}
             disabled={isUploading}
           />

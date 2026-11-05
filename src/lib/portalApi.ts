@@ -203,14 +203,17 @@ export async function portalGetCaseSummary() {
   return data as {
     lead: PortalLeadSummary;
     handler_name: string | null;
+    handler_name_he?: string | null;
     handler_photo_url?: string | null;
     handler_contact?: PortalTeamContact | null;
     handler_department?: string | null;
     retainer_handler_name: string | null;
+    retainer_handler_name_he?: string | null;
     retainer_handler_photo_url?: string | null;
     retainer_handler_contact?: PortalTeamContact | null;
     retainer_handler_department?: string | null;
     department_manager_name: string | null;
+    department_manager_name_he?: string | null;
     department_manager_photo_url?: string | null;
     department_manager_contact?: PortalTeamContact | null;
     department_manager_department?: string | null;

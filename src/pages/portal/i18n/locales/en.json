@@ -1,0 +1,391 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "caseStatus": "Case Status",
+    "finance": "Finance",
+    "documents": "Documents",
+    "myContacts": "My contacts",
+    "meetings": "Meetings",
+    "ariaCaseSections": "Case sections"
+  },
+  "layout": {
+    "logoAlt": "Decker Pex & Co Law Offices",
+    "menuOpen": "Open menu",
+    "menuClose": "Close menu"
+  },
+  "profile": {
+    "caseNumber": "Case #{{leadNumber}}",
+    "settings": "Settings",
+    "signOut": "Sign out"
+  },
+  "notifications": {
+    "ariaLabel": "Notifications",
+    "title": "Notifications",
+    "dismissAll": "Dismiss all",
+    "empty": "You're all caught up.",
+    "unreadOverflow": "9+",
+    "documentNewTitleFallback": "New document uploaded",
+    "documentNameFallback": "Document",
+    "meetingTitleFallback": "Meeting",
+    "types": {
+      "poa_new": {
+        "titleFallback": "Power of attorney",
+        "subtitle": "New power of attorney to review"
+      },
+      "poa_signed": {
+        "titleFallback": "Power of attorney",
+        "subtitle": "Power of attorney signed"
+      },
+      "contract_new": {
+        "titleFallback": "Contract",
+        "subtitle": "New contract available"
+      },
+      "contract_signed": {
+        "titleFallback": "Contract",
+        "subtitle": "Contract signed"
+      },
+      "contact_new": {
+        "titleFallback": "New contact",
+        "subtitle": "New contact added to your case"
+      },
+      "meeting_new": {
+        "titleFallback": "Meeting",
+        "subtitleScheduled": "Meeting scheduled for {{date}}",
+        "subtitleFallback": "New meeting scheduled"
+      },
+      "document_new": {
+        "titleFallback": "Document",
+        "subtitle": "New document uploaded"
+      },
+      "status_new": {
+        "titleFallback": "Case update",
+        "subtitle": "New case status"
+      },
+      "status_updated": {
+        "titleFallback": "Case update",
+        "subtitle": "Case status updated"
+      }
+    }
+  },
+  "footer": {
+    "logoAlt": "DPL Logo",
+    "firmName": "Decker Pex & Co. Law Offices",
+    "firmNameShort": "Decker Pex & Co.",
+    "addressRamatGan": "Menachem Begin Rd. 11, Ramat Gan, Israel",
+    "addressJerusalem": "Yad Harutzim 10, Jerusalem, Israel",
+    "copyright": "RMQ 2.0 - Copyright © {{year}} - All right reserved",
+    "social": {
+      "linkedIn": "LinkedIn",
+      "youTube": "YouTube",
+      "facebook": "Facebook"
+    }
+  },
+  "common": {
+    "emDash": "—",
+    "language": "Language",
+    "needHelp": "Need help?",
+    "contactUs": "Contact us",
+    "badges": {
+      "overdue": "Overdue",
+      "paid": "Paid",
+      "due": "Due",
+      "dueWithDate": "Due {{date}}",
+      "paidWithDate": "Paid {{date}}",
+      "originallyDue": "Originally due {{date}}"
+    },
+    "status": {
+      "signed": "Signed",
+      "pending": "Pending",
+      "completed": "Completed",
+      "cancelled": "Cancelled",
+      "scheduled": "Scheduled",
+      "done": "Done",
+      "inProcess": "In process"
+    },
+    "teamContact": {
+      "email": "Email",
+      "call": "Call",
+      "whatsApp": "WhatsApp"
+    },
+    "maps": {
+      "waze": "Waze",
+      "googleMaps": "Google Maps",
+      "appleMaps": "Apple Maps",
+      "openMapLink": "Open map link"
+    },
+    "documentFallback": "Document",
+    "folder": "Folder",
+    "empty": "Empty",
+    "open": "Open",
+    "view": "View",
+    "download": "Download",
+    "preview": "Preview",
+    "close": "Close",
+    "cancel": "Cancel",
+    "upload": "Upload",
+    "uploading": "Uploading…",
+    "uploadFailed": "Upload failed",
+    "complete": "Complete",
+    "failed": "Failed",
+    "showLess": "Show less",
+    "showMore": "Show {{count}} more",
+    "mainContactBadge": "Main contact",
+    "viewArrow": "View →",
+    "loading": "Loading…"
+  },
+  "dashboard": {
+    "greeting": {
+      "morning": "Good morning",
+      "afternoon": "Good afternoon",
+      "evening": "Good evening",
+      "withName": "{{greeting}}, {{firstName}}"
+    },
+    "firstNameFallback": "there",
+    "loadError": "Unable to load your dashboard.",
+    "stats": {
+      "nextMeeting": {
+        "label": "Next meeting",
+        "noneScheduled": "None scheduled",
+        "hintTeams": "Teams meeting",
+        "hintViewDetails": "View details in Meetings",
+        "hintSchedule": "Schedule a time in Meetings"
+      },
+      "nextPayment": {
+        "label": "Next payment",
+        "allCaughtUp": "All caught up",
+        "hintDue": "Due {{date}}",
+        "hintNoOutstanding": "No outstanding payments"
+      },
+      "caseStatus": {
+        "label": "Case Status",
+        "hintCurrentStage": "Current stage in your workflow",
+        "valueComplete": "Complete",
+        "hintAllComplete": "All stages complete",
+        "valueNoActiveStage": "No active stage",
+        "hintLatestMilestone": "Latest case milestone"
+      }
+    },
+    "nextStep": {
+      "titleNext": "Next step",
+      "titleOverview": "Case overview",
+      "paymentOverdue": "Your payment of {{amount}} was due {{date}}. Please complete it to keep your case on track.",
+      "paymentUpcoming": "Upcoming payment of {{amount}}{{dueSuffix}}.",
+      "dueSuffix": " due {{date}}",
+      "meetingScheduled": "Your meeting is scheduled for {{meetingLabel}}.",
+      "caseInStage": "Your case is currently in {{stageName}}{{categorySuffix}}.",
+      "categorySuffix": " ({{category}})",
+      "defaultDescription": "Track your meetings, payments, documents, and communication in one secure place.",
+      "actions": {
+        "payOnline": "Pay online",
+        "viewFinance": "View finance",
+        "joinMeeting": "Join meeting",
+        "viewCaseStatus": "View case status",
+        "viewDocuments": "View documents"
+      }
+    },
+    "recentActivity": {
+      "title": "Recent activity",
+      "empty": "No recent updates to show yet.",
+      "meetingScheduled": "Meeting scheduled for {{meetingLabel}}",
+      "paymentReceived": "Payment received on {{date}}",
+      "paymentDue": "Payment due {{date}}",
+      "caseMoved": "Case moved to {{stageName}}"
+    },
+    "team": {
+      "title": "Your legal team",
+      "subtitle": "Reach your assigned professionals directly.",
+      "viewBusinessCardTitle": "View {{name}}'s business card",
+      "roles": {
+        "caseHandler": "Case Handler",
+        "legalAssistant": "Legal Assistant",
+        "departmentManager": "Department manager"
+      }
+    }
+  },
+  "stages": {
+    "title": "Case Status",
+    "subtitleCurrentStage": "Current stage: {{stageName}}",
+    "subtitleAllComplete": "All stages are complete.",
+    "emptyNoCaseType": "Case stages will appear here once your case type is set on your file.",
+    "emptyNoStagesLinked": "No case stages are linked to your case type yet.",
+    "timeline": {
+      "emptyFallback": "No case stages to display yet.",
+      "workflowTitle": "Workflow",
+      "allStagesComplete": "All stages complete",
+      "notesTitle": "Notes from our team",
+      "notesEmpty": "No notes for this stage yet.",
+      "documentsTitle": "Documents",
+      "allDocuments": "All documents",
+      "noDocumentsStage": "No documents uploaded for this stage yet.",
+      "folderEmpty": "This folder has no documents yet.",
+      "folderEmptyShort": "This folder is empty.",
+      "documentCount_one": "{{count}} document",
+      "documentCount_other": "{{count}} documents",
+      "filesInFolderFooter": "Files in this folder itself will appear here",
+      "filesOutsideFoldersFooter": "Files outside these folders will appear here",
+      "columns": {
+        "type": "Type",
+        "added": "Added"
+      },
+      "fileTypes": {
+        "pdfDocument": "PDF document",
+        "imageWithExt": "{{ext}} image",
+        "image": "Image"
+      },
+      "folderActions": {
+        "optionsFor": "Options for {{name}}",
+        "openFolder": "Open folder"
+      },
+      "aboutStage": "About this stage",
+      "whatIsThisStage": "What is this stage?",
+      "noDescriptionAvailable": "No description available",
+      "aboutStageAria": "About {{stageName}}",
+      "noDescriptionForStageAria": "No description for {{stageName}}",
+      "descriptionModalEmpty": "No description is available for this stage yet.",
+      "closeDescriptionAria": "Close description",
+      "backToStages": "Back to stages",
+      "loadingDocuments": "Loading documents…"
+    }
+  },
+  "finance": {
+    "title": "Finance",
+    "subtitle": "Outstanding payments, invoices, and payment history.",
+    "filtersAria": "Finance filters",
+    "filters": {
+      "outstanding": "Outstanding",
+      "paid": "Paid"
+    },
+    "sections": {
+      "outstanding": "Outstanding",
+      "paymentHistory": "Payment history",
+      "paidInvoices": "Paid invoices"
+    },
+    "empty": {
+      "outstanding": "No outstanding payments.",
+      "paid": "No completed payments yet.",
+      "paidInvoices": "Invoices will appear here after payments are completed."
+    },
+    "paymentTitles": {
+      "default": "Payment",
+      "first": "First Payment",
+      "intermediate": "Intermediate Payment",
+      "final": "Final Payment",
+      "single": "Single Payment",
+      "expense": "Expense",
+      "expenseNoVat": "Expense (no VAT)"
+    },
+    "actions": {
+      "payOnline": "Pay online",
+      "viewInvoice": "View invoice",
+      "taxReceipt": "Tax receipt",
+      "taxReceiptNumber": "Tax receipt #{{number}}",
+      "viewTaxReceiptTitle": "View tax receipt",
+      "viewTaxReceiptWithNumberTitle": "Tax receipt #{{number}}"
+    },
+    "invoiceRow": {
+      "invoiceWithAmount": "Invoice — {{amount}}",
+      "invoiceWithIdAndAmount": "Invoice #{{id}} — {{amount}}",
+      "invoiceWithId": "Invoice #{{id}}",
+      "paidOn": "Paid {{date}}"
+    }
+  },
+  "documents": {
+    "title": "Documents",
+    "subtitle": "Download shared files or upload documents for our team.",
+    "uploadZone": {
+      "processing": "Processing files...",
+      "prompt": "Drag and drop files here, or click to select files",
+      "button": "Upload Files",
+      "uploadingProgress": "Uploading..."
+    },
+    "categoriesAria": "Document categories",
+    "categoryTabs": {
+      "sequenceOfEvents": "Sequence of Events",
+      "expert": "Expert",
+      "legalClaims": "Legal claims",
+      "contract": "Contract"
+    },
+    "views": {
+      "table": "Table view",
+      "grid": "Box view"
+    },
+    "folderPathAria": "Folder path",
+    "empty": {
+      "noneYet": "No documents yet. Upload files using the area above.",
+      "noneInCategory": "No documents in this category.",
+      "folderEmpty": "This folder is empty."
+    },
+    "table": {
+      "name": "Name",
+      "size": "Size",
+      "actions": "Actions",
+      "open": "Open",
+      "sizeKb": "{{sizeKb}} KB"
+    },
+    "download": {
+      "title": "Download",
+      "aria": "Download {{fileName}}",
+      "unavailableTitle": "This file is not available to download"
+    },
+    "view": {
+      "title": "View",
+      "aria": "View {{fileName}}"
+    },
+    "uploadModal": {
+      "title": "Upload documents",
+      "description": "Choose who the documents belong to and what type they are.",
+      "closeAria": "Close",
+      "closeDialogAria": "Close upload dialog",
+      "contactLabel": "Contact",
+      "contactPlaceholder": "Select contact…",
+      "documentTypeLabel": "Document type",
+      "documentTypeOptional": "Document type (optional)",
+      "typePlaceholderRequired": "Select type…",
+      "typePlaceholderOptional": "No type required",
+      "validationContactOnly": "Please choose a contact",
+      "validationContactAndType": "Please choose a contact and document type",
+      "loadFailed": "Failed to load documents"
+    },
+    "toastUploadError": "{{fileName}}: {{message}}"
+  },
+  "contacts": {
+    "title": "My contacts",
+    "subtitle": "People linked to your case. Update details or profile photos here.",
+    "fields": {
+      "email": "Email",
+      "phone": "Phone",
+      "mobile": "Mobile",
+      "address": "Address",
+      "idPassport": "ID / Passport"
+    },
+    "editContactAria": "Edit contact",
+    "contractsSection": "Contracts",
+    "contractTitleFallback": "Contract",
+    "poaSection": "Power of Attorney",
+    "poaTitleFallback": "Power of Attorney",
+    "open": "Open",
+    "toastUpdated": "Contact updated",
+    "toastUpdateFailed": "Update failed",
+    "loadFailed": "Failed to load contacts",
+    "avatar": {
+      "changePhotoTitle": "Change photo",
+      "changePhotoAria": "Change profile photo",
+      "invalidType": "Please choose a JPG, PNG, GIF, or WebP image",
+      "tooLarge": "Image must be 5MB or smaller",
+      "updated": "Profile photo updated"
+    }
+  },
+  "meetings": {
+    "title": "Meetings",
+    "subtitle": "Schedule appointments and view your upcoming meetings.",
+    "joinMeeting": "Join meeting",
+    "meetingTitleFallback": "Meeting",
+    "sections": {
+      "upcoming": "Upcoming",
+      "past": "Past meetings"
+    },
+    "emptyUpcoming": "No upcoming meetings scheduled.",
+    "bookingAccessUnavailable": "Self-scheduling is not available for your case.",
+    "bookingAccessLoadFailed": "Could not load scheduling"
+  }
+}

@@ -4,6 +4,7 @@ import {
   ChevronDownIcon,
   Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
+import { useTranslation } from 'react-i18next';
 import { EntityAvatar } from './portalTheme';
 
 type Props = {
@@ -30,6 +31,7 @@ const PortalProfileMenu: React.FC<Props> = ({
   onDark = false,
   showIdentity = true,
 }) => {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -64,7 +66,7 @@ const PortalProfileMenu: React.FC<Props> = ({
           className="h-9 w-9 shrink-0 text-xs"
         />
         {showIdentity ? (
-          <div className="min-w-0 text-left">
+          <div className="min-w-0 text-start">
             <span
               className={`block truncate text-sm font-semibold ${
                 onDark ? 'text-primary-content' : 'text-base-content/80'
@@ -78,7 +80,7 @@ const PortalProfileMenu: React.FC<Props> = ({
                   onDark ? 'text-primary-content/70' : 'text-base-content/45'
                 }`}
               >
-                Case #{leadNumber}
+                {t('profile.caseNumber', { leadNumber })}
               </span>
             ) : null}
           </div>
@@ -92,33 +94,33 @@ const PortalProfileMenu: React.FC<Props> = ({
 
       {open ? (
         <div
-          className={`absolute right-0 z-50 min-w-[180px] rounded-2xl border border-gray-200 bg-white p-1.5 shadow-lg ${
+          className={`absolute end-0 z-50 min-w-[180px] rounded-2xl border border-gray-200 bg-white p-1.5 shadow-lg ${
             dropUp ? 'bottom-full mb-2' : 'top-full mt-2'
           }`}
         >
           {onSettings ? (
             <button
               type="button"
-              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50"
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-gray-700 transition-colors hover:bg-gray-50"
               onClick={() => {
                 close();
                 onSettings();
               }}
             >
               <Cog6ToothIcon className="h-4 w-4 text-base-content/50" />
-              Settings
+              {t('profile.settings')}
             </button>
           ) : null}
           <button
             type="button"
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50"
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-gray-700 transition-colors hover:bg-gray-50"
             onClick={() => {
               close();
               onLogout();
             }}
           >
             <ArrowRightOnRectangleIcon className="h-4 w-4 text-base-content/50" />
-            Sign out
+            {t('profile.signOut')}
           </button>
         </div>
       ) : null}

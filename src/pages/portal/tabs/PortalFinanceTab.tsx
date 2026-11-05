@@ -1,4 +1,6 @@
 import React, { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { DocumentTextIcon } from '@heroicons/react/24/outline';
 import { buildPaymentPagePath } from '../../../lib/proformaPaymentLink';
 import { buildPublicProformaUrl } from '../../../lib/proformaPublicLink';
@@ -16,15 +18,15 @@ import {
   isPaymentOverdue,
 } from '../components/portalTheme';
 
-function formatMoney(amount: number, currency: string | null): string {
+function formatMoney(amount: number, currency: string | null, locale?: string): string {
   const sym = currency?.trim() || '₪';
-  return `${sym}${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${sym}${Number(amount).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function formatDate(d: string | null | undefined): string {
+function formatDate(d: string | null | undefined, locale?: string): string {
   if (!d) return '—';
   try {
-    return new Date(d).toLocaleDateString();
+    return new Date(d).toLocaleDateString(locale);
   } catch {
     return d;
   }
@@ -36,40 +38,45 @@ function isPaidPayment(p: PortalPaymentRow): boolean {
 
 type FinanceFilter = 'outstanding' | 'paid';
 
-function paymentOrderTitle(order: string | number | null | undefined): string {
-  if (order == null || order === '') return 'Payment';
+function paymentOrderTitle(order: string | number | null | undefined, t: TFunction): string {
+  if (order == null || order === '') return t('finance.paymentTitles.default');
+
   if (typeof order === 'string') {
-    const lower = order.toLowerCase();
-    if (
-      lower.includes('first') ||
-      lower.includes('intermediate') ||
-      lower.includes('final') ||
-      lower.includes('single') ||
-      lower.includes('expense')
-    ) {
-      return order;
+    const lower = order.toLowerCase().trim();
+    if (lower.includes('first')) return t('finance.paymentTitles.first');
+    if (lower.includes('intermediate')) return t('finance.paymentTitles.intermediate');
+    if (lower.includes('final')) return t('finance.paymentTitles.final');
+    if (lower.includes('single')) return t('finance.paymentTitles.single');
+    if (lower.includes('expense')) {
+      return lower.includes('vat') || lower.includes('מע')
+        ? t('finance.paymentTitles.expenseNoVat')
+        : t('finance.paymentTitles.expense');
     }
     const num = parseInt(order, 10);
-    if (!Number.isNaN(num)) order = num;
-    else return order;
+    if (!Number.isNaN(num) && String(num) === order.trim()) {
+      order = num;
+    } else {
+      return order;
+    }
   }
+
   if (typeof order === 'number') {
     switch (order) {
       case 1:
-        return 'First Payment';
+        return t('finance.paymentTitles.first');
       case 5:
-        return 'Intermediate Payment';
+        return t('finance.paymentTitles.intermediate');
       case 9:
-        return 'Final Payment';
+        return t('finance.paymentTitles.final');
       case 90:
-        return 'Single Payment';
+        return t('finance.paymentTitles.single');
       case 99:
-        return 'Expense (no VAT)';
+        return t('finance.paymentTitles.expenseNoVat');
       default:
-        return 'Payment';
+        return t('finance.paymentTitles.default');
     }
   }
-  return 'Payment';
+  return t('finance.paymentTitles.default');
 }
 
 type PaidInvoiceItem = {
@@ -88,6 +95,8 @@ type Props = {
 };
 
 const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) => {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   const outstanding = useMemo(
     () =>
       payments
@@ -122,8 +131,8 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
   }, [activeFilter, outstanding, paid]);
 
   const filterOptions: Array<{ id: FinanceFilter; label: string; count: number }> = [
-    { id: 'outstanding', label: 'Outstanding', count: outstanding.length },
-    { id: 'paid', label: 'Paid', count: paid.length },
+    { id: 'outstanding', label: t('finance.filters.outstanding'), count: outstanding.length },
+    { id: 'paid', label: t('finance.filters.paid'), count: paid.length },
   ];
 
   const tabBase =
@@ -132,8 +141,8 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
   const tabIdle = `${tabBase} border border-gray-200 bg-white text-base-content/70 hover:bg-gray-50`;
 
   const emptyFilterMessage: Record<FinanceFilter, string> = {
-    outstanding: 'No outstanding payments.',
-    paid: 'No completed payments yet.',
+    outstanding: t('finance.empty.outstanding'),
+    paid: t('finance.empty.paid'),
   };
 
   const buildInvoicePath = (p: PortalPaymentRow): string | null => {
@@ -152,7 +161,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
       const amount = Number(p.value || 0) + Number(p.value_vat || 0);
       items.push({
         key: `payment-${p.id}`,
-        label: `Invoice — ${formatMoney(amount, p.currency)}`,
+        label: t('finance.invoiceRow.invoiceWithAmount', { amount: formatMoney(amount, p.currency, locale) }),
         amount,
         currency: p.currency,
         paidAt: p.paid_at,
@@ -169,7 +178,13 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
       const amount = Number(pf.value || 0) + Number(pf.value_vat || 0);
       items.push({
         key: `proforma-${pf.id}`,
-        label: amount > 0 ? `Invoice #${pf.id} — ${formatMoney(amount, pf.currency ?? null)}` : `Invoice #${pf.id}`,
+        label:
+          amount > 0
+            ? t('finance.invoiceRow.invoiceWithIdAndAmount', {
+                id: pf.id,
+                amount: formatMoney(amount, pf.currency ?? null, locale),
+              })
+            : t('finance.invoiceRow.invoiceWithId', { id: pf.id }),
         amount,
         currency: pf.currency ?? null,
         paidAt: pf.paid_at ?? pf.created_at ?? null,
@@ -182,7 +197,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
       const tb = b.paidAt ? new Date(b.paidAt).getTime() : 0;
       return tb - ta;
     });
-  }, [paid, proformas, isLegacy]);
+  }, [paid, proformas, isLegacy, t, locale]);
 
   const renderOutstandingRow = (p: PortalPaymentRow) => {
     const total = Number(p.value || 0) + Number(p.value_vat || 0);
@@ -193,11 +208,11 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
     return (
       <PortalCard key={p.id}>
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <p className="font-semibold text-base-content/90">{paymentOrderTitle(p.order)}</p>
+          <p className="font-semibold text-base-content/90">{paymentOrderTitle(p.order, t)}</p>
           {overdue ? <PortalOverdueBadge /> : null}
         </div>
         <div className="mt-2">
-          <p className="font-bold text-base-content/90">{formatMoney(total, p.currency)}</p>
+          <p className="font-bold text-base-content/90">{formatMoney(total, p.currency, locale)}</p>
           <div className="mt-2">
             <PortalDueDateBadge date={p.due_date} overdue={overdue} />
           </div>
@@ -205,12 +220,12 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
         <div className="mt-3 flex flex-wrap gap-2">
           {payPath && (
             <a href={payPath} className="btn btn-sm btn-primary" target="_blank" rel="noopener noreferrer">
-              Pay online
+              {t('finance.actions.payOnline')}
             </a>
           )}
           {proformaPath && (
             <a href={proformaPath} className="btn btn-sm btn-outline" target="_blank" rel="noopener noreferrer">
-              View invoice
+              {t('finance.actions.viewInvoice')}
             </a>
           )}
         </div>
@@ -226,11 +241,11 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
     return (
       <PortalCard key={p.id}>
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <p className="font-semibold text-base-content/90">{paymentOrderTitle(p.order)}</p>
+          <p className="font-semibold text-base-content/90">{paymentOrderTitle(p.order, t)}</p>
           <PortalPaidBadge />
         </div>
         <div className="mt-2">
-          <p className="font-bold text-base-content/90">{formatMoney(total, p.currency)}</p>
+          <p className="font-bold text-base-content/90">{formatMoney(total, p.currency, locale)}</p>
           <div className="mt-2">
             <PortalPaidDateBadge date={p.paid_at} />
           </div>
@@ -240,7 +255,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
           <div className="mt-3 flex flex-wrap gap-2">
             {invoicePath && (
               <a href={invoicePath} className="btn btn-sm btn-outline" target="_blank" rel="noopener noreferrer">
-                View invoice
+                {t('finance.actions.viewInvoice')}
               </a>
             )}
             {taxReceiptLink && (
@@ -251,11 +266,13 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
                 rel="noopener noreferrer"
                 title={
                   p.payper_invoice_number
-                    ? `Tax receipt #${p.payper_invoice_number}`
-                    : 'View tax receipt'
+                    ? t('finance.actions.viewTaxReceiptWithNumberTitle', { number: p.payper_invoice_number })
+                    : t('finance.actions.viewTaxReceiptTitle')
                 }
               >
-                {p.payper_invoice_number ? `Tax receipt #${p.payper_invoice_number}` : 'Tax receipt'}
+                {p.payper_invoice_number
+                  ? t('finance.actions.taxReceiptNumber', { number: p.payper_invoice_number })
+                  : t('finance.actions.taxReceipt')}
               </a>
             )}
           </div>
@@ -266,11 +283,11 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
 
   return (
     <PortalTabFrame
-      title="Finance"
-      subtitle="Outstanding payments, invoices, and payment history."
+      title={t('finance.title')}
+      subtitle={t('finance.subtitle')}
       headerCoverImage={getPortalTabHeaderCoverImage('finance')}
     >
-      <nav className="-mx-1 overflow-x-auto px-1 pb-1" aria-label="Finance filters">
+      <nav className="-mx-1 overflow-x-auto px-1 pb-1" aria-label={t('finance.filtersAria')}>
         <div className="flex min-w-max items-center gap-2">
           {filterOptions.map((option) => {
             const isActive = activeFilter === option.id;
@@ -298,7 +315,9 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
 
       <section className="space-y-5">
         <PortalSectionLabel>
-          {activeFilter === 'outstanding' ? 'Outstanding' : 'Payment history'}
+          {activeFilter === 'outstanding'
+            ? t('finance.sections.outstanding')
+            : t('finance.sections.paymentHistory')}
         </PortalSectionLabel>
         {filteredPayments.length > 0 ? (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -314,7 +333,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
       </section>
 
       <section className="space-y-5">
-        <PortalSectionLabel>Paid invoices</PortalSectionLabel>
+        <PortalSectionLabel>{t('finance.sections.paidInvoices')}</PortalSectionLabel>
         {paidInvoices.length > 0 ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {paidInvoices.map((inv) => (
@@ -330,15 +349,15 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-semibold text-base-content/90">{inv.label}</span>
-                  <span className="mt-0.5 block text-xs text-base-content/45">Paid {formatDate(inv.paidAt)}</span>
+                  <span className="mt-0.5 block text-xs text-base-content/45">{t('finance.invoiceRow.paidOn', { date: formatDate(inv.paidAt, locale) })}</span>
                 </span>
-                <span className="shrink-0 text-sm font-medium text-primary">View →</span>
+                <span className="shrink-0 text-sm font-medium text-primary">{t('common.viewArrow')}</span>
               </a>
             ))}
           </div>
         ) : (
           <PortalCard>
-            <p className="text-sm text-base-content/45">Invoices will appear here after payments are completed.</p>
+            <p className="text-sm text-base-content/45">{t('finance.empty.paidInvoices')}</p>
           </PortalCard>
         )}
       </section>

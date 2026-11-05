@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   BanknotesIcon,
   CalendarDaysIcon,
@@ -34,6 +36,7 @@ import {
   portalActiveSubEffortCardCopy,
   type PortalSubEffortRow,
 } from '../../../lib/portalSubEfforts';
+import { translatePortalDynamicLabel } from '../i18n/portalDynamicLabels';
 
 type TabId = 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings';
 
@@ -44,10 +47,10 @@ type Props = {
   onSessionRefresh?: () => void;
 };
 
-function formatDate(d: string | null | undefined): string {
+function formatDate(d: string | null | undefined, locale?: string): string {
   if (!d) return '—';
   try {
-    return new Date(d).toLocaleDateString(undefined, { dateStyle: 'medium' });
+    return new Date(d).toLocaleDateString(locale, { dateStyle: 'medium' });
   } catch {
     return d;
   }
@@ -98,27 +101,31 @@ function pickNextPayment(payments: PortalPaymentRow[]): PortalPaymentRow | null 
   return unpaid[0] ?? null;
 }
 
-function portalGreeting(): string {
+function portalGreeting(t: TFunction): string {
   const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 12) return t('dashboard.greeting.morning');
+  if (hour < 17) return t('dashboard.greeting.afternoon');
+  return t('dashboard.greeting.evening');
 }
 
-function firstName(name: string | null | undefined): string {
+function firstName(name: string | null | undefined, t: TFunction): string {
   const part = (name || '').trim().split(/\s+/).filter(Boolean)[0];
-  return part || 'there';
+  return part || t('dashboard.firstNameFallback');
 }
+
+type NextStepActionId = 'payOnline' | 'viewFinance' | 'joinMeeting' | 'viewCaseStatus' | 'viewDocuments';
 
 type NextStepInfo = {
   title: string;
   description: string;
-  actionLabel?: string;
+  actionId?: NextStepActionId;
   href?: string;
   onAction?: () => void;
 };
 
 function buildNextStep(input: {
+  t: TFunction;
+  locale: string;
   nextPayment: PortalPaymentRow | null;
   nextPaymentTotal: string | null;
   nextPaymentOverdue: boolean;
@@ -129,6 +136,8 @@ function buildNextStep(input: {
   onNavigate: (tab: TabId) => void;
 }): NextStepInfo {
   const {
+    t,
+    locale,
     nextPayment,
     nextPaymentTotal,
     nextPaymentOverdue,
@@ -141,45 +150,60 @@ function buildNextStep(input: {
 
   if (nextPaymentOverdue && nextPayment?.secure_token) {
     return {
-      title: 'Next step',
-      description: `Your payment of ${nextPaymentTotal} was due ${formatDate(nextPayment.due_date)}. Please complete it to keep your case on track.`,
-      actionLabel: 'Pay online',
+      title: t('dashboard.nextStep.titleNext'),
+      description: t('dashboard.nextStep.paymentOverdue', {
+        amount: nextPaymentTotal,
+        date: formatDate(nextPayment.due_date, locale),
+      }),
+      actionId: 'payOnline',
       href: buildPaymentPagePath(nextPayment.secure_token),
     };
   }
 
   if (nextPayment && nextPaymentTotal) {
     return {
-      title: 'Next step',
-      description: `Upcoming payment of ${nextPaymentTotal}${nextPayment.due_date ? ` due ${formatDate(nextPayment.due_date)}` : ''}.`,
-      actionLabel: 'View finance',
+      title: t('dashboard.nextStep.titleNext'),
+      description: t('dashboard.nextStep.paymentUpcoming', {
+        amount: nextPaymentTotal,
+        dueSuffix: nextPayment.due_date
+          ? t('dashboard.nextStep.dueSuffix', { date: formatDate(nextPayment.due_date, locale) })
+          : '',
+      }),
+      actionId: 'viewFinance',
       onAction: () => onNavigate('finance'),
     };
   }
 
   if (nextMeeting?.join_url) {
     return {
-      title: 'Next step',
-      description: `Your meeting is scheduled for ${nextMeetingLabel}.`,
-      actionLabel: 'Join meeting',
+      title: t('dashboard.nextStep.titleNext'),
+      description: t('dashboard.nextStep.meetingScheduled', { meetingLabel: nextMeetingLabel }),
+      actionId: 'joinMeeting',
       href: nextMeeting.join_url,
     };
   }
 
   if (latestSubEffort?.sub_effort_name) {
-    const categorySuffix = category ? ` (${category})` : '';
+    const categorySuffix = category ? t('dashboard.nextStep.categorySuffix', { category }) : '';
     return {
-      title: 'Case overview',
-      description: `Your case is currently in ${latestSubEffort.sub_effort_name}${categorySuffix}.`,
-      actionLabel: 'View case status',
+      title: t('dashboard.nextStep.titleOverview'),
+      description: t('dashboard.nextStep.caseInStage', {
+        stageName: translatePortalDynamicLabel(
+          locale,
+          latestSubEffort.sub_effort_name,
+          latestSubEffort.sub_effort_name_he,
+        ),
+        categorySuffix,
+      }),
+      actionId: 'viewCaseStatus',
       onAction: () => onNavigate('stages'),
     };
   }
 
   return {
-    title: 'Case overview',
-    description: 'Track your meetings, payments, documents, and communication in one secure place.',
-    actionLabel: 'View documents',
+    title: t('dashboard.nextStep.titleOverview'),
+    description: t('dashboard.nextStep.defaultDescription'),
+    actionId: 'viewDocuments',
     onAction: () => onNavigate('documents'),
   };
 }
@@ -187,18 +211,20 @@ function buildNextStep(input: {
 type ActivityItem = { id: string; text: string };
 
 function buildRecentActivity(input: {
+  t: TFunction;
+  locale: string;
   nextMeeting: PortalMeetingRow | null;
   nextMeetingLabel: string;
   payments: PortalPaymentRow[];
   latestSubEffort: PortalSubEffortRow | null;
 }): ActivityItem[] {
-  const { nextMeeting, nextMeetingLabel, payments, latestSubEffort } = input;
+  const { t, locale, nextMeeting, nextMeetingLabel, payments, latestSubEffort } = input;
   const items: ActivityItem[] = [];
 
   if (nextMeeting) {
     items.push({
       id: 'meeting',
-      text: `Meeting scheduled for ${nextMeetingLabel}`,
+      text: t('dashboard.recentActivity.meetingScheduled', { meetingLabel: nextMeetingLabel }),
     });
   }
 
@@ -209,14 +235,14 @@ function buildRecentActivity(input: {
   if (recentlyPaid?.paid_at) {
     items.push({
       id: 'payment-paid',
-      text: `Payment received on ${formatDate(recentlyPaid.paid_at)}`,
+      text: t('dashboard.recentActivity.paymentReceived', { date: formatDate(recentlyPaid.paid_at, locale) }),
     });
   } else {
     const unpaid = pickNextPayment(payments);
     if (unpaid?.due_date) {
       items.push({
         id: 'payment-due',
-        text: `Payment due ${formatDate(unpaid.due_date)}`,
+        text: t('dashboard.recentActivity.paymentDue', { date: formatDate(unpaid.due_date, locale) }),
       });
     }
   }
@@ -224,18 +250,24 @@ function buildRecentActivity(input: {
   if (latestSubEffort?.sub_effort_name) {
     items.push({
       id: 'stage',
-      text: `Case moved to ${latestSubEffort.sub_effort_name}`,
+      text: t('dashboard.recentActivity.caseMoved', {
+        stageName: translatePortalDynamicLabel(
+          locale,
+          latestSubEffort.sub_effort_name,
+          latestSubEffort.sub_effort_name_he,
+        ),
+      }),
     });
   }
 
   return items.slice(0, 4);
 }
 
-function nextStepActionIcon(label: string | undefined) {
-  if (!label) return FlagIcon;
-  if (label === 'Join meeting') return VideoCameraIcon;
-  if (label === 'View documents') return DocumentArrowUpIcon;
-  if (label === 'View case status') return BriefcaseIcon;
+function nextStepActionIcon(actionId: NextStepActionId | undefined) {
+  if (!actionId) return FlagIcon;
+  if (actionId === 'joinMeeting') return VideoCameraIcon;
+  if (actionId === 'viewDocuments') return DocumentArrowUpIcon;
+  if (actionId === 'viewCaseStatus') return BriefcaseIcon;
   return BanknotesIcon;
 }
 
@@ -251,9 +283,9 @@ const TEAM_ROW_CLASS =
   `${MOBILE_CAROUSEL_ROW_CLASS} md:grid md:grid-cols-2 md:gap-4 xl:grid-cols-3`;
 
 const ROLE_META = [
-  { key: 'handler' as const, label: 'Case Handler' },
-  { key: 'retainer_handler' as const, label: 'Legal Assistant' },
-  { key: 'department_manager' as const, label: 'Department manager' },
+  { key: 'handler' as const, labelKey: 'dashboard.team.roles.caseHandler' },
+  { key: 'retainer_handler' as const, labelKey: 'dashboard.team.roles.legalAssistant' },
+  { key: 'department_manager' as const, labelKey: 'dashboard.team.roles.departmentManager' },
 ];
 
 /** Lower number wins when the same person is assigned to more than one role. */
@@ -291,6 +323,8 @@ const PortalDashboardTab: React.FC<Props> = ({
   sessionContact,
   onNavigate,
 }) => {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   const { data, initialLoading } = usePortalTabData();
   const summary = data?.summary ?? null;
   const meetings = data?.meetings?.meetings ?? [];
@@ -322,29 +356,44 @@ const PortalDashboardTab: React.FC<Props> = ({
   if (loading) return <PortalLoading />;
 
   if (!summary?.lead) {
-    return <p className="text-base-content/50">Unable to load your dashboard.</p>;
+    return <p className="text-base-content/50">{t('dashboard.loadError')}</p>;
   }
 
   const lead = summary.lead;
   const coverKey = `case::${lead.lead_number}::${lead.display_name}`;
+  const preferHebrewName = locale.toLowerCase().startsWith('he');
+  const pickTeamName = (en: string | null | undefined, he: string | null | undefined) => {
+    const english = en?.trim() || '';
+    const hebrew = he?.trim() || '';
+    // Only use Hebrew when it is a real alternate value (not an English fallback).
+    if (preferHebrewName && hebrew && hebrew !== english) return hebrew;
+    return english || hebrew;
+  };
   const rolesWithPeople = [
     {
       ...ROLE_META[0],
-      name: summary.handler_name,
+      name: pickTeamName(summary.handler_name, summary.handler_name_he),
+      lookupName: summary.handler_name?.trim() || summary.handler_name_he?.trim() || '',
       photo: summary.handler_photo_url,
       contact: summary.handler_contact,
       department: summary.handler_department,
     },
     {
       ...ROLE_META[1],
-      name: summary.retainer_handler_name,
+      name: pickTeamName(summary.retainer_handler_name, summary.retainer_handler_name_he),
+      lookupName:
+        summary.retainer_handler_name?.trim() || summary.retainer_handler_name_he?.trim() || '',
       photo: summary.retainer_handler_photo_url,
       contact: summary.retainer_handler_contact,
       department: summary.retainer_handler_department,
     },
     {
       ...ROLE_META[2],
-      name: summary.department_manager_name,
+      name: pickTeamName(summary.department_manager_name, summary.department_manager_name_he),
+      lookupName:
+        summary.department_manager_name?.trim() ||
+        summary.department_manager_name_he?.trim() ||
+        '',
       photo: summary.department_manager_photo_url,
       contact: summary.department_manager_contact,
       department: summary.department_manager_department || summary.main_category_name,
@@ -357,35 +406,39 @@ const PortalDashboardTab: React.FC<Props> = ({
   // Same employee in multiple roles → show once, preferring Case Handler over Legal Assistant.
   const preferredRoleByName = new Map<string, (typeof rolesWithPeople)[number]>();
   for (const role of rolesWithPeople) {
-    const nameKey = role.name!.trim().toLowerCase();
+    const nameKey = (role.lookupName || role.name!).trim().toLowerCase();
     const existing = preferredRoleByName.get(nameKey);
     if (!existing || ROLE_PRIORITY[role.key] < ROLE_PRIORITY[existing.key]) {
       preferredRoleByName.set(nameKey, role);
     }
   }
   const roles = rolesWithPeople.filter(
-    (role) => preferredRoleByName.get(role.name!.trim().toLowerCase()) === role,
+    (role) =>
+      preferredRoleByName.get((role.lookupName || role.name!).trim().toLowerCase()) === role,
   );
 
   const rolePhotoByName = new Map<string, string>();
   for (const role of roles) {
-    const name = role.name?.trim();
     const photo = role.photo?.trim();
-    if (name && photo) rolePhotoByName.set(name.toLowerCase(), photo);
+    if (!photo) continue;
+    const keys = [role.lookupName, role.name].map((n) => n?.trim().toLowerCase()).filter(Boolean);
+    for (const key of keys) rolePhotoByName.set(key!, photo);
   }
 
   const nextMeetingLabel = nextMeeting
-    ? `${formatDate(nextMeeting.meeting_date)}${formatTime(nextMeeting.meeting_time) ? ` · ${formatTime(nextMeeting.meeting_time)}` : ''}`
-    : 'None scheduled';
+    ? `${formatDate(nextMeeting.meeting_date, locale)}${formatTime(nextMeeting.meeting_time) ? ` · ${formatTime(nextMeeting.meeting_time)}` : ''}`
+    : t('dashboard.stats.nextMeeting.noneScheduled');
 
   const nextPaymentTotal = nextPayment
     ? formatMoney(Number(nextPayment.value || 0) + Number(nextPayment.value_vat || 0), nextPayment.currency)
     : null;
   const nextPaymentOverdue = nextPayment ? isPaymentOverdue(nextPayment.due_date) : false;
 
-  const clientFirstName = firstName(sessionContact?.name || lead.display_name);
+  const clientFirstName = firstName(sessionContact?.name || lead.display_name, t);
 
   const nextStep = buildNextStep({
+    t,
+    locale,
     nextPayment,
     nextPaymentTotal,
     nextPaymentOverdue,
@@ -397,22 +450,51 @@ const PortalDashboardTab: React.FC<Props> = ({
   });
 
   const meetingHint = nextMeeting?.meeting_location?.trim()
-    || (nextMeeting?.join_url ? 'Teams meeting' : nextMeeting ? 'View details in Meetings' : 'Schedule a time in Meetings');
+    || (nextMeeting?.join_url
+      ? t('dashboard.stats.nextMeeting.hintTeams')
+      : nextMeeting
+        ? t('dashboard.stats.nextMeeting.hintViewDetails')
+        : t('dashboard.stats.nextMeeting.hintSchedule'));
 
   const recentActivity = buildRecentActivity({
+    t,
+    locale,
     nextMeeting,
     nextMeetingLabel,
     payments,
     latestSubEffort,
   });
 
-  const NextStepIcon = nextStepActionIcon(nextStep.actionLabel);
+  const NextStepIcon = nextStepActionIcon(nextStep.actionId);
+  const nextStepActionLabel = nextStep.actionId
+    ? t(`dashboard.nextStep.actions.${nextStep.actionId}`)
+    : undefined;
+
+  const caseStatusValue =
+    caseStatusCopy.valueKey === 'complete'
+      ? t('dashboard.stats.caseStatus.valueComplete')
+      : caseStatusCopy.valueKey === 'noActive'
+        ? t('dashboard.stats.caseStatus.valueNoActiveStage')
+        : translatePortalDynamicLabel(
+            locale,
+            caseStatusCopy.value,
+            caseStatusCopy.current?.sub_effort_name_he,
+          );
+  const caseStatusHint =
+    caseStatusCopy.hintKey === 'current'
+      ? t('dashboard.stats.caseStatus.hintCurrentStage')
+      : caseStatusCopy.hintKey === 'allComplete'
+        ? t('dashboard.stats.caseStatus.hintAllComplete')
+        : t('dashboard.stats.caseStatus.hintLatestMilestone');
 
   return (
     <div className="space-y-8">
       <div className={`${PORTAL_DASHBOARD_CONTAINER} pt-1 md:pt-2`}>
         <p className="text-xl font-semibold tracking-tight text-[#16161d] md:text-2xl">
-          {portalGreeting()}, {clientFirstName}
+          {t('dashboard.greeting.withName', {
+            greeting: portalGreeting(t),
+            firstName: clientFirstName,
+          })}
         </p>
       </div>
 
@@ -420,7 +502,7 @@ const PortalDashboardTab: React.FC<Props> = ({
         <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 xl:grid-cols-3`}>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
-            label="Next meeting"
+            label={t('dashboard.stats.nextMeeting.label')}
             value={nextMeetingLabel}
             hint={meetingHint}
             icon={CalendarDaysIcon}
@@ -431,9 +513,13 @@ const PortalDashboardTab: React.FC<Props> = ({
         </div>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
-            label="Next payment"
-            value={nextPayment ? nextPaymentTotal! : 'All caught up'}
-            hint={nextPayment?.due_date ? `Due ${formatDate(nextPayment.due_date)}` : 'No outstanding payments'}
+            label={t('dashboard.stats.nextPayment.label')}
+            value={nextPayment ? nextPaymentTotal! : t('dashboard.stats.nextPayment.allCaughtUp')}
+            hint={
+              nextPayment?.due_date
+                ? t('dashboard.stats.nextPayment.hintDue', { date: formatDate(nextPayment.due_date, locale) })
+                : t('dashboard.stats.nextPayment.hintNoOutstanding')
+            }
             icon={BanknotesIcon}
             accent="emerald"
             coverKey={`${coverKey}::stat-next-payment`}
@@ -441,7 +527,7 @@ const PortalDashboardTab: React.FC<Props> = ({
             badge={
               nextPaymentOverdue ? (
                 <span className="inline-flex rounded-full bg-red-100 px-3 py-0.5 text-xs font-semibold text-red-600 md:text-sm">
-                  Overdue
+                  {t('common.badges.overdue')}
                 </span>
               ) : undefined
             }
@@ -449,9 +535,9 @@ const PortalDashboardTab: React.FC<Props> = ({
         </div>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
-            label="Case Status"
-            value={caseStatusCopy.value}
-            hint={summary.category || caseStatusCopy.hint}
+            label={t('dashboard.stats.caseStatus.label')}
+            value={caseStatusValue}
+            hint={summary.category || caseStatusHint}
             icon={BriefcaseIcon}
             accent="primary"
             coverKey={`${coverKey}::stat-case-status`}
@@ -474,7 +560,7 @@ const PortalDashboardTab: React.FC<Props> = ({
                 <p className="mt-1.5 text-sm font-semibold leading-relaxed text-[#16161d] md:text-base">{nextStep.description}</p>
               </div>
             </div>
-            {nextStep.actionLabel ? (
+            {nextStepActionLabel ? (
               nextStep.href ? (
                 <a
                   href={nextStep.href}
@@ -483,7 +569,7 @@ const PortalDashboardTab: React.FC<Props> = ({
                   className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-blue-900 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_22px_rgba(30,58,138,0.3)] transition-all hover:-translate-y-0.5 hover:bg-blue-950 md:self-center"
                 >
                   <NextStepIcon className="h-4 w-4" />
-                  {nextStep.actionLabel}
+                  {nextStepActionLabel}
                 </a>
               ) : (
                 <button
@@ -492,7 +578,7 @@ const PortalDashboardTab: React.FC<Props> = ({
                   className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-blue-900 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_22px_rgba(30,58,138,0.3)] transition-all hover:-translate-y-0.5 hover:bg-blue-950 md:self-center"
                 >
                   <NextStepIcon className="h-4 w-4" />
-                  {nextStep.actionLabel}
+                  {nextStepActionLabel}
                 </button>
               )
             ) : null}
@@ -502,26 +588,28 @@ const PortalDashboardTab: React.FC<Props> = ({
       {roles.length > 0 ? (
       <div className={`flex flex-col gap-5 md:gap-6 ${PORTAL_DASHBOARD_CONTAINER}`}>
         <div className="flex flex-col gap-1">
-          <h3 className="text-lg font-bold tracking-tight text-[#16161d]">Your legal team</h3>
-          <p className="text-sm text-[#747684]">Reach your assigned professionals directly.</p>
+          <h3 className="text-lg font-bold tracking-tight text-[#16161d]">{t('dashboard.team.title')}</h3>
+          <p className="text-sm text-[#747684]">{t('dashboard.team.subtitle')}</p>
         </div>
         <div className={TEAM_ROW_CLASS}>
             {roles.map((role) => {
               const displayName = role.name!.trim();
+              const lookupName = (role.lookupName || displayName).trim();
               const photoUrl =
                 role.photo?.trim() ||
+                rolePhotoByName.get(lookupName.toLowerCase()) ||
                 rolePhotoByName.get(displayName.toLowerCase());
-              const avatarStableKey = `role::${role.key}::${displayName}`;
+              const avatarStableKey = `role::${role.key}::${lookupName || displayName}`;
               return (
                 <div key={role.key} className={`${MOBILE_CAROUSEL_ITEM_CLASS} md:min-w-0`}>
                   <div
                     className={`${PORTAL_TEAM_CARD_CLASS} ${TEAM_CARD_CLASS} w-full cursor-pointer transition-shadow hover:shadow-[0_8px_24px_rgba(15,23,42,0.08)]`}
                     role="button"
                     tabIndex={0}
-                    title={`View ${displayName}'s business card`}
+                    title={t('dashboard.team.viewBusinessCardTitle', { name: displayName })}
                     onClick={() =>
                       void openTeamBusinessCard(
-                        displayName,
+                        lookupName,
                         photoUrl,
                         role.contact,
                         role.department,
@@ -531,7 +619,7 @@ const PortalDashboardTab: React.FC<Props> = ({
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         void openTeamBusinessCard(
-                          displayName,
+                          lookupName,
                           photoUrl,
                           role.contact,
                           role.department,
@@ -550,11 +638,11 @@ const PortalDashboardTab: React.FC<Props> = ({
                         <div className="min-w-0 flex-1 pt-0.5">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#747684]">
-                              {role.label}
+                              {t(role.labelKey)}
                             </p>
                             {role.key === 'handler' ? (
                               <span className="inline-flex rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-medium text-blue-700">
-                                Main contact
+                                {t('common.mainContactBadge')}
                               </span>
                             ) : null}
                           </div>
@@ -581,7 +669,7 @@ const PortalDashboardTab: React.FC<Props> = ({
 
       <div className={`${PORTAL_DASHBOARD_CONTAINER}`}>
         <div className={`${PORTAL_TEAM_CARD_CLASS} p-5 md:p-6`}>
-          <h4 className="text-sm font-bold tracking-tight text-[#16161d]">Recent activity</h4>
+          <h4 className="text-sm font-bold tracking-tight text-[#16161d]">{t('dashboard.recentActivity.title')}</h4>
           {recentActivity.length > 0 ? (
             <ul className="mt-3 space-y-2.5">
               {recentActivity.map((item) => (
@@ -592,7 +680,7 @@ const PortalDashboardTab: React.FC<Props> = ({
               ))}
             </ul>
           ) : (
-            <p className="mt-2 text-sm text-[#747684]">No recent updates to show yet.</p>
+            <p className="mt-2 text-sm text-[#747684]">{t('dashboard.recentActivity.empty')}</p>
           )}
         </div>
       </div>

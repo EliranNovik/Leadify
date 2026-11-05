@@ -9,11 +9,14 @@ import {
   FlagIcon,
   CheckCircleIcon,
 } from '@heroicons/react/24/outline';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   portalGetNotifications,
   type PortalNotificationRow,
   type PortalNotificationType,
 } from '../../../lib/portalApi';
+import { translatePortalDynamicLabel } from '../i18n/portalDynamicLabels';
 
 type Props = {
   onNavigate: (tab: string) => void;
@@ -41,6 +44,129 @@ function metaFor(type: PortalNotificationType): IconMeta {
   return TYPE_META[type] || { icon: BellIcon, chip: 'bg-gray-100 text-gray-500' };
 }
 
+/**
+ * Mac / phone screenshot names embed a capture date that reads like "uploaded at" in this list.
+ * Strip that middle so the row is the document name, not a timestamp.
+ */
+function cleanDocumentNotificationFileName(fileName: string): string {
+  const cleaned = String(fileName || '')
+    .replace(/\s+\d{4}-\d{2}-\d{2}\s+at\s+\d{1,2}[.:]\d{2}(?:[.:]\d{2})?/gi, '')
+    .replace(/\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned || fileName;
+}
+
+const ENGLISH_SUBTITLE_KEYS: Record<string, string> = {
+  'New power of attorney to review': 'notifications.types.poa_new.subtitle',
+  'Power of attorney signed': 'notifications.types.poa_signed.subtitle',
+  'New contract available': 'notifications.types.contract_new.subtitle',
+  'Contract signed': 'notifications.types.contract_signed.subtitle',
+  'New contact added to your case': 'notifications.types.contact_new.subtitle',
+  'New meeting scheduled': 'notifications.types.meeting_new.subtitleFallback',
+  'New document uploaded': 'notifications.documentNewTitleFallback',
+  'New case status': 'notifications.types.status_new.subtitle',
+  'Case status updated': 'notifications.types.status_updated.subtitle',
+};
+
+const ENGLISH_TITLE_FALLBACKS = new Set([
+  'Power of attorney',
+  'Contract',
+  'New contact',
+  'Meeting',
+  'Document',
+  'Case update',
+]);
+
+function translateMeetingScheduledSubtitle(subtitle: string, t: TFunction, locale: string): string | null {
+  const match = subtitle.match(/^Meeting scheduled for\s+(.+)$/i);
+  if (!match) return null;
+  const rawDate = match[1].trim();
+  let dateLabel = rawDate;
+  try {
+    const parsed = new Date(rawDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      dateLabel = parsed.toLocaleDateString(locale, { dateStyle: 'medium' });
+    }
+  } catch {
+    // keep raw date text
+  }
+  return t('notifications.types.meeting_new.subtitleScheduled', { date: dateLabel });
+}
+
+function notificationTitle(n: PortalNotificationRow, t: TFunction, locale: string): string {
+  if (n.type === 'document_new') {
+    return t('notifications.documentNewTitleFallback');
+  }
+
+  if (n.type === 'meeting_new') {
+    const raw = (n.title || '').trim();
+    if (!raw || /^meeting$/i.test(raw)) {
+      return t('notifications.types.meeting_new.titleFallback');
+    }
+    return translatePortalDynamicLabel(locale, raw);
+  }
+
+  if (n.type === 'status_new' || n.type === 'status_updated') {
+    const raw = (n.title || '').trim();
+    if (!raw || ENGLISH_TITLE_FALLBACKS.has(raw)) {
+      return t(`notifications.types.${n.type}.titleFallback`);
+    }
+    return translatePortalDynamicLabel(locale, raw);
+  }
+
+  if (n.type === 'poa_new' || n.type === 'poa_signed') {
+    const raw = (n.title || '').trim();
+    if (!raw || ENGLISH_TITLE_FALLBACKS.has(raw)) {
+      return t(`notifications.types.${n.type}.titleFallback`);
+    }
+    return translatePortalDynamicLabel(locale, raw);
+  }
+
+  if (n.type === 'contract_new' || n.type === 'contract_signed') {
+    const raw = (n.title || '').trim();
+    if (!raw || ENGLISH_TITLE_FALLBACKS.has(raw)) {
+      return t(`notifications.types.${n.type}.titleFallback`);
+    }
+    return raw;
+  }
+
+  if (n.type === 'contact_new') {
+    const raw = (n.title || '').trim();
+    if (!raw || ENGLISH_TITLE_FALLBACKS.has(raw)) {
+      return t('notifications.types.contact_new.titleFallback');
+    }
+    return raw;
+  }
+
+  return n.title;
+}
+
+function notificationSubtitle(
+  n: PortalNotificationRow,
+  t: TFunction,
+  locale: string,
+): string | null {
+  if (n.type === 'document_new') {
+    const name = cleanDocumentNotificationFileName(n.title);
+    const fallback = t('notifications.documentNameFallback');
+    return name && name !== 'Document' && name !== fallback ? name : null;
+  }
+
+  const raw = (n.subtitle || '').trim();
+  if (!raw) return null;
+
+  if (n.type === 'meeting_new') {
+    const scheduled = translateMeetingScheduledSubtitle(raw, t, locale);
+    if (scheduled) return scheduled;
+  }
+
+  const mappedKey = ENGLISH_SUBTITLE_KEYS[raw];
+  if (mappedKey) return t(mappedKey);
+
+  return raw;
+}
+
 const PortalNotifications: React.FC<Props> = ({
   onNavigate,
   storageKey,
@@ -48,6 +174,7 @@ const PortalNotifications: React.FC<Props> = ({
   align = 'right',
   onDark = false,
 }) => {
+  const { t, i18n } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<PortalNotificationRow[]>([]);
@@ -161,13 +288,13 @@ const PortalNotifications: React.FC<Props> = ({
             ? 'text-primary-content hover:bg-white/15'
             : 'text-primary hover:bg-primary/10'
         }`}
-        aria-label="Notifications"
+        aria-label={t('notifications.ariaLabel')}
         aria-expanded={open}
       >
         <BellIcon className="h-6 w-6" />
         {unreadCount > 0 ? (
-          <span className="absolute -right-0.5 -top-0.5 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white shadow-sm">
-            {unreadCount > 9 ? '9+' : unreadCount}
+          <span className="absolute -end-0.5 -top-0.5 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold text-white shadow-sm">
+            {unreadCount > 9 ? t('notifications.unreadOverflow') : unreadCount}
           </span>
         ) : null}
       </button>
@@ -175,18 +302,18 @@ const PortalNotifications: React.FC<Props> = ({
       {open ? (
         <div
           className={`absolute z-50 w-[22rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl ${
-            align === 'left' ? 'left-0' : 'right-0'
+            align === 'left' ? 'start-0' : 'end-0'
           } ${dropUp ? 'bottom-[calc(100%+0.625rem)]' : 'top-[calc(100%+0.625rem)]'}`}
         >
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-            <p className="text-sm font-semibold text-gray-900">Notifications</p>
+            <p className="text-sm font-semibold text-gray-900">{t('notifications.title')}</p>
             {visibleItems.length > 0 ? (
               <button
                 type="button"
                 onClick={dismissAll}
                 className="text-xs font-semibold text-primary transition-colors hover:text-primary/80"
               >
-                Dismiss all
+                {t('notifications.dismissAll')}
               </button>
             ) : null}
           </div>
@@ -198,13 +325,15 @@ const PortalNotifications: React.FC<Props> = ({
               </div>
             ) : visibleItems.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-gray-400">
-                You&apos;re all caught up.
+                {t('notifications.empty')}
               </div>
             ) : (
               <ul className="divide-y divide-gray-50">
                 {visibleItems.map((n) => {
                   const { icon: Icon, chip } = metaFor(n.type);
                   const isUnread = new Date(n.ts).getTime() > lastSeen;
+                  const title = notificationTitle(n, t, i18n.language);
+                  const subtitle = notificationSubtitle(n, t, i18n.language);
                   return (
                     <li key={n.id}>
                       <button
@@ -213,7 +342,7 @@ const PortalNotifications: React.FC<Props> = ({
                           onNavigate(n.tab);
                           setOpen(false);
                         }}
-                        className={`flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 ${
+                        className={`flex w-full items-start gap-3 px-4 py-3 text-start transition-colors hover:bg-gray-50 ${
                           isUnread ? 'bg-primary/[0.04]' : ''
                         }`}
                       >
@@ -225,15 +354,15 @@ const PortalNotifications: React.FC<Props> = ({
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-2">
                             <span className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900">
-                              {n.title}
+                              {title}
                             </span>
                             {isUnread ? (
                               <span className="h-2 w-2 shrink-0 rounded-full bg-rose-500" />
                             ) : null}
                           </span>
-                          {n.subtitle ? (
+                          {subtitle ? (
                             <span className="mt-0.5 block truncate text-xs text-gray-500">
-                              {n.subtitle}
+                              {subtitle}
                             </span>
                           ) : null}
                         </span>

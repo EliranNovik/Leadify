@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   CalendarDaysIcon,
   ChevronDownIcon,
@@ -17,10 +19,10 @@ import {
 } from '../components/portalTheme';
 import PortalMeetingLocationLines from '../components/PortalMeetingLocationLines';
 
-function formatDate(d: string | null | undefined): string {
+function formatDate(d: string | null | undefined, locale?: string): string {
   if (!d) return '—';
   try {
-    return new Date(d).toLocaleDateString();
+    return new Date(d).toLocaleDateString(locale);
   } catch {
     return d;
   }
@@ -47,11 +49,16 @@ function formatTime12h(t: string | null | undefined): string {
   return m ? `${hour12}:${String(m).padStart(2, '0')}${period}` : `${hour12}${period}`;
 }
 
-function formatMeetingTitle(date: string | null | undefined, time: string | null | undefined): string {
-  if (!date) return formatTime12h(time) || 'Meeting';
+function formatMeetingTitle(
+  date: string | null | undefined,
+  time: string | null | undefined,
+  t: TFunction,
+  locale: string,
+): string {
+  if (!date) return formatTime12h(time) || t('meetings.meetingTitleFallback');
   try {
     const d = new Date(`${date.includes('T') ? date : `${date}T12:00:00`}`);
-    const dateLabel = d.toLocaleDateString(undefined, {
+    const dateLabel = d.toLocaleDateString(locale, {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
@@ -61,7 +68,7 @@ function formatMeetingTitle(date: string | null | undefined, time: string | null
     return timeLabel ? `${dateLabel} · ${timeLabel}` : dateLabel;
   } catch {
     const timeLabel = formatTime12h(time);
-    return timeLabel ? `${formatDate(date)} · ${timeLabel}` : formatDate(date);
+    return timeLabel ? `${formatDate(date, locale)} · ${timeLabel}` : formatDate(date, locale);
   }
 }
 
@@ -87,14 +94,15 @@ function ColoredBadge({
 }
 
 function MeetingStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const normalized = status.toLowerCase();
   if (normalized === 'completed') {
-    return <ColoredBadge className="bg-emerald-500/15 text-emerald-800">Completed</ColoredBadge>;
+    return <ColoredBadge className="bg-emerald-500/15 text-emerald-800">{t('common.status.completed')}</ColoredBadge>;
   }
   if (normalized === 'canceled' || normalized === 'cancelled') {
-    return <ColoredBadge className="bg-red-500/10 text-red-500/90">Cancelled</ColoredBadge>;
+    return <ColoredBadge className="bg-red-500/10 text-red-500/90">{t('common.status.cancelled')}</ColoredBadge>;
   }
-  return <ColoredBadge className="bg-primary/15 text-primary">Scheduled</ColoredBadge>;
+  return <ColoredBadge className="bg-primary/15 text-primary">{t('common.status.scheduled')}</ColoredBadge>;
 }
 
 function MeetingCardActions({ meeting, title }: { meeting: PortalMeetingRow; title: string }) {
@@ -116,7 +124,8 @@ function PortalMeetingCard({
   meeting: PortalMeetingRow;
   muted?: boolean;
 }) {
-  const title = formatMeetingTitle(meeting.meeting_date, meeting.meeting_time);
+  const { t, i18n } = useTranslation();
+  const title = formatMeetingTitle(meeting.meeting_date, meeting.meeting_time, t, i18n.language);
   const isTeams = (meeting.meeting_location || '').toLowerCase() === 'teams';
 
   return (
@@ -139,7 +148,7 @@ function PortalMeetingCard({
               }`}
             >
               <VideoCameraIcon className="h-5 w-5 shrink-0" />
-              Join meeting
+              {t('meetings.joinMeeting')}
             </a>
           ) : null}
           <span className="ml-auto shrink-0">
@@ -187,9 +196,13 @@ const PortalMeetingsTab: React.FC<Props> = ({
   sessionContactId = null,
   onMeetingsChange,
 }) => {
+  const { t } = useTranslation();
   const [bookingToken, setBookingToken] = useState<string | null>(null);
   const [bookingAccessLoading, setBookingAccessLoading] = useState(true);
-  const [bookingAccessError, setBookingAccessError] = useState<string | null>(null);
+  const [bookingAccessError, setBookingAccessError] = useState<{
+    message?: string;
+    fallbackKey: 'meetings.bookingAccessUnavailable' | 'meetings.bookingAccessLoadFailed';
+  } | null>(null);
   const [bookingFlowActive, setBookingFlowActive] = useState(false);
 
   useEffect(() => {
@@ -201,12 +214,18 @@ const PortalMeetingsTab: React.FC<Props> = ({
           setBookingAccessError(null);
         } else {
           setBookingToken(null);
-          setBookingAccessError(result?.error || 'Self-scheduling is not available for your case.');
+          setBookingAccessError({
+            message: result?.error || undefined,
+            fallbackKey: 'meetings.bookingAccessUnavailable',
+          });
         }
       })
       .catch((e) => {
         setBookingToken(null);
-        setBookingAccessError(e instanceof Error ? e.message : 'Could not load scheduling');
+        setBookingAccessError({
+          message: e instanceof Error ? e.message : undefined,
+          fallbackKey: 'meetings.bookingAccessLoadFailed',
+        });
       })
       .finally(() => setBookingAccessLoading(false));
   }, []);
@@ -235,6 +254,10 @@ const PortalMeetingsTab: React.FC<Props> = ({
     return { upcoming: upcomingList, past: pastList };
   }, [meetings]);
 
+  const bookingAccessErrorText = bookingAccessError
+    ? bookingAccessError.message || t(bookingAccessError.fallbackKey)
+    : null;
+
   const renderMeetingCard = (m: PortalMeetingRow, muted = false) => (
     <PortalMeetingCard key={String(m.id)} meeting={m} muted={muted} />
   );
@@ -244,7 +267,7 @@ const PortalMeetingsTab: React.FC<Props> = ({
       <section className="mt-10 space-y-5">
         <details className="group">
           <summary className="inline-flex w-fit cursor-pointer list-none items-center gap-2.5 rounded-full bg-white px-4 py-2 shadow-[0_2px_10px_rgba(15,23,42,0.06)] transition-shadow hover:shadow-[0_4px_14px_rgba(15,23,42,0.1)] [&::-webkit-details-marker]:hidden">
-            <PortalSectionLabel>Past meetings</PortalSectionLabel>
+            <PortalSectionLabel>{t('meetings.sections.past')}</PortalSectionLabel>
             <span className="text-sm font-medium text-base-content/45">{past.length}</span>
             <ChevronDownIcon className="h-4 w-4 text-base-content/45 transition-transform group-open:rotate-180" />
           </summary>
@@ -260,8 +283,8 @@ const PortalMeetingsTab: React.FC<Props> = ({
   if (bookingAccessLoading) {
     return (
       <PortalTabFrame
-        title="Meetings"
-        subtitle="Schedule appointments and view your upcoming meetings."
+        title={t('meetings.title')}
+        subtitle={t('meetings.subtitle')}
         headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
       >
         <PortalLoading className="py-16" />
@@ -287,17 +310,17 @@ const PortalMeetingsTab: React.FC<Props> = ({
 
   return (
     <PortalTabFrame
-      title="Meetings"
-      subtitle="Schedule appointments and view your upcoming meetings."
+      title={t('meetings.title')}
+      subtitle={t('meetings.subtitle')}
       headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
     >
       <section className="space-y-5">
-        <PortalSectionLabel>Upcoming</PortalSectionLabel>
+        <PortalSectionLabel>{t('meetings.sections.upcoming')}</PortalSectionLabel>
         {upcoming.length === 0 ? (
           <PortalCard>
             <p className="text-sm text-base-content/45">
-              No upcoming meetings scheduled.
-              {bookingAccessError ? ` ${bookingAccessError}` : ''}
+              {t('meetings.emptyUpcoming')}
+              {bookingAccessErrorText ? ` ${bookingAccessErrorText}` : ''}
             </p>
           </PortalCard>
         ) : (
@@ -307,10 +330,10 @@ const PortalMeetingsTab: React.FC<Props> = ({
         )}
       </section>
 
-      {bookingAccessError ? (
+      {bookingAccessErrorText ? (
         <section className="space-y-5">
           <PortalCard>
-            <p className="text-sm text-base-content/55">{bookingAccessError}</p>
+            <p className="text-sm text-base-content/55">{bookingAccessErrorText}</p>
           </PortalCard>
         </section>
       ) : null}

@@ -1,0 +1,392 @@
+{
+  "nav": {
+    "dashboard": "לוח בקרה",
+    "caseStatus": "סטטוס התיק",
+    "finance": "כספים",
+    "documents": "מסמכים",
+    "myContacts": "אנשי הקשר שלי",
+    "meetings": "פגישות",
+    "ariaCaseSections": "אזורי התיק"
+  },
+  "layout": {
+    "logoAlt": "משרד עורכי דין Decker Pex & Co",
+    "menuOpen": "פתיחת תפריט",
+    "menuClose": "סגירת תפריט"
+  },
+  "profile": {
+    "caseNumber": "תיק מס׳ {{leadNumber}}",
+    "settings": "הגדרות",
+    "signOut": "התנתקות"
+  },
+  "notifications": {
+    "ariaLabel": "התראות",
+    "title": "התראות",
+    "dismissAll": "סגירת הכל",
+    "empty": "הכל מעודכן.",
+    "unreadOverflow": "9+",
+    "documentNewTitleFallback": "הועלה מסמך חדש",
+    "documentNameFallback": "מסמך",
+    "meetingTitleFallback": "פגישה",
+    "types": {
+      "poa_new": {
+        "titleFallback": "ייפוי כוח",
+        "subtitle": "ייפוי כוח חדש לעיון"
+      },
+      "poa_signed": {
+        "titleFallback": "ייפוי כוח",
+        "subtitle": "ייפוי הכוח נחתם"
+      },
+      "contract_new": {
+        "titleFallback": "חוזה",
+        "subtitle": "חוזה חדש זמין"
+      },
+      "contract_signed": {
+        "titleFallback": "חוזה",
+        "subtitle": "החוזה נחתם"
+      },
+      "contact_new": {
+        "titleFallback": "איש קשר חדש",
+        "subtitle": "נוסף איש קשר חדש לתיק שלכם"
+      },
+      "meeting_new": {
+        "titleFallback": "פגישה",
+        "subtitleScheduled": "פגישה נקבעה ל-{{date}}",
+        "subtitleFallback": "נקבעה פגישה חדשה"
+      },
+      "document_new": {
+        "titleFallback": "מסמך",
+        "subtitle": "הועלה מסמך חדש"
+      },
+      "status_new": {
+        "titleFallback": "עדכון תיק",
+        "subtitle": "סטטוס תיק חדש"
+      },
+      "status_updated": {
+        "titleFallback": "עדכון תיק",
+        "subtitle": "סטטוס התיק עודכן"
+      }
+    }
+  },
+  "footer": {
+    "logoAlt": "לוגו DPL",
+    "firmName": "משרד עורכי דין דקר פקס ושות׳",
+    "firmNameShort": "דקר פקס ושות׳",
+    "addressRamatGan": "דרך מנחם בגין 11, רמת גן, ישראל",
+    "addressJerusalem": "יד חרוצים 10, ירושלים, ישראל",
+    "copyright": "RMQ 2.0 - Copyright © {{year}} - כל הזכויות שמורות",
+    "social": {
+      "linkedIn": "LinkedIn",
+      "youTube": "YouTube",
+      "facebook": "Facebook"
+    }
+  },
+  "common": {
+    "emDash": "—",
+    "language": "שפה",
+    "needHelp": "צריכים עזרה?",
+    "contactUs": "צרו קשר",
+    "badges": {
+      "overdue": "באיחור",
+      "paid": "שולם",
+      "due": "לתשלום",
+      "dueWithDate": "לתשלום עד {{date}}",
+      "paidWithDate": "שולם {{date}}",
+      "originallyDue": "מועד תשלום מקורי {{date}}"
+    },
+    "status": {
+      "signed": "נחתם",
+      "pending": "ממתין",
+      "completed": "הושלם",
+      "cancelled": "בוטל",
+      "scheduled": "נקבע",
+      "done": "בוצע",
+      "inProcess": "בטיפול"
+    },
+    "teamContact": {
+      "email": "דוא״ל",
+      "call": "שיחה",
+      "whatsApp": "WhatsApp"
+    },
+    "maps": {
+      "waze": "Waze",
+      "googleMaps": "Google Maps",
+      "appleMaps": "Apple Maps",
+      "openMapLink": "פתיחת קישור למפה"
+    },
+    "documentFallback": "מסמך",
+    "folder": "תיקייה",
+    "empty": "ריק",
+    "open": "פתיחה",
+    "view": "צפייה",
+    "download": "הורדה",
+    "preview": "תצוגה מקדימה",
+    "close": "סגירה",
+    "cancel": "ביטול",
+    "upload": "העלאה",
+    "uploading": "מעלה…",
+    "uploadFailed": "ההעלאה נכשלה",
+    "complete": "הושלם",
+    "failed": "נכשל",
+    "showLess": "הצג פחות",
+    "showMore": "הצג עוד {{count}}",
+    "mainContactBadge": "איש קשר ראשי",
+    "viewArrow": "צפייה ←",
+    "loading": "טוען…"
+  },
+  "dashboard": {
+    "greeting": {
+      "morning": "בוקר טוב",
+      "afternoon": "צהריים טובים",
+      "evening": "ערב טוב",
+      "withName": "{{greeting}}, {{firstName}}"
+    },
+    "firstNameFallback": "לכם",
+    "loadError": "לא ניתן לטעון את לוח הבקרה.",
+    "stats": {
+      "nextMeeting": {
+        "label": "הפגישה הבאה",
+        "noneScheduled": "לא נקבעה פגישה",
+        "hintTeams": "פגישת Teams",
+        "hintViewDetails": "פרטים נוספים בפגישות",
+        "hintSchedule": "קביעת מועד בפגישות"
+      },
+      "nextPayment": {
+        "label": "התשלום הבא",
+        "allCaughtUp": "הכל מעודכן",
+        "hintDue": "לתשלום עד {{date}}",
+        "hintNoOutstanding": "אין תשלומים ממתינים"
+      },
+      "caseStatus": {
+        "label": "סטטוס התיק",
+        "hintCurrentStage": "השלב הנוכחי בתהליך",
+        "valueComplete": "הושלם",
+        "hintAllComplete": "כל השלבים הושלמו",
+        "valueNoActiveStage": "אין שלב פעיל",
+        "hintLatestMilestone": "אבן הדרך האחרונה בתיק"
+      }
+    },
+    "nextStep": {
+      "titleNext": "הצעד הבא",
+      "titleOverview": "סקירת התיק",
+      "paymentOverdue": "תשלום בסך {{amount}} היה אמור להיות משולם עד {{date}}. יש להשלים את התשלום כדי להמשיך בטיפול בתיק.",
+      "paymentUpcoming": "תשלום קרוב בסך {{amount}}{{dueSuffix}}.",
+      "dueSuffix": " — לתשלום עד {{date}}",
+      "meetingScheduled": "הפגישה שלכם נקבעה ל-{{meetingLabel}}.",
+      "caseInStage": "התיק שלכם נמצא כעת בשלב {{stageName}}{{categorySuffix}}.",
+      "categorySuffix": " ({{category}})",
+      "defaultDescription": "מעקב אחר פגישות, תשלומים, מסמכים ותקשורת במקום מאובטח אחד.",
+      "actions": {
+        "payOnline": "תשלום מקוון",
+        "viewFinance": "צפייה בכספים",
+        "joinMeeting": "הצטרפות לפגישה",
+        "viewCaseStatus": "צפייה בסטטוס התיק",
+        "viewDocuments": "צפייה במסמכים"
+      }
+    },
+    "recentActivity": {
+      "title": "פעילות אחרונה",
+      "empty": "אין עדכונים אחרונים להצגה.",
+      "meetingScheduled": "פגישה נקבעה ל-{{meetingLabel}}",
+      "paymentReceived": "תשלום התקבל ב-{{date}}",
+      "paymentDue": "תשלום לתאריך {{date}}",
+      "caseMoved": "התיק עבר לשלב {{stageName}}"
+    },
+    "team": {
+      "title": "צוות המשפטי שלכם",
+      "subtitle": "יצירת קשר ישיר עם אנשי המקצוע המטפלים בתיק.",
+      "viewBusinessCardTitle": "צפייה בכרטיס הביקור של {{name}}",
+      "roles": {
+        "caseHandler": "מטפל/ת בתיק",
+        "legalAssistant": "עוזר/ת משפטי/ת",
+        "departmentManager": "מנהל/ת מחלקה"
+      }
+    }
+  },
+  "stages": {
+    "title": "סטטוס התיק",
+    "subtitleCurrentStage": "שלב נוכחי: {{stageName}}",
+    "subtitleAllComplete": "כל השלבים הושלמו.",
+    "emptyNoCaseType": "שלבי התיק יופיעו כאן לאחר שסוג התיק יוגדר בתיק שלכם.",
+    "emptyNoStagesLinked": "טרם קושרו שלבי תיק לסוג התיק שלכם.",
+    "timeline": {
+      "emptyFallback": "אין שלבי תיק להצגה כרגע.",
+      "workflowTitle": "תהליך העבודה",
+      "allStagesComplete": "כל השלבים הושלמו",
+      "notesTitle": "הערות מהצוות שלנו",
+      "notesEmpty": "אין הערות לשלב זה עדיין.",
+      "documentsTitle": "מסמכים",
+      "allDocuments": "כל המסמכים",
+      "noDocumentsStage": "טרם הועלו מסמכים לשלב זה.",
+      "folderEmpty": "בתיקייה זו אין מסמכים עדיין.",
+      "folderEmptyShort": "תיקייה זו ריקה.",
+      "documentCount_one": "מסמך אחד",
+      "documentCount_two": "{{count}} מסמכים",
+      "documentCount_other": "{{count}} מסמכים",
+      "filesInFolderFooter": "קבצים בתיקייה עצמה יופיעו כאן",
+      "filesOutsideFoldersFooter": "קבצים מחוץ לתיקיות אלה יופיעו כאן",
+      "columns": {
+        "type": "סוג",
+        "added": "נוסף"
+      },
+      "fileTypes": {
+        "pdfDocument": "מסמך PDF",
+        "imageWithExt": "תמונת {{ext}}",
+        "image": "תמונה"
+      },
+      "folderActions": {
+        "optionsFor": "אפשרויות עבור {{name}}",
+        "openFolder": "פתיחת תיקייה"
+      },
+      "aboutStage": "אודות שלב זה",
+      "whatIsThisStage": "מהו שלב זה?",
+      "noDescriptionAvailable": "אין תיאור זמין",
+      "aboutStageAria": "אודות {{stageName}}",
+      "noDescriptionForStageAria": "אין תיאור עבור {{stageName}}",
+      "descriptionModalEmpty": "טרם זמין תיאור לשלב זה.",
+      "closeDescriptionAria": "סגירת התיאור",
+      "backToStages": "חזרה לשלבים",
+      "loadingDocuments": "טוען מסמכים…"
+    }
+  },
+  "finance": {
+    "title": "כספים",
+    "subtitle": "תשלומים ממתינים, חשבוניות והיסטוריית תשלומים.",
+    "filtersAria": "מסנני כספים",
+    "filters": {
+      "outstanding": "ממתינים",
+      "paid": "שולמו"
+    },
+    "sections": {
+      "outstanding": "ממתינים לתשלום",
+      "paymentHistory": "היסטוריית תשלומים",
+      "paidInvoices": "חשבוניות ששולמו"
+    },
+    "empty": {
+      "outstanding": "אין תשלומים ממתינים.",
+      "paid": "אין תשלומים שהושלמו עדיין.",
+      "paidInvoices": "חשבוניות יופיעו כאן לאחר השלמת התשלומים."
+    },
+    "paymentTitles": {
+      "default": "תשלום",
+      "first": "תשלום ראשון",
+      "intermediate": "תשלום ביניים",
+      "final": "תשלום אחרון",
+      "single": "תשלום יחיד",
+      "expense": "הוצאה",
+      "expenseNoVat": "הוצאה (ללא מע״מ)"
+    },
+    "actions": {
+      "payOnline": "תשלום מקוון",
+      "viewInvoice": "צפייה בחשבונית",
+      "taxReceipt": "קבלה מס",
+      "taxReceiptNumber": "קבלה מס מס׳ {{number}}",
+      "viewTaxReceiptTitle": "צפייה בקבלה מס",
+      "viewTaxReceiptWithNumberTitle": "קבלה מס מס׳ {{number}}"
+    },
+    "invoiceRow": {
+      "invoiceWithAmount": "חשבונית — {{amount}}",
+      "invoiceWithIdAndAmount": "חשבונית מס׳ {{id}} — {{amount}}",
+      "invoiceWithId": "חשבונית מס׳ {{id}}",
+      "paidOn": "שולם {{date}}"
+    }
+  },
+  "documents": {
+    "title": "מסמכים",
+    "subtitle": "הורדת קבצים משותפים או העלאת מסמכים לצוות שלנו.",
+    "uploadZone": {
+      "processing": "מעבד קבצים…",
+      "prompt": "גררו קבצים לכאן או לחצו לבחירת קבצים",
+      "button": "העלאת קבצים",
+      "uploadingProgress": "מעלה…"
+    },
+    "categoriesAria": "קטגוריות מסמכים",
+    "categoryTabs": {
+      "sequenceOfEvents": "רצף אירועים",
+      "expert": "מומחה",
+      "legalClaims": "טענות משפטיות",
+      "contract": "חוזה"
+    },
+    "views": {
+      "table": "תצוגת טבלה",
+      "grid": "תצוגת תיבות"
+    },
+    "folderPathAria": "נתיב תיקייה",
+    "empty": {
+      "noneYet": "אין מסמכים עדיין. העלו קבצים באזור למעלה.",
+      "noneInCategory": "אין מסמכים בקטגוריה זו.",
+      "folderEmpty": "תיקייה זו ריקה."
+    },
+    "table": {
+      "name": "שם",
+      "size": "גודל",
+      "actions": "פעולות",
+      "open": "פתיחה",
+      "sizeKb": "{{sizeKb}} KB"
+    },
+    "download": {
+      "title": "הורדה",
+      "aria": "הורדת {{fileName}}",
+      "unavailableTitle": "קובץ זה אינו זמין להורדה"
+    },
+    "view": {
+      "title": "צפייה",
+      "aria": "צפייה ב-{{fileName}}"
+    },
+    "uploadModal": {
+      "title": "העלאת מסמכים",
+      "description": "בחרו למי שייכים המסמכים ומה סוגם.",
+      "closeAria": "סגירה",
+      "closeDialogAria": "סגירת חלון ההעלאה",
+      "contactLabel": "איש קשר",
+      "contactPlaceholder": "בחירת איש קשר…",
+      "documentTypeLabel": "סוג מסמך",
+      "documentTypeOptional": "סוג מסמך (אופציונלי)",
+      "typePlaceholderRequired": "בחירת סוג…",
+      "typePlaceholderOptional": "לא נדרש סוג",
+      "validationContactOnly": "יש לבחור איש קשר",
+      "validationContactAndType": "יש לבחור איש קשר וסוג מסמך",
+      "loadFailed": "טעינת המסמכים נכשלה"
+    },
+    "toastUploadError": "{{fileName}}: {{message}}"
+  },
+  "contacts": {
+    "title": "אנשי הקשר שלי",
+    "subtitle": "אנשים הקשורים לתיק שלכם. עדכון פרטים או תמונות פרופיל כאן.",
+    "fields": {
+      "email": "דוא״ל",
+      "phone": "טלפון",
+      "mobile": "נייד",
+      "address": "כתובת",
+      "idPassport": "ת.ז. / דרכון"
+    },
+    "editContactAria": "עריכת איש קשר",
+    "contractsSection": "חוזים",
+    "contractTitleFallback": "חוזה",
+    "poaSection": "ייפוי כוח",
+    "poaTitleFallback": "ייפוי כוח",
+    "open": "פתיחה",
+    "toastUpdated": "איש הקשר עודכן",
+    "toastUpdateFailed": "העדכון נכשל",
+    "loadFailed": "טעינת אנשי הקשר נכשלה",
+    "avatar": {
+      "changePhotoTitle": "שינוי תמונה",
+      "changePhotoAria": "שינוי תמונת פרופיל",
+      "invalidType": "יש לבחור תמונה בפורמט JPG, PNG, GIF או WebP",
+      "tooLarge": "גודל התמונה חייב להיות 5MB או פחות",
+      "updated": "תמונת הפרופיל עודכנה"
+    }
+  },
+  "meetings": {
+    "title": "פגישות",
+    "subtitle": "קביעת תורים וצפייה בפגישות הקרובות.",
+    "joinMeeting": "הצטרפות לפגישה",
+    "meetingTitleFallback": "פגישה",
+    "sections": {
+      "upcoming": "קרובות",
+      "past": "פגישות קודמות"
+    },
+    "emptyUpcoming": "אין פגישות קרובות.",
+    "bookingAccessUnavailable": "קביעת תורים עצמית אינה זמינה לתיק שלכם.",
+    "bookingAccessLoadFailed": "לא ניתן לטעון את מערכת הקביעה"
+  }
+}

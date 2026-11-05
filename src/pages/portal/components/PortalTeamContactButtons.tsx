@@ -1,6 +1,7 @@
 import React from 'react';
 import { PhoneIcon } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
+import { useTranslation } from 'react-i18next';
 import type { PortalTeamContact } from '../../../lib/portalApi';
 
 function buildWhatsAppUrl(phone: string): string {
@@ -59,6 +60,7 @@ type Props = {
 };
 
 const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
+  const { t } = useTranslation();
   if (!contact) return null;
 
   const email = contact.email?.trim() || null;
@@ -72,7 +74,7 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
     email
       ? {
           href: `mailto:${email}`,
-          label: 'Email',
+          label: t('common.teamContact.email'),
           kind: 'email' as const,
           external: false,
         }
@@ -80,7 +82,7 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
     callNumber
       ? {
           href: `tel:${callNumber}`,
-          label: 'Call',
+          label: t('common.teamContact.call'),
           kind: 'call' as const,
           external: false,
         }
@@ -88,7 +90,7 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
     whatsAppUrl
       ? {
           href: whatsAppUrl,
-          label: 'WhatsApp',
+          label: t('common.teamContact.whatsApp'),
           kind: 'whatsapp' as const,
           external: true,
         }
@@ -99,7 +101,7 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
     <div className="flex flex-wrap items-center justify-start gap-2">
       {items.map(({ href, label, kind, external }) => (
         <a
-          key={label}
+          key={kind}
           href={href}
           target={external ? '_blank' : undefined}
           rel={external ? 'noopener noreferrer' : undefined}

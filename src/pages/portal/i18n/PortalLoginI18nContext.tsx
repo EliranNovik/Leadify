@@ -14,12 +14,11 @@ import {
   type PortalLoginLocale,
   type PortalLoginMessages,
 } from './portalLoginMessages';
-
-const STORAGE_KEY = 'portal_login_locale';
+import { PORTAL_LOCALE_STORAGE_KEY } from './portalLocaleStorage';
 
 function readStoredLocale(): PortalLoginLocale {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(PORTAL_LOCALE_STORAGE_KEY);
     if (stored && isPortalLoginLocale(stored)) return stored;
   } catch {
     // ignore
@@ -43,7 +42,7 @@ export function PortalLoginI18nProvider({ children }: { children: ReactNode }) {
   const setLocale = useCallback((next: PortalLoginLocale) => {
     setLocaleState(next);
     try {
-      localStorage.setItem(STORAGE_KEY, next);
+      localStorage.setItem(PORTAL_LOCALE_STORAGE_KEY, next);
     } catch {
       // ignore
     }

@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { CameraIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import { portalUploadContactProfile } from '../../../lib/portalApi';
 import { EntityAvatar } from './portalTheme';
 
@@ -27,29 +28,30 @@ const PortalContactAvatar: React.FC<Props> = ({
   sizeClass = 'h-14 w-14 text-base',
   onUpdated,
 }) => {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
     if (!isAllowedImage(file)) {
-      toast.error('Please choose a JPG, PNG, GIF, or WebP image');
+      toast.error(t('contacts.avatar.invalidType'));
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      toast.error('Image must be 5MB or smaller');
+      toast.error(t('contacts.avatar.tooLarge'));
       return;
     }
     setUploading(true);
     try {
       const result = await portalUploadContactProfile(contactId, file);
       if (!result.ok || !result.portal_profile_image_path) {
-        throw new Error(result.error || 'Upload failed');
+        throw new Error(result.error || t('common.uploadFailed'));
       }
-      toast.success('Profile photo updated');
+      toast.success(t('contacts.avatar.updated'));
       onUpdated?.(result.portal_profile_image_path);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Upload failed');
+      toast.error(e instanceof Error ? e.message : t('common.uploadFailed'));
     } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = '';
@@ -69,8 +71,8 @@ const PortalContactAvatar: React.FC<Props> = ({
         className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
         onClick={() => inputRef.current?.click()}
         disabled={uploading}
-        title="Change photo"
-        aria-label="Change profile photo"
+        title={t('contacts.avatar.changePhotoTitle')}
+        aria-label={t('contacts.avatar.changePhotoAria')}
       >
         {uploading ? (
           <span className="loading loading-spinner loading-sm text-white" />

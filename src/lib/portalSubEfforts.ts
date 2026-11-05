@@ -15,7 +15,9 @@ export type PortalSubEffortFolder = {
 export type PortalSubEffortSubCategory = {
   id: number;
   name: string;
+  name_he?: string | null;
   description?: string | null;
+  description_he?: string | null;
   sort_order: number;
 };
 
@@ -23,7 +25,9 @@ export type PortalSubEffortRow = {
   id: number;
   sub_effort_id: number;
   sub_effort_name: string;
+  sub_effort_name_he?: string | null;
   sub_effort_description?: string | null;
+  sub_effort_description_he?: string | null;
   active?: boolean;
   client_notes?: string | null;
   document_url?: unknown;
@@ -48,9 +52,15 @@ export function normalizePortalSubCategoryEfforts(raw: unknown): PortalSubEffort
       return {
         id,
         name,
+        name_he:
+          typeof row.name_he === 'string' && row.name_he.trim() ? row.name_he.trim() : null,
         description:
           typeof row.description === 'string' && row.description.trim()
             ? row.description.trim()
+            : null,
+        description_he:
+          typeof row.description_he === 'string' && row.description_he.trim()
+            ? row.description_he.trim()
             : null,
         sort_order: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
       } satisfies PortalSubEffortSubCategory;
@@ -124,28 +134,32 @@ export function getPortalSubEffortProgress(
 /** Label for dashboard Case Status card (synced with CRM modal / portal workflow). */
 export function portalActiveSubEffortCardCopy(rows: PortalSubEffortRow[]): {
   value: string;
-  hint: string;
+  hintKey: 'current' | 'allComplete' | 'latest';
+  valueKey?: 'complete' | 'noActive';
   current: PortalSubEffortRow | null;
 } {
   const current = findCurrentPortalSubEffort(rows);
   if (current?.sub_effort_name?.trim()) {
     return {
       value: current.sub_effort_name.trim(),
-      hint: 'Current stage in your workflow',
+      hintKey: 'current',
       current,
     };
   }
   if (rows.length > 0 && rows.every((row) => row.active === false)) {
     const last = rows[rows.length - 1];
+    const name = last.sub_effort_name?.trim();
     return {
-      value: last.sub_effort_name?.trim() || 'Complete',
-      hint: 'All stages complete',
+      value: name || '',
+      valueKey: name ? undefined : 'complete',
+      hintKey: 'allComplete',
       current: null,
     };
   }
   return {
-    value: 'No active stage',
-    hint: 'Latest case milestone',
+    value: '',
+    valueKey: 'noActive',
+    hintKey: 'latest',
     current: null,
   };
 }
@@ -195,9 +209,18 @@ export function dedupePortalSubEffortRows(rows: Array<Record<string, unknown>>):
       id: Number(row.id),
       sub_effort_id: Number(row.sub_effort_id),
       sub_effort_name: String(row.sub_effort_name ?? ''),
+      sub_effort_name_he:
+        typeof row.sub_effort_name_he === 'string' && row.sub_effort_name_he.trim()
+          ? row.sub_effort_name_he.trim()
+          : null,
       sub_effort_description:
         typeof row.sub_effort_description === 'string' && row.sub_effort_description.trim()
           ? row.sub_effort_description.trim()
+          : null,
+      sub_effort_description_he:
+        typeof row.sub_effort_description_he === 'string' &&
+        row.sub_effort_description_he.trim()
+          ? row.sub_effort_description_he.trim()
           : null,
       active: row.active === false ? false : true,
       client_notes: typeof row.client_notes === 'string' ? row.client_notes : null,

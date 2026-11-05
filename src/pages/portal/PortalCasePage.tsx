@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import PortalLayout from './PortalLayout';
 import { usePortalSession } from './usePortalSession';
 import PortalDashboardTab from './tabs/PortalDashboardTab';
@@ -11,20 +12,28 @@ import PortalMeetingsTab from './tabs/PortalMeetingsTab';
 import PortalTabPageTurn from './components/PortalTabPageTurn';
 import { PortalTabDataProvider, usePortalTabData } from './context/PortalTabDataContext';
 import { PortalLoading } from './components/portalTheme';
+import { PortalI18nProvider } from './i18n/PortalI18nProvider';
 import type { PortalTabId } from './portalTabTypes';
 
 export type { PortalTabId } from './portalTabTypes';
 
-const TABS: { id: PortalTabId; label: string }[] = [
-  { id: 'summary', label: 'Dashboard' },
-  { id: 'stages', label: 'Case Status' },
-  { id: 'finance', label: 'Finance' },
-  { id: 'documents', label: 'Documents' },
-  { id: 'contacts', label: 'My contacts' },
-  { id: 'meetings', label: 'Meetings' },
+const TAB_IDS: PortalTabId[] = [
+  'summary',
+  'stages',
+  'finance',
+  'documents',
+  'contacts',
+  'meetings',
 ];
 
-const TAB_ORDER = TABS.map((tab) => tab.id);
+const NAV_LABEL_KEYS: Record<PortalTabId, string> = {
+  summary: 'nav.dashboard',
+  stages: 'nav.caseStatus',
+  finance: 'nav.finance',
+  documents: 'nav.documents',
+  contacts: 'nav.myContacts',
+  meetings: 'nav.meetings',
+};
 
 const PortalCaseContent: React.FC<{
   contact: ReturnType<typeof usePortalSession>['contact'];
@@ -32,12 +41,18 @@ const PortalCaseContent: React.FC<{
   logout: () => Promise<void>;
   leadSummary: ReturnType<typeof usePortalSession>['leadSummary'];
 }> = ({ contact, refreshSession, logout, leadSummary }) => {
+  const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<PortalTabId>('summary');
   const { data, initialLoading, refresh } = usePortalTabData();
   const contactProfileImageUrl = contact?.portal_profile_image_path
     ? data?.contactProfileSignedUrls?.[contact.portal_profile_image_path] ?? null
     : null;
+
+  const navTabs = useMemo(
+    () => TAB_IDS.map((id) => ({ id, label: t(NAV_LABEL_KEYS[id]) })),
+    [t],
+  );
 
   useEffect(() => {
     const tab = searchParams.get('tab');
@@ -112,7 +127,7 @@ const PortalCaseContent: React.FC<{
   );
 
   const tabTurn = useMemo(
-    () => <PortalTabPageTurn activeTab={activeTab} tabOrder={TAB_ORDER} renderTab={renderTab} />,
+    () => <PortalTabPageTurn activeTab={activeTab} tabOrder={TAB_IDS} renderTab={renderTab} />,
     [activeTab, renderTab],
   );
 
@@ -123,7 +138,7 @@ const PortalCaseContent: React.FC<{
       contactProfileImageUrl={contactProfileImageUrl}
       onLogout={logout}
       onSettings={() => setActiveTab('contacts')}
-      navTabs={TABS}
+      navTabs={navTabs}
       activeNavTab={activeTab}
       onNavTabChange={(tabId) => setActiveTab(tabId as PortalTabId)}
     >
@@ -132,7 +147,7 @@ const PortalCaseContent: React.FC<{
   );
 };
 
-const PortalCasePage: React.FC = () => {
+const PortalCasePageInner: React.FC = () => {
   const { loading, valid, leadSummary, contact, logout, refresh, leadRef } = usePortalSession(true);
 
   if (loading) {
@@ -156,5 +171,11 @@ const PortalCasePage: React.FC = () => {
     </PortalTabDataProvider>
   );
 };
+
+const PortalCasePage: React.FC = () => (
+  <PortalI18nProvider>
+    <PortalCasePageInner />
+  </PortalI18nProvider>
+);
 
 export default PortalCasePage;

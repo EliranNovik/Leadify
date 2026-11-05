@@ -189,6 +189,16 @@ const EmployeesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) 
       placeholder: 'e.g., John Michael Doe'
     },
     {
+      name: 'display_name_he',
+      label: 'Hebrew Display Name',
+      type: 'text' as const,
+      required: false,
+      placeholder: 'e.g., אלירן נוביק',
+      hideInTable: false,
+      hideInAdd: false,
+      hideInEdit: false,
+    },
+    {
       name: 'department_id',
       label: 'Department',
       type: 'select' as const,

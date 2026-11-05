@@ -9,6 +9,7 @@ import {
   ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import {
   portalUpdateContact,
   type PortalContactPoaRow,
@@ -55,17 +56,18 @@ function displayContactValue(value: string | null | undefined): string {
   return value.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-const FIELD_LABELS: Record<'email' | 'phone' | 'mobile' | 'address' | 'id_passport', string> = {
-  email: 'Email',
-  phone: 'Phone',
-  mobile: 'Mobile',
-  address: 'Address',
-  id_passport: 'ID / Passport',
+const FIELD_LABEL_KEYS: Record<'email' | 'phone' | 'mobile' | 'address' | 'id_passport', string> = {
+  email: 'contacts.fields.email',
+  phone: 'contacts.fields.phone',
+  mobile: 'contacts.fields.mobile',
+  address: 'contacts.fields.address',
+  id_passport: 'contacts.fields.idPassport',
 };
 
 const CONTACT_FIELDS = ['email', 'phone', 'mobile', 'address', 'id_passport'] as const;
 
 const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh }) => {
+  const { t } = useTranslation();
   const { data, initialLoading, refresh } = usePortalTabData();
   const contacts = (data?.contacts?.contacts ?? []) as ContactRow[];
   const poasByContact = data?.poasByContact ?? {};
@@ -81,9 +83,9 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
     try {
       await refresh('contacts');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to load contacts');
+      toast.error(e instanceof Error ? e.message : t('contacts.loadFailed'));
     }
-  }, [refresh]);
+  }, [refresh, t]);
 
   const startEdit = (c: ContactRow) => {
     setEditingId(c.id);
@@ -108,12 +110,12 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
         id_passport: draft.id_passport,
         country_id: draft.country_id,
       });
-      if (!result.ok) throw new Error(result.error || 'Update failed');
-      toast.success('Contact updated');
+      if (!result.ok) throw new Error(result.error || t('contacts.toastUpdateFailed'));
+      toast.success(t('contacts.toastUpdated'));
       setEditingId(null);
       await reloadContacts();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Update failed');
+      toast.error(e instanceof Error ? e.message : t('contacts.toastUpdateFailed'));
     } finally {
       setSaving(false);
     }
@@ -130,8 +132,8 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
 
   return (
     <PortalTabFrame
-      title="My contacts"
-      subtitle="People linked to your case. Update details or profile photos here."
+      title={t('contacts.title')}
+      subtitle={t('contacts.subtitle')}
       headerCoverImage={getPortalTabHeaderCoverImage('contacts')}
     >
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -168,7 +170,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                     type="button"
                     className="btn btn-ghost btn-circle h-11 w-11 min-h-11 shrink-0"
                     onClick={() => startEdit(c)}
-                    aria-label="Edit contact"
+                    aria-label={t('contacts.editContactAria')}
                   >
                     <PencilSquareIcon className="h-5 w-5" />
                   </button>
@@ -188,7 +190,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                 <div className="grid grid-cols-2 gap-x-4 gap-y-5 text-sm">
                   {CONTACT_FIELDS.map((field) => (
                     <div key={field} className="min-w-0">
-                      <p className="mb-1 text-sm font-semibold text-gray-900">{FIELD_LABELS[field]}</p>
+                      <p className="mb-1 text-sm font-semibold text-gray-900">{t(FIELD_LABEL_KEYS[field])}</p>
                       {isEditing ? (
                         <input
                           className="input input-bordered input-sm w-full border-gray-200 bg-white"
@@ -206,13 +208,13 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                   <div className="mt-5 border-t border-gray-200/60 pt-4">
                     <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-900">
                       <DocumentDuplicateIcon className="h-4 w-4 text-gray-400" />
-                      Contracts
+                      {t('contacts.contractsSection')}
                     </p>
                     <div className="flex flex-col divide-y divide-gray-100">
                       {contractsByContact[c.id].map((contract) => (
                         <div key={contract.id} className="flex items-center gap-2 py-2 first:pt-0">
                           <span className="min-w-0 flex-1 truncate text-sm text-gray-700">
-                            {contract.title || 'Contract'}
+                            {contract.title || t('contacts.contractTitleFallback')}
                           </span>
                           <span
                             className={`badge badge-sm border-none ${
@@ -221,7 +223,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                                 : 'bg-gray-100 text-gray-500'
                             }`}
                           >
-                            {contract.status === 'signed' ? 'Signed' : 'Pending'}
+                            {contract.status === 'signed' ? t('common.status.signed') : t('common.status.pending')}
                           </span>
                           <a
                             className="btn btn-ghost btn-xs gap-1 text-primary"
@@ -230,7 +232,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                             rel="noopener noreferrer"
                           >
                             <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-                            {contract.status === 'signed' ? 'View' : 'Open'}
+                            {contract.status === 'signed' ? t('common.view') : t('contacts.open')}
                           </a>
                         </div>
                       ))}
@@ -242,7 +244,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                   <div className="mt-5 border-t border-gray-200/60 pt-4">
                     <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-900">
                       <DocumentTextIcon className="h-4 w-4 text-gray-400" />
-                      Power of Attorney
+                      {t('contacts.poaSection')}
                     </p>
                     <div className="flex flex-col divide-y divide-gray-100">
                       {(expandedPoas[c.id]
@@ -251,7 +253,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                       ).map((poa) => (
                         <div key={poa.id} className="flex items-center gap-2 py-2 first:pt-0">
                           <span className="min-w-0 flex-1 truncate text-sm text-gray-700">
-                            {poa.type_name || 'Power of Attorney'}
+                            {poa.type_name || t('contacts.poaTitleFallback')}
                           </span>
                           <span
                             className={`badge badge-sm border-none ${
@@ -260,7 +262,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                                 : 'bg-gray-100 text-gray-500'
                             }`}
                           >
-                            {poa.status === 'signed' ? 'Signed' : 'Pending'}
+                            {poa.status === 'signed' ? t('common.status.signed') : t('common.status.pending')}
                           </span>
                           <a
                             className="btn btn-ghost btn-xs gap-1 text-primary"
@@ -269,7 +271,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                             rel="noopener noreferrer"
                           >
                             <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-                            {poa.status === 'signed' ? 'View' : 'Open'}
+                            {poa.status === 'signed' ? t('common.view') : t('contacts.open')}
                           </a>
                         </div>
                       ))}
@@ -287,8 +289,8 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                             }`}
                           />
                           {expandedPoas[c.id]
-                            ? 'Show less'
-                            : `Show ${poasByContact[c.id].length - 2} more`}
+                            ? t('common.showLess')
+                            : t('common.showMore', { count: poasByContact[c.id].length - 2 })}
                         </button>
                       )}
                     </div>

@@ -48,22 +48,10 @@ import { setCaseDocumentsClientVisible } from '../lib/clientVisibleDocuments';
 
 const SUB_EFFORT_MENU_WIDTH = 384;
 
-function formatDocDate(dateString: string): string {
-  const d = new Date(dateString);
-  if (Number.isNaN(d.getTime())) return dateString;
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}.${mm}.${yy}, ${hh}:${min}`;
-}
-
 /** What a client upload fills of the drive's list. */
 const CLIENT_UPLOAD_COLUMNS: DriveTableColumn[] = [
   { id: 'contact', label: 'Uploaded by', className: 'hidden w-[13rem] md:table-cell' },
   { id: 'type', label: 'Document type', className: 'hidden w-[11rem] lg:table-cell' },
-  { id: 'date', label: 'Uploaded at', className: 'w-[9.5rem]' },
 ];
 
 export function ClientUploadsDocumentsModal({
@@ -742,11 +730,6 @@ export function ClientUploadsDocumentsModal({
                         </span>
                       ) : (
                         <span className="text-sm text-gray-400">—</span>
-                      ),
-                      date: (
-                        <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
-                          {formatDocDate(doc.lastModified)}
-                        </span>
                       ),
                     },
                     actions: (

@@ -1,5 +1,6 @@
 import React from 'react';
 import { MapPinIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
+import { useTranslation } from 'react-i18next';
 import { resolvePortalMeetingLocationDisplay } from '../../../lib/meetingLocationUtils';
 
 type Props = {
@@ -35,12 +36,12 @@ function linkHost(url: string): string {
   }
 }
 
-function mapLinkLabel(url: string): string {
+function mapLinkLabelKey(url: string): 'waze' | 'googleMaps' | 'appleMaps' | 'openMapLink' {
   const host = linkHost(url);
-  if (host.includes('waze')) return 'Waze';
-  if (host.includes('google')) return 'Google Maps';
-  if (host.includes('apple')) return 'Apple Maps';
-  return 'Open map link';
+  if (host.includes('waze')) return 'waze';
+  if (host.includes('google')) return 'googleMaps';
+  if (host.includes('apple')) return 'appleMaps';
+  return 'openMapLink';
 }
 
 function googleMapsSearchUrl(query: string): string {
@@ -71,6 +72,7 @@ const PortalMeetingLocationLines: React.FC<Props> = ({
   mapActionsClassName = 'flex flex-wrap gap-2 pl-5 pt-1',
   mapButtonClassName = 'inline-flex h-9 min-h-9 items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3.5 text-sm font-medium text-gray-800 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50',
 }) => {
+  const { t } = useTranslation();
   const resolved = resolvePortalMeetingLocationDisplay(location, {
     isPhysicalMeeting,
     meetingAddress,
@@ -83,12 +85,15 @@ const PortalMeetingLocationLines: React.FC<Props> = ({
   const { text: addressText, links: addressLinks } =
     resolved.isPhysicalMeeting && address ? splitAddress(address) : { text: '', links: [] };
 
-  const mapLinks = addressLinks.map((url) => ({ url, label: mapLinkLabel(url) }));
+  const mapLinks = addressLinks.map((url) => ({
+    url,
+    labelKey: mapLinkLabelKey(url),
+  }));
   const mapsQuery = [addressText.replace(/\n/g, ', '), resolved.location]
     .map((part) => part.trim())
     .filter(Boolean)[0];
   if (resolved.isPhysicalMeeting && mapsQuery && !addressLinks.some((url) => linkHost(url).includes('google'))) {
-    mapLinks.push({ url: googleMapsSearchUrl(mapsQuery), label: 'Google Maps' });
+    mapLinks.push({ url: googleMapsSearchUrl(mapsQuery), labelKey: 'googleMaps' });
   }
 
   return (
@@ -100,8 +105,8 @@ const PortalMeetingLocationLines: React.FC<Props> = ({
       {addressText ? <p className={addressClassName}>{addressText}</p> : null}
       {mapLinks.length > 0 ? (
         <div className={mapActionsClassName}>
-          {mapLinks.map(({ url, label }) => {
-            const isGoogleMaps = label === 'Google Maps';
+          {mapLinks.map(({ url, labelKey }) => {
+            const isGoogleMaps = labelKey === 'googleMaps';
             return (
               <a
                 key={url}
@@ -115,7 +120,7 @@ const PortalMeetingLocationLines: React.FC<Props> = ({
                 ) : (
                   <MapPinIcon className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
                 )}
-                {label}
+                {t(`common.maps.${labelKey}`)}
               </a>
             );
           })}

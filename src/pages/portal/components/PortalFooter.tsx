@@ -1,20 +1,23 @@
 import React from 'react';
 import { FaFacebook, FaLinkedin, FaYoutube } from 'react-icons/fa';
+import { useTranslation } from 'react-i18next';
+// Side-effect import so public pages that reuse this footer still get the portal catalog.
+import '../i18n/portalI18n';
 
 const SOCIAL_LINKS = [
   {
     href: 'https://www.linkedin.com/company/decker-pex-co/',
-    label: 'LinkedIn',
+    labelKey: 'footer.social.linkedIn',
     Icon: FaLinkedin,
   },
   {
     href: 'https://www.youtube.com/@DeckerPexLawoffice',
-    label: 'YouTube',
+    labelKey: 'footer.social.youTube',
     Icon: FaYoutube,
   },
   {
     href: 'https://www.facebook.com/DeckerPexCo',
-    label: 'Facebook',
+    labelKey: 'footer.social.facebook',
     Icon: FaFacebook,
   },
 ] as const;
@@ -28,6 +31,7 @@ const PortalFooter: React.FC<{
   /** Override firm logo path (e.g. payment page). */
   logoSrc?: string;
 }> = ({ className = '', compact = false, tone = 'navy', logoSrc = '/DPLOGO1.png' }) => {
+  const { t } = useTranslation();
   const isGray = tone === 'gray';
   return (
     <footer
@@ -58,7 +62,7 @@ const PortalFooter: React.FC<{
             <div className="flex flex-col items-center justify-center gap-4 md:flex-row md:gap-3">
               <img
                 src={logoSrc}
-                alt="DPL Logo"
+                alt={t('footer.logoAlt')}
                 className={`object-contain ${compact ? 'h-10 w-auto' : 'h-12 w-auto'}`}
               />
               <p
@@ -66,7 +70,7 @@ const PortalFooter: React.FC<{
                   compact ? 'text-lg' : 'text-xl'
                 }`}
               >
-                Decker Pex & Co. Law Offices
+                {t('footer.firmName')}
               </p>
             </div>
             <div
@@ -74,13 +78,13 @@ const PortalFooter: React.FC<{
                 isGray ? 'text-gray-600' : 'text-blue-100'
               } ${compact ? 'text-sm' : 'text-sm'}`}
             >
-              <p>Menachem Begin Rd. 11, Ramat Gan, Israel</p>
+              <p>{t('footer.addressRamatGan')}</p>
               <span
                 className={`hidden md:inline ${isGray ? 'text-gray-400' : 'text-blue-200/80'}`}
               >
                 •
               </span>
-              <p>Yad Harutzim 10, Jerusalem, Israel</p>
+              <p>{t('footer.addressJerusalem')}</p>
             </div>
           </div>
         </div>
@@ -95,17 +99,17 @@ const PortalFooter: React.FC<{
             <p
               className={`text-center text-xs ${isGray ? 'text-gray-500' : 'text-blue-200/90'}`}
             >
-              RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
+              {t('footer.copyright', { year: new Date().getFullYear() })}
             </p>
             <div className="flex items-center justify-end gap-2.5">
-              {SOCIAL_LINKS.map(({ href, label, Icon }) => (
+              {SOCIAL_LINKS.map(({ href, labelKey, Icon }) => (
                 <a
                   key={href}
                   href={href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  aria-label={label}
-                  title={label}
+                  aria-label={t(labelKey)}
+                  title={t(labelKey)}
                   className={`inline-flex items-center justify-center rounded-full transition-colors ${
                     isGray
                       ? 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'
