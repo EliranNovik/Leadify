@@ -260,7 +260,7 @@ const BulkManualClockInModal: React.FC<BulkManualClockInModalProps> = ({
         headerClassName="!border-b-0"
         footerClassName="!border-t-0"
         footer={
-          <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
+          <div className="flex w-full flex-row items-center gap-2 md:justify-end md:gap-3">
             <button
               type="button"
               className="btn btn-ghost border-none shadow-none flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 text-base-content/70 hover:bg-base-200 hover:text-base-content"

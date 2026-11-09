@@ -73,7 +73,7 @@ export function MeetingFormDrawerFooter({
 }) {
   return (
     <div
-      className={`flex gap-3 p-4 max-md:flex-col-reverse md:justify-end md:px-6 ${className}`.trim()}
+      className={`flex flex-row items-center gap-2 p-4 md:justify-end md:gap-3 md:px-6 ${className}`.trim()}
     >
       {children}
     </div>
@@ -90,7 +90,7 @@ export function MeetingFormDrawerActionButton({
   return (
     <button
       type="button"
-      className={`btn max-md:min-h-12 max-md:w-full md:w-auto ${className}`.trim()}
+      className={`btn max-md:min-h-12 max-md:w-auto max-md:flex-1 max-md:[&.btn-primary]:!rounded-full md:w-auto ${className}`.trim()}
       {...props}
     >
       {children}

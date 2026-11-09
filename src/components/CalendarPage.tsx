@@ -1409,6 +1409,8 @@ const CalendarPage: React.FC = () => {
 
   // Mobile filters modal (date, staff, meeting type)
   const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
+  const [showDateRangePicker, setShowDateRangePicker] = useState(false);
+  const dateRangePickerRef = useRef<HTMLDivElement>(null);
   const [showPortalMeetingRequestsModal, setShowPortalMeetingRequestsModal] = useState(false);
   const {
     requests: portalMeetingRequests,
@@ -1433,6 +1435,16 @@ const CalendarPage: React.FC = () => {
 
   // Unavailable staff section collapse state
   const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!showDateRangePicker) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (dateRangePickerRef.current?.contains(event.target as Node)) return;
+      setShowDateRangePicker(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [showDateRangePicker]);
 
   // Handle clicking outside action menu dropdown (trigger or portaled menu)
   useEffect(() => {
@@ -7630,42 +7642,7 @@ const CalendarPage: React.FC = () => {
       <div
         className="calendar-date-bar-mobile flex items-center justify-between gap-2 md:gap-4 md:mb-0 rounded-full bg-white/90 dark:bg-base-300/90 backdrop-blur-xl border border-gray-200/80 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-xl md:bg-white md:backdrop-blur-none md:border md:border-base-200 md:shadow-sm md:static w-full max-md:max-w-lg md:max-w-none md:mx-0"
       >
-        <div className="flex-shrink-0 flex items-center min-w-0">
-          <div className="flex flex-col gap-1 leading-tight md:hidden">
-            <div className="flex items-center gap-1.5">
-              <span
-                className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full px-2 text-sm font-bold text-white"
-                style={{ backgroundColor: '#3b28c7' }}
-              >
-                {clientMeetingCount}
-              </span>
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">client</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full bg-gray-500 px-2 text-sm font-bold text-white">
-                {staffMeetingCount}
-              </span>
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
-              <button
-                type="button"
-                className="relative ml-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
-                title="Client bookings"
-                aria-label={
-                  portalMeetingRequestCount > 0
-                    ? `Client bookings (${portalMeetingRequestCount} upcoming)`
-                    : 'Client bookings'
-                }
-                onClick={() => setShowPortalMeetingRequestsModal(true)}
-              >
-                <CalendarDaysIcon className="h-5 w-5" aria-hidden />
-                {portalMeetingRequestCount > 0 ? (
-                  <span className="absolute -right-1.5 -top-1.5 inline-flex min-h-[1.25rem] min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold leading-none text-primary-content shadow-sm">
-                    {portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount}
-                  </span>
-                ) : null}
-              </button>
-            </div>
-          </div>
+        <div className="hidden min-w-0 flex-shrink-0 items-center md:flex">
           <div className="hidden md:flex md:items-center md:gap-2.5 md:leading-tight">
             <div className="flex items-center gap-1.5">
               <span
@@ -7717,8 +7694,19 @@ const CalendarPage: React.FC = () => {
           >
             <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
           </button>
-          <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
-            <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[45vw] md:max-w-none">
+          <div className="relative flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial" ref={dateRangePickerRef}>
+            <button
+              type="button"
+              className="min-w-0 max-w-[45vw] truncate text-center text-sm font-semibold sm:text-base md:max-w-none md:text-left md:text-lg"
+              title="Choose from and to dates"
+              aria-expanded={showDateRangePicker}
+              aria-haspopup="dialog"
+              onClick={() => {
+                setFromDate(appliedFromDate);
+                setToDate(appliedToDate);
+                setShowDateRangePicker((open) => !open);
+              }}
+            >
               {appliedFromDate === appliedToDate ? (
                 (() => {
                   const d = new Date(appliedFromDate);
@@ -7754,7 +7742,45 @@ const CalendarPage: React.FC = () => {
                   );
                 })()
               )}
-            </span>
+            </button>
+            {showDateRangePicker && (
+              <div
+                role="dialog"
+                aria-label="From and to dates"
+                className="absolute left-1/2 top-full z-[80] mt-2 w-72 -translate-x-1/2 rounded-2xl border border-gray-200 bg-white p-3 text-left shadow-xl"
+              >
+                <div className="flex flex-col gap-2">
+                  <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    From
+                    <input
+                      type="date"
+                      className="input input-bordered input-sm w-full font-normal normal-case tracking-normal"
+                      value={fromDate}
+                      onChange={(e) => setFromDate(e.target.value)}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    To
+                    <input
+                      type="date"
+                      className="input input-bordered input-sm w-full font-normal normal-case tracking-normal"
+                      value={toDate}
+                      onChange={(e) => setToDate(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm mt-1 w-full"
+                    onClick={() => {
+                      handleShowButton();
+                      setShowDateRangePicker(false);
+                    }}
+                  >
+                    Show
+                  </button>
+                </div>
+              </div>
+            )}
             <button
               onClick={goToToday}
               className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
@@ -7777,10 +7803,11 @@ const CalendarPage: React.FC = () => {
             value={calendarLeadFilterQuery}
             onChange={setCalendarLeadFilterQuery}
             loading={calendarGlobalSearchLoading}
+            className="hidden md:flex"
           />
           <Link
             to="/calendar/internal-meeting-documents"
-            className="btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"
+            className="btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 hidden md:inline-flex"
             title="Internal meeting documents"
             aria-label="Internal meeting documents"
           >
@@ -7880,6 +7907,57 @@ const CalendarPage: React.FC = () => {
           }}
         >
           <div className="py-2">
+            <div className="md:hidden px-3 pb-2">
+              <label className="relative flex items-center">
+                <MagnifyingGlassIcon className="pointer-events-none absolute left-3 h-4 w-4 text-gray-400" aria-hidden />
+                <input
+                  type="search"
+                  value={calendarLeadFilterQuery}
+                  onChange={(e) => setCalendarLeadFilterQuery(e.target.value)}
+                  placeholder="Search leads & clients"
+                  aria-label="Search all calendar leads and clients"
+                  className="input input-bordered input-sm h-10 w-full rounded-full bg-white pl-9 pr-8"
+                />
+                {calendarGlobalSearchLoading ? (
+                  <span className="absolute right-2 inline-flex h-6 w-6 items-center justify-center">
+                    <span className="loading loading-spinner loading-xs text-primary" />
+                  </span>
+                ) : null}
+              </label>
+            </div>
+            <button
+              type="button"
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                goToToday();
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <CalendarIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Today</span>
+            </button>
+            <button
+              type="button"
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setShowPortalMeetingRequestsModal(true);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <CalendarDaysIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">
+                Client bookings{portalMeetingRequestCount > 0 ? ` (${portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount})` : ''}
+              </span>
+            </button>
+            <Link
+              to="/calendar/internal-meeting-documents"
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => setShowActionMenuDropdown(false)}
+            >
+              <FolderIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Internal meeting documents</span>
+            </Link>
+            <div className="md:hidden border-t border-gray-100 my-1" aria-hidden />
             <button
               type="button"
               className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"

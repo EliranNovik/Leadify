@@ -60,8 +60,8 @@ export function ModalActionFooter({
     const confirmButton = (
             <button
                 type="button"
-                className={`btn ${confirmBtnClass} w-full md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${
-                    confirmTooltip ? 'pointer-events-none' : 'flex-1'
+                className={`btn ${confirmBtnClass} max-md:min-h-12 max-md:flex-1 max-md:!rounded-full md:min-w-[6.5rem] md:w-auto md:flex-none ${
+                    confirmTooltip ? 'pointer-events-none' : ''
                 } ${confirmClassName}`}
                 onClick={onConfirm}
                 disabled={disabled || loading}
@@ -71,10 +71,10 @@ export function ModalActionFooter({
     );
 
     return (
-        <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
+        <div className="flex w-full flex-row items-center gap-2 md:justify-end md:gap-3">
             <button
                 type="button"
-                className={`btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12 ${cancelClassName}`}
+                className={`btn max-md:min-h-12 max-md:flex-1 max-md:border-0 max-md:bg-transparent max-md:shadow-none max-md:hover:bg-base-200 md:btn-outline md:min-w-[6.5rem] md:flex-none ${cancelClassName}`}
                 onClick={onCancel}
                 disabled={cancelDisabled || loading}
             >
@@ -127,10 +127,10 @@ export function EditFieldModalFooter({
     cancelLabel?: string;
 }) {
     return (
-        <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
+        <div className="flex w-full flex-row items-center gap-2 md:justify-end md:gap-3">
             <button
                 type="button"
-                className="btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
+                className="btn max-md:min-h-12 max-md:flex-1 max-md:border-0 max-md:bg-transparent max-md:shadow-none max-md:hover:bg-base-200 md:btn-outline md:min-w-[6.5rem] md:flex-none"
                 onClick={onCancel}
                 disabled={saving}
             >
@@ -138,7 +138,7 @@ export function EditFieldModalFooter({
             </button>
             <button
                 type="button"
-                className="btn btn-primary flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
+                className="btn btn-primary max-md:min-h-12 max-md:flex-1 max-md:!rounded-full md:min-w-[6.5rem] md:w-auto md:flex-none"
                 onClick={onSave}
                 disabled={saving || saveDisabled}
             >

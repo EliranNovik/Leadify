@@ -2963,6 +2963,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [timelineSearchQuery, setTimelineSearchQuery] = useState('');
   const [timelineSortMenuOpen, setTimelineSortMenuOpen] = useState(false);
   const timelineSortMenuRef = useRef<HTMLDivElement>(null);
+  const [timelineDirectionMenuOpen, setTimelineDirectionMenuOpen] = useState(false);
+  const timelineDirectionMenuRef = useRef<HTMLDivElement>(null);
+  const [mobileHeaderToolsSortOpen, setMobileHeaderToolsSortOpen] = useState(false);
 
   const sortedInteractions = useMemo(() => {
     const filtered = interactions.filter((interaction: any) =>
@@ -3015,6 +3018,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [timelineSortMenuOpen]);
+
+  useEffect(() => {
+    if (!timelineDirectionMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!timelineDirectionMenuRef.current?.contains(event.target as Node)) {
+        setTimelineDirectionMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setTimelineDirectionMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [timelineDirectionMenuOpen]);
 
   const visibleInteractions = useMemo(
     () => sortedInteractions.slice(0, visibleInteractionsCount),
@@ -8926,15 +8947,117 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>
         ) : (
           <>
-            {/* Header — action buttons sit under the subtitle */}
             <ClientTabPageHeader
-              className="mb-4"
+              className="mb-3 md:mb-4"
               icon={ChatBubbleLeftRightIcon}
               title="Interactions"
-              subtitle="Emails, calls, WhatsApp, and manual contact history"
               actions={
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <div className="relative min-w-[10rem] w-44 sm:w-56">
+                <div className="flex w-full flex-wrap items-center justify-end gap-2">
+                  <div className="dropdown dropdown-end lg:hidden">
+                  <button
+                    type="button"
+                    tabIndex={0}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm"
+                    aria-label="Sort, attachments, and flagged"
+                  >
+                    <EllipsisHorizontalIcon className="h-5 w-5" />
+                  </button>
+                  <ul
+                    tabIndex={0}
+                    className="dropdown-content menu z-40 mt-2 w-60 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg"
+                  >
+                    <li>
+                      <button
+                        type="button"
+                        className="gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-800"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setMobileHeaderToolsSortOpen((open) => !open);
+                        }}
+                      >
+                        <ArrowDownIcon className="h-5 w-5 shrink-0" />
+                        Sort
+                        <span className="ml-auto text-xs font-normal text-slate-500">
+                          {TIMELINE_SORT_OPTIONS.find((option) => option.value === timelineSortMode)?.label ||
+                            'Newest'}
+                        </span>
+                        <ChevronDownIcon
+                          className={`h-4 w-4 shrink-0 transition-transform ${mobileHeaderToolsSortOpen ? 'rotate-180' : ''}`}
+                        />
+                      </button>
+                    </li>
+                    {mobileHeaderToolsSortOpen
+                      ? TIMELINE_SORT_OPTIONS.map((option) => {
+                          const selected = timelineSortMode === option.value;
+                          return (
+                            <li key={option.value}>
+                              <button
+                                type="button"
+                                className={`gap-2 rounded-xl px-3 py-2 text-sm ${
+                                  selected ? 'font-semibold text-[#4218CC]' : 'text-slate-700'
+                                }`}
+                                onClick={(event) => {
+                                  setTimelineSortMode(option.value);
+                                  setMobileHeaderToolsSortOpen(false);
+                                  (
+                                    event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null
+                                  )?.blur();
+                                }}
+                              >
+                                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                                  {selected ? <CheckIcon className="h-4 w-4" /> : null}
+                                </span>
+                                {option.label}
+                              </button>
+                            </li>
+                          );
+                        })
+                      : null}
+                    <li>
+                      <button
+                        type="button"
+                        className="gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-800"
+                        disabled={interactionsLoading}
+                        onClick={(event) => {
+                          setAttachmentsModalOpen(true);
+                          (
+                            event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null
+                          )?.blur();
+                        }}
+                      >
+                        <PaperClipIcon className="h-5 w-5 shrink-0" />
+                        Attachments
+                        {totalLeadEmailAttachmentCount > 0 ? (
+                          <span className="ml-auto flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-slate-700 px-1 text-[11px] font-bold text-white">
+                            {totalLeadEmailAttachmentCount > 99 ? '99+' : totalLeadEmailAttachmentCount}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        className="gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-amber-800"
+                        disabled={!publicUserId || interactionsLoading}
+                        onClick={(event) => {
+                          setFlaggedItemsModalOpen(true);
+                          (
+                            event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null
+                          )?.blur();
+                        }}
+                      >
+                        <FlagIcon className="h-5 w-5 shrink-0" />
+                        Flagged
+                        {totalFlaggedCountWithRmq > 0 ? (
+                          <span className="ml-auto flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                            {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  </ul>
+                  </div>
+                  <div className="relative hidden min-w-[10rem] w-44 sm:w-56 md:block">
                     <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
                       <MagnifyingGlassIcon className="h-4 w-4 text-slate-400" />
                     </div>
@@ -8944,7 +9067,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       onChange={(event) => setTimelineSearchQuery(event.target.value)}
                       placeholder="Search…"
                       aria-label="Search interactions"
-                      className="h-9 w-full rounded-xl border-0 bg-slate-50 py-1.5 pl-8 pr-8 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:bg-base-200 dark:text-base-content"
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white py-1.5 pl-8 pr-8 text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:border-base-300 dark:bg-base-100 dark:text-base-content"
                     />
                     {timelineSearchQuery ? (
                       <button
@@ -8957,7 +9080,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       </button>
                     ) : null}
                   </div>
-                  <div className="flex items-center gap-0.5 rounded-xl bg-slate-50 p-1 dark:bg-base-200">
+                  <div className="hidden items-center gap-0.5 rounded-xl bg-slate-50 p-1 dark:bg-base-200 md:flex">
                     {(
                       [
                         ['all', 'All', EnvelopeIcon],
@@ -8987,7 +9110,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       </button>
                     ))}
                   </div>
-                  <div className="relative" ref={timelineSortMenuRef}>
+                  <div className="relative max-lg:!hidden lg:block" ref={timelineSortMenuRef}>
                     <button
                       type="button"
                       onClick={() => setTimelineSortMenuOpen((open) => !open)}
@@ -9054,7 +9177,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </div>
                   <button
                     type="button"
-                    className="relative inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 disabled:opacity-40 dark:bg-base-200 dark:text-base-content/70 dark:hover:bg-base-300 dark:hover:text-base-content"
+                    className="relative hidden h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 disabled:opacity-40 dark:bg-base-200 dark:text-base-content/70 dark:hover:bg-base-300 dark:hover:text-base-content max-lg:!hidden lg:inline-flex"
                     onClick={() => setAttachmentsModalOpen(true)}
                     disabled={interactionsLoading}
                     title="View email attachments on this lead"
@@ -9069,7 +9192,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </button>
                   <button
                     type="button"
-                    className="relative inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-amber-800 transition hover:bg-slate-200 disabled:opacity-40 dark:bg-base-200 dark:text-amber-200 dark:hover:bg-base-300"
+                    className="relative hidden h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-amber-800 transition hover:bg-slate-200 disabled:opacity-40 dark:bg-base-200 dark:text-amber-200 dark:hover:bg-base-300 max-lg:!hidden lg:inline-flex"
                     onClick={() => setFlaggedItemsModalOpen(true)}
                     disabled={!publicUserId || interactionsLoading}
                     title={publicUserId ? 'View flagged items on this lead (all users)' : 'Sign in to use flags'}
@@ -9085,41 +9208,113 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>
               }
             />
+            <div className="dropdown mb-3 lg:hidden">
+              <label tabIndex={0} className="btn btn-outline btn-primary flex w-fit cursor-pointer items-center gap-2">
+                <UserIcon className="h-5 w-5" /> Contact Client <ChevronDownIcon className="ml-1 h-4 w-4" />
+              </label>
+              <ul tabIndex={0} className="dropdown-content menu z-[100] mt-2 w-52 rounded-box bg-base-100 p-2 shadow">
+                <li>
+                  <button className="flex items-center gap-2" onClick={() => setShowContactSelectorForEmail(true)}>
+                    <EnvelopeIcon className="h-5 w-5" /> Email
+                  </button>
+                </li>
+                <li>
+                  <button className="flex items-center gap-2" onClick={() => setShowContactSelector(true)}>
+                    <FaWhatsapp className="h-5 w-5" /> WhatsApp
+                  </button>
+                </li>
+                <li>
+                  <button className="flex items-center gap-2" onClick={openContactDrawer}>
+                    <ChatBubbleLeftRightIcon className="h-5 w-5" /> Contact
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div className="mb-4 flex w-full items-center gap-2 md:hidden">
+              <div className="relative min-w-0 flex-1">
+                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
+                  <MagnifyingGlassIcon className="h-4 w-4 text-slate-400" />
+                </div>
+                <input
+                  type="search"
+                  value={timelineSearchQuery}
+                  onChange={(event) => setTimelineSearchQuery(event.target.value)}
+                  placeholder="Search…"
+                  aria-label="Search interactions"
+                  className="h-9 w-full rounded-xl border border-slate-200 bg-white py-1.5 pl-8 pr-8 text-left text-sm text-slate-800 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#4218CC]/30 dark:border-base-300 dark:bg-base-100 dark:text-base-content"
+                />
+                {timelineSearchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setTimelineSearchQuery('')}
+                    className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
+                    aria-label="Clear search"
+                  >
+                    <XMarkIcon className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+              <div className="relative shrink-0" ref={timelineDirectionMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setTimelineDirectionMenuOpen((open) => !open)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-slate-100 px-2.5 text-sm font-medium text-slate-700"
+                  aria-haspopup="menu"
+                  aria-expanded={timelineDirectionMenuOpen}
+                  title="Filter inbox and sent"
+                >
+                  {timelineDirectionFilter === 'incoming' ? (
+                    <InboxIcon className="h-5 w-5" />
+                  ) : timelineDirectionFilter === 'outgoing' ? (
+                    <PaperAirplaneIcon className="h-5 w-5" />
+                  ) : (
+                    <EnvelopeIcon className="h-5 w-5" />
+                  )}
+                  <ChevronDownIcon className="h-4 w-4" />
+                </button>
+                {timelineDirectionMenuOpen ? (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full z-40 mt-1.5 w-40 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
+                  >
+                    {(
+                      [
+                        ['all', 'All', EnvelopeIcon],
+                        ['incoming', 'Inbox', InboxIcon],
+                        ['outgoing', 'Sent', PaperAirplaneIcon],
+                      ] as const
+                    ).map(([key, label, Icon]) => {
+                      const selected = timelineDirectionFilter === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={selected}
+                          onClick={() => {
+                            setTimelineDirectionFilter(key);
+                            setTimelineDirectionMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                            selected ? 'bg-[#4218CC]/10 font-semibold text-[#4218CC]' : 'text-slate-700'
+                          }`}
+                        >
+                          <Icon className="h-4 w-4 shrink-0" />
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
             <div
               ref={contactActionsRef}
-              className="mb-6 md:mb-8 flex flex-wrap items-center gap-4 sm:gap-5"
+              className="mb-6 hidden flex-wrap items-center gap-4 sm:gap-5 lg:mb-8 lg:flex"
             >
               <p className="text-sm font-medium text-black dark:text-base-content">
                 How do you want to contact the client?
               </p>
-
-              {/* Mobile: Contact Client Dropdown */}
-              <div className="dropdown lg:hidden">
-                <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer justify-center">
-                  <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
-                  <li>
-                    <button className="flex gap-2 items-center" onClick={() => {
-                      setShowContactSelectorForEmail(true);
-                    }}>
-                      <EnvelopeIcon className="w-5 h-5" /> Email
-                    </button>
-                  </li>
-                  <li>
-                    <button className="flex gap-2 items-center" onClick={() => {
-                      setShowContactSelector(true);
-                    }}>
-                      <FaWhatsapp className="w-5 h-5" /> WhatsApp
-                    </button>
-                  </li>
-                  <li>
-                    <button className="flex gap-2 items-center" onClick={openContactDrawer}>
-                      <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
-                    </button>
-                  </li>
-                </ul>
-              </div>
 
               {/* Desktop: icon + title inside each badge */}
               <div className="hidden lg:flex items-center gap-3 sm:gap-4">
@@ -9192,7 +9387,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               ) : null}
 
             {/* Timeline container with improved spacing */}
-            <div className="relative max-w-5xl w-full">
+            <div className="relative w-full max-sm:-mx-3 max-sm:w-[calc(100%+1.5rem)] sm:max-w-5xl">
               {/* Timeline line */}
               <div className="hidden sm:block absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-0.5 bg-base-300" style={{ zIndex: 0 }} />
               
@@ -9902,31 +10097,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </button>
                 <ul
                   tabIndex={0}
-                  className="dropdown-content menu z-[80] mb-2 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+                  className="dropdown-content menu z-[80] mb-3 w-56 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg"
                 >
                   <li>
                     <button
                       type="button"
-                      className="gap-2 text-sm"
+                      className="gap-3 rounded-xl px-3 py-3 text-base font-medium"
                       onClick={(event) => {
                         openNewEmailCompose();
                         (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
                       }}
                     >
-                      <PlusIcon className="h-4 w-4" />
+                      <PlusIcon className="h-6 w-6" />
                       New mail
                     </button>
                   </li>
                   <li>
                     <button
                       type="button"
-                      className="gap-2 text-sm"
+                      className="gap-3 rounded-xl px-3 py-3 text-base font-medium"
                       onClick={(event) => {
                         openReplyCompose();
                         (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
                       }}
                     >
-                      <ArrowUturnLeftIcon className="h-4 w-4" />
+                      <ArrowUturnLeftIcon className="h-6 w-6" />
                       Reply
                     </button>
                   </li>

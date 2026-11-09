@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import {
@@ -1357,11 +1358,31 @@ const Clients: React.FC<ClientsProps> = ({
     prefetchTabChunk(activeTab);
   }, [activeTab, prefetchTabChunk]);
 
+  const scrollMobileTabPastHeader = () => {
+    if (window.matchMedia('(min-width: 768px)').matches) return;
+    const content = tabContentRef.current;
+    const scrollRoot = document.querySelector('main.clients-detail-scroll') as HTMLElement | null;
+    if (!content || !scrollRoot) return;
+    const title = Array.from(content.querySelectorAll<HTMLElement>('[data-client-tab-title]')).find(
+      (el) => el.getClientRects().length > 0,
+    );
+    if (!title) return;
+    const navbar = document.querySelector('.navbar') as HTMLElement | null;
+    const clearance = navbar ? Math.max(0, navbar.getBoundingClientRect().bottom) : 0;
+    const delta = title.getBoundingClientRect().top - clearance;
+    if (Math.abs(delta) < 2) return;
+    scrollRoot.scrollTo({
+      top: Math.max(0, scrollRoot.scrollTop + delta),
+      behavior: 'smooth',
+    });
+  };
+
   const handleMobileTabSelect = (tabId: string) => {
     setActiveTabWithUrl(tabId);
-    setTimeout(() => {
-      tabContentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 50);
+    // The native picker restores scroll as it closes, so align once it has settled.
+    window.setTimeout(scrollMobileTabPastHeader, 80);
+    window.setTimeout(scrollMobileTabPastHeader, 320);
+    window.setTimeout(scrollMobileTabPastHeader, 700);
   };
 
   // Set default collapsed state for mobile on mount
@@ -2129,6 +2150,12 @@ const Clients: React.FC<ClientsProps> = ({
   const [availableStages, setAvailableStages] = useState<Array<{ id: number; name: string; colour?: string | null }>>([]);
   type StageDropdownAnchor = 'badge' | 'desktop' | 'mobile';
   const [stageDropdownAnchor, setStageDropdownAnchor] = useState<StageDropdownAnchor | null>(null);
+  const [mobileStageMenuBox, setMobileStageMenuBox] = useState<{
+    top: number;
+    right: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
   const badgeStageDropdownRef = useRef<HTMLDivElement | null>(null);
   const desktopStageDropdownRef = useRef<HTMLDivElement | null>(null);
   const mobileStageDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -2317,6 +2344,40 @@ const Clients: React.FC<ClientsProps> = ({
     return () => {
       clearTimeout(timeoutId);
       document.removeEventListener('click', handleClickOutside);
+    };
+  }, [stageDropdownAnchor]);
+
+  useLayoutEffect(() => {
+    if (stageDropdownAnchor !== 'mobile') {
+      setMobileStageMenuBox(null);
+      return;
+    }
+    const measure = () => {
+      const anchorEl = mobileStageDropdownRef.current;
+      if (!anchorEl) return;
+      const rect = anchorEl.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return;
+      const pad = 12;
+      const width = Math.min(288, window.innerWidth - pad * 2);
+      const right = Math.min(
+        window.innerWidth - width - pad,
+        Math.max(pad, window.innerWidth - rect.right),
+      );
+      const top = Math.min(rect.bottom + 8, window.innerHeight - 160);
+      setMobileStageMenuBox({
+        top: Math.max(pad, top),
+        right: Math.max(pad, right),
+        width,
+        maxHeight: Math.max(160, window.innerHeight - Math.max(pad, top) - pad),
+      });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    const scrollRoot = document.querySelector('main.clients-detail-scroll');
+    scrollRoot?.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      window.removeEventListener('resize', measure);
+      scrollRoot?.removeEventListener('scroll', measure);
     };
   }, [stageDropdownAnchor]);
 
@@ -5728,18 +5789,16 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
     );
 
-    const renderTimelineOverlay = (overlayAnchor: StageDropdownAnchor) => (
-      <div
-        className={`absolute ${overlayAnchor === 'mobile'
-          ? 'left-1/2 transform -translate-x-1/2'
-          : overlayAnchor === 'badge'
-            ? 'right-0'
-            : 'right-0'
-          } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[300] overflow-hidden`}
-      >
+    const renderTimelineOverlay = (overlayAnchor: StageDropdownAnchor) => {
+      const menu = (
         <div
           ref={getListRef(overlayAnchor)}
-          className="max-h-80 overflow-y-auto px-3 py-5 space-y-4"
+          className="overflow-y-auto px-3 py-5 space-y-4"
+          style={
+            overlayAnchor === 'mobile' && mobileStageMenuBox
+              ? { maxHeight: mobileStageMenuBox.maxHeight }
+              : { maxHeight: '20rem' }
+          }
         >
           {previousStages.length > 0 && (
             <div className="space-y-2">
@@ -5759,8 +5818,32 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
         </div>
-      </div>
-    );
+      );
+
+      if (overlayAnchor === 'mobile') {
+        if (!mobileStageMenuBox || typeof document === 'undefined') return null;
+        return createPortal(
+          <div
+            className="fixed overflow-hidden rounded-2xl border border-base-300 bg-white shadow-2xl dark:bg-base-100"
+            style={{
+              top: mobileStageMenuBox.top,
+              right: mobileStageMenuBox.right,
+              width: mobileStageMenuBox.width,
+              zIndex: 400,
+            }}
+          >
+            {menu}
+          </div>,
+          document.body,
+        );
+      }
+
+      return (
+        <div className="absolute right-0 z-[300] mt-2 w-72 overflow-hidden rounded-2xl border border-base-300 bg-white shadow-2xl dark:bg-base-100">
+          {menu}
+        </div>
+      );
+    };
 
     const showRevisedOfferCount =
       priceOfferSentCount >= 2 ||
@@ -14222,10 +14305,6 @@ const Clients: React.FC<ClientsProps> = ({
                       {selectedClient.name || 'Unnamed Lead'}
                     </span>
                   </div>
-                  {/* Stage Badge */}
-                  <div className="flex items-center flex-shrink-0">
-                    {getStageBadge(selectedClient.stage, 'mobile', selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
-                  </div>
                   {/* Timeline and History Buttons */}
                   <button
                     onClick={handleTimelineClick}
@@ -14651,7 +14730,7 @@ const Clients: React.FC<ClientsProps> = ({
               }
             >
               {selectedClient && (
-                <div className="md:pb-0 pb-32">
+                <div>
                   <ClientTabPageHeaderExtrasProvider value={tabPageHeaderExtra}>
                     {visitedTabDefs.map((tab) => {
                       const TabComponent = tab.component;
@@ -17259,7 +17338,7 @@ const Clients: React.FC<ClientsProps> = ({
           {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
             <>
               {/* Circle button look + native picker behavior (invisible <select> on top). */}
-              <div className="md:hidden fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))] right-4 z-[45]">
+              <div className="md:hidden fixed bottom-[max(1rem,env(safe-area-inset-bottom,0px))] right-4 z-[45]">
                 <label className="sr-only" htmlFor="client-tabs-native-select">
                   Client tabs
                 </label>
@@ -17277,7 +17356,10 @@ const Clients: React.FC<ClientsProps> = ({
                     id="client-tabs-native-select"
                     className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                     value={activeTab}
-                    onChange={(e) => handleMobileTabSelect(e.target.value)}
+                    onChange={(e) => {
+                      handleMobileTabSelect(e.target.value);
+                      e.currentTarget.blur();
+                    }}
                     onTouchStart={() => prefetchTabChunk(activeTab)}
                     aria-label="Client tabs"
                   >

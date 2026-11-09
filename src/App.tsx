@@ -34,7 +34,6 @@ import MailboxReconnectModal from './components/MailboxReconnectModal';
 import MailboxHealthMonitor from './components/MailboxHealthMonitor';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
 import AppUrlBar from './components/AppUrlBar';
-import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -256,10 +255,6 @@ const AppContentInner: React.FC = () => {
   const sidebarMobileOnly = useMemo(
     () => isReportsPage || isPipelinePage || isHandlerManagementPage || (isAdminPage && !adminAppNavOpen),
     [isReportsPage, isPipelinePage, isHandlerManagementPage, isAdminPage, adminAppNavOpen],
-  );
-  const showBottomNav = useMemo(
-    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage && !isPipelinePage && !isHandlerManagementPage,
-    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage, isPipelinePage, isHandlerManagementPage]
   );
   const useStaffSidebarInset = useMemo(
     () =>
@@ -808,7 +803,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
       <Route path="/business-card/:employeeId" element={<RouteSuspense><LazyBusinessCardPage /></RouteSuspense>} />
       <Route path="/documents" element={
-        <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 bg-white">
+        <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 max-md:h-[100lvh] max-md:max-h-[100lvh] bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-4">
               {/* Desktop Layout */}
@@ -929,7 +924,7 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 bg-white">
+          <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 max-md:h-[100lvh] max-md:max-h-[100lvh] bg-white">
             <Sidebar
               userName={userFullName || userName}
               userInitials={userInitials}
@@ -991,7 +986,7 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/my-profile" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 bg-base-100">
+          <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 max-md:h-[100lvh] max-md:max-h-[100lvh] bg-base-100">
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <Header
                 onMenuClick={() => setIsSidebarOpen(prev => !prev)}
@@ -1085,7 +1080,7 @@ const AppContentInner: React.FC = () => {
         element={
           < ProtectedRoute user={authUser} >
             <div
-              className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}
+              className={`flex h-[100dvh] max-h-[100dvh] min-h-0 max-md:h-[100lvh] max-md:max-h-[100lvh] ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}
             >
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div
@@ -1164,7 +1159,7 @@ const AppContentInner: React.FC = () => {
                   isMenuOpen={isSidebarOpen}
                   clearFloatingSidebar={isClientDetailRoute}
                   startInsetClassName={
-                    isPipelinePage ? 'left-16' : isHandlerManagementPage ? 'md:left-16' : undefined
+                    isPipelinePage ? 'left-16' : isHandlerManagementPage ? 'left-0 md:left-16' : undefined
                   }
                 />
                 </div>
@@ -1186,7 +1181,7 @@ const AppContentInner: React.FC = () => {
                           ? // External header is h-11 / md:h-12 — snug content under it (see .external-user-scroll).
                             'scrollbar-hide external-user-scroll'
                         : `pt-[calc(env(safe-area-inset-top,0px)+var(--rmq-urlbar-h,0px)+3.5rem)] md:pt-[calc(3.5rem+var(--rmq-urlbar-h,0px))] ${isClientsPage || isDashboardPage ? 'scrollbar-hide' : ''}`
-                  } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                  } ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   {pipelinePageMounted ? (
                     <div
@@ -1326,11 +1321,6 @@ const AppContentInner: React.FC = () => {
                   </Routes>
                 </main>
               </div>
-              <MobileBottomNav
-                onOpenMessaging={handleOpenMessaging}
-                onOpenWhatsApp={handleOpenWhatsApp}
-                onOpenEmailThread={handleOpenEmailThread}
-              />
               <AIChatWindow
                 isOpen={isAiChatOpen}
                 onClose={() => setIsAiChatOpen(false)}

@@ -98,10 +98,18 @@ function MobileEditModal({
           className="flex gap-2 p-4 border-t border-base-200 bg-base-100 shrink-0"
           style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
         >
-          <button type="button" className="btn btn-outline flex-1" onClick={onClose}>
+          <button
+            type="button"
+            className="btn min-h-12 flex-1 border-0 bg-transparent shadow-none hover:bg-base-200"
+            onClick={onClose}
+          >
             Cancel
           </button>
-          <button type="button" className="btn btn-primary flex-1" onClick={() => void onSave()}>
+          <button
+            type="button"
+            className="btn btn-primary min-h-12 flex-1 !rounded-full"
+            onClick={() => void onSave()}
+          >
             Save
           </button>
         </div>
@@ -1722,7 +1730,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
       />
 
       {/* Main Info Grid */}
-      <div className="info-box-carousel space-y-2 max-md:!space-y-0">
+      <div className="info-box-carousel info-box-carousel-match space-y-2 max-md:!space-y-0">
         {/* Case Probability + Follow-up; Eligibility + File ID */}
         <div className="info-carousel-pass mb-0 flex flex-col gap-2">
           <div className="info-carousel-pass flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-2">

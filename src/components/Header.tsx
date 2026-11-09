@@ -4316,6 +4316,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const mobileBackButtonClass =
     'md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#3b28c7] text-white shadow-md ring-2 ring-white/25 hover:bg-[#3224b0] active:scale-95 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b28c7]/40 focus-visible:ring-offset-2';
 
+  const handleMobileNavPick = (value: string) => {
+    if (!value) return;
+    if (value === 'back') {
+      navigate(-1);
+      return;
+    }
+    if (value === 'forward') {
+      navigate(1);
+      return;
+    }
+    if (value === 'messaging') {
+      onOpenMessaging?.();
+      return;
+    }
+    if (value === 'whatsapp') {
+      onOpenWhatsApp?.();
+      return;
+    }
+    if (value === 'email') {
+      onOpenEmailThread?.();
+      return;
+    }
+    navigate(value);
+  };
+
   const renderMailboxReconnectButton = (className = '') =>
     mailboxConnectPending && !isMailboxReconnectModalOpen && !isExternalUser && !isLoadingExternal ? (
       <div className={`relative ${className}`}>
@@ -4343,10 +4368,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className={`navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 ${startInsetClassName || 'left-0'} right-0 z-50 w-auto max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${clearFloatingSidebar ? 'md:pl-2 md:pr-6 lg:pr-8 border-b-0 shadow-none' : ''}`}
+        className={`navbar navbar-safe-x flex-nowrap overflow-visible md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 ${startInsetClassName || 'left-0'} right-0 z-50 w-auto max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${clearFloatingSidebar ? 'md:pl-2 md:pr-6 lg:pr-8 border-b-0 shadow-none' : ''}`}
       >
         {/* Left section with menu and logo */}
-        <div className={`shrink-0 flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`shrink-0 flex items-center gap-2 md:gap-4 overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button
             type="button"
             className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
@@ -4362,9 +4387,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           {/* Profile + dropdown: mobile only */}
           <div className="relative flex items-center gap-1.5 flex-shrink-0 md:hidden" ref={profileDropdownRef}>
-            <div className="relative">
+            <div className="relative overflow-visible">
               {unreadCount > 0 && (
-                <span className="absolute -top-1 -right-1 z-30 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                <span className="absolute left-full top-0 z-30 ml-1.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
                   {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
@@ -6529,14 +6554,40 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
 
           {location.pathname !== '/login' && (
-            <button
-              type="button"
-              onClick={() => navigate(-1)}
-              className={`${mobileBackButtonClass} z-[60]`}
-              aria-label="Go back"
-            >
-              <ChevronLeftIcon className="h-5 w-5" aria-hidden />
-            </button>
+            <label className={`${mobileBackButtonClass} relative z-[60] cursor-pointer`}>
+              <ChevronLeftIcon className="pointer-events-none h-5 w-5" aria-hidden />
+              <span className="sr-only">Open navigation</span>
+              <select
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label="Navigation"
+                defaultValue=""
+                onChange={(event) => {
+                  const value = event.target.value;
+                  event.target.value = '';
+                  handleMobileNavPick(value);
+                }}
+              >
+                <option value="" disabled>
+                  Navigation
+                </option>
+                <option value="back">Back</option>
+                <option value="forward">Forward</option>
+                <option value="/calendar">Calendar</option>
+                <option value="/lead-search">Lead Search</option>
+                <option value="/reports">Reports</option>
+                {isSuperUser ? (
+                  <option value="/new-cases">
+                    {newLeadsCount > 0 ? `Assign Leads (${newLeadsCount > 9 ? '9+' : newLeadsCount})` : 'Assign Leads'}
+                  </option>
+                ) : (
+                  <option value="messaging">RMQ Messages</option>
+                )}
+                {isSuperUser ? <option value="messaging">RMQ Messages</option> : null}
+                <option value="whatsapp">WhatsApp</option>
+                <option value="email">Email Thread</option>
+                <option value="/handler-management">Handler Management</option>
+              </select>
+            </label>
           )}
         </div>
       </div>

@@ -8565,7 +8565,7 @@ export default function ReportsPage() {
                       placeholder="Search reports by name or category..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-12 pr-12 py-4 bg-white border-2 border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all duration-200 text-gray-700 placeholder-gray-400"
+                      className="w-full rounded-full border-0 bg-gray-100 py-4 pl-12 pr-12 text-gray-700 shadow-none outline-none ring-0 placeholder-gray-400 transition-all duration-200 focus:border-0 focus:outline-none focus:ring-0"
                     />
                     {searchQuery && (
                       <button
@@ -8578,113 +8578,26 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Shortcut Boxes - Compact Style */}
-                <div className="flex flex-wrap gap-3">
-                  {/* Finances - Collection */}
-                  {(() => {
-                    const label = 'Collection';
-                    const category = 'Finances';
-                    const gradients = [
-                      'from-blue-500 to-cyan-500',
-                      'from-purple-500 to-pink-500',
-                      'from-green-500 to-emerald-500',
-                      'from-orange-500 to-red-500',
-                      'from-indigo-500 to-blue-500',
-                      'from-teal-500 to-cyan-500',
-                    ];
-                    const cardGradient = gradients[0];
-
-                    return (
-                      <button
-                        onClick={() => navigate('/reports/finance-management?tab=collection')}
-                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
-                      >
-                        {/* Background Gradient */}
-                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
-
-                        {/* Content */}
-                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
-                          {/* Category Label */}
-                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
-                            {category}
-                          </span>
-
-                          {/* Label */}
-                          <h3 className="text-sm font-bold drop-shadow-md">
-                            {label}
-                          </h3>
-                        </div>
-                      </button>
-                    );
-                  })()}
-
-                  {/* Finances - Collection Due */}
-                  {(() => {
-                    const label = 'Collection Due';
-                    const category = 'Finances';
-                    const cardGradient = 'from-purple-500 to-purple-600';
-
-                    return (
-                      <button
-                        onClick={() => navigate('/reports/finance-management?tab=collection-due')}
-                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
-                      >
-                        {/* Background Gradient */}
-                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
-
-                        {/* Content */}
-                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
-                          {/* Category Label */}
-                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
-                            {category}
-                          </span>
-
-                          {/* Label */}
-                          <h3 className="text-sm font-bold drop-shadow-md">
-                            {label}
-                          </h3>
-                        </div>
-                      </button>
-                    );
-                  })()}
-
-                  {/* Sales - Signed */}
-                  {(() => {
-                    const label = 'Signed';
-                    const category = 'Sales';
-                    const gradients = [
-                      'from-blue-500 to-cyan-500',
-                      'from-purple-500 to-pink-500',
-                      'from-green-500 to-emerald-500',
-                      'from-orange-500 to-red-500',
-                      'from-indigo-500 to-blue-500',
-                      'from-teal-500 to-cyan-500',
-                    ];
-                    const cardGradient = gradients[2];
-
-                    return (
-                      <button
-                        onClick={() => navigate('/sales/signed')}
-                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
-                      >
-                        {/* Background Gradient */}
-                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
-
-                        {/* Content */}
-                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
-                          {/* Category Label */}
-                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
-                            {category}
-                          </span>
-
-                          {/* Label */}
-                          <h3 className="text-sm font-bold drop-shadow-md">
-                            {label}
-                          </h3>
-                        </div>
-                      </button>
-                    );
-                  })()}
+                {/* Shortcut Boxes - one row, no category badges */}
+                <div className="grid w-full grid-cols-3 gap-2 lg:flex lg:w-auto lg:gap-3">
+                  <button
+                    onClick={() => navigate('/reports/finance-management?tab=collection')}
+                    className="flex h-14 min-w-0 items-center justify-center rounded-xl bg-gray-100 px-2 text-sm font-semibold leading-tight text-gray-800 transition-colors hover:bg-gray-200 lg:w-[180px]"
+                  >
+                    Collection
+                  </button>
+                  <button
+                    onClick={() => navigate('/reports/external-firms')}
+                    className="flex h-14 min-w-0 items-center justify-center rounded-xl bg-gray-100 px-2 text-sm font-semibold leading-tight text-gray-800 transition-colors hover:bg-gray-200 lg:w-[180px]"
+                  >
+                    External Firms
+                  </button>
+                  <button
+                    onClick={() => navigate('/sales/signed')}
+                    className="flex h-14 min-w-0 items-center justify-center rounded-xl bg-gray-100 px-2 text-sm font-semibold leading-tight text-gray-800 transition-colors hover:bg-gray-200 lg:w-[180px]"
+                  >
+                    Signed
+                  </button>
                 </div>
               </div>
               {searchQuery && (

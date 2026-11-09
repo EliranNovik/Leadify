@@ -770,11 +770,11 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       sheetClassName="md:max-w-3xl"
       contentClassName="px-4 md:px-6"
       footer={(
-        <div className="flex justify-end gap-3 p-4 max-md:flex-col-reverse">
+        <div className="flex flex-row items-center justify-end gap-2 p-4 md:gap-3">
           <button
             type="button"
             onClick={onClose}
-            className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
+            className="btn btn-ghost max-md:min-h-12 max-md:flex-1 border-0 shadow-none md:w-auto"
             disabled={isLoading}
           >
             Cancel
@@ -782,7 +782,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           <button
             type="button"
             onClick={handleSubmit}
-            className="btn btn-primary max-md:min-h-12 w-full md:w-auto"
+            className="btn btn-primary max-md:min-h-12 max-md:flex-1 max-md:!rounded-full md:w-auto"
             disabled={isLoading || !formData.subject.trim()}
           >
             {isLoading ? (

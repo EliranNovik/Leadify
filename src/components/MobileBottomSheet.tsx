@@ -8,10 +8,6 @@ const SNAP_RATIOS = [0.38, 0.58, 0.94] as const;
 const FULL_HEIGHT_RATIO = 0.96;
 /** Default open position: mid (centered), not fully expanded. */
 const DEFAULT_SNAP_INDEX: SnapIndex = 1;
-/** How far past the peek snap (px) before a release dismisses. */
-const DISMISS_PAST_PEEK_PX = 120;
-/** Downward fling speed (px/ms) that dismisses from peek. */
-const DISMISS_VELOCITY_PX_MS = 1.15;
 const UP_DRAG_RESISTANCE = 0.28;
 const SHEET_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
 const SNAP_MS = 360;
@@ -51,23 +47,17 @@ function resolveReleaseSnap(
   velocityY: number,
   fromSnap: SnapIndex,
 ): SnapIndex | 'close' {
-  if (
-    dismissY >= DISMISS_PAST_PEEK_PX ||
-    (dismissY > 40 && velocityY > DISMISS_VELOCITY_PX_MS) ||
-    (height < heights[0] - 40 && velocityY > 0.5)
-  ) {
-    return 'close';
-  }
+  const nearest = nearestSnapByHeight(heights, height);
+  // A downward swipe closes in the same gesture. Landing on the peek snap
+  // left the sheet hanging and required a second swipe.
+  if (velocityY > 0.4 || dismissY > 8) return 'close';
+  if (nearest === 0 && fromSnap > 0) return 'close';
 
-  if (velocityY > 0.65) {
-    if (fromSnap > 0) return (fromSnap - 1) as SnapIndex;
-    return dismissY > 40 ? 'close' : 0;
-  }
   if (velocityY < -0.65) {
     return Math.min(2, fromSnap + 1) as SnapIndex;
   }
 
-  return nearestSnapByHeight(heights, height);
+  return nearest;
 }
 
 export type MobileBottomSheetProps = {
@@ -503,7 +493,7 @@ export default function MobileBottomSheet({
       <div className={`fixed inset-0 flex pointer-events-none ${outerPositionClass}`}>
         <div
           ref={sheetRef}
-          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t max-md:max-h-none transition-[transform,opacity] duration-300 ease-out ${sheetLayoutClass} ${desktopCenterMotion} ${mobileFullPageMotion} ${sheetClassName}`}
+          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-0 max-md:max-h-none transition-[transform,opacity] duration-300 ease-out ${sheetLayoutClass} ${desktopCenterMotion} ${mobileFullPageMotion} ${sheetClassName}`}
           style={mobileSheetStyle || sheetStyle ? { ...mobileSheetStyle, ...sheetStyle } : undefined}
           onClick={(e) => e.stopPropagation()}
           role="dialog"
@@ -526,7 +516,9 @@ export default function MobileBottomSheet({
           {showHeader && (
             <div
               data-sheet-handle
-              className={`flex shrink-0 items-start justify-between gap-3 border-b border-base-200/80 bg-base-100 px-4 py-3.5 md:px-6 md:py-4 ${headerClassName}`}
+              data-sheet-header
+              className={`flex shrink-0 items-start justify-between gap-3 bg-base-100 px-4 py-3.5 max-md:!border-0 max-md:!shadow-none md:border-b md:border-base-200/80 md:px-6 md:py-4 ${headerClassName}`}
+              style={isMobile ? { border: 'none', boxShadow: 'none' } : undefined}
             >
               <div className="min-w-0 flex-1">
                 {title && (
@@ -556,8 +548,10 @@ export default function MobileBottomSheet({
 
           {footer && (
             <div
-              className={`shrink-0 border-t border-base-200/80 bg-base-100/95 backdrop-blur-sm pb-[max(1rem,env(safe-area-inset-bottom,0px))] ${footerClassName}`}
+              className={`shrink-0 bg-base-100 pb-[max(1rem,env(safe-area-inset-bottom,0px))] max-md:!border-0 max-md:!shadow-none md:border-t md:border-base-200/80 md:bg-base-100/95 md:backdrop-blur-sm ${footerClassName}`}
               data-sheet-no-drag
+              data-sheet-footer
+              style={isMobile ? { border: 'none', boxShadow: 'none' } : undefined}
             >
               {footer}
             </div>

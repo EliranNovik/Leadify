@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition } from 'react';
+import React, { useState, useEffect, Fragment, useLayoutEffect, useMemo, useRef, startTransition } from 'react';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabProps } from '../../types/client';
@@ -2347,6 +2347,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     fetchContractStatuses();
   }, [client?.id]);
 
+  const contactCarouselRef = useRef<HTMLDivElement>(null);
+  const pendingScrollContactIdRef = useRef<number | null>(null);
+
   const handleCreateNewContact = () => {
     const newContact: ContactEntry = {
       id: Date.now(),
@@ -2358,12 +2361,33 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       isEditing: true,
     };
     setContacts((prev) => {
-      if (prev.some((c) => isTempContactId(c.id) && c.isEditing)) {
+      const existingDraft = prev.find((c) => isTempContactId(c.id) && c.isEditing);
+      if (existingDraft) {
+        pendingScrollContactIdRef.current = existingDraft.id;
         return prev;
       }
+      pendingScrollContactIdRef.current = newContact.id;
       return [...prev, newContact];
     });
   };
+
+  useLayoutEffect(() => {
+    const contactId = pendingScrollContactIdRef.current;
+    if (contactId == null) return;
+    if (window.matchMedia('(min-width: 768px)').matches) {
+      pendingScrollContactIdRef.current = null;
+      return;
+    }
+    const root = contactCarouselRef.current;
+    const card = root?.querySelector(`[data-contact-card="${contactId}"]`) as HTMLElement | null;
+    if (!root || !card) return;
+    pendingScrollContactIdRef.current = null;
+    const left =
+      root.scrollLeft +
+      (card.getBoundingClientRect().left - root.getBoundingClientRect().left) -
+      12;
+    root.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+  }, [contacts]);
 
   const handleSaveMainContact = async () => {
     // Check if this is a legacy lead
@@ -3852,6 +3876,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           </div>
 
           <div
+            ref={contactCarouselRef}
             className={`grid w-full grid-cols-1 items-stretch gap-5 pb-6 sm:grid-cols-2 2xl:grid-cols-3 ${
               contacts.length > 1 ? 'info-box-carousel info-box-carousel-free contact-box-carousel' : ''
             } ${
@@ -3921,6 +3946,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return (
                 <div
                   key={contact.id}
+                  data-contact-card={contact.id}
                   className={[
                     'info-carousel-card h-full min-w-0 bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
                     cardMenuOpen ? 'relative z-40' : 'relative z-0',

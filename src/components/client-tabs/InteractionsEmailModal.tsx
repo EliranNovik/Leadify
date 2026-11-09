@@ -530,21 +530,36 @@ export function InteractionsEmailModal({
                   </div>
                   <input
                     type="text"
-                    className="block w-full rounded-lg border-0 bg-transparent py-1.5 pl-9 pr-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0"
+                    className={`block w-full rounded-lg border-0 bg-transparent py-1.5 pl-9 text-left text-sm leading-5 placeholder-gray-400 focus:outline-none focus:ring-0 ${
+                      emailSearchQuery ? 'pr-16' : 'pr-10'
+                    }`}
                     placeholder="Search emails…"
                     value={emailSearchQuery}
                     onChange={(e) => setEmailSearchQuery(e.target.value)}
                   />
-                  {emailSearchQuery && (
+                  {emailSearchQuery ? (
                     <button
                       type="button"
                       onClick={() => setEmailSearchQuery('')}
-                      className="absolute inset-y-0 right-0 flex items-center pr-2.5"
+                      className="absolute inset-y-0 right-8 flex items-center px-1"
                       aria-label="Clear search"
                     >
                       <XMarkIcon className="h-4 w-4 text-gray-400 hover:text-gray-600" />
                     </button>
-                  )}
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEmailModalOpen(false);
+                      setSelectedEmailForView(null);
+                      setEmailSearchQuery('');
+                      setShowEmailDetail(false);
+                    }}
+                    className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-700"
+                    aria-label="Close"
+                  >
+                    <XMarkIcon className="h-5 w-5" />
+                  </button>
                 </div>
               </div>
             </div>

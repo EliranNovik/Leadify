@@ -286,8 +286,8 @@ const CLIENT_HEADER_NAV_RAIL_PAD =
     'md:pl-[calc(4.75rem+1.25rem)] lg:pl-[calc(4.75rem+1.5rem)] xl:pl-[calc(4.75rem+2rem)]';
 /** Right + mobile left page padding — never sets md:pl so sidebar pad stays intact. */
 const CLIENT_HEADER_PAGE_X = 'pl-3 pr-3 sm:pl-4 sm:pr-4 md:pr-6 lg:pr-8 xl:pr-10';
-/** Right-only page padding when left inset already includes content gutter (nav rail). */
-const CLIENT_HEADER_PAGE_X_WITH_RAIL = 'pr-3 sm:pr-4 md:pr-5 lg:pr-6 xl:pr-8';
+/** Right page padding when the desktop left inset already includes the nav rail. Mobile gets the same inset on the left. */
+const CLIENT_HEADER_PAGE_X_WITH_RAIL = 'pl-3 pr-3 sm:pl-4 sm:pr-4 md:pr-5 lg:pr-6 xl:pr-8';
 /**
  * Desktop top strip — edge-to-edge white.
  * Uses a dedicated spacer for the fixed navbar height so the name never sits under it.
@@ -295,7 +295,7 @@ const CLIENT_HEADER_PAGE_X_WITH_RAIL = 'pr-3 sm:pr-4 md:pr-5 lg:pr-6 xl:pr-8';
 const CLIENT_HEADER_TOP_BAND = 'client-header-top-band w-full bg-white dark:bg-base-100';
 
 const CLIENT_HEADER_SECTION_LABEL =
-    'text-[11px] font-semibold uppercase tracking-widest text-base-content/40';
+    'text-[11px] font-semibold uppercase tracking-widest text-slate-500';
 
 const TEAM_ROLE_LABEL =
     'text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-base-content/45';
@@ -2797,9 +2797,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         }
     }, [selectedClient, leadMetaChips]);
 
-    const displayCategory = leadMetaChips.category || 'No Category';
+    const displayCategory = leadMetaChips.category || '--';
     const displayLanguageChip = leadMetaChips.language || '---';
-    const displayTopicChip = leadMetaChips.topic || '---';
+    const displayTopicChip = leadMetaChips.topic || '--';
     const displaySourceChip = leadMetaChips.source || '---';
 
     const filteredCategories = allCategories.filter((category) => {
@@ -4347,15 +4347,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 field.wide ? 'col-span-2' : ''
             } ${field.onClick ? 'cursor-pointer hover:bg-base-200/40' : ''}`;
             const body = (
-                <>
-                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-base-content/40">
-                        <Icon className={`h-3.5 w-3.5 shrink-0 ${field.iconClass}`} aria-hidden />
-                        {field.label}
+                <span className="flex min-w-0 items-start gap-1.5">
+                    <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${field.iconClass}`} aria-hidden />
+                    <span className="min-w-0 flex-1">
+                        <span className="block text-[11px] font-semibold uppercase tracking-widest text-slate-500">
+                            {field.label}
+                        </span>
+                        <span className="mt-1 block w-full truncate text-sm font-semibold text-base-content/90">
+                            {field.value || '—'}
+                        </span>
                     </span>
-                    <span className="mt-1 w-full truncate text-sm font-semibold text-base-content/90">
-                        {field.value || '—'}
-                    </span>
-                </>
+                </span>
             );
             if (!field.onClick) {
                 return (
@@ -4641,53 +4643,61 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                   : '—';
         const canCallOrWhatsApp = Boolean(trimmed && trimmed !== '---');
 
-        return (
-            <div>
-                <p className="text-sm text-base-content/50">{label}</p>
-                <p className="mt-0.5 text-base text-base-content">{display}</p>
-                {trimmed ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-                        {label !== 'Email' && canCallOrWhatsApp ? (
-                            <>
-                                <button
-                                    type="button"
-                                    className={CONTACT_MODAL_LINK}
-                                    onClick={() => openCallModal(trimmed)}
-                                >
-                                    <PhoneArrowUpRightIcon className="h-4 w-4" aria-hidden />
-                                    Call
-                                </button>
-                                <button
-                                    type="button"
-                                    className={CONTACT_MODAL_LINK_WHATSAPP}
-                                    onClick={() => void openWhatsAppForNumber(trimmed)}
-                                >
-                                    <FaWhatsapp className="h-4 w-4" aria-hidden />
-                                    WhatsApp
-                                </button>
-                            </>
-                        ) : null}
-                        {label === 'Email' && trimmed ? (
-                            <button
-                                type="button"
-                                className={CONTACT_MODAL_LINK}
-                                onClick={() => openEmailClient(trimmed)}
-                            >
-                                <EnvelopeIcon className="h-4 w-4" aria-hidden />
-                                Email
-                            </button>
-                        ) : null}
+        const actions = trimmed ? (
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                {label !== 'Email' && canCallOrWhatsApp ? (
+                    <>
                         <button
                             type="button"
                             className={CONTACT_MODAL_LINK}
-                            onClick={() => void copyContactValue(trimmed, label)}
+                            onClick={() => openCallModal(trimmed)}
                         >
-                            <ClipboardDocumentIcon className="h-4 w-4" aria-hidden />
-                            Copy
+                            <PhoneArrowUpRightIcon className="h-4 w-4" aria-hidden />
+                            Call
                         </button>
-                    </div>
+                        <button
+                            type="button"
+                            className={CONTACT_MODAL_LINK_WHATSAPP}
+                            onClick={() => void openWhatsAppForNumber(trimmed)}
+                        >
+                            <FaWhatsapp className="h-4 w-4" aria-hidden />
+                            WhatsApp
+                        </button>
+                    </>
                 ) : null}
+                {label === 'Email' && trimmed ? (
+                    <button
+                        type="button"
+                        className={CONTACT_MODAL_LINK}
+                        onClick={() => openEmailClient(trimmed)}
+                    >
+                        <EnvelopeIcon className="h-4 w-4" aria-hidden />
+                        Email
+                    </button>
+                ) : null}
+                <button
+                    type="button"
+                    className={CONTACT_MODAL_LINK}
+                    onClick={() => void copyContactValue(trimmed, label)}
+                >
+                    <ClipboardDocumentIcon className="h-4 w-4" aria-hidden />
+                    Copy
+                </button>
             </div>
+        ) : null;
+
+        return (
+            <tr className="border-b border-slate-100 last:border-b-0">
+                <td colSpan={2} className="px-4 py-3 align-top">
+                    <div className="flex items-start gap-4">
+                        <p className="w-24 shrink-0 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            {label}
+                        </p>
+                        <p className="min-w-0 text-sm font-medium text-slate-900">{display}</p>
+                    </div>
+                    {actions}
+                </td>
+            </tr>
         );
     };
 
@@ -4720,7 +4730,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 ? `flex w-full flex-col gap-5 md:hidden ${CLIENT_HEADER_APP_INSET_MOBILE} ${sidebarPadClass} ${pagePadClass}`
                                 : 'flex w-full flex-col gap-5 md:hidden'
                         }
-                    >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2 px-2">
+                    >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
                             <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1 text-left">
                                     <div className="flex min-w-0 items-center gap-1.5">
@@ -4767,6 +4777,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 className="w-full min-w-0 [&:not(:empty)]:mt-1"
                             />
                         </header>
+
+                        {(showAssignSchedulerInHeader && assignSchedulerContent) || dropdownsContent ? (
+                            <div className="flex w-full flex-col gap-3">
+                                {showAssignSchedulerInHeader && assignSchedulerContent ? (
+                                    <div className="w-full [&_[data-assign-dropdown]]:!w-full">
+                                        {assignSchedulerContent}
+                                    </div>
+                                ) : null}
+                                {dropdownsContent ? (
+                                    <div className="w-full empty:hidden [&_[data-assign-dropdown]]:!w-full">
+                                        {dropdownsContent}
+                                    </div>
+                                ) : null}
+                            </div>
+                        ) : null}
 
                         <div className="rounded-[18px] bg-white px-4 py-4 shadow-sm sm:px-5">
                             <div className="flex items-start gap-3">
@@ -6316,11 +6341,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </button>
                                 )}
 
-                                {/* Created / Precommunication — assign scheduler instead of stage buttons */}
-                                {showAssignSchedulerInHeader && assignSchedulerContent ? (
-                                    <div className={HEADER_ROLE_ASSIGN_WIDTH_CLASS}>{assignSchedulerContent}</div>
-                                ) : null}
-
                                 {/* General stages - Schedule Meeting and Communication Started */}
                                 {/* Only show for stages that haven't been handled by specific sections above */}
                                 {showsGeneralStageActions && (
@@ -6897,14 +6917,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     title={selectedClient?.name || 'Contact details'}
                     subtitle={selectedClient?.lead_number ? `#${selectedClient.lead_number}` : undefined}
                     zIndex={320}
-                    sheetClassName="md:max-w-sm md:!border-0 max-md:!border-t-0"
-                    headerClassName="!border-0"
-                    contentClassName="!px-5 !pb-6"
+                    sheetClassName="max-md:!bg-slate-100 md:max-w-sm md:!border-0 max-md:!border-t-0"
+                    headerClassName="!border-0 max-md:!bg-slate-100"
+                    contentClassName="!bg-slate-100 !px-4 !pb-6 md:!bg-base-100 md:!px-5"
                 >
-                    <div className="flex flex-col gap-5">
-                        {renderContactDetailField('Mobile', displayMobile)}
-                        {renderContactDetailField('Email', displayEmail)}
-                        {renderContactDetailField('Phone', displayPhone)}
+                    <div className="overflow-hidden rounded-2xl bg-white shadow-sm">
+                        <table className="w-full border-collapse">
+                            <tbody>
+                                {renderContactDetailField('Mobile', displayMobile)}
+                                {renderContactDetailField('Email', displayEmail)}
+                                {renderContactDetailField('Phone', displayPhone)}
+                            </tbody>
+                        </table>
                     </div>
                 </MobileBottomSheet>
 

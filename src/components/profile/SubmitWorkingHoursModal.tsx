@@ -210,10 +210,10 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
       title="Submit working hours"
       closeOnOverlayClick={!submitting}
       footer={
-        <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
+        <div className="flex w-full flex-row items-center gap-2 md:justify-end md:gap-3">
           <button
             type="button"
-            className="btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
+            className="btn max-md:min-h-12 max-md:flex-1 max-md:border-0 max-md:bg-transparent max-md:shadow-none md:btn-outline md:min-w-[6.5rem] md:flex-none"
             onClick={onClose}
             disabled={submitting}
           >

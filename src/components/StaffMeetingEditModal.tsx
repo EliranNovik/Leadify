@@ -917,11 +917,11 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
               'Delete Meeting'
             )}
           </button>
-          <div className="flex flex-col-reverse gap-3 md:flex-row md:justify-end">
+          <div className="flex flex-row items-center gap-2 md:justify-end md:gap-3">
             <button
               type="button"
               onClick={onClose}
-              className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
+              className="btn btn-ghost max-md:min-h-12 max-md:flex-1 border-0 shadow-none md:w-auto"
               disabled={isLoading || isDeleting}
             >
               Cancel
@@ -929,7 +929,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             <button
               type="submit"
               form="staff-meeting-edit-form"
-              className="btn btn-primary max-md:min-h-12 w-full md:w-auto"
+              className="btn btn-primary max-md:min-h-12 max-md:flex-1 max-md:!rounded-full md:w-auto"
               disabled={isLoading || isDeleting}
             >
               {isLoading ? (
@@ -1297,11 +1297,11 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       title="Delete Meeting"
       zIndex={60}
       footer={(
-        <div className="flex flex-col-reverse gap-3 p-4 md:flex-row md:justify-end">
+        <div className="flex flex-row items-center gap-2 p-4 md:justify-end md:gap-3">
           <button
             type="button"
             onClick={() => setShowDeleteConfirm(false)}
-            className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
+            className="btn btn-ghost max-md:min-h-12 max-md:flex-1 border-0 shadow-none md:w-auto"
             disabled={isDeleting}
           >
             Cancel
@@ -1309,7 +1309,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
           <button
             type="button"
             onClick={handleDelete}
-            className="btn btn-error max-md:min-h-12 w-full md:w-auto"
+            className="btn btn-error max-md:min-h-12 max-md:flex-1 max-md:!rounded-full md:w-auto"
             disabled={isDeleting}
           >
             {isDeleting ? (

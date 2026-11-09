@@ -49,7 +49,7 @@ export function ClientTabPageHeader({
   const hasRightContent = Boolean(injectedExtra || actions);
 
   return (
-    <div className={`flex flex-wrap items-start justify-between gap-3 ${className}`}>
+    <div data-client-tab-title className={`flex flex-wrap items-start justify-between gap-3 ${className}`}>
       <div className="flex min-w-0 items-center gap-3">
         <div className={CLIENT_TAB_PAGE_HEADER_ICON_BOX}>
           <Icon className={CLIENT_TAB_PAGE_HEADER_ICON} />

@@ -56,7 +56,7 @@ export default function HandlerManagementSidebar({ activeTab, onChange }: Props)
 
 export function HandlerManagementMobileTabs({ activeTab, onChange }: Props) {
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1 rounded-xl bg-gray-200 p-1 md:hidden">
+    <div className="scrollbar-hide mb-4 flex flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain rounded-xl bg-gray-200 p-1 md:hidden">
       {TABS.map((tab) => {
         const active = activeTab === tab.id;
         return (
@@ -64,8 +64,8 @@ export function HandlerManagementMobileTabs({ activeTab, onChange }: Props) {
             key={tab.id}
             type="button"
             onClick={() => onChange(tab.id)}
-            className={`inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
-              active ? 'bg-primary text-white shadow-sm' : 'text-gray-600'
+            className={`inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-semibold transition [&_svg]:h-5 [&_svg]:w-5 ${
+              active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
             }`}
           >
             {tab.icon}

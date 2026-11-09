@@ -63,6 +63,15 @@
     flex: 0 0 calc(100% - 1.25rem);
     width: calc(100% - 1.25rem);
   }
+
+  .info-box-carousel.info-box-carousel-match {
+    align-items: stretch;
+  }
+
+  .info-box-carousel.info-box-carousel-match .info-carousel-card {
+    height: auto;
+    align-self: stretch;
+  }
 }
 
 @keyframes slideInRight {
@@ -725,10 +734,10 @@ body:has(main.clients-detail-scroll) .navbar {
     overflow-x: hidden;
     /* iOS: momentum scrolling inside main (not the whole document) */
     -webkit-overflow-scrolling: touch;
-    /* Keep scroll gestures inside this pane; bottom inset so content clears the home indicator */
+    /* Keep scroll gestures inside this pane. No bottom inset, so content
+       scrolls under the iOS browser bar on pages without a bottom nav. */
     overscroll-behavior: contain;
-    padding-bottom: constant(safe-area-inset-bottom, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: 0;
   }
   /* Bottom tab bar + safe area — must override padding-bottom above */
   .app-main-scroll.main-with-bottom-nav-padding {
@@ -3014,5 +3023,17 @@ html .doc-viewer-glass textarea {
 html .doc-viewer-glass input:not([type='checkbox']):not([type='radio'])::placeholder,
 html .doc-viewer-glass textarea::placeholder {
   color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* Mobile sheets: no hairline under the title or above the footer buttons. */
+@media (max-width: 767px) {
+  [data-sheet-header],
+  [data-sheet-footer] {
+    border: 0 !important;
+    border-top: 0 !important;
+    border-bottom: 0 !important;
+    box-shadow: none !important;
+    outline: none !important;
+  }
 }
 
