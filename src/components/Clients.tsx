@@ -3243,7 +3243,6 @@ const Clients: React.FC<ClientsProps> = ({
             retainer_handler_id,
             client_support_id,
             submission_manager_id,
-            application_manager_id,
             digital_case_coordinator_id,
             document_procurement_coordinator_id,
             certification_coordinator_id,
@@ -5845,10 +5844,6 @@ const Clients: React.FC<ClientsProps> = ({
       );
     };
 
-    const showRevisedOfferCount =
-      priceOfferSentCount >= 2 ||
-      (priceOfferSentCount >= 1 && areStagesEquivalent(stageName, 'revised_offer'));
-
     return (
       <div className="flex items-center gap-1.5">
         <div className="relative" ref={dropdownRef}>
@@ -5886,21 +5881,35 @@ const Clients: React.FC<ClientsProps> = ({
           </button>
           {isSuperuser && stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
         </div>
-        {showRevisedOfferCount ? (
-          <button
-            type="button"
-            className="inline-flex h-8 min-w-[2rem] items-center justify-center rounded-full bg-gray-100 px-2.5 text-sm font-bold text-gray-600 hover:bg-gray-200"
-            title={`${priceOfferSentCount} price offer${priceOfferSentCount === 1 ? '' : 's'} sent`}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setActiveTabWithUrl('price');
-            }}
-          >
-            {priceOfferSentCount}
-          </button>
-        ) : null}
       </div>
+    );
+  };
+
+  const renderOfferCountBadge = () => {
+    if (!selectedClient) return null;
+    const idStageName = getStageName(String(selectedClient.stage));
+    const joinName = selectedClient.stage_name && String(selectedClient.stage_name).trim()
+      ? String(selectedClient.stage_name).trim()
+      : '';
+    const joinMatchesStage = !joinName || areStagesEquivalent(joinName, idStageName) || joinName === idStageName;
+    const stageLabel = joinMatchesStage && joinName ? joinName : idStageName;
+    const showRevisedOfferCount =
+      priceOfferSentCount >= 2 ||
+      (priceOfferSentCount >= 1 && areStagesEquivalent(stageLabel, 'revised_offer'));
+    if (!showRevisedOfferCount) return null;
+    return (
+      <button
+        type="button"
+        className="inline-flex h-7 min-w-[1.75rem] shrink-0 items-center justify-center rounded-full bg-gray-100 px-2 text-sm font-bold text-gray-600 hover:bg-gray-200"
+        title={`${priceOfferSentCount} price offer${priceOfferSentCount === 1 ? '' : 's'} sent`}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setActiveTabWithUrl('price');
+        }}
+      >
+        {priceOfferSentCount}
+      </button>
     );
   };
 
@@ -14142,6 +14151,7 @@ const Clients: React.FC<ClientsProps> = ({
             handleActivation={handleActivation}
             setShowUnactivationModal={setShowUnactivationModal}
             renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor, selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
+            offerCountBadge={renderOfferCountBadge()}
             getEmployeeDisplayName={getEmployeeDisplayName}
             allEmployees={allEmployees}
             dropdownItems={dropdownItems}
@@ -14379,6 +14389,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <span className="text-base font-bold text-base-content whitespace-nowrap">
                         #{getDisplayLeadNumber(selectedClient)}
                       </span>
+                      {renderOfferCountBadge()}
                       <span className="text-base font-semibold text-base-content/90 truncate">
                         {selectedClient.name || 'Unnamed Lead'}
                       </span>
@@ -14386,7 +14397,6 @@ const Clients: React.FC<ClientsProps> = ({
                       <div className="flex items-center flex-shrink-0">
                         {getStageBadge(selectedClient.stage, 'desktop', selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
                       </div>
-                      {/* Duplicate Contact Badge - Icon and Number Only */}
                       {duplicateContacts.length > 0 && (
                         <div className="relative">
                           {duplicateContacts.length === 1 ? (

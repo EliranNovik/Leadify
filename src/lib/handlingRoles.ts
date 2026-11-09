@@ -88,18 +88,6 @@ export const HANDLING_SWITCH_ROLES: HandlingRole[] = [
     communicatesWithClient: false,
   },
   {
-    id: 'application_manager',
-    title: 'Application Manager',
-    shortLabel: 'Application Mgr',
-    focus: 'Application handling',
-    responsibilities:
-      'Handles preparation of the application. Responsible for client communication during application preparation and submission.',
-    activeType: 5,
-    column: 'application_manager_id',
-    stageId: 1,
-    communicatesWithClient: true,
-  },
-  {
     id: 'digital_case_coordinator',
     title: 'Digital Case Coordinator',
     shortLabel: 'Digital Case',
@@ -200,18 +188,96 @@ export function handlingStageForRole(roleId: string | null | undefined): Handlin
   return handlingStageById(role.stageId);
 }
 
-/** Stage that should be stored when this active_handler_type owns the case. Null for the case handler. */
-export function handlingStageIdForActiveType(activeType: number | null | undefined): HandlingStageId | null {
-  return handlingRoleByType(activeType)?.stageId ?? null;
+/**
+ * Citizenship is stored as a subcategory under a main category.
+ * A lead shows as "Undefined (Germany)": the subcategory is Undefined and the
+ * main category is Germany or Austria. Some rows use the full citizenship name.
+ */
+const CITIZENSHIP_HANDLER_STAGE_CATEGORIES = new Set([
+  'austrian citizenship',
+  'german citizenship',
+  'austria',
+  'germany',
+]);
+
+function normalizedCategoryName(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
-export function handlingStageForActiveType(activeType: number | null | undefined): HandlingStage | null {
-  return handlingStageById(handlingStageIdForActiveType(activeType));
+function categoryNamesFromLead(lead: any): string[] {
+  const joined = Array.isArray(lead?.misc_category) ? lead.misc_category[0] : lead?.misc_category;
+  const main = Array.isArray(joined?.misc_maincategory)
+    ? joined.misc_maincategory[0]
+    : joined?.misc_maincategory;
+  const names = [
+    normalizedCategoryName(joined?.name),
+    normalizedCategoryName(main?.name),
+    normalizedCategoryName(lead?.category_name),
+    normalizedCategoryName(lead?.main_category),
+    normalizedCategoryName(lead?.main_category_name),
+  ];
+  const display = normalizedCategoryName(lead?.category);
+  if (display) {
+    names.push(display);
+    const parenthetical = display.match(/\(([^)]+)\)\s*$/);
+    if (parenthetical) names.push(parenthetical[1].trim());
+  }
+  return names.filter(Boolean);
 }
 
-/** The role that speaks to the client during this stage. */
-export function communicationRoleForStage(stageId: HandlingStageId | null | undefined): HandlingRole | null {
+/** Austrian or German citizenship leads. The handler owns stage 1 on these cases. */
+export function isCitizenshipHandlerStageLead(lead: any): boolean {
+  return categoryNamesFromLead(lead).some((name) => CITIZENSHIP_HANDLER_STAGE_CATEGORIES.has(name));
+}
+
+/** Stage stored for this active worker. The case handler has none, except on citizenship leads, where it takes stage 1. */
+export function handlingStageIdForActiveType(
+  activeType: number | null | undefined,
+  lead?: any,
+): HandlingStageId | null {
+  const role = handlingRoleByType(activeType);
+  if (!role) return null;
+  if (role.id === 'handler' && isCitizenshipHandlerStageLead(lead)) return 1;
+  return role.stageId;
+}
+
+export function handlingStageForActiveType(
+  activeType: number | null | undefined,
+  lead?: any,
+): HandlingStage | null {
+  return handlingStageById(handlingStageIdForActiveType(activeType, lead));
+}
+
+/** The three roles a case can show as the active person in the header. Each one speaks to the client. */
+const CLIENT_CONTACT_ROLE_IDS = ['handler', 'client_support', 'retainer_handler'] as const;
+
+export function isClientContactRole(roleId: string | null | undefined): boolean {
+  return (CLIENT_CONTACT_ROLE_IDS as readonly string[]).includes(String(roleId || ''));
+}
+
+/** Roles that work the current stage, client-contact role first. */
+export function rolesForHandlingStage(
+  stageId: HandlingStageId | null | undefined,
+  lead?: any,
+): HandlingRole[] {
+  if (stageId == null) return [];
+  const roles = HANDLING_SWITCH_ROLES.filter((role) => {
+    if (role.id === 'handler') return stageId === 1 && isCitizenshipHandlerStageLead(lead);
+    return role.stageId === stageId;
+  });
+  const contactId = communicationRoleForStage(stageId, lead)?.id;
+  return roles.slice().sort((a, b) => Number(b.id === contactId) - Number(a.id === contactId));
+}
+
+/** The role that speaks to the client during this stage. On citizenship leads the handler speaks during stage 1. */
+export function communicationRoleForStage(
+  stageId: HandlingStageId | null | undefined,
+  lead?: any,
+): HandlingRole | null {
   if (stageId == null) return null;
+  if (stageId === 1 && isCitizenshipHandlerStageLead(lead)) {
+    return handlingRoleById('handler');
+  }
   return (
     HANDLING_SWITCH_ROLES.find(
       (role) => role.communicatesWithClient && role.stageId === stageId,
@@ -219,10 +285,11 @@ export function communicationRoleForStage(stageId: HandlingStageId | null | unde
   );
 }
 
-/** Preserve 1 and 3–10. Anything else, including empty, is the case handler (2). */
+/** Preserve 1 and 3–10. Anything else, including empty, is the case handler (2). Type 5 was Application Manager and now stays on stage 1 as Submission Manager. */
 export function readHandlingActiveType(value: unknown): number {
   const n = Number(value);
   if (n === 9) return 3;
+  if (n === 5) return 4;
   if (n === 1 || (Number.isFinite(n) && n >= 3 && n <= 10)) return n;
   return 2;
 }
@@ -231,7 +298,6 @@ export function readHandlingActiveType(value: unknown): number {
 export function handlingFieldsFromLead(row: any): Record<string, unknown> {
   return {
     submission_manager_id: row?.submission_manager_id ?? null,
-    application_manager_id: row?.application_manager_id ?? null,
     digital_case_coordinator_id: row?.digital_case_coordinator_id ?? null,
     document_procurement_coordinator_id: row?.document_procurement_coordinator_id ?? null,
     certification_coordinator_id: row?.certification_coordinator_id ?? null,

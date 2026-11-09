@@ -52,11 +52,17 @@ import { BookmarkIcon as BookmarkIconSolid, CheckIcon } from '@heroicons/react/2
 import { supabase } from '../lib/supabase';
 import {
     employeeIdOnLead,
+    HANDLING_STAGES,
     handlingRoleById,
+    handlingRoleByType,
+    handlingStageForActiveType,
     handlingStageIdForActiveType,
+    isClientContactRole,
+    communicationRoleForStage,
     partitionHandlingRoles,
     readHandlingActiveType,
 } from '../lib/handlingRoles';
+import { addLeadSubmissionManager } from '../lib/leadSubmissionManagers';
 import HandlingStageChip from './HandlingStageChip';
 import {
     prefetchEmployeePhotos,
@@ -270,8 +276,7 @@ const normalizeTagsValue = (value: unknown): string[] => {
 const CLIENT_HEADER_CARD = 'rounded-[18px] bg-white shadow-sm px-4 py-3.5 sm:px-5 sm:py-4';
 const CLIENT_HEADER_SHELL = `${CLIENT_HEADER_CARD} w-full`;
 /** Clears fixed app Header on mobile (clients-detail-scroll sets main padding-top: 0). */
-const CLIENT_HEADER_APP_INSET_MOBILE =
-    'pt-[calc(env(safe-area-inset-top,0px)+2.75rem+1.75rem)]';
+const CLIENT_HEADER_APP_INSET_MOBILE = 'client-header-mobile-top';
 /**
  * Clear floating staff sidebar: left-4 (1rem) + w-20 (5rem) + gap.
  * Use pl-* only (not px-*) so page right-padding utilities never override left inset.
@@ -345,59 +350,303 @@ function ActiveRolePhotoRing({
     );
 }
 
-/** Stable avatar for handling menus — avoids remount/reload when ClientHeader re-renders. */
+const HEADER_AVATAR_GRADIENTS = [
+    'bg-gradient-to-br from-rose-400 to-rose-700',
+    'bg-gradient-to-br from-orange-300 to-rose-500',
+    'bg-gradient-to-br from-amber-300 to-orange-600',
+    'bg-gradient-to-br from-lime-300 to-emerald-600',
+    'bg-gradient-to-br from-emerald-300 to-teal-700',
+    'bg-gradient-to-br from-teal-300 to-cyan-700',
+    'bg-gradient-to-br from-cyan-300 to-sky-700',
+    'bg-gradient-to-br from-sky-300 to-blue-700',
+    'bg-gradient-to-br from-blue-400 to-indigo-700',
+    'bg-gradient-to-br from-indigo-400 to-violet-700',
+    'bg-gradient-to-br from-violet-400 to-fuchsia-700',
+    'bg-gradient-to-br from-fuchsia-400 to-pink-600',
+    'bg-gradient-to-br from-pink-300 to-rose-600',
+];
+
+function headerAvatarInitials(name: string | null | undefined): string {
+    return (name || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() || '')
+        .join('');
+}
+
+/** Same name keeps the same gradient as the Roles tab circles. */
+function headerAvatarGradient(name: string | null | undefined): string {
+    const text = String(name || '').trim();
+    if (!text) return 'bg-gradient-to-br from-gray-300 to-gray-500';
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        hash = (hash + text.charCodeAt(i) * (i + 3)) % HEADER_AVATAR_GRADIENTS.length;
+    }
+    return HEADER_AVATAR_GRADIENTS[hash];
+}
+
+/** Photo when the employee has one. Gradient initials only when they do not. */
 const HandlingMenuAvatar = React.memo(function HandlingMenuAvatar({
     photoUrl,
     name,
     size = 'md',
 }: {
-    photoUrl: string | null | undefined;
+    photoUrl?: string | null | undefined;
     name: string | null | undefined;
     size?: 'sm' | 'md';
 }) {
     const original = resolveEmployeePhotoUrl(photoUrl, null);
-    const sizePx = size === 'sm' ? 64 : 96;
-    const sized = toEmployeeAvatarSrc(original, sizePx);
-    const [src, setSrc] = useState<string | null>(sized || original);
-    const [errored, setErrored] = useState(false);
-    useEffect(() => {
-        setSrc(sized || original);
-        setErrored(false);
-    }, [sized, original]);
+    const sized = toEmployeeAvatarSrc(original, size === 'sm' ? 64 : 96);
+    const [failed, setFailed] = useState(false);
     const sizeClass = size === 'sm' ? 'h-8 w-8 text-[11px]' : 'h-12 w-12 text-sm';
-    const initials = (name || '')
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((p) => p[0]?.toUpperCase() || '')
-        .join('');
-    if (src && !errored) {
-        return (
-            <img
-                src={src}
-                alt=""
-                decoding="async"
-                loading="eager"
-                className={`${sizeClass} shrink-0 rounded-full object-cover bg-gray-200`}
-                onError={() => {
-                    if (src !== original && original) {
-                        setSrc(original);
-                        return;
-                    }
-                    setErrored(true);
-                }}
-            />
-        );
-    }
+    const initials = headerAvatarInitials(name);
     return (
         <span
-            className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full bg-gray-200 font-semibold text-gray-600`}
+            className={`${sizeClass} relative flex shrink-0 items-center justify-center overflow-hidden rounded-full font-semibold text-white ${headerAvatarGradient(name)}`}
         >
             {initials || '—'}
+            {sized && !failed ? (
+                <img
+                    src={sized}
+                    alt=""
+                    decoding="async"
+                    className="absolute inset-0 h-full w-full object-cover"
+                    onError={() => setFailed(true)}
+                />
+            ) : null}
         </span>
     );
 });
+
+type HandlingMenuOption = {
+    type: number;
+    key: string;
+    id: number | null;
+    rolesLabel: string;
+    chipLabel: string;
+    display: string;
+    photoUrl: string | null;
+};
+
+function handlingMenuStageId(roleId: string): 1 | 2 | 3 {
+    if (roleId === 'handler') return 1;
+    const stageId = handlingRoleById(roleId)?.stageId;
+    return stageId === 2 || stageId === 3 ? stageId : 1;
+}
+
+/** Header handling menu, grouped by handling stage. Client-contact roles can be set active. Unassigned roles add from the row. */
+function HandlingRolesMenuBody({
+    roles,
+    activeKey,
+    openStageIds,
+    onToggleStage,
+    onMakeActive,
+    onStartAssign,
+    assigning,
+    assignHandlingKey,
+    assignRoleLabel,
+    assignSearch,
+    onAssignSearch,
+    assignEmployees,
+    onPickEmployee,
+    onAssignBack,
+    formatDisplay,
+}: {
+    roles: HandlingMenuOption[];
+    activeKey: string | null;
+    openStageIds: number[];
+    onToggleStage: (stageId: number) => void;
+    onMakeActive: (type: number) => void;
+    onStartAssign: (key: string, makeActive: boolean) => void;
+    assigning: boolean;
+    assignHandlingKey: string | null;
+    assignRoleLabel: string;
+    assignSearch: string;
+    onAssignSearch: (value: string) => void;
+    assignEmployees: Array<{ id: string | number; display_name: string; photo_url?: string | null; photo?: string | null }>;
+    onPickEmployee: (employee: { id: string | number; display_name: string }) => void;
+    onAssignBack: () => void;
+    formatDisplay: (value: string) => string;
+}) {
+    if (assignHandlingKey) {
+        return (
+            <>
+                <div className="flex items-center gap-1.5 px-2.5 pb-1.5 pt-1">
+                    <button type="button" className="btn btn-ghost btn-xs btn-circle" aria-label="Back" onClick={onAssignBack}>
+                        <ArrowLeftIcon className="h-4 w-4" />
+                    </button>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
+                        Assign {assignRoleLabel}
+                    </p>
+                </div>
+                <div className="relative px-2.5 pb-2">
+                    <MagnifyingGlassIcon className="pointer-events-none absolute left-5 top-1/2 h-4 w-4 -translate-y-1/2 text-base-content/35" aria-hidden />
+                    <input
+                        type="text"
+                        value={assignSearch}
+                        onChange={(event) => onAssignSearch(event.target.value)}
+                        placeholder="Search employee…"
+                        className="input input-sm w-full rounded-lg border-base-200 bg-base-100 pl-8"
+                        autoFocus
+                        disabled={assigning}
+                    />
+                </div>
+                <div className="max-h-56 overflow-y-auto">
+                    {assignEmployees.length > 0 ? (
+                        assignEmployees.map((emp) => (
+                            <button
+                                key={String(emp.id)}
+                                type="button"
+                                role="option"
+                                disabled={assigning}
+                                className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-base-200/70"
+                                onClick={() => onPickEmployee({ id: emp.id, display_name: emp.display_name })}
+                            >
+                                <HandlingMenuAvatar
+                                    photoUrl={resolveEmployeePhotoUrl(emp.photo_url, emp.photo)}
+                                    name={emp.display_name}
+                                    size="sm"
+                                />
+                                <span className="min-w-0 flex-1 truncate text-sm font-medium">{emp.display_name}</span>
+                                <ChevronRightIcon className="h-4 w-4 shrink-0 text-base-content/25 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/50" aria-hidden />
+                            </button>
+                        ))
+                    ) : (
+                        <p className="px-3.5 py-2.5 text-sm text-base-content/50">No matches</p>
+                    )}
+                </div>
+            </>
+        );
+    }
+
+    return (
+        <>
+            {HANDLING_STAGES.map((stage, stageIndex) => {
+                const stageRoles = roles
+                    .filter((opt) => handlingMenuStageId(opt.key) === stage.id)
+                    .slice()
+                    .sort((a, b) => Number(isClientContactRole(b.key)) - Number(isClientContactRole(a.key)));
+                const open = openStageIds.includes(stage.id);
+                return (
+                    <div key={stage.id} className={stageIndex > 0 ? 'mt-1 border-t border-base-200 pt-1' : undefined}>
+                        <button
+                            type="button"
+                            className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center justify-between rounded-xl px-2.5 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-base-200/40"
+                            aria-expanded={open}
+                            onClick={() => onToggleStage(stage.id)}
+                        >
+                            <span className="min-w-0">
+                                <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
+                                    Stage {stage.id}
+                                </span>
+                                <span className="block truncate text-xs font-semibold text-base-content/80">
+                                    {stage.shortLabel}
+                                </span>
+                            </span>
+                            <ChevronDownIcon className={`h-4 w-4 shrink-0 text-base-content/40 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden />
+                        </button>
+                        {open
+                            ? stageRoles.map((opt) => {
+                                  const assigned = opt.id != null;
+                                  const contact = isClientContactRole(opt.key);
+                                  const isActive = opt.key === activeKey;
+                                  if (contact) {
+                                      if (!assigned) {
+                                          return (
+                                              <button
+                                                  key={opt.key}
+                                                  type="button"
+                                                  className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-base-200/70"
+                                                  onClick={() => onStartAssign(opt.key, true)}
+                                              >
+                                                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-base-300 bg-base-100 text-base-content/40">
+                                                      <PlusIcon className="h-4 w-4" aria-hidden />
+                                                  </span>
+                                                  <span className="min-w-0 flex-1">
+                                                      <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
+                                                          {opt.rolesLabel}
+                                                      </span>
+                                                      <span className="block truncate text-sm font-medium text-base-content/55">Add to make active</span>
+                                                  </span>
+                                              </button>
+                                          );
+                                      }
+                                      return (
+                                          <button
+                                              key={opt.key}
+                                              type="button"
+                                              role="option"
+                                              aria-selected={isActive}
+                                              className={`group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${
+                                                  isActive ? 'bg-emerald-50 dark:bg-emerald-500/10' : 'hover:bg-gray-100 dark:hover:bg-base-200/70'
+                                              }`}
+                                              onClick={() => {
+                                                  if (!isActive) onMakeActive(opt.type);
+                                              }}
+                                          >
+                                              <HandlingMenuAvatar photoUrl={opt.photoUrl} name={opt.display} size="sm" />
+                                              <span className="min-w-0 flex-1">
+                                                  <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
+                                                      {opt.rolesLabel}
+                                                  </span>
+                                                  <span className="block truncate text-sm font-semibold text-base-content/85">
+                                                      {formatDisplay(opt.display)}
+                                                  </span>
+                                              </span>
+                                              {isActive ? (
+                                                  <CheckIcon className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
+                                              ) : (
+                                                  <ChevronRightIcon className="h-4 w-4 shrink-0 text-base-content/30" aria-hidden />
+                                              )}
+                                          </button>
+                                      );
+                                  }
+                                  if (!assigned) {
+                                      return (
+                                          <button
+                                              key={opt.key}
+                                              type="button"
+                                              disabled={assigning}
+                                              className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-base-200/70"
+                                              onClick={() => onStartAssign(opt.key, false)}
+                                          >
+                                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-dashed border-base-300 bg-base-100 text-base-content/40">
+                                                  <PlusIcon className="h-4 w-4" aria-hidden />
+                                              </span>
+                                              <span className="min-w-0 flex-1">
+                                                  <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
+                                                      {opt.rolesLabel}
+                                                  </span>
+                                                  <span className="block truncate text-sm font-medium text-base-content/70">
+                                                      --
+                                                  </span>
+                                              </span>
+                                          </button>
+                                      );
+                                  }
+                                  return (
+                                      <div key={opt.key} className="mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2">
+                                          <HandlingMenuAvatar photoUrl={opt.photoUrl} name={opt.display} size="sm" />
+                                          <span className="min-w-0 flex-1">
+                                              <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
+                                                  {opt.rolesLabel}
+                                              </span>
+                                              <span className="block truncate text-sm font-medium text-base-content/70">
+                                                  {formatDisplay(opt.display)}
+                                              </span>
+                                          </span>
+                                      </div>
+                                  );
+                              })
+                            : null}
+                    </div>
+                );
+            })}
+        </>
+    );
+}
 
 /** Light grey pills for language, source, category, topic (below header box). */
 const META_BADGE_WHITE =
@@ -701,6 +950,8 @@ interface ClientHeaderProps {
     handleActivation: () => void;
     setShowUnactivationModal: (show: boolean) => void;
     renderStageBadge: (anchor?: 'badge' | 'mobile' | 'desktop') => React.ReactNode;
+    /** Sent price-offer count, shown beside the lead number. */
+    offerCountBadge?: React.ReactNode;
     getEmployeeDisplayName: (id: string | null | undefined) => string;
     allEmployees?: any[];
     dropdownsContent?: React.ReactNode;
@@ -793,6 +1044,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     handleActivation,
     setShowUnactivationModal,
     renderStageBadge,
+    offerCountBadge,
     getEmployeeDisplayName,
     allEmployees = [],
     dropdownsContent,
@@ -912,6 +1164,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [mobileHandlingSlot, setMobileHandlingSlot] = useState<HTMLDivElement | null>(null);
     const [mobileStageMenuOpen, setMobileStageMenuOpen] = useState(false);
     const [mobileClientDetailsOpen, setMobileClientDetailsOpen] = useState(false);
+    const [metaBadgesOpen, setMetaBadgesOpen] = useState(false);
     const [mobileBalanceOpen, setMobileBalanceOpen] = useState(false);
     useLayoutEffect(() => {
         const node = mobileHandlingSlotRef.current;
@@ -921,6 +1174,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [assignHandlingKey, setAssignHandlingKey] = useState<AssignHandlingKey | null>(null);
     const [assignHandlingSearch, setAssignHandlingSearch] = useState('');
     const [assignHandlingSaving, setAssignHandlingSaving] = useState(false);
+    const [openHandlingStageIds, setOpenHandlingStageIds] = useState<number[]>([1]);
+    const assignMakesActiveRef = useRef(false);
     const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
     const [leadEmployeeCostSummary, setLeadEmployeeCostSummary] =
         useState<LeadEmployeeCostSummary | null>(() => {
@@ -1876,12 +2131,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setActiveHandlerMenuOpen(false);
         setAssignHandlingKey(null);
         setAssignHandlingSearch('');
+        setOpenHandlingStageIds([1]);
+        assignMakesActiveRef.current = false;
     }, []);
 
     const updateActiveHandlerType = useCallback(
         async (newType: number) => {
             const sc = selectedClientRef.current;
             if (!sc?.id || togglingActiveHandlerRef.current) return;
+            const nextRole = handlingRoleByType(newType);
+            if (!nextRole || !isClientContactRole(nextRole.id)) return;
             const current = readHandlingActiveType((sc as any).active_handler_type);
             if (current === newType) {
                 closeActiveHandlerMenu();
@@ -1896,7 +2155,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             try {
                 const stageUpdate = {
                     active_handler_type: newType,
-                    handling_stage_id: handlingStageIdForActiveType(newType),
+                    handling_stage_id: handlingStageIdForActiveType(newType, sc),
                 };
                 if (isLegacy) {
                     const legacyId = parseInt(idStr.replace(/^legacy_/, ''), 10);
@@ -1942,11 +2201,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             }
             const idStr = String(sc.id);
             const isLegacy = idStr.startsWith('legacy_') || sc.lead_type === 'legacy';
+            const makeActive = isClientContactRole(role.id) && assignMakesActiveRef.current;
+            if (role.id === 'submission_manager') {
+                try {
+                    await addLeadSubmissionManager(supabase, {
+                        clientId: sc.id,
+                        employeeId: empId,
+                    });
+                } catch (error) {
+                    console.error('lead_submission_managers insert:', error);
+                }
+            }
             const updateData: Record<string, unknown> = {
-                active_handler_type: role.activeType,
-                handling_stage_id: role.stageId,
                 [role.column]: empId,
             };
+            if (makeActive) {
+                updateData.active_handler_type = role.activeType;
+                updateData.handling_stage_id = handlingStageIdForActiveType(role.activeType, sc);
+            }
             if (role.id === 'handler' && !isLegacy) updateData.handler = employee.display_name;
 
             setAssignHandlingSaving(true);
@@ -1961,8 +2233,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     if (error) throw error;
                 }
                 toast.success(`${employee.display_name} assigned`);
-                closeActiveHandlerMenu();
-                setHandlerActiveRingNonce((n) => n + 1);
+                if (makeActive) {
+                    closeActiveHandlerMenu();
+                    setHandlerActiveRingNonce((n) => n + 1);
+                } else {
+                    setAssignHandlingKey(null);
+                    setAssignHandlingSearch('');
+                    setOpenHandlingStageIds((ids) =>
+                        ids.includes(handlingMenuStageId(role.id)) ? ids : [...ids, handlingMenuStageId(role.id)],
+                    );
+                }
                 await refreshClientData(sc.id);
             } catch (e: any) {
                 console.error('assignHandlingRole:', e);
@@ -2211,9 +2491,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const rawPhoto = employee?.photo_url || employee?.photo;
         const trimmedPhoto = rawPhoto != null ? String(rawPhoto).trim() : '';
         const hasError = cachedError || imageError;
-        const photoUrl = !hasError && trimmedPhoto && trimmedPhoto !== 'null' && trimmedPhoto !== 'undefined'
-            ? trimmedPhoto
-            : null;
+        const resolvedPhoto = !hasError ? resolveEmployeePhotoUrl(trimmedPhoto, null) : null;
+        const photoUrl = toEmployeeAvatarSrc(
+            resolvedPhoto,
+            size === 'sm' ? 64 : size === 'md' ? 96 : size === 'lg' ? 128 : 256,
+        );
 
         if (!initials && !photoUrl) {
             return null;
@@ -2221,7 +2503,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
         return (
             <div
-                className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity`}
+                className={`${sizeClasses} relative flex flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full font-medium text-white transition-opacity hover:opacity-80 ${headerAvatarGradient(name)}`}
                 onClick={() => {
                     if (employee?.id) {
                         navigate(`/my-profile/${employee.id}`);
@@ -2229,11 +2511,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 }}
                 title={name ? `View ${name}'s profile` : undefined}
             >
+                {initials}
                 {photoUrl ? (
                     <img
                         src={photoUrl}
                         alt=""
-                        className="h-full w-full object-cover"
+                        className="absolute inset-0 h-full w-full object-cover"
                         onError={() => {
                             if (cacheKey) {
                                 imageErrorCache.current.set(cacheKey, true);
@@ -2241,9 +2524,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             setImageError(true);
                         }}
                     />
-                ) : (
-                    initials
-                )}
+                ) : null}
             </div>
         );
     };
@@ -3324,6 +3605,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <GlobeAltIcon className={languageIcon} aria-hidden />
                     <span className="truncate">{displayLanguageChip}</span>
                 </button>
+                <button
+                    type="button"
+                    className={badgeBtn}
+                    aria-expanded={metaBadgesOpen}
+                    onClick={() => setMetaBadgesOpen((open) => !open)}
+                >
+                    {metaBadgesOpen ? 'Less' : 'More'}
+                    <ChevronRightIcon className="h-4 w-4 shrink-0" aria-hidden />
+                </button>
+                {metaBadgesOpen ? (
+                    <>
                 <span className={badge}>
                     <LinkIcon className={sourceIcon} aria-hidden />
                     <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
@@ -3356,6 +3648,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {displayTopicChip}
                     </span>
                 </button>
+                    </>
+                ) : null}
             </>
         );
     };
@@ -4734,7 +5028,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1 text-left">
                                     <div className="flex min-w-0 items-center gap-1.5">
-                                        <h1 className="min-w-0 truncate text-2xl font-bold leading-tight tracking-tight text-base-content/95">
+                                        <h1 className="min-w-0 truncate text-xl font-bold leading-tight tracking-tight text-base-content/95">
                                             {renderClickableClientName('font-bold')}
                                         </h1>
                                         {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
@@ -4767,6 +5061,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <p className={`${CLIENT_HEADER_LEAD_NUMBER} shrink-0`}>
                                             {renderLeadNumber()}
                                         </p>
+                                        {offerCountBadge}
                                         {renderDuplicatesNextToStage()}
                                     </div>
                                 </div>
@@ -4909,6 +5204,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 });
                             }
                             const showOutstanding = unpaidGross > 0 || unpaidExpenseAmount > 0;
+                            const showBudgetVat = amountReady && shouldShowVAT && vatAmount > 0;
+                            if (showBudgetVat) {
+                                breakdown.unshift({
+                                    label: 'VAT',
+                                    value: `+${vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`,
+                                });
+                            }
                             const canExpandBalance = breakdown.length > 0 || showOutstanding;
                             return (
                                 <div
@@ -4928,11 +5230,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     <LockClosedIcon className="h-4 w-4 text-base-content/40" title="Locked by payment plan" />
                                                 )}
                                             </p>
-                                            {amountReady && shouldShowVAT && vatAmount > 0 && (
-                                                <p className="mt-1.5 text-sm tabular-nums text-base-content/50">
-                                                    +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
-                                                </p>
-                                            )}
                                             {amountReady ? (
                                                 <ClientHeaderTotalInNis
                                                     clientId={selectedClient?.id}
@@ -5100,8 +5397,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <div className="shrink-0">{renderStageBadge('desktop')}</div>
                                         {renderDuplicatesNextToStage()}
                                     </div>
-                                    <span className={CLIENT_HEADER_LEAD_NUMBER}>
-                                        {renderLeadNumber()}
+                                    <span className="-mt-1 flex min-w-0 items-center gap-1.5">
+                                        <span className={CLIENT_HEADER_LEAD_NUMBER}>
+                                            {renderLeadNumber()}
+                                        </span>
+                                        {offerCountBadge}
                                     </span>
                                 </div>
                             </div>
@@ -5145,12 +5445,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </button>
                                             ) : null}
                                         </div>
-                                        <button
-                                            type="button"
-                                            className="w-full text-left"
-                                            onClick={() => setIsBalanceModalOpen(true)}
-                                        >
-                                            <div className="flex flex-col items-start">
+                                        <div className="flex items-center gap-0.5">
+                                            <button
+                                                type="button"
+                                                className="text-left"
+                                                onClick={() => setIsBalanceModalOpen(true)}
+                                            >
                                                 <p className="inline-flex items-center gap-2 text-2xl font-bold leading-none tracking-tight text-base-content/95 sm:text-3xl">
                                                     {amountReady ? (
                                                         <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
@@ -5161,37 +5461,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />
                                                     )}
                                                 </p>
-                                            </div>
-                                        </button>
-                                        {(amountReady && shouldShowVAT && vatAmount > 0) || (amountReady && hasExpandableFinancialDetails) ? (
-                                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                                                {amountReady && shouldShowVAT && vatAmount > 0 ? (
-                                                    <button
-                                                        type="button"
-                                                        className="text-sm text-base-content/55"
-                                                        onClick={() => setIsBalanceModalOpen(true)}
-                                                    >
-                                                        +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
-                                                    </button>
-                                                ) : null}
-                                                {hasExpandableFinancialDetails ? (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-xs h-7 min-h-7 w-7 min-w-7 p-0 text-base-content/55"
-                                                        onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
-                                                        aria-expanded={headerFinancialDetailsOpen}
-                                                        aria-label={headerFinancialDetailsOpen ? 'Hide financial details' : 'Show more financial details'}
-                                                        title={headerFinancialDetailsOpen ? 'Less' : 'More'}
-                                                    >
-                                                        <ChevronDownIcon
-                                                            className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
-                                                        />
-                                                    </button>
-                                                ) : null}
-                                            </div>
-                                        ) : null}
-                                        {headerFinancialDetailsOpen && hasExpandableFinancialDetails ? (
+                                            </button>
+                                            {hasExpandableFinancialDetails || (amountReady && shouldShowVAT && vatAmount > 0) ? (
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-xs h-7 min-h-7 w-7 min-w-7 p-0 text-base-content/55"
+                                                    onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
+                                                    aria-expanded={headerFinancialDetailsOpen}
+                                                    aria-label={headerFinancialDetailsOpen ? 'Hide financial details' : 'Show more financial details'}
+                                                    title={headerFinancialDetailsOpen ? 'Less' : 'More'}
+                                                >
+                                                    <ChevronDownIcon
+                                                        className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
+                                                    />
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        {headerFinancialDetailsOpen && (hasExpandableFinancialDetails || (amountReady && shouldShowVAT && vatAmount > 0)) ? (
                                             <div className="mt-1.5 space-y-1 border-t border-base-200/70 pt-2 text-left">
+                                                {amountReady && shouldShowVAT && vatAmount > 0 ? (
+                                                    <p className="text-sm tabular-nums text-base-content/55">
+                                                        +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                                    </p>
+                                                ) : null}
                                                 <ClientHeaderTotalInNis
                                                     clientId={selectedClient?.id}
                                                     leadType={selectedClient?.lead_type}
@@ -5440,24 +5732,37 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             },
                             isEmpty: isRoleEmpty,
                         });
-                        const handlingOptions: HandlingRoleOption[] = partitioned.assigned.map((opt) => ({
-                            ...opt,
-                            photoUrl: photoForEmployeeId(opt.id),
-                        }));
-                        const activeHandling =
-                            handlingOptions.find((o) => o.type === activeHandlerTypeForLead) ||
-                            handlingOptions[0] ||
+                        const allHandling: HandlingRoleOption[] = [
+                            ...partitioned.assigned.map((opt) => ({
+                                ...opt,
+                                photoUrl: photoForEmployeeId(opt.id),
+                            })),
+                            ...partitioned.missing.map((opt) => ({
+                                ...opt,
+                                photoUrl: null,
+                            })),
+                        ];
+                        const contactRoleOrder = ['handler', 'client_support', 'retainer_handler'];
+                        const contactRoles = contactRoleOrder
+                            .map((key) => allHandling.find((opt) => opt.key === key))
+                            .filter((opt): opt is HandlingRoleOption => Boolean(opt));
+                        const assignedContacts = contactRoles.filter((opt) => opt.id != null);
+                        const stageForStored = handlingStageForActiveType(activeHandlerTypeForLead, selectedClient);
+                        const stageContactId = communicationRoleForStage(stageForStored?.id, selectedClient)?.id ?? null;
+                        const storedContact =
+                            assignedContacts.find(
+                                (opt) => opt.type === activeHandlerTypeForLead && isClientContactRole(opt.key),
+                            ) || null;
+                        const headerHandling =
+                            storedContact ||
+                            assignedContacts.find((opt) => opt.key === stageContactId) ||
+                            assignedContacts.find((opt) => opt.key === 'handler') ||
+                            assignedContacts[0] ||
+                            contactRoles[0] ||
                             null;
-                        const inactiveHandling = handlingOptions.filter((o) => o.key !== activeHandling?.key);
-                        const missingHandling: HandlingRoleOption[] = partitioned.missing.map((opt) => ({
-                            ...opt,
-                            photoUrl: null,
-                        }));
-                        const canOpenHandlingMenu =
-                            !isUnactivated &&
-                            Boolean(activeHandling) &&
-                            (inactiveHandling.length > 0 || missingHandling.length > 0);
-                        const openAssignHandlingRole = (key: AssignHandlingKey) => {
+                        const canOpenHandlingMenu = !isUnactivated && showHandlerRolesInHeader;
+                        const openAssignHandlingRole = (key: AssignHandlingKey, makeActive: boolean) => {
+                            assignMakesActiveRef.current = makeActive;
                             setAssignHandlingKey(key);
                             setAssignHandlingSearch('');
                         };
@@ -5538,12 +5843,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         });
 
                         const renderActiveHandlingCard = () => {
-                            if (!activeHandling) return null;
+                            if (!headerHandling) return null;
                             return (
                                 <div className="relative flex items-center gap-2" ref={activeHandlerMenuRef}>
                                     <HandlingStageChip
                                         lead={selectedClient}
                                         employeeName={(id) => getEmployeeDisplayNameFromId(id)}
+                                        employeePhoto={photoForEmployeeId}
                                     />
                                     <button
                                         type="button"
@@ -5568,19 +5874,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         title={
                                             canOpenHandlingMenu
                                                 ? 'Switch or add handling role'
-                                                : activeHandling.rolesLabel
+                                                : headerHandling.rolesLabel
                                         }
                                     >
                                         <ActiveRolePhotoRing drawNonce={handlerActiveRingNonce}>
                                             <EmployeeAvatar
-                                                employeeId={activeHandling.id}
-                                                fallbackName={activeHandling.display}
+                                                employeeId={headerHandling.id}
+                                                fallbackName={headerHandling.display}
                                                 size="md"
                                             />
                                         </ActiveRolePhotoRing>
                                         <div className="flex min-w-0 flex-col">
                                             <span className={`inline-flex items-center gap-1 whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
-                                                {activeHandling.chipLabel || activeHandling.rolesLabel}
+                                                {headerHandling.chipLabel || headerHandling.rolesLabel}
                                                 {canOpenHandlingMenu ? (
                                                     <ChevronDownIcon
                                                         className={`h-3.5 w-3.5 text-base-content/40 transition-transform ${
@@ -5591,158 +5897,45 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 ) : null}
                                             </span>
                                             <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
-                                                {formatRoleDisplay(activeHandling.display)}
+                                                {formatRoleDisplay(headerHandling.display)}
                                             </span>
                                         </div>
                                     </button>
                                     {canOpenHandlingMenu && activeHandlerMenuOpen ? (
                                         <div
-                                            className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] min-w-[16rem] overflow-y-auto rounded-2xl border border-black/[0.06] bg-white py-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-base-200"
+                                            className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] min-w-[22rem] overflow-y-auto rounded-2xl border border-black/[0.06] bg-white py-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-base-200"
                                             role="listbox"
                                             aria-label="Switch or add handling role"
                                         >
-                                            {assignHandlingKey ? (
-                                                <>
-                                                    <div className="flex items-center gap-1.5 px-2.5 pb-1.5 pt-1">
-                                                        <button
-                                                            type="button"
-                                                            className="btn btn-ghost btn-xs btn-circle"
-                                                            aria-label="Back"
-                                                            onClick={() => {
-                                                                setAssignHandlingKey(null);
-                                                                setAssignHandlingSearch('');
-                                                            }}
-                                                        >
-                                                            <ArrowLeftIcon className="h-4 w-4" />
-                                                        </button>
-                                                        <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-                                                            Assign {assignRoleLabel}
-                                                        </p>
-                                                    </div>
-                                                    <div className="relative px-2.5 pb-2">
-                                                        <MagnifyingGlassIcon className="pointer-events-none absolute left-5 top-1/2 h-4 w-4 -translate-y-1/2 text-base-content/35" aria-hidden />
-                                                        <input
-                                                            type="text"
-                                                            value={assignHandlingSearch}
-                                                            onChange={(e) => setAssignHandlingSearch(e.target.value)}
-                                                            placeholder="Search employee…"
-                                                            className="input input-sm w-full rounded-lg border-base-200 bg-base-100 pl-8"
-                                                            autoFocus
-                                                            disabled={assignHandlingSaving}
-                                                        />
-                                                    </div>
-                                                    <div className="max-h-56 overflow-y-auto">
-                                                        {assignEmployeeOptions.length > 0 ? (
-                                                            assignEmployeeOptions.map((emp: any) => (
-                                                                <button
-                                                                    key={String(emp.id)}
-                                                                    type="button"
-                                                                    role="option"
-                                                                    disabled={assignHandlingSaving}
-                                                                    className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-base-200/70"
-                                                                    onClick={() =>
-                                                                        void assignHandlingRole(assignHandlingKey, {
-                                                                            id: emp.id,
-                                                                            display_name: emp.display_name,
-                                                                        })
-                                                                    }
-                                                                >
-                                                                    <HandlingMenuAvatar
-                                                                        photoUrl={resolveEmployeePhotoUrl(emp.photo_url, emp.photo)}
-                                                                        name={emp.display_name}
-                                                                        size="sm"
-                                                                    />
-                                                                    <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                                                                        {emp.display_name}
-                                                                    </span>
-                                                                    <ChevronRightIcon
-                                                                        className="h-4 w-4 shrink-0 text-base-content/25 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/50"
-                                                                        aria-hidden
-                                                                    />
-                                                                </button>
-                                                            ))
-                                                        ) : (
-                                                            <p className="px-3.5 py-2.5 text-sm text-base-content/50">No matches</p>
-                                                        )}
-                                                    </div>
-                                                </>
-                                            ) : (
-                                                <>
-                                                    {inactiveHandling.length > 0 ? (
-                                                        <>
-                                                            <p className="px-3.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-                                                                Make active
-                                                            </p>
-                                                            {inactiveHandling.map((opt) => (
-                                                                <button
-                                                                    key={opt.key}
-                                                                    type="button"
-                                                                    role="option"
-                                                                    className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-base-200/70"
-                                                                    onClick={() => void updateActiveHandlerType(opt.type)}
-                                                                >
-                                                                    <span className="shrink-0">
-                                                                        <HandlingMenuAvatar
-                                                                            photoUrl={opt.photoUrl}
-                                                                            name={opt.display}
-                                                                            size="md"
-                                                                        />
-                                                                    </span>
-                                                                    <span className="min-w-0 flex-1">
-                                                                        <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
-                                                                            {opt.rolesLabel}
-                                                                        </span>
-                                                                        <span className="block truncate text-sm font-semibold text-base-content/85">
-                                                                            {formatRoleDisplay(opt.display)}
-                                                                        </span>
-                                                                    </span>
-                                                                    <ChevronRightIcon
-                                                                        className="h-4 w-4 shrink-0 text-base-content/30 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/55"
-                                                                        aria-hidden
-                                                                    />
-                                                                </button>
-                                                            ))}
-                                                        </>
-                                                    ) : null}
-                                                    {missingHandling.length > 0 ? (
-                                                        <>
-                                                            <p
-                                                                className={`px-3.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40 ${
-                                                                    inactiveHandling.length > 0 ? 'mt-1.5 border-t border-base-200 pt-2' : 'pt-1.5'
-                                                                }`}
-                                                            >
-                                                                Add role
-                                                            </p>
-                                                            {missingHandling.map((opt) => (
-                                                                <button
-                                                                    key={`missing-${opt.key}`}
-                                                                    type="button"
-                                                                    className="group mx-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-base-200/70"
-                                                                    title={`Add ${opt.rolesLabel}`}
-                                                                    aria-label={`Add ${opt.rolesLabel}`}
-                                                                    onClick={() => openAssignHandlingRole(opt.key as AssignHandlingKey)}
-                                                                >
-                                                                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-dashed border-base-300 bg-base-100 text-base-content/40">
-                                                                        <PlusIcon className="h-5 w-5" aria-hidden />
-                                                                    </span>
-                                                                    <span className="min-w-0 flex-1">
-                                                                        <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
-                                                                            {opt.rolesLabel}
-                                                                        </span>
-                                                                        <span className="block truncate text-sm font-medium text-base-content/55">
-                                                                            Not assigned
-                                                                        </span>
-                                                                    </span>
-                                                                    <ChevronRightIcon
-                                                                        className="h-4 w-4 shrink-0 text-base-content/25 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/50"
-                                                                        aria-hidden
-                                                                    />
-                                                                </button>
-                                                            ))}
-                                                        </>
-                                                    ) : null}
-                                                </>
-                                            )}
+                                            <HandlingRolesMenuBody
+                                                roles={allHandling}
+                                                activeKey={storedContact?.key ?? null}
+                                                openStageIds={openHandlingStageIds}
+                                                onToggleStage={(stageId) =>
+                                                    setOpenHandlingStageIds((ids) =>
+                                                        ids.includes(stageId)
+                                                            ? ids.filter((id) => id !== stageId)
+                                                            : [...ids, stageId],
+                                                    )
+                                                }
+                                                onMakeActive={(type) => void updateActiveHandlerType(type)}
+                                                onStartAssign={(key, makeActive) => openAssignHandlingRole(key, makeActive)}
+                                                assigning={assignHandlingSaving}
+                                                assignHandlingKey={assignHandlingKey}
+                                                assignRoleLabel={assignRoleLabel}
+                                                assignSearch={assignHandlingSearch}
+                                                onAssignSearch={setAssignHandlingSearch}
+                                                assignEmployees={assignEmployeeOptions}
+                                                onPickEmployee={(employee) => {
+                                                    if (!assignHandlingKey) return;
+                                                    void assignHandlingRole(assignHandlingKey, employee);
+                                                }}
+                                                onAssignBack={() => {
+                                                    setAssignHandlingKey(null);
+                                                    setAssignHandlingSearch('');
+                                                }}
+                                                formatDisplay={formatRoleDisplay}
+                                            />
                                         </div>
                                     ) : null}
                                 </div>
@@ -5788,7 +5981,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         ))}
                                         {renderActiveHandlingCard()}
                                     </div>
-                                    {teamEntries.length === 0 && !activeHandling && !showLeadCostUi ? (
+                                    {teamEntries.length === 0 && !headerHandling && !showLeadCostUi ? (
                                         <span className="text-sm text-base-content/45">No team assigned</span>
                                     ) : null}
                                 </div>
@@ -6552,24 +6745,37 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             },
                             isEmpty: isRoleEmpty,
                         });
-                        const handlingOptions: HandlingRoleOption[] = partitioned.assigned.map((opt) => ({
-                            ...opt,
-                            photoUrl: photoForEmployeeId(opt.id),
-                        }));
-                        const activeHandling =
-                            handlingOptions.find((o) => o.type === activeHandlerTypeForLead) ||
-                            handlingOptions[0] ||
+                        const allHandling: HandlingRoleOption[] = [
+                            ...partitioned.assigned.map((opt) => ({
+                                ...opt,
+                                photoUrl: photoForEmployeeId(opt.id),
+                            })),
+                            ...partitioned.missing.map((opt) => ({
+                                ...opt,
+                                photoUrl: null,
+                            })),
+                        ];
+                        const contactRoleOrder = ['handler', 'client_support', 'retainer_handler'];
+                        const contactRoles = contactRoleOrder
+                            .map((key) => allHandling.find((opt) => opt.key === key))
+                            .filter((opt): opt is HandlingRoleOption => Boolean(opt));
+                        const assignedContacts = contactRoles.filter((opt) => opt.id != null);
+                        const stageForStored = handlingStageForActiveType(activeHandlerTypeForLead, selectedClient);
+                        const stageContactId = communicationRoleForStage(stageForStored?.id, selectedClient)?.id ?? null;
+                        const storedContact =
+                            assignedContacts.find(
+                                (opt) => opt.type === activeHandlerTypeForLead && isClientContactRole(opt.key),
+                            ) || null;
+                        const headerHandling =
+                            storedContact ||
+                            assignedContacts.find((opt) => opt.key === stageContactId) ||
+                            assignedContacts.find((opt) => opt.key === 'handler') ||
+                            assignedContacts[0] ||
+                            contactRoles[0] ||
                             null;
-                        const inactiveHandling = handlingOptions.filter((o) => o.key !== activeHandling?.key);
-                        const missingHandling: HandlingRoleOption[] = partitioned.missing.map((opt) => ({
-                            ...opt,
-                            photoUrl: null,
-                        }));
-                        const canOpenHandlingMenu =
-                            !isUnactivated &&
-                            Boolean(activeHandling) &&
-                            (inactiveHandling.length > 0 || missingHandling.length > 0);
-                        const openAssignHandlingRole = (key: AssignHandlingKey) => {
+                        const canOpenHandlingMenu = !isUnactivated && showHandlerRolesInHeader;
+                        const openAssignHandlingRole = (key: AssignHandlingKey, makeActive: boolean) => {
+                            assignMakesActiveRef.current = makeActive;
                             setAssignHandlingKey(key);
                             setAssignHandlingSearch('');
                         };
@@ -6641,7 +6847,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </div>
                                     </div>
                                 ))}
-                                {activeHandling && mobileHandlingSlot
+                                {headerHandling && mobileHandlingSlot
                                     ? createPortal(
                                     <div
                                         ref={mobileActiveHandlerMenuRef}
@@ -6652,6 +6858,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <HandlingStageChip
                                             lead={selectedClient}
                                             employeeName={(id) => getEmployeeDisplayNameFromId(id)}
+                                            employeePhoto={photoForEmployeeId}
                                         />
                                         <button
                                             type="button"
@@ -6672,166 +6879,55 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         >
                                             <ActiveRolePhotoRing drawNonce={handlerActiveRingNonce}>
                                                 <EmployeeAvatar
-                                                    employeeId={activeHandling.id}
-                                                    fallbackName={activeHandling.display}
+                                                    employeeId={headerHandling.id}
+                                                    fallbackName={headerHandling.display}
                                                     size="md"
                                                 />
                                             </ActiveRolePhotoRing>
                                             <div className="flex min-w-0 flex-1 flex-col">
                                                 <span className={`inline-flex items-center gap-1 whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
-                                                    {activeHandling.chipLabel || activeHandling.rolesLabel}
+                                                    {headerHandling.chipLabel || headerHandling.rolesLabel}
                                                     {canOpenHandlingMenu ? (
                                                         <ChevronDownIcon className="h-3.5 w-3.5 text-base-content/40" aria-hidden />
                                                     ) : null}
                                                 </span>
                                                 <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
-                                                    {formatRoleDisplay(activeHandling.display)}
+                                                    {formatRoleDisplay(headerHandling.display)}
                                                 </span>
                                             </div>
                                         </button>
                                         </div>
                                         {canOpenHandlingMenu && activeHandlerMenuOpen ? (
                                             <div className="mt-2 space-y-1 border-t border-base-200 pt-2">
-                                                {assignHandlingKey ? (
-                                                    <>
-                                                        <div className="flex items-center gap-1.5 px-1 pb-1">
-                                                            <button
-                                                                type="button"
-                                                                className="btn btn-ghost btn-xs btn-circle"
-                                                                aria-label="Back"
-                                                                onClick={() => {
-                                                                    setAssignHandlingKey(null);
-                                                                    setAssignHandlingSearch('');
-                                                                }}
-                                                            >
-                                                                <ArrowLeftIcon className="h-4 w-4" />
-                                                            </button>
-                                                            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-                                                                Assign {assignRoleLabel}
-                                                            </p>
-                                                        </div>
-                                                        <div className="relative px-1 pb-2">
-                                                            <MagnifyingGlassIcon className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-base-content/35" aria-hidden />
-                                                            <input
-                                                                type="text"
-                                                                value={assignHandlingSearch}
-                                                                onChange={(e) => setAssignHandlingSearch(e.target.value)}
-                                                                placeholder="Search employee…"
-                                                                className="input input-sm w-full rounded-lg border-base-200 bg-base-100 pl-8"
-                                                                autoFocus
-                                                                disabled={assignHandlingSaving}
-                                                            />
-                                                        </div>
-                                                        <div className="max-h-56 overflow-y-auto">
-                                                            {assignEmployeeOptions.length > 0 ? (
-                                                                assignEmployeeOptions.map((emp: any) => (
-                                                                    <button
-                                                                        key={String(emp.id)}
-                                                                        type="button"
-                                                                        disabled={assignHandlingSaving}
-                                                                        className="group flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-base-200/70"
-                                                                        onClick={() =>
-                                                                            void assignHandlingRole(assignHandlingKey, {
-                                                                                id: emp.id,
-                                                                                display_name: emp.display_name,
-                                                                            })
-                                                                        }
-                                                                    >
-                                                                        <HandlingMenuAvatar
-                                                                            photoUrl={resolveEmployeePhotoUrl(emp.photo_url, emp.photo)}
-                                                                            name={emp.display_name}
-                                                                            size="sm"
-                                                                        />
-                                                                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                                                                            {emp.display_name}
-                                                                        </span>
-                                                                        <ChevronRightIcon
-                                                                            className="h-4 w-4 shrink-0 text-base-content/25 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/50"
-                                                                            aria-hidden
-                                                                        />
-                                                                    </button>
-                                                                ))
-                                                            ) : (
-                                                                <p className="px-2 py-2.5 text-sm text-base-content/50">No matches</p>
-                                                            )}
-                                                        </div>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        {inactiveHandling.length > 0 ? (
-                                                            <>
-                                                                <p className="px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-                                                                    Make active
-                                                                </p>
-                                                                {inactiveHandling.map((opt) => (
-                                                                    <button
-                                                                        key={opt.key}
-                                                                        type="button"
-                                                                        className="group flex w-full items-center gap-2 rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-base-200/70"
-                                                                        onClick={() => void updateActiveHandlerType(opt.type)}
-                                                                    >
-                                                                        <span className="shrink-0">
-                                                                            <HandlingMenuAvatar
-                                                                                photoUrl={opt.photoUrl}
-                                                                                name={opt.display}
-                                                                                size="md"
-                                                                            />
-                                                                        </span>
-                                                                        <span className="min-w-0 flex-1">
-                                                                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
-                                                                                {opt.rolesLabel}
-                                                                            </span>
-                                                                            <span className="block truncate text-sm font-semibold">
-                                                                                {formatRoleDisplay(opt.display)}
-                                                                            </span>
-                                                                        </span>
-                                                                        <ChevronRightIcon
-                                                                            className="h-4 w-4 shrink-0 text-base-content/30 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/55"
-                                                                            aria-hidden
-                                                                        />
-                                                                    </button>
-                                                                ))}
-                                                            </>
-                                                        ) : null}
-                                                        {missingHandling.length > 0 ? (
-                                                            <>
-                                                                <p
-                                                                    className={`px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40 ${
-                                                                        inactiveHandling.length > 0 ? 'mt-1.5 pt-2 border-t border-base-200' : ''
-                                                                    }`}
-                                                                >
-                                                                    Add role
-                                                                </p>
-                                                                {missingHandling.map((opt) => (
-                                                                    <button
-                                                                        key={`missing-${opt.key}`}
-                                                                        type="button"
-                                                                        className="group flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-base-200/70"
-                                                                        title={`Add ${opt.rolesLabel}`}
-                                                                        aria-label={`Add ${opt.rolesLabel}`}
-                                                                        onClick={() => openAssignHandlingRole(opt.key as AssignHandlingKey)}
-                                                                    >
-                                                                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-dashed border-base-300 bg-base-100 text-base-content/40">
-                                                                            <PlusIcon className="h-5 w-5" aria-hidden />
-                                                                        </span>
-                                                                        <span className="min-w-0 flex-1">
-                                                                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-base-content/45">
-                                                                                {opt.rolesLabel}
-                                                                            </span>
-                                                                            <span className="block truncate text-sm font-medium text-base-content/55">
-                                                                                Not assigned
-                                                                            </span>
-                                                                        </span>
-                                                                        <ChevronRightIcon
-                                                                            className="h-4 w-4 shrink-0 text-base-content/25 transition-transform duration-150 group-hover:scale-125 group-hover:text-base-content/50"
-                                                                            aria-hidden
-                                                                        />
-                                                                    </button>
-                                                                ))}
-                                                            </>
-                                                        ) : null}
-                                                    </>
-                                                )}
+                                            <HandlingRolesMenuBody
+                                                roles={allHandling}
+                                                activeKey={storedContact?.key ?? null}
+                                                openStageIds={openHandlingStageIds}
+                                                onToggleStage={(stageId) =>
+                                                    setOpenHandlingStageIds((ids) =>
+                                                        ids.includes(stageId)
+                                                            ? ids.filter((id) => id !== stageId)
+                                                            : [...ids, stageId],
+                                                    )
+                                                }
+                                                onMakeActive={(type) => void updateActiveHandlerType(type)}
+                                                onStartAssign={(key, makeActive) => openAssignHandlingRole(key, makeActive)}
+                                                assigning={assignHandlingSaving}
+                                                assignHandlingKey={assignHandlingKey}
+                                                assignRoleLabel={assignRoleLabel}
+                                                assignSearch={assignHandlingSearch}
+                                                onAssignSearch={setAssignHandlingSearch}
+                                                assignEmployees={assignEmployeeOptions}
+                                                onPickEmployee={(employee) => {
+                                                    if (!assignHandlingKey) return;
+                                                    void assignHandlingRole(assignHandlingKey, employee);
+                                                }}
+                                                onAssignBack={() => {
+                                                    setAssignHandlingKey(null);
+                                                    setAssignHandlingSearch('');
+                                                }}
+                                                formatDisplay={formatRoleDisplay}
+                                            />
                                             </div>
                                         ) : null}
                                     </div>,

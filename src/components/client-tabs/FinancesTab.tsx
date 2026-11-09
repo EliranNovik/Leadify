@@ -519,6 +519,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
   const [editingPaymentInModal, setEditingPaymentInModal] = useState<PaymentPlan | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
+  const [isMobileFinanceLayout, setIsMobileFinanceLayout] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const sync = () => setIsMobileFinanceLayout(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  const paymentLayout: 'table' | 'boxes' = isMobileFinanceLayout ? 'boxes' : viewMode;
   const [financesSubTab, setFinancesSubTab] = useState<'payment-plan' | 'expenses-fees'>(() => {
     try {
       if (sessionStorage.getItem('financesSubTab') === 'expenses-fees') {
@@ -6216,7 +6227,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <button
             type="button"
             role="menuitem"
-            className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className="hidden w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 md:flex"
             onClick={() => {
               setFinancesMoreOpen(false);
               setViewMode(viewMode === 'table' ? 'boxes' : 'table');
@@ -8212,7 +8223,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       key={planKey}
                       className="w-full overflow-hidden rounded-2xl bg-white"
                     >
-                      {viewMode === 'table' ? (
+                      {paymentLayout === 'table' ? (
                             <div className="finances-payments-table-shell overflow-x-auto">
                               <table className="finances-payments-table table w-full min-w-[960px] text-sm">
                                 <thead>

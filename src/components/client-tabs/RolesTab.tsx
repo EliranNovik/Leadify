@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LifebuoyIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon, DocumentTextIcon, FolderOpenIcon, ShieldCheckIcon, ClipboardDocumentCheckIcon, BuildingLibraryIcon } from '@heroicons/react/24/outline';
-import { EXTRA_HANDLING_ROLES, handlingStageForRole } from '../../lib/handlingRoles';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LifebuoyIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon, DocumentTextIcon, FolderOpenIcon, ShieldCheckIcon, BuildingLibraryIcon } from '@heroicons/react/24/outline';
+import { EXTRA_HANDLING_ROLES, HANDLING_STAGES, handlingStageById, handlingStageForActiveType, handlingStageForRole, isCitizenshipHandlerStageLead, readHandlingActiveType, rolesForHandlingStage } from '../../lib/handlingRoles';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -24,7 +24,14 @@ import {
   normalizeHelperHandlerIds,
   removeLeadHelperHandler,
 } from '../../lib/leadHelperHandlers';
-import { resolveEmployeePhotoUrl } from '../../lib/employeePhotoUrl';
+import {
+  addLeadSubmissionManager,
+  fetchLeadSubmissionManagerIds,
+  isSubmissionManager,
+  normalizeSubmissionManagerIds,
+  removeLeadSubmissionManager,
+} from '../../lib/leadSubmissionManagers';
+import { prefetchEmployeePhotos, resolveEmployeePhotoUrl, toEmployeeAvatarSrc } from '../../lib/employeePhotoUrl';
 
 const loadedRoleAvatarUrls = new Set<string>();
 
@@ -43,7 +50,7 @@ const RoleEmployeeAvatar: React.FC<{
     .map((part: string) => part.match(/[\p{L}\p{N}]/u)?.[0] || '')
     .join('')
     .toUpperCase();
-  const photoUrl = resolveEmployeePhotoUrl(employee?.photo_url, employee?.photo) || '';
+  const photoUrl = toEmployeeAvatarSrc(resolveEmployeePhotoUrl(employee?.photo_url, employee?.photo), 96) || '';
   const [failedUrl, setFailedUrl] = useState('');
   const [imageLoaded, setImageLoaded] = useState(() => Boolean(photoUrl && loadedRoleAvatarUrls.has(photoUrl)));
   const usablePhotoUrl = photoUrl && failedUrl !== photoUrl ? photoUrl : '';
@@ -59,7 +66,7 @@ const RoleEmployeeAvatar: React.FC<{
 
   return (
     <div
-      className={`${sizeClasses} relative flex flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-gray-200 font-medium text-gray-600 transition-opacity hover:opacity-80`}
+      className={`${sizeClasses} relative flex flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full font-medium text-white transition-opacity hover:opacity-80 ${avatarColorClass(name || displayName || '')}`}
       onClick={() => {
         if (employee?.id) onOpenProfile(employee.id);
       }}
@@ -100,6 +107,79 @@ type RolesTabCacheSlice = {
  */
 const HELPER_HANDLER_ROLE_ID = 'helper_handler';
 const HELPER_HANDLER_TITLE = 'Helper Handler';
+const SUBMISSION_MANAGER_ROLE_ID = 'submission_manager';
+const SUBMISSION_MANAGER_TITLE = 'Submission Manager';
+/** Pinned at the top of the Submission Manager picker, in this order. */
+const SUGGESTED_SUBMISSION_MANAGER_IDS = [61, 92];
+
+const AVATAR_COLOR_CLASSES = [
+  'bg-gradient-to-br from-rose-400 to-rose-700',
+  'bg-gradient-to-br from-orange-300 to-rose-500',
+  'bg-gradient-to-br from-amber-300 to-orange-600',
+  'bg-gradient-to-br from-lime-300 to-emerald-600',
+  'bg-gradient-to-br from-emerald-300 to-teal-700',
+  'bg-gradient-to-br from-teal-300 to-cyan-700',
+  'bg-gradient-to-br from-cyan-300 to-sky-700',
+  'bg-gradient-to-br from-sky-300 to-blue-700',
+  'bg-gradient-to-br from-blue-400 to-indigo-700',
+  'bg-gradient-to-br from-indigo-400 to-violet-700',
+  'bg-gradient-to-br from-violet-400 to-fuchsia-700',
+  'bg-gradient-to-br from-fuchsia-400 to-pink-600',
+  'bg-gradient-to-br from-pink-300 to-rose-600',
+];
+
+function roleDropdownInitials(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.match(/[\p{L}\p{N}]/u)?.[0] || '')
+    .join('')
+    .toUpperCase();
+}
+
+/** Same person keeps the same color. Different names land on different colors. */
+function avatarColorClass(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = (hash + name.charCodeAt(i) * (i + 3)) % AVATAR_COLOR_CLASSES.length;
+  }
+  return AVATAR_COLOR_CLASSES[hash];
+}
+
+function RoleDropdownPerson({ employee, label }: { employee: any | null; label: string }) {
+  const original = resolveEmployeePhotoUrl(employee?.photo_url, employee?.photo);
+  const photo = toEmployeeAvatarSrc(original, 64);
+  const [failed, setFailed] = useState(false);
+  if (label === '---' || label === '--') {
+    return <span className="text-sm text-gray-500">{label}</span>;
+  }
+  const initials = roleDropdownInitials(employee?.display_name || label);
+  return (
+    <span className="flex min-w-0 items-center gap-2.5">
+      <span
+        className={`relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] font-semibold text-white ${avatarColorClass(label)}`}
+      >
+        {initials || '—'}
+        {photo && !failed ? (
+          <img
+            src={photo}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+            onError={() => setFailed(true)}
+          />
+        ) : null}
+      </span>
+      <span className="min-w-0 truncate text-sm">{label}</span>
+    </span>
+  );
+}
+
+/** Handling roles that stay one person per lead. Submission Manager is a list, like Helper Handler. */
+const SINGLE_EXTRA_HANDLING_ROLES = EXTRA_HANDLING_ROLES.filter(
+  (role) => role.id !== SUBMISSION_MANAGER_ROLE_ID,
+);
 
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
@@ -109,7 +189,6 @@ const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
     roleIds: [
       'handler',
       'submission_manager',
-      'application_manager',
       'digital_case_coordinator',
       'document_procurement_coordinator',
       'certification_coordinator',
@@ -125,6 +204,30 @@ const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
 
 /** Role cards turned off in the UI (read-only; not persisted from this tab) */
 const DISABLED_ROLE_IDS = new Set<string>(['collection_manager', 'marketing_officer']);
+
+/**
+ * Austrian and German citizenship leads group the handling cards under the three stages.
+ * Helper Handler stays after them. Every other category keeps the flat Handlers list.
+ */
+function handlerRoleGroups(
+  roleIds: string[],
+  lead: any,
+): { key: string; label: string | null; stageId: number | null; roleIds: string[] }[] {
+  if (!isCitizenshipHandlerStageLead(lead)) {
+    return [{ key: 'all', label: null, stageId: null, roleIds }];
+  }
+  const staged = new Set<string>();
+  const groups = HANDLING_STAGES.map((stage) => {
+    const ids = rolesForHandlingStage(stage.id, lead)
+      .map((role) => role.id)
+      .filter((id) => roleIds.includes(id));
+    ids.forEach((id) => staged.add(id));
+    return { key: stage.code, label: stage.shortLabel, stageId: stage.id, roleIds: ids };
+  }).filter((group) => group.roleIds.length > 0);
+  const rest = roleIds.filter((id) => !staged.has(id));
+  if (rest.length > 0) groups.push({ key: 'other', label: null, stageId: null, roleIds: rest });
+  return groups;
+}
 
 /**
  * On new leads each of these roles is held in two places: the column the card writes, and an id
@@ -341,7 +444,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
         { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
         { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
-        ...EXTRA_HANDLING_ROLES.map((role) => ({
+        ...SINGLE_EXTRA_HANDLING_ROLES.map((role) => ({
           id: role.id,
           title: role.title,
           assignee: '---',
@@ -450,7 +553,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'
       },
-      ...EXTRA_HANDLING_ROLES.map((role) => ({
+      ...SINGLE_EXTRA_HANDLING_ROLES.map((role) => ({
         id: role.id,
         title: role.title,
         assignee: getEmployeeDisplayName((client as any)[role.column], employeesToUse) || '---',
@@ -520,6 +623,15 @@ const RolesTab: React.FC<ClientTabProps> = ({
    */
   const [helperHandlerMode, setHelperHandlerMode] = useState<'add' | 'remove' | null>(null);
 
+  const [submissionManagerIds, setSubmissionManagerIds] = useState<number[]>(() => {
+    const fromList = (client as any)?.submission_manager_ids;
+    if (Array.isArray(fromList)) return normalizeSubmissionManagerIds(fromList);
+    const single = Number((client as any)?.submission_manager_id);
+    return Number.isFinite(single) && single > 0 ? [single] : [];
+  });
+  const [isSavingSubmissionManager, setIsSavingSubmissionManager] = useState(false);
+  const [submissionManagerMode, setSubmissionManagerMode] = useState<'add' | 'remove' | null>(null);
+
   // Update roles state when computed roles change
   useEffect(() => {
     setRoles(computedRoles);
@@ -555,13 +667,39 @@ const RolesTab: React.FC<ClientTabProps> = ({
     };
   }, [client?.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const fromList = (client as any)?.submission_manager_ids;
+    if (Array.isArray(fromList)) {
+      setSubmissionManagerIds(normalizeSubmissionManagerIds(fromList));
+    } else {
+      const single = Number((client as any)?.submission_manager_id);
+      if (Number.isFinite(single) && single > 0) setSubmissionManagerIds([single]);
+    }
+
+    fetchLeadSubmissionManagerIds(supabase, client?.id)
+      .then((ids) => {
+        if (!cancelled) setSubmissionManagerIds(ids);
+      })
+      .catch((error) => {
+        console.error('Error loading submission managers:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id]);
+
   /*
    * Losing write access has to close an open mode rather than strand it. The roles lock is not that:
    * helper handlers are deliberately outside it, so a locked lead can still have one added or taken
    * off while the assigned roles stay fixed.
    */
   useEffect(() => {
-    if (readOnly) setHelperHandlerMode(null);
+    if (readOnly) {
+      setHelperHandlerMode(null);
+      setSubmissionManagerMode(null);
+    }
   }, [readOnly]);
 
   // Update locked status from client data
@@ -612,6 +750,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
       };
       fetchEmployees();
     }
+    const people = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    prefetchEmployeePhotos(
+      (people || []).map((emp: any) => resolveEmployeePhotoUrl(emp?.photo_url, emp?.photo)),
+      64,
+    );
   }, [allEmployees, allEmployeesProp]);
 
   // Fetch current user's superuser status
@@ -995,6 +1138,40 @@ const RolesTab: React.FC<ClientTabProps> = ({
       .slice(0, 50);
   }, [allEmployees, allEmployeesProp, searchTerms, helperHandlerIds]);
 
+  const submissionManagerAssignees = useMemo(() => {
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    return submissionManagerIds.map((employeeId) => {
+      const employee = (employeesToUse || []).find((emp: any) => Number(emp?.id) === employeeId) ?? null;
+      return {
+        employeeId,
+        employee,
+        displayName: employee?.display_name || employee?.official_name || `Employee ${employeeId}`,
+      };
+    });
+  }, [submissionManagerIds, allEmployees, allEmployeesProp]);
+
+  const submissionManagerOptions = useMemo(() => {
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    const search = (searchTerms[SUBMISSION_MANAGER_ROLE_ID] || '').trim().toLowerCase();
+    return (employeesToUse || [])
+      .filter((emp: any) => {
+        const name = String(emp?.display_name || '').trim();
+        if (!name || /^not[_\s]?assigned$/i.test(name)) return false;
+        if (isSubmissionManager(submissionManagerIds, emp?.id)) return false;
+        return !search || name.toLowerCase().includes(search);
+      })
+      .sort((a: any, b: any) => {
+        const rank = (emp: any) => {
+          const index = SUGGESTED_SUBMISSION_MANAGER_IDS.indexOf(Number(emp?.id));
+          return index === -1 ? SUGGESTED_SUBMISSION_MANAGER_IDS.length : index;
+        };
+        const bySuggestion = rank(a) - rank(b);
+        if (bySuggestion !== 0) return bySuggestion;
+        return String(a?.display_name || '').localeCompare(String(b?.display_name || ''));
+      })
+      .slice(0, 50);
+  }, [allEmployees, allEmployeesProp, searchTerms, submissionManagerIds]);
+
   /** Open the add or remove mode from the card's menu, closing the menu and any open row editor. */
   const handleHelperHandlerMode = (mode: 'add' | 'remove' | null) => {
     (document.activeElement as HTMLElement)?.blur();
@@ -1047,6 +1224,55 @@ const RolesTab: React.FC<ClientTabProps> = ({
       toast.error(`Failed to remove ${HELPER_HANDLER_TITLE}: ${error?.message || 'unknown error'}`);
     } finally {
       setIsSavingHelperHandler(false);
+    }
+  };
+
+  const handleSubmissionManagerMode = (mode: 'add' | 'remove' | null) => {
+    (document.activeElement as HTMLElement)?.blur();
+    setSubmissionManagerMode(mode);
+    setSearchTerms(prev => ({ ...prev, [SUBMISSION_MANAGER_ROLE_ID]: '' }));
+    setShowDropdowns(prev => ({ ...prev, [SUBMISSION_MANAGER_ROLE_ID]: mode === 'add' }));
+    if (mode) setEditingRoleId(null);
+  };
+
+  const handleAddSubmissionManager = async (employeeId: unknown) => {
+    const id = Number(employeeId);
+    if (!Number.isFinite(id) || isSubmissionManager(submissionManagerIds, id)) return;
+
+    setIsSavingSubmissionManager(true);
+    try {
+      const actor = await fetchStageActorInfo();
+      await addLeadSubmissionManager(supabase, {
+        clientId: client?.id,
+        employeeId: id,
+        createdBy: actor?.fullName || null,
+      });
+      setSubmissionManagerIds(normalizeSubmissionManagerIds([...submissionManagerIds, id]));
+      setSearchTerms(prev => ({ ...prev, [SUBMISSION_MANAGER_ROLE_ID]: '' }));
+      toast.success(`${getEmployeeById(id)?.display_name || 'Employee'} added as ${SUBMISSION_MANAGER_TITLE}`);
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error: any) {
+      console.error('Error adding submission manager:', error);
+      toast.error(`Failed to add ${SUBMISSION_MANAGER_TITLE}: ${error?.message || 'unknown error'}`);
+    } finally {
+      setIsSavingSubmissionManager(false);
+    }
+  };
+
+  const handleRemoveSubmissionManager = async (employeeId: number) => {
+    setIsSavingSubmissionManager(true);
+    try {
+      await removeLeadSubmissionManager(supabase, { clientId: client?.id, employeeId });
+      const remaining = submissionManagerIds.filter((id) => id !== employeeId);
+      setSubmissionManagerIds(remaining);
+      if (remaining.length === 0) setSubmissionManagerMode(null);
+      toast.success(`${SUBMISSION_MANAGER_TITLE} removed`);
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error: any) {
+      console.error('Error removing submission manager:', error);
+      toast.error(`Failed to remove ${SUBMISSION_MANAGER_TITLE}: ${error?.message || 'unknown error'}`);
+    } finally {
+      setIsSavingSubmissionManager(false);
     }
   };
 
@@ -1191,8 +1417,6 @@ const RolesTab: React.FC<ClientTabProps> = ({
         return BriefcaseIcon;
       case 'submission_manager':
         return DocumentTextIcon;
-      case 'application_manager':
-        return ClipboardDocumentCheckIcon;
       case 'digital_case_coordinator':
         return FolderOpenIcon;
       case 'document_procurement_coordinator':
@@ -1261,17 +1485,206 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
       <div className="w-full min-w-0">
         <div className="w-full space-y-10">
-          {ROLE_SECTIONS.map((section) => (
+          {ROLE_SECTIONS.map((section) => {
+            const roleGroups = section.title === 'Handlers'
+              ? handlerRoleGroups(section.roleIds, client)
+              : [{ key: 'all', label: null as string | null, stageId: null as number | null, roleIds: section.roleIds }];
+            const activeStageId = section.title === 'Handlers'
+              ? handlingStageForActiveType(readHandlingActiveType(client?.active_handler_type), client)?.id ?? null
+              : null;
+            return (
             <div key={section.title}>
               <h3 className="text-lg font-semibold text-gray-900 mb-3">
                 {section.title}
               </h3>
-              <div
-                className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 ${
-                  section.roleIds.length > 1 ? 'info-box-carousel info-box-carousel-free' : ''
-                } ${Object.values(showDropdowns).some(Boolean) ? 'max-md:pb-72' : ''}`}
-              >
-                {section.roleIds.map((roleId) => {
+              <div className="space-y-6">
+                {roleGroups.map((group) => (
+                  <div key={group.key}>
+                    {group.label ? (
+                      <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                        {group.stageId != null ? (
+                          <span
+                            className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold ${
+                              group.stageId === activeStageId
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200'
+                                : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300'
+                            }`}
+                          >
+                            {group.stageId}
+                          </span>
+                        ) : null}
+                        {group.label}
+                        {group.stageId != null && group.stageId === activeStageId ? (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200">
+                            Active
+                          </span>
+                        ) : null}
+                      </p>
+                    ) : null}
+                    <div
+                      className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 ${
+                        group.roleIds.length > 1 ? 'info-box-carousel info-box-carousel-free' : ''
+                      } ${Object.values(showDropdowns).some(Boolean) ? 'max-md:pb-72' : ''}`}
+                    >
+                {group.roleIds.map((roleId) => {
+                  if (roleId === SUBMISSION_MANAGER_ROLE_ID) {
+                    const canEdit = !readOnly && !isRolesLocked;
+                    const isAdding = submissionManagerMode === 'add';
+                    const isRemoving = submissionManagerMode === 'remove';
+                    const showAsSingle = submissionManagerAssignees.length === 1 && !submissionManagerMode;
+                    const stageLabel = handlingStageForRole(SUBMISSION_MANAGER_ROLE_ID)?.shortLabel;
+                    return (
+                      <div
+                        key={SUBMISSION_MANAGER_ROLE_ID}
+                        className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <span className="inline-flex flex-col items-start rounded-md bg-base-200 px-2.5 py-1">
+                            <span className="inline-flex items-center gap-1.5 text-sm font-medium leading-none text-blue-600 dark:text-blue-400">
+                              {SUBMISSION_MANAGER_TITLE}
+                              {submissionManagerAssignees.length > 0 && (
+                                <span className="text-sm font-semibold text-gray-500">
+                                  {submissionManagerAssignees.length}
+                                </span>
+                              )}
+                            </span>
+                            {stageLabel && !group.label ? (
+                              <span className="mt-1 text-[10px] font-semibold uppercase leading-none tracking-wide text-gray-400 dark:text-gray-500">
+                                {stageLabel}
+                              </span>
+                            ) : null}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {isSavingSubmissionManager && <span className="loading loading-spinner loading-xs" />}
+                            {canEdit && submissionManagerMode && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                onClick={() => handleSubmissionManagerMode(null)}
+                                title="Done"
+                              >
+                                <XMarkIcon className="w-5 h-5" />
+                              </button>
+                            )}
+                            {canEdit && (
+                              <div className="dropdown dropdown-end">
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0"
+                                  title={`${SUBMISSION_MANAGER_TITLE} options`}
+                                >
+                                  <ChevronDownIcon className="w-5 h-5" />
+                                </button>
+                                <ul
+                                  tabIndex={0}
+                                  className="dropdown-content menu menu-md p-2 shadow bg-base-100 rounded-box w-52 text-base z-[1000]"
+                                >
+                                  <li>
+                                    <button type="button" onClick={() => handleSubmissionManagerMode('add')}>
+                                      <UserPlusIcon className="w-6 h-6 text-gray-500 shrink-0" />
+                                      Add
+                                    </button>
+                                  </li>
+                                  <li className={submissionManagerAssignees.length === 0 ? 'disabled' : undefined}>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSubmissionManagerMode('remove')}
+                                      disabled={submissionManagerAssignees.length === 0}
+                                    >
+                                      <UserMinusIcon className="w-6 h-6 text-gray-500 shrink-0" />
+                                      Remove
+                                    </button>
+                                  </li>
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {submissionManagerAssignees.length === 0 ? (
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 flex-shrink-0">
+                              {React.createElement(getRoleIcon(SUBMISSION_MANAGER_ROLE_ID), { className: 'w-6 h-6 text-gray-500' })}
+                            </div>
+                            <span className="text-base text-gray-500 italic">--</span>
+                          </div>
+                        ) : showAsSingle ? (
+                          <div className="flex items-center gap-3">
+                            <RoleEmployeeAvatar
+                              employee={submissionManagerAssignees[0].employee}
+                              displayName={submissionManagerAssignees[0].displayName}
+                              size="md"
+                              onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
+                            />
+                            <span className="flex-1 min-w-0 truncate text-base font-medium text-gray-900">
+                              {submissionManagerAssignees[0].displayName}
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {submissionManagerAssignees.map((assignee) => (
+                              <div key={assignee.employeeId} className="flex items-center gap-2">
+                                <RoleEmployeeAvatar
+                                  employee={assignee.employee}
+                                  displayName={assignee.displayName}
+                                  size="sm"
+                                  onOpenProfile={(employeeId) => navigate(`/my-profile/${employeeId}`)}
+                                />
+                                <span className="flex-1 min-w-0 truncate text-sm font-medium text-gray-900">
+                                  {assignee.displayName}
+                                </span>
+                                {canEdit && isRemoving && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm btn-square h-9 w-9 min-h-0 shrink-0 text-error"
+                                    onClick={() => handleRemoveSubmissionManager(assignee.employeeId)}
+                                    disabled={isSavingSubmissionManager}
+                                    title={`Remove ${assignee.displayName}`}
+                                  >
+                                    <XMarkIcon className="w-6 h-6" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {canEdit && isAdding && (
+                          <div className="relative mt-3">
+                            <input
+                              type="text"
+                              className="input input-bordered w-full max-w-[280px] min-h-12 text-base"
+                              placeholder="Type to add someone..."
+                              value={searchTerms[SUBMISSION_MANAGER_ROLE_ID] || ''}
+                              onChange={(e) => handleSearchChange(SUBMISSION_MANAGER_ROLE_ID, e.target.value)}
+                              onFocus={() => handleShowDropdown(SUBMISSION_MANAGER_ROLE_ID)}
+                              onBlur={() => handleHideDropdown(SUBMISSION_MANAGER_ROLE_ID)}
+                              autoFocus
+                            />
+                            {showDropdowns[SUBMISSION_MANAGER_ROLE_ID] && submissionManagerOptions.length > 0 && (
+                              <div
+                                className="absolute z-50 w-full max-w-[280px] mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto"
+                                style={{ top: '100%', left: 0 }}
+                              >
+                                {submissionManagerOptions.map((emp: any) => (
+                                  <div
+                                    key={String(emp.id)}
+                                    className={`cursor-pointer px-3 py-2 hover:bg-gray-100 ${
+                                      SUGGESTED_SUBMISSION_MANAGER_IDS.includes(Number(emp.id)) ? 'bg-amber-50' : ''
+                                    }`}
+                                    onClick={() => handleAddSubmissionManager(emp.id)}
+                                  >
+                                    <RoleDropdownPerson employee={emp} label={emp.display_name} />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
                   if (roleId === HELPER_HANDLER_ROLE_ID) {
                     // Outside the roles lock on purpose: a locked lead still needs helpers moved on and off.
                     const canEditHelperHandlers = !readOnly;
@@ -1413,10 +1826,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
                                 {helperHandlerOptions.map((emp: any) => (
                                   <div
                                     key={String(emp.id)}
-                                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                                    className="cursor-pointer px-3 py-2 hover:bg-gray-100"
                                     onClick={() => handleAddHelperHandler(emp.id)}
                                   >
-                                    {emp.display_name}
+                                    <RoleDropdownPerson employee={emp} label={emp.display_name} />
                                   </div>
                                 ))}
                               </div>
@@ -1432,7 +1845,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
                   const hasAssignee = role.assignee && role.assignee !== '---';
                   const isEditingRow = editingRoleId === role.id;
                   const roleUiDisabled = DISABLED_ROLE_IDS.has(role.id);
-                  const handlingStageLabel = handlingStageForRole(role.id)?.shortLabel;
+                  const handlingStageLabel =
+                    role.id === 'handler' && isCitizenshipHandlerStageLead(client)
+                      ? handlingStageById(1)?.shortLabel
+                      : handlingStageForRole(role.id)?.shortLabel;
 
                   return (
                     <div
@@ -1448,7 +1864,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <span className="inline-flex flex-col items-start rounded-md bg-base-200 px-2.5 py-1">
                           <span className="text-sm font-medium leading-none text-blue-600 dark:text-blue-400">{role.title}</span>
-                          {handlingStageLabel ? (
+                          {handlingStageLabel && !group.label ? (
                             <span className="mt-1 text-[10px] font-semibold uppercase leading-none tracking-wide text-gray-400 dark:text-gray-500">
                               {handlingStageLabel}
                             </span>
@@ -1518,10 +1934,10 @@ const RolesTab: React.FC<ClientTabProps> = ({
                                   {getFilteredOptions(role.id).map((option: string, index: number) => (
                                     <div
                                       key={index}
-                                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                                      className="cursor-pointer px-3 py-2 hover:bg-gray-100"
                                       onClick={() => handleRoleSelectAndSave(role.id, option)}
                                     >
-                                      {option}
+                                      <RoleDropdownPerson employee={getEmployeeById(option)} label={option} />
                                     </div>
                                   ))}
                                 </div>
@@ -1537,9 +1953,13 @@ const RolesTab: React.FC<ClientTabProps> = ({
                     </div>
                   );
                 })}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
+            );
+          })}
 
           <div>
             <h3 className="text-lg font-semibold text-gray-900 mb-3">

@@ -140,7 +140,7 @@ export default function LeadRemainingTimeBar({
             <div className="h-3 overflow-hidden rounded-full bg-base-200/70">
               <div className="h-full w-2/5 animate-pulse rounded-full bg-base-300/80" />
             </div>
-            <div className="col-start-2 mt-2 grid grid-cols-3 gap-2">
+            <div className="col-start-2 mt-1 grid grid-cols-3 gap-2">
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
@@ -151,7 +151,7 @@ export default function LeadRemainingTimeBar({
             <div className="h-3 overflow-hidden rounded-full bg-base-200/70">
               <div className="h-full w-2/5 animate-pulse rounded-full bg-base-300/80" />
             </div>
-            <div className="mt-2 grid grid-cols-3 gap-2">
+            <div className="mt-1 grid grid-cols-3 gap-2">
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
               <div className="h-8 animate-pulse rounded-md bg-base-200/60" />
@@ -236,7 +236,7 @@ export default function LeadRemainingTimeBar({
   );
 
   const metrics = (
-    <div className="mt-2 grid grid-cols-3 gap-x-2">
+    <div className="mt-1 grid grid-cols-3 gap-x-2">
       <MetricCell
         label="Spent"
         value={spentLabel}
@@ -261,48 +261,54 @@ export default function LeadRemainingTimeBar({
     </div>
   );
 
-  const body = (
-    <>
-      {bar}
-      {metrics}
-    </>
-  );
-
   const clickableClass =
     'cursor-pointer rounded-xl text-left transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1';
 
-  const barBlock = onClick ? (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[barWidthClass, clickableClass, 'block border-0 bg-transparent p-0'].join(' ')}
-      title={title}
-      aria-label="View lead cost details"
-    >
-      {body}
-    </button>
-  ) : (
-    <div className={barWidthClass} title={title}>
-      {body}
-    </div>
-  );
+  const wrapClick = (node: React.ReactNode, className: string) =>
+    onClick ? (
+      <button
+        type="button"
+        onClick={onClick}
+        className={[className, clickableClass, 'block border-0 bg-transparent p-0'].join(' ')}
+        title={title}
+        aria-label="View lead cost details"
+      >
+        {node}
+      </button>
+    ) : (
+      <div className={className} title={title}>
+        {node}
+      </div>
+    );
+
+  if (!leftAccessory) {
+    return (
+      <div className={[rootAlign, className].filter(Boolean).join(' ')}>
+        {wrapClick(
+          <>
+            {bar}
+            {metrics}
+          </>,
+          barWidthClass,
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={[rootAlign, className].filter(Boolean).join(' ')}>
-      {leftAccessory ? (
-        <div
-          className={`grid items-start gap-x-2 ${
-            fullWidth
-              ? 'w-full grid-cols-[auto_minmax(0,1fr)]'
-              : 'w-fit grid-cols-[auto_minmax(15.5rem,18rem)]'
-          }`}
-        >
-          <div className="shrink-0 self-center pt-0.5">{leftAccessory}</div>
-          <div className="min-w-0">{barBlock}</div>
+      <div className={`flex items-start gap-2 ${fullWidth ? 'w-full' : 'w-fit'}`}>
+        <div className="flex h-3 shrink-0 items-center">{leftAccessory}</div>
+        <div className={fullWidth ? 'min-w-0 flex-1' : 'w-[15.5rem] min-w-0 sm:w-[18rem]'}>
+          {wrapClick(
+            <>
+              {bar}
+              {metrics}
+            </>,
+            'w-full min-w-0',
+          )}
         </div>
-      ) : (
-        barBlock
-      )}
+      </div>
     </div>
   );
 }

@@ -600,6 +600,12 @@ html,
   padding-top: 0 !important;
 }
 
+/* Mobile client name + stage must start below the fixed app header, including the URL bar. */
+.client-header-mobile-top {
+  padding-top: calc(constant(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 4.75rem);
+  padding-top: calc(env(safe-area-inset-top, 0px) + var(--rmq-urlbar-h, 0px) + 4.75rem);
+}
+
 /* Drive: runs without the app header, so it starts at the top of the window, not below a bar
    that is not there. Only the notch is kept clear. */
 /* External user chrome: Header is h-11 (+ pb) / md:h-12 — keep content tight under it. */
@@ -743,6 +749,22 @@ body:has(main.clients-detail-scroll) .navbar {
   .app-main-scroll.main-with-bottom-nav-padding {
     padding-bottom: max(4.25rem, calc(3.75rem + constant(safe-area-inset-bottom, 0px)));
     padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
+  }
+
+  /*
+   * Pin the app to the screen, including the strip under the browser bar, and
+   * keep a definite height so the page still scrolls inside main.
+   * max-height: none on a growing shell made that pane as tall as the content,
+   * so nothing on the page could scroll.
+   */
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: hidden;
   }
 }
 @media (min-width: 768px) {

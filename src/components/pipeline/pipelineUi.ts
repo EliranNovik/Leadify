@@ -3,7 +3,6 @@ import { EXTRA_HANDLING_ROLES } from '../../lib/handlingRoles';
 
 export type MoreHandlingPipelineTab =
   | 'submission_manager'
-  | 'application_manager'
   | 'digital_case_coordinator'
   | 'document_procurement_coordinator'
   | 'certification_coordinator'

@@ -10,7 +10,6 @@
 --   2  Handler                        case_handler_id                     (no handling stage)
 --   3  Case Monitoring Coordinator    client_support_id                   stage 2, client communication
 --   4  Submission Manager             submission_manager_id               stage 1
---   5  Application Manager            application_manager_id              stage 1, client communication
 --   6  Digital Case Coordinator       digital_case_coordinator_id         stage 1
 --   7  Document Procurement Coord.    document_procurement_coordinator_id stage 1
 --   8  Certification Coordinator      certification_coordinator_id        stage 1
@@ -82,9 +81,6 @@ VALUES
   (4, 'submission_manager', 'Submission Manager', 'Submission Mgr', 'Department management',
    'Runs the submissions department and oversees how applications are prepared and filed.',
    1, false, 'submission_manager_id', 20),
-  (5, 'application_manager', 'Application Manager', 'Application Mgr', 'Application handling',
-   'Handles preparation of the application. Responsible for client communication during application preparation and submission.',
-   1, true, 'application_manager_id', 30),
   (6, 'digital_case_coordinator', 'Digital Case Coordinator', 'Digital Case', 'Document scanning and file management',
    'Scans documents and keeps the digital case file in order.',
    1, false, 'digital_case_coordinator_id', 40),
@@ -117,7 +113,6 @@ ON CONFLICT (active_type) DO UPDATE SET
 -- Employee id columns. Completion coordinator reuses retainer_handler_id.
 ALTER TABLE public.leads
   ADD COLUMN IF NOT EXISTS submission_manager_id bigint REFERENCES public.tenants_employee (id),
-  ADD COLUMN IF NOT EXISTS application_manager_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS digital_case_coordinator_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS document_procurement_coordinator_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS certification_coordinator_id bigint REFERENCES public.tenants_employee (id),
@@ -126,7 +121,6 @@ ALTER TABLE public.leads
 
 ALTER TABLE public.leads_lead
   ADD COLUMN IF NOT EXISTS submission_manager_id bigint REFERENCES public.tenants_employee (id),
-  ADD COLUMN IF NOT EXISTS application_manager_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS digital_case_coordinator_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS document_procurement_coordinator_id bigint REFERENCES public.tenants_employee (id),
   ADD COLUMN IF NOT EXISTS certification_coordinator_id bigint REFERENCES public.tenants_employee (id),
@@ -134,7 +128,6 @@ ALTER TABLE public.leads_lead
   ADD COLUMN IF NOT EXISTS handling_stage_id smallint REFERENCES public.handling_stages (id);
 
 COMMENT ON COLUMN public.leads.submission_manager_id IS 'Submission Manager (handling stage 1).';
-COMMENT ON COLUMN public.leads.application_manager_id IS 'Application Manager. Client communication for handling stage 1.';
 COMMENT ON COLUMN public.leads.digital_case_coordinator_id IS 'Digital Case Coordinator (handling stage 1).';
 COMMENT ON COLUMN public.leads.document_procurement_coordinator_id IS 'Document Procurement Coordinator (handling stage 1).';
 COMMENT ON COLUMN public.leads.certification_coordinator_id IS 'Certification Coordinator (handling stage 1).';
@@ -144,7 +137,6 @@ COMMENT ON COLUMN public.leads.handling_stage_id IS 'Handling under-stage. Set f
 COMMENT ON COLUMN public.leads.retainer_handler_id IS 'Completion Coordinator (formerly retention handler). Client communication for handling stage 3.';
 
 COMMENT ON COLUMN public.leads_lead.submission_manager_id IS 'Submission Manager (handling stage 1).';
-COMMENT ON COLUMN public.leads_lead.application_manager_id IS 'Application Manager. Client communication for handling stage 1.';
 COMMENT ON COLUMN public.leads_lead.digital_case_coordinator_id IS 'Digital Case Coordinator (handling stage 1).';
 COMMENT ON COLUMN public.leads_lead.document_procurement_coordinator_id IS 'Document Procurement Coordinator (handling stage 1).';
 COMMENT ON COLUMN public.leads_lead.certification_coordinator_id IS 'Certification Coordinator (handling stage 1).';
@@ -154,27 +146,48 @@ COMMENT ON COLUMN public.leads_lead.handling_stage_id IS 'Handling under-stage. 
 COMMENT ON COLUMN public.leads_lead.retainer_handler_id IS 'Completion Coordinator (formerly retention handler). Client communication for handling stage 3.';
 
 COMMENT ON COLUMN public.leads.active_handler_type IS
-  'Active worker: 1=completion coordinator, 2=handler, 3=case monitoring coordinator, 4=submission manager, 5=application manager, 6=digital case coordinator, 7=document procurement coordinator, 8=certification coordinator, 10=authorities coordinator';
+  'Active worker: 1=completion coordinator, 2=handler, 3=case monitoring coordinator, 4=submission manager, 6=digital case coordinator, 7=document procurement coordinator, 8=certification coordinator, 10=authorities coordinator';
 COMMENT ON COLUMN public.leads_lead.active_handler_type IS
-  'Active worker: 1=completion coordinator, 2=handler, 3=case monitoring coordinator, 4=submission manager, 5=application manager, 6=digital case coordinator, 7=document procurement coordinator, 8=certification coordinator, 10=authorities coordinator';
+  'Active worker: 1=completion coordinator, 2=handler, 3=case monitoring coordinator, 4=submission manager, 6=digital case coordinator, 7=document procurement coordinator, 8=certification coordinator, 10=authorities coordinator';
 
 CREATE OR REPLACE FUNCTION public.sync_lead_handling_stage()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  v_stage smallint;
+  v_category text;
+  v_main text;
 BEGIN
-  IF TG_OP = 'INSERT' OR NEW.active_handler_type IS DISTINCT FROM OLD.active_handler_type THEN
-    NEW.handling_stage_id := CASE NEW.active_handler_type
-      WHEN 1 THEN 3
-      WHEN 3 THEN 2
-      WHEN 4 THEN 1
-      WHEN 5 THEN 1
-      WHEN 6 THEN 1
-      WHEN 7 THEN 1
-      WHEN 8 THEN 1
-      WHEN 10 THEN 3
-      ELSE NULL
-    END;
+  v_stage := CASE NEW.active_handler_type
+    WHEN 1 THEN 3
+    WHEN 3 THEN 2
+    WHEN 4 THEN 1
+    WHEN 6 THEN 1
+    WHEN 7 THEN 1
+    WHEN 8 THEN 1
+    WHEN 10 THEN 3
+    ELSE NULL
+  END;
+
+  -- Handler takes the stage-1 place of the removed Application Manager
+  -- on Austrian and German citizenship leads.
+  IF NEW.active_handler_type = 2 AND NEW.category_id IS NOT NULL THEN
+    SELECT lower(btrim(category.name)), lower(btrim(main.name))
+      INTO v_category, v_main
+    FROM public.misc_category AS category
+    LEFT JOIN public.misc_maincategory AS main ON main.id = category.parent_id
+    WHERE category.id = NEW.category_id;
+    IF v_category IN ('austrian citizenship', 'german citizenship', 'austria', 'germany')
+       OR v_main IN ('austrian citizenship', 'german citizenship', 'austria', 'germany') THEN
+      v_stage := 1;
+    END IF;
+  END IF;
+
+  IF TG_OP = 'INSERT'
+     OR NEW.active_handler_type IS DISTINCT FROM OLD.active_handler_type
+     OR NEW.category_id IS DISTINCT FROM OLD.category_id THEN
+    NEW.handling_stage_id := v_stage;
   END IF;
   RETURN NEW;
 END;
@@ -182,14 +195,14 @@ $$;
 
 DROP TRIGGER IF EXISTS leads_sync_handling_stage ON public.leads;
 CREATE TRIGGER leads_sync_handling_stage
-  BEFORE INSERT OR UPDATE OF active_handler_type
+  BEFORE INSERT OR UPDATE OF active_handler_type, category_id
   ON public.leads
   FOR EACH ROW
   EXECUTE FUNCTION public.sync_lead_handling_stage();
 
 DROP TRIGGER IF EXISTS leads_lead_sync_handling_stage ON public.leads_lead;
 CREATE TRIGGER leads_lead_sync_handling_stage
-  BEFORE INSERT OR UPDATE OF active_handler_type
+  BEFORE INSERT OR UPDATE OF active_handler_type, category_id
   ON public.leads_lead
   FOR EACH ROW
   EXECUTE FUNCTION public.sync_lead_handling_stage();
@@ -219,6 +232,9 @@ END $$;
 ALTER TABLE public.leads DROP COLUMN IF EXISTS case_monitoring_coordinator_id;
 ALTER TABLE public.leads_lead DROP COLUMN IF EXISTS case_monitoring_coordinator_id;
 DELETE FROM public.handling_roles WHERE active_type = 9;
+DELETE FROM public.handling_roles WHERE active_type = 5 OR code = 'application_manager';
+ALTER TABLE public.leads DROP COLUMN IF EXISTS application_manager_id;
+ALTER TABLE public.leads_lead DROP COLUMN IF EXISTS application_manager_id;
 
 -- Completion coordinator (type 1) is stage 3. Case monitoring coordinator (type 3) is stage 2.
 UPDATE public.leads

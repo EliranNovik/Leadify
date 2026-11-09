@@ -416,7 +416,7 @@ function SummaryMetricCard({
   const colors = SUMMARY_CARD_TONES[tone];
   const isFilterable = Boolean(filterKey && onFilterToggle && !filterDisabled);
   const cardClassName = [
-    'relative rounded-2xl bg-white p-4 text-left w-full',
+    'info-carousel-card relative rounded-2xl bg-white p-4 text-left w-full',
     isFilterable ? 'cursor-pointer transition-all hover:shadow-md' : '',
     active ? colors.activeRing : '',
   ]
@@ -530,7 +530,7 @@ export function PaymentPlanSummaryCards({
     : '—';
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="info-box-carousel info-box-carousel-match grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <SummaryMetricCard
         label="Total contract value"
         primary={total.primary}
