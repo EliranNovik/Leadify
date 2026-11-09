@@ -757,7 +757,7 @@ body:has(main.clients-detail-scroll) .navbar {
    * max-height: none on a growing shell made that pane as tall as the content,
    * so nothing on the page could scroll.
    */
-  html:not(.login-page-active):not(.entry-kiosk-active) #root > div {
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div:not(.contract-studio) {
     position: fixed;
     inset: 0;
     width: 100%;
@@ -2941,13 +2941,12 @@ html.entry-kiosk-active::after {
 
 @media (max-width: 639px) {
   .contract-a4-page.public-contract-paper {
-    width: 100%;
+    width: calc(100% - 0.75rem);
     max-width: none;
+    margin-left: auto;
+    margin-right: auto;
     min-height: 0;
-    border-radius: 1.25rem 1.25rem 0 0;
-    border-left: none;
-    border-right: none;
-    border-bottom: none;
+    border-radius: 1.25rem;
     box-shadow:
       0 -6px 20px rgba(0, 0, 0, 0.1),
       0 16px 40px rgba(0, 0, 0, 0.12);

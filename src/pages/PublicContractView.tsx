@@ -2600,13 +2600,13 @@ const PublicContractView: React.FC<{
     'inline-flex h-11 w-11 items-center justify-center rounded-xl text-slate-600 transition hover:bg-slate-100 hover:text-slate-900';
 
   const statusBadge = isSigned ? (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 sm:text-sm">
-      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" aria-hidden />
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+      <span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden />
       {headerCopy.signed}
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-950 px-3 py-1.5 text-xs font-medium text-white sm:text-sm">
-      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden />
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-950 px-2.5 py-0.5 text-xs font-medium text-white">
+      <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
       {headerCopy.awaiting}
     </span>
   );
@@ -2636,12 +2636,14 @@ const PublicContractView: React.FC<{
               </h1>
             </div>
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-              {statusBadge}
-              {leadNumber ? (
-                <span className="font-mono text-[13px] tabular-nums text-slate-500 sm:text-sm">
-                  #{leadNumber}
-                </span>
-              ) : null}
+              <div className="flex flex-col items-end gap-1">
+                {statusBadge}
+                {leadNumber ? (
+                  <span className="font-mono text-[13px] tabular-nums text-slate-500 sm:text-sm">
+                    #{leadNumber}
+                  </span>
+                ) : null}
+              </div>
               <span className="mx-0.5 hidden h-5 w-px bg-slate-200 sm:block" aria-hidden />
               <div className="hidden sm:flex sm:items-center sm:gap-1.5">
                 {isSigned ? (
