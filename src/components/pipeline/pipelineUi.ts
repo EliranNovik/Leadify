@@ -1,4 +1,13 @@
 import type { CSSProperties } from 'react';
+import { EXTRA_HANDLING_ROLES } from '../../lib/handlingRoles';
+
+export type MoreHandlingPipelineTab =
+  | 'submission_manager'
+  | 'application_manager'
+  | 'digital_case_coordinator'
+  | 'document_procurement_coordinator'
+  | 'certification_coordinator'
+  | 'authorities_coordinator';
 
 export type PipelineRoleTab =
   | 'closer'
@@ -8,7 +17,12 @@ export type PipelineRoleTab =
   | 'expert'
   | 'handler'
   | 'retention'
-  | 'support';
+  | 'support'
+  | MoreHandlingPipelineTab;
+
+const MORE_HANDLING_LABELS = Object.fromEntries(
+  EXTRA_HANDLING_ROLES.map((role) => [role.id, role.title]),
+) as Record<MoreHandlingPipelineTab, string>;
 
 export const PIPELINE_TAB_LABELS: Record<PipelineRoleTab, string> = {
   closer: 'Closer',
@@ -17,11 +31,38 @@ export const PIPELINE_TAB_LABELS: Record<PipelineRoleTab, string> = {
   helper: 'Helper',
   expert: 'Expert',
   handler: 'Handler',
-  retention: 'Retention Handler',
-  support: 'Client Support',
+  retention: 'Completion Coordinator',
+  support: 'Case Monitoring Coordinator',
+  ...MORE_HANDLING_LABELS,
 };
 
 export const HANDLING_PIPELINE_TABS: PipelineRoleTab[] = ['handler', 'retention', 'support'];
+
+export type MoreHandlingPipelineConfig = {
+  id: MoreHandlingPipelineTab;
+  label: string;
+  shortLabel: string;
+  column: string;
+  activeType: number;
+};
+
+export const MORE_HANDLING_PIPELINE_TABS: MoreHandlingPipelineConfig[] = EXTRA_HANDLING_ROLES.map(
+  (role) => ({
+    id: role.id as MoreHandlingPipelineTab,
+    label: role.title,
+    shortLabel: role.shortLabel,
+    column: role.column,
+    activeType: role.activeType,
+  }),
+);
+
+export function isMoreHandlingPipelineTab(tab: string): tab is MoreHandlingPipelineTab {
+  return MORE_HANDLING_PIPELINE_TABS.some((item) => item.id === tab);
+}
+
+export function moreHandlingPipelineByTab(tab: string): MoreHandlingPipelineConfig | null {
+  return MORE_HANDLING_PIPELINE_TABS.find((item) => item.id === tab) ?? null;
+}
 
 export type { PipelineViewAs } from '../../lib/resolvePipelineIdentity';
 

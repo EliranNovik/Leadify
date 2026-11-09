@@ -58,7 +58,7 @@ function roleOptionsFromRow(row: HandlerPipelineRow): {
     {
       type: 1,
       key: 'retention',
-      rolesLabel: 'R-Handler',
+      rolesLabel: 'Completion',
       id: row.retainerHandlerId ?? null,
       display: row.retentionHandlerName ?? null,
       photoUrl: row.retentionPhotoUrl ?? null,
@@ -66,7 +66,7 @@ function roleOptionsFromRow(row: HandlerPipelineRow): {
     {
       type: 3,
       key: 'support',
-      rolesLabel: 'Client Support',
+      rolesLabel: 'Case Monitoring',
       id: row.clientSupportId ?? null,
       display: row.clientSupportName ?? null,
       photoUrl: row.clientSupportPhotoUrl ?? null,
@@ -133,7 +133,7 @@ function RoleAvatar({
 /** Active / Not-active control: menu mirrors ClientHeader (avatar, name, add role). */
 const ActiveHandlerTypeControl: React.FC<{
   row: HandlerPipelineRow;
-  pipelineRole: ActiveHandlerType;
+  pipelineRole: number;
   onSetActiveType: (row: HandlerPipelineRow, nextType: ActiveHandlerType, e: React.MouseEvent) => void;
   onAssigned?: () => void | Promise<void>;
 }> = ({ row, pipelineRole, onSetActiveType, onAssigned }) => {
@@ -246,9 +246,9 @@ const ActiveHandlerTypeControl: React.FC<{
     assignKey === 'handler'
       ? 'Handler'
       : assignKey === 'retention'
-        ? 'R-Handler'
+        ? 'Completion'
         : assignKey === 'support'
-          ? 'Client Support'
+          ? 'Case Monitoring'
           : '';
 
   const suggested = CLIENT_SUPPORT_SUGGESTED_NAME.toLowerCase();
@@ -559,8 +559,8 @@ type ActionHandlers = {
 export const HandlerActionsColumn: React.FC<{
   row: HandlerPipelineRow;
   handlers: ActionHandlers;
-  /** Which role this pipeline represents (2 handler, 1 retention, 3 client support). */
-  pipelineRole?: ActiveHandlerType;
+  /** active_handler_type this pipeline owns (2 handler, 1 completion, 3 case monitoring, 4–8 and 10 the newer roles). */
+  pipelineRole?: number;
 }> = ({ row, handlers, pipelineRole = 2 }) => (
   <div className="flex items-center justify-end gap-1.5">
     <button
@@ -646,7 +646,7 @@ export const RetentionActionsColumn: React.FC<{
         type="button"
         onClick={(e) => handlers.onStartCase(row, e)}
         className="btn btn-circle btn-md border-none bg-emerald-500 text-white hover:bg-emerald-600"
-        title="Start Retention Case"
+        title="Start Completion Case"
       >
         <ArrowUturnLeftIcon className="h-6 w-6" />
       </button>
@@ -656,7 +656,7 @@ export const RetentionActionsColumn: React.FC<{
         type="button"
         onClick={(e) => handlers.onReverseStart(row, e)}
         className="btn btn-circle btn-md border-none bg-amber-500 text-white hover:bg-amber-600"
-        title="Reverse Retention Start Case"
+        title="Reverse Completion Start"
       >
         <ArrowUturnLeftIcon className="h-6 w-6" />
       </button>
@@ -710,8 +710,8 @@ export async function toggleHandlerRetention(
 }
 
 export function activeHandlerTypeLabel(type: ActiveHandlerType): string {
-  if (type === 1) return 'Retention';
-  if (type === 3) return 'Client Support';
+  if (type === 1) return 'Completion';
+  if (type === 3) return 'Case Monitoring';
   return 'Handler';
 }
 

@@ -2,6 +2,69 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Start empty so the outline draws along the circle instead of popping in. */
+.animate-handler-ring-draw {
+  stroke-dashoffset: 100;
+}
+
+/* Client info cards: one horizontal snap row on a phone, stacked layout from md up. */
+@media (max-width: 767px) {
+  .info-box-carousel {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-inline: 0.25rem;
+    padding-bottom: 0.4rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .info-box-carousel::-webkit-scrollbar {
+    display: none;
+  }
+
+  .info-box-carousel.info-box-carousel {
+    margin-top: 0;
+  }
+
+  .info-box-carousel > * + * {
+    margin-top: 0;
+  }
+
+  .info-box-carousel .info-carousel-pass {
+    display: contents;
+  }
+
+  .info-box-carousel .info-carousel-card {
+    flex: 0 0 84%;
+    width: 84%;
+    scroll-snap-align: start;
+  }
+
+  .info-box-carousel.info-box-carousel-free {
+    scroll-snap-type: none;
+    scroll-padding-inline: 0;
+  }
+
+  .info-box-carousel.info-box-carousel-free .info-carousel-card {
+    scroll-snap-align: none;
+  }
+
+  .info-box-carousel.contact-box-carousel {
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .info-box-carousel.contact-box-carousel .info-carousel-card {
+    flex: 0 0 calc(100% - 1.25rem);
+    width: calc(100% - 1.25rem);
+  }
+}
+
 @keyframes slideInRight {
   from {
     transform: translateX(100%);

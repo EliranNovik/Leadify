@@ -2138,7 +2138,7 @@ const MyCasesPage: React.FC = () => {
                   Stage
                 </th>
                 <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
-                  Retention Handler
+                  Completion Coordinator
                 </th>
                 <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Actions

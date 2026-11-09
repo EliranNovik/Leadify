@@ -291,10 +291,10 @@ export default function LeadRemainingTimeBar({
     <div className={[rootAlign, className].filter(Boolean).join(' ')}>
       {leftAccessory ? (
         <div
-          className={`grid w-fit items-start gap-x-2 ${
+          className={`grid items-start gap-x-2 ${
             fullWidth
               ? 'w-full grid-cols-[auto_minmax(0,1fr)]'
-              : 'grid-cols-[auto_minmax(15.5rem,18rem)]'
+              : 'w-fit grid-cols-[auto_minmax(15.5rem,18rem)]'
           }`}
         >
           <div className="shrink-0 self-center pt-0.5">{leftAccessory}</div>

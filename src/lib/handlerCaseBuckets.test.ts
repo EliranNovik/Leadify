@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   classifyHandlerBucket,
+  classifyOwnedHandlingBucket,
   classifyRetentionBucket,
   classifySupportBucket,
 } from './handlerCaseBuckets';
@@ -32,6 +33,15 @@ test('client support owns the case only when active_handler_type is 3', () => {
   assert.equal(classifySupportBucket(110, 3, false), 'active');
   assert.equal(classifySupportBucket(107, 3, false), null);
   assert.equal(classifySupportBucket(null, 3, false), null);
+});
+
+test('a newer handling role owns the case only when its active type matches', () => {
+  assert.equal(classifyOwnedHandlingBucket(200, 4, false, 4), 'closed');
+  assert.equal(classifyOwnedHandlingBucket(130, 2, false, 4), 'non_active');
+  assert.equal(classifyOwnedHandlingBucket(130, 4, true, 4), 'non_active');
+  assert.equal(classifyOwnedHandlingBucket(105, 4, false, 4), 'new');
+  assert.equal(classifyOwnedHandlingBucket(110, 5, false, 5), 'active');
+  assert.equal(classifyOwnedHandlingBucket(107, 10, false, 10), null);
 });
 
 test('retention handler mirrors the case handler and reads the started flag', () => {

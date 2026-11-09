@@ -1290,7 +1290,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
           .eq('id', caseItem.id);
         if (error) throw error;
       }
-      toast.success('Case started by Retention Handler!');
+      toast.success('Case started by Completion Coordinator!');
       await fetchRetainerHandlerCases();
     } catch (error: any) {
       console.error('Error starting retention case:', error);
@@ -1817,7 +1817,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
                         <button
                           onClick={(e) => handleRetentionStartCase(caseItem, e)}
                           className="btn btn-sm p-1.5 sm:p-2 rounded bg-emerald-500 hover:bg-emerald-600 text-white border-none"
-                          title="Start Retention Case — marks this case as started by Retention Handler"
+                          title="Start Completion Case — marks this case as started by the Completion Coordinator"
                         >
                           <ArrowUturnLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>

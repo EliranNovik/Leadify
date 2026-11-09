@@ -38,7 +38,7 @@ export type HandlerPipelineRow = {
   bucket: HandlerBucket;
   isInactive: boolean;
   isNewLead: boolean;
-  active_handler_type: 1 | 2 | 3;
+  active_handler_type: number;
   isFirstPaymentPaid: boolean;
   hasReadyToPay: boolean;
   hasUnpaidPayment: boolean;

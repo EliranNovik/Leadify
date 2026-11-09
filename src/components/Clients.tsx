@@ -17,6 +17,7 @@ import { clientMatchesLeadRouteKey } from '../lib/leadRouteMatch';
 import { allowsAdditionalLeadMeetings, getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage, applyLocalLeadStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
+import { handlingFieldsFromLead } from '../lib/handlingRoles';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
   findDuplicateContacts as findDuplicateContactsApi,
@@ -3180,6 +3181,13 @@ const Clients: React.FC<ClientsProps> = ({
             case_handler_id,
             retainer_handler_id,
             client_support_id,
+            submission_manager_id,
+            application_manager_id,
+            digital_case_coordinator_id,
+            document_procurement_coordinator_id,
+            certification_coordinator_id,
+            authorities_coordinator_id,
+            handling_stage_id,
             meeting_collection_id,
             marketing_officer_id,
             retention_handler_started,
@@ -3357,10 +3365,7 @@ const Clients: React.FC<ClientsProps> = ({
             meeting_collection_id: (data as any).meeting_collection_id ?? null,
             marketing_officer_id: (data as any).marketing_officer_id ?? null,
             retention_handler_started: data.retention_handler_started === true || (data as any).retention_handler_started === 'true',
-            active_handler_type: (() => {
-              const n = Number(data.active_handler_type);
-              return n === 1 || n === 3 ? n : 2;
-            })(),
+            ...handlingFieldsFromLead(data),
             description: data.description || null,
             description_last_edited_by: data.description_last_edited_by || null,
             description_last_edited_at: data.description_last_edited_at || null,
@@ -4309,10 +4314,7 @@ const Clients: React.FC<ClientsProps> = ({
                   meeting_collection_id: (legacyLead as any).meeting_collection_id ?? null,
                   marketing_officer_id: (legacyLead as any).marketing_officer_id ?? null,
                   retention_handler_started: legacyLead.retention_handler_started === true || (legacyLead as any).retention_handler_started === 'true',
-                  active_handler_type: (() => {
-                    const n = Number(legacyLead.active_handler_type);
-                    return n === 1 || n === 3 ? n : 2;
-                  })(),
+                  ...handlingFieldsFromLead(legacyLead),
                   vat: (legacyLead as any).vat || null,
                   potential_total: legacyLead.potential_total || null,
                   description: legacyLead.description || null,
@@ -4621,32 +4623,9 @@ const Clients: React.FC<ClientsProps> = ({
               })();
             }
 
-            // IMMEDIATELY check for subleads/master lead status (don't wait for useEffect)
-            // This runs in parallel with rendering for faster UX
-            // Note: fetchSubLeads is defined later, so we use a setTimeout to ensure it's available
-            const isLegacy = normalizedClient.lead_type === 'legacy' || normalizedClient.id?.toString().startsWith('legacy_');
-            if (!normalizedClient.master_id || String(normalizedClient.master_id).trim() === '') {
-              // Not a sublead - check if it's a master lead
-              let subLeadBase = '';
-              if (isLegacy) {
-                const routeLeadNumber = effectiveLeadNumber.trim();
-                const isNumericRoute = /^\d+$/.test(routeLeadNumber);
-                subLeadBase = isNumericRoute ? routeLeadNumber : normalizedClient.id.toString().replace('legacy_', '');
-              } else {
-                if (normalizedClient.id && !normalizedClient.id.toString().startsWith('legacy_')) {
-                  subLeadBase = normalizedClient.id.toString();
-                } else if (normalizedClient.lead_number && String(normalizedClient.lead_number).trim() !== '') {
-                  const trimmed = String(normalizedClient.lead_number).trim();
-                  subLeadBase = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-                }
-              }
-              if (subLeadBase) {
-                // Run fetchSubLeads immediately (non-blocking) - use setTimeout to ensure function is available
-                setTimeout(() => {
-                  fetchSubLeads(subLeadBase).catch(err => console.error('Error fetching subleads:', err));
-                }, 0);
-              }
-            }
+            // Master-lead badge is resolved by the effect that runs after selectedClient commits.
+            // Do not also call fetchSubLeads here: that call closed over the previous client and
+            // its empty answer landed last, so the badge stayed hidden until a full refresh.
 
             // Clear flag immediately since fetch completed and client is set
             // Also set a timeout as backup in case of race conditions
@@ -11225,6 +11204,8 @@ const Clients: React.FC<ClientsProps> = ({
   // header state. Without it an older answer — nearly always "not a master lead" — lands last and
   // the master button disappears until the page is reloaded.
   const subLeadsRequestRef = useRef(0);
+  const selectedClientIdRef = useRef('');
+  selectedClientIdRef.current = selectedClient?.id != null ? String(selectedClient.id) : '';
 
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
@@ -11235,6 +11216,8 @@ const Clients: React.FC<ClientsProps> = ({
     // Commit a resolved answer: show it and remember it, so the button is instant next time round.
     const commit = (leads: any[]) => {
       if (!isCurrentRequest()) return leads;
+      const liveClientId = selectedClientIdRef.current;
+      if (requestLeadId && liveClientId && requestLeadId !== liveClientId) return leads;
       if (requestLeadId) {
         masterChildrenCache.set(requestLeadId, { isMasterLead: leads.length > 0, subLeads: leads });
       }
@@ -11824,9 +11807,11 @@ const Clients: React.FC<ClientsProps> = ({
       leadNumber: selectedClient?.lead_number
     });
 
-    // Don't fetch subleads if current client is a traditional or linked-only sublead
+    // Don't fetch subleads if current client is a traditional or linked-only sublead.
+    // Bump the request ticket so an in-flight lookup for the previous lead cannot paint its badge here.
     if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
       if (CLIENTS_DEBUG) console.log('🔍 Clients.tsx - Client is a sub-lead, not fetching sub-leads');
+      subLeadsRequestRef.current += 1;
       setSubLeads([]);
       setIsMasterLead(false);
       return;
@@ -11839,6 +11824,7 @@ const Clients: React.FC<ClientsProps> = ({
       )
     ) {
       if (CLIENTS_DEBUG) console.log('🔍 Clients.tsx - Client is linked-only, not fetching as master');
+      subLeadsRequestRef.current += 1;
       setSubLeads([]);
       setIsMasterLead(false);
       return;
@@ -11890,6 +11876,7 @@ const Clients: React.FC<ClientsProps> = ({
       }
       void fetchSubLeads(subLeadBase);
     } else {
+      subLeadsRequestRef.current += 1;
       setSubLeads([]);
       setIsMasterLead(false);
     }

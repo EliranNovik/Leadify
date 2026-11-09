@@ -17,6 +17,7 @@ import {
   FaceSmileIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  EllipsisHorizontalIcon,
   SparklesIcon,
   ExclamationTriangleIcon,
   PlayIcon,
@@ -39,6 +40,7 @@ import {
   BoldIcon,
   UnderlineIcon,
 } from '@heroicons/react/24/outline';
+import { Paperclip, SendHorizontal } from 'lucide-react';
 import { BookmarkIcon as BookmarkIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -285,34 +287,20 @@ const getMessageDirection = (message: any): 'rtl' | 'ltr' => {
   return 'ltr';
 };
 
-// Format time with date and time - shows full date and time
+// Today shows the time only. Any other day shows "14 Nov".
 const formatTime = (timestamp: string) => {
   const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
   const now = new Date();
-  
-  // Compare dates by calendar day (ignore time) to properly detect today/yesterday
-  const dateStartOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const nowStartOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const diffDays = Math.round((nowStartOfDay.getTime() - dateStartOfDay.getTime()) / (1000 * 60 * 60 * 24));
-
-  const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-  if (diffDays === 0) {
-    // Today: show "Today at HH:MM"
-    return `Today at ${timeString}`;
-  } else if (diffDays === 1) {
-    // Yesterday: show "Yesterday at HH:MM"
-    return `Yesterday at ${timeString}`;
-  } else if (diffDays <= 7) {
-    // Within a week: show weekday, date, and time
-    const weekday = date.toLocaleDateString([], { weekday: 'short' });
-    const monthDay = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    return `${weekday}, ${monthDay} at ${timeString}`;
-  } else {
-    // Older: show full date and time
-    const dateString = date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
-    return `${dateString} at ${timeString}`;
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (isToday) {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
+  const month = date.toLocaleDateString('en-GB', { month: 'short' });
+  return `${date.getDate()} ${month}`;
 };
 
 // Format date separator
@@ -1980,7 +1968,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   );
   const [showCompose, setShowCompose] = useState(false);
   const [showEmailSentModal, setShowEmailSentModal] = useState(false);
-  const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('all');
+  const [composeSideFilter, setComposeSideFilter] = useState<'all' | 'incoming' | 'outgoing'>('incoming');
   const [composeSideSearch, setComposeSideSearch] = useState('');
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBodyState] = useState('');
@@ -2050,6 +2038,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [leadContacts]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
   const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
+  const [mobileComposeToolsOpen, setMobileComposeToolsOpen] = useState(false);
+  const mobileComposeToolsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!mobileComposeToolsOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!mobileComposeToolsRef.current?.contains(event.target as Node)) {
+        setMobileComposeToolsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [mobileComposeToolsOpen]);
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
   const [composeLinkUrl, setComposeLinkUrl] = useState('');
   const [insertingComposeContractLink, setInsertingComposeContractLink] = useState(false);
@@ -6523,6 +6523,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           contact_id: e.contact_id,
           sender_name: e.sender_name || null,
           sender_display_name: senderDisplayName,
+          is_read: e.is_read === true,
         };
       });
 
@@ -7350,6 +7351,151 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     client.topic,
     selectedContactForEmail,
   ]);
+
+  const openReplyCompose = useCallback(() => {
+    const emailToUse = selectedContactForEmail?.contact.email || client.email;
+    const draft = buildComposeDraft(
+      selectedEmailForView
+        ? {
+            id: selectedEmailForView.id,
+            message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+            subject: selectedEmailForView.subject,
+            body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+            body_preview: selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+            sender_email: selectedEmailForView.from,
+            sender_name:
+              selectedEmailForView.sender_display_name || selectedEmailForView.sender_name,
+            recipient_list: selectedEmailForView.to,
+            sent_at: selectedEmailForView.date,
+            direction: selectedEmailForView.direction,
+          }
+        : null,
+      'reply',
+      { userEmail, fallbackTo: emailToUse },
+    );
+    setComposeToRecipients(draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse));
+    setComposeCcRecipients(draft.cc);
+    setComposeToInput('');
+    setComposeCcInput('');
+    setComposeRecipientError(null);
+    setShowComposeLinkForm(false);
+    setComposeLinkLabel('');
+    setComposeLinkUrl('');
+    setSelectedComposeTemplateId(null);
+    setComposeTemplateSearch('');
+    setComposeTemplateLanguageFilter(null);
+    setComposeTemplatePlacementFilter(null);
+    setComposeSubject(
+      draft.subject ||
+        `[${client.lead_number}] - ${
+          selectedContactForEmail?.contact.name || client.name
+        } - ${client.topic || ''}`,
+    );
+    setComposeBody(draft.body);
+    setComposeAttachments([]);
+    setShowCompose(true);
+  }, [
+    client.email,
+    client.lead_number,
+    client.name,
+    client.topic,
+    selectedContactForEmail,
+    selectedEmailForView,
+    userEmail,
+  ]);
+
+  const openReplyAllCompose = useCallback(() => {
+    if (!selectedEmailForView) {
+      toast.error('Select an email first');
+      return;
+    }
+    const emailToUse = selectedContactForEmail?.contact.email || client.email;
+    const draft = buildComposeDraft(
+      {
+        id: selectedEmailForView.id,
+        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+        subject: selectedEmailForView.subject,
+        body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+        body_preview: selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+        sender_email: selectedEmailForView.from,
+        recipient_list: selectedEmailForView.to,
+        sent_at: selectedEmailForView.date,
+        direction: selectedEmailForView.direction,
+      },
+      'reply_all',
+      { userEmail, fallbackTo: emailToUse },
+    );
+    setComposeToRecipients(draft.to);
+    setComposeCcRecipients(draft.cc);
+    setComposeToInput('');
+    setComposeCcInput('');
+    setComposeRecipientError(null);
+    setComposeSubject(draft.subject);
+    setComposeBody(draft.body);
+    setComposeAttachments([]);
+    setShowCompose(true);
+  }, [client.email, selectedContactForEmail, selectedEmailForView, userEmail]);
+
+  const openForwardCompose = useCallback(() => {
+    if (!selectedEmailForView) {
+      toast.error('Select an email first');
+      return;
+    }
+    const draft = buildComposeDraft(
+      {
+        id: selectedEmailForView.id,
+        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+        subject: selectedEmailForView.subject,
+        body_html: selectedEmailForView.body || selectedEmailForView.body_html,
+        body_preview: selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
+        sender_email: selectedEmailForView.from,
+        recipient_list: selectedEmailForView.to,
+        sent_at: selectedEmailForView.date,
+        direction: selectedEmailForView.direction,
+      },
+      'forward',
+      { userEmail },
+    );
+    setComposeToRecipients([]);
+    setComposeCcRecipients([]);
+    setComposeToInput('');
+    setComposeCcInput('');
+    setComposeRecipientError(null);
+    setComposeSubject(draft.subject);
+    setComposeBody(draft.body);
+    setComposeAttachments([]);
+    setShowCompose(true);
+  }, [selectedEmailForView, userEmail]);
+
+  const deleteSelectedEmail = useCallback(async () => {
+    if (!selectedEmailForView) {
+      toast.error('Select an email to delete');
+      return;
+    }
+    if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
+      return;
+    }
+    const filter = resolveEmailDeleteFilter({
+      id: selectedEmailForView.id,
+      message_id: selectedEmailForView.message_id || selectedEmailForView.id,
+    });
+    if (!filter) {
+      toast.error('Could not resolve email id for delete');
+      return;
+    }
+    try {
+      let query = supabase.from('emails').delete();
+      query = filter.by === 'id' ? query.eq('id', filter.value) : query.eq('message_id', filter.value);
+      const { error } = await query;
+      if (error) throw error;
+      setEmails((prev) => prev.filter((m) => String(m.id) !== String(selectedEmailForView.id)));
+      setSelectedEmailForView(null);
+      toast.success('Email deleted');
+    } catch (error) {
+      console.error('Error deleting email:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to delete email');
+    }
+  }, [selectedEmailForView]);
 
   const pipelineEmailActionKeyRef = useRef<string | null>(null);
   const pendingFlaggedEmailRef = useRef<HandlerEmailFlagTarget | null>(null);
@@ -9742,196 +9888,146 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           onReplyMessage={(message) => openComposeForEmailMessage(message, 'reply')}
           onForwardMessage={(message) => openComposeForEmailMessage(message, 'forward')}
           onDeleteMessage={(message) => void deleteEmailMessage(message)}
+          mobileSearchActions={
+            isMobile && !showCompose ? (
+              <div className="dropdown dropdown-top dropdown-end">
+                <button
+                  type="button"
+                  tabIndex={0}
+                  className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-primary text-white shadow-lg"
+                  title="New mail or reply"
+                  aria-label="New mail or reply"
+                >
+                  <PlusIcon className="h-7 w-7" />
+                </button>
+                <ul
+                  tabIndex={0}
+                  className="dropdown-content menu z-[80] mb-2 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+                >
+                  <li>
+                    <button
+                      type="button"
+                      className="gap-2 text-sm"
+                      onClick={(event) => {
+                        openNewEmailCompose();
+                        (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                      }}
+                    >
+                      <PlusIcon className="h-4 w-4" />
+                      New mail
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="gap-2 text-sm"
+                      onClick={(event) => {
+                        openReplyCompose();
+                        (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                      }}
+                    >
+                      <ArrowUturnLeftIcon className="h-4 w-4" />
+                      Reply
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            ) : null
+          }
           floatingActions={
             !showCompose ? (
-              <div className="flex w-full flex-wrap items-center gap-2">
+              <>
+                <div className="flex w-full items-center gap-2 md:w-auto">
                   <button
                     type="button"
                     onClick={openNewEmailCompose}
-                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
-                    title="Start a new conversation"
+                    className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1 rounded-full bg-primary px-4 text-sm font-semibold text-white shadow-sm md:flex-none md:px-5 md:shadow-lg"
+                    title="New email"
                   >
-                    <PlusIcon className="h-4 w-4" />
-                    New email
+                    <PlusIcon className="h-5 w-5 shrink-0 stroke-white text-white" strokeWidth={2.25} />
+                    New
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
-                      const draft = buildComposeDraft(
-                        selectedEmailForView
-                          ? {
-                              id: selectedEmailForView.id,
-                              message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                              subject: selectedEmailForView.subject,
-                              body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                              body_preview:
-                                selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                              sender_email: selectedEmailForView.from,
-                              sender_name:
-                                selectedEmailForView.sender_display_name ||
-                                selectedEmailForView.sender_name,
-                              recipient_list: selectedEmailForView.to,
-                              sent_at: selectedEmailForView.date,
-                              direction: selectedEmailForView.direction,
-                            }
-                          : null,
-                        'reply',
-                        { userEmail, fallbackTo: emailToUse },
-                      );
-                      setComposeToRecipients(
-                        draft.to.length > 0 ? draft.to : normaliseAddressList(emailToUse),
-                      );
-                      setComposeCcRecipients(draft.cc);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setShowComposeLinkForm(false);
-                      setComposeLinkLabel('');
-                      setComposeLinkUrl('');
-                      setSelectedComposeTemplateId(null);
-                      setComposeTemplateSearch('');
-                      setComposeTemplateLanguageFilter(null);
-                      setComposeTemplatePlacementFilter(null);
-                      setComposeSubject(
-                        draft.subject ||
-                          `[${client.lead_number}] - ${
-                            selectedContactForEmail?.contact.name || client.name
-                          } - ${client.topic || ''}`,
-                      );
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-primary btn-sm gap-1.5 border-0"
+                    onClick={openReplyCompose}
+                    className="inline-flex h-9 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-full bg-primary px-4 text-sm font-semibold text-primary-content shadow-sm md:hidden"
                   >
-                    <ArrowUturnLeftIcon className="h-4 w-4" />
+                    <ArrowUturnLeftIcon className="h-5 w-5 shrink-0 text-white" />
                     Reply
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email first');
-                        return;
-                      }
-                      const emailToUse = selectedContactForEmail?.contact.email || client.email;
-                      const draft = buildComposeDraft(
-                        {
-                          id: selectedEmailForView.id,
-                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                          subject: selectedEmailForView.subject,
-                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                          body_preview:
-                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                          sender_email: selectedEmailForView.from,
-                          recipient_list: selectedEmailForView.to,
-                          sent_at: selectedEmailForView.date,
-                          direction: selectedEmailForView.direction,
-                        },
-                        'reply_all',
-                        { userEmail, fallbackTo: emailToUse },
-                      );
-                      setComposeToRecipients(draft.to);
-                      setComposeCcRecipients(draft.cc);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setComposeSubject(draft.subject);
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
-                    disabled={!selectedEmailForView}
-                  >
-                    <ArrowUturnLeftIcon className="h-4 w-4" />
-                    Reply all
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email first');
-                        return;
-                      }
-                      const draft = buildComposeDraft(
-                        {
-                          id: selectedEmailForView.id,
-                          message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                          subject: selectedEmailForView.subject,
-                          body_html: selectedEmailForView.body || selectedEmailForView.body_html,
-                          body_preview:
-                            selectedEmailForView.bodyPreview || selectedEmailForView.body_preview,
-                          sender_email: selectedEmailForView.from,
-                          recipient_list: selectedEmailForView.to,
-                          sent_at: selectedEmailForView.date,
-                          direction: selectedEmailForView.direction,
-                        },
-                        'forward',
-                        { userEmail },
-                      );
-                      setComposeToRecipients([]);
-                      setComposeCcRecipients([]);
-                      setComposeToInput('');
-                      setComposeCcInput('');
-                      setComposeRecipientError(null);
-                      setComposeSubject(draft.subject);
-                      setComposeBody(draft.body);
-                      setComposeAttachments([]);
-                      setShowCompose(true);
-                    }}
-                    className="btn btn-ghost btn-sm gap-1.5 border-0 bg-slate-100 hover:bg-slate-200"
-                    disabled={!selectedEmailForView}
-                  >
-                    <ArrowUturnRightIcon className="h-4 w-4" />
-                    Forward
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!selectedEmailForView) {
-                        toast.error('Select an email to delete');
-                        return;
-                      }
-                      if (!window.confirm('Delete this email from the CRM? This cannot be undone.')) {
-                        return;
-                      }
-                      const filter = resolveEmailDeleteFilter({
-                        id: selectedEmailForView.id,
-                        message_id: selectedEmailForView.message_id || selectedEmailForView.id,
-                      });
-                      if (!filter) {
-                        toast.error('Could not resolve email id for delete');
-                        return;
-                      }
-                      try {
-                        let query = supabase.from('emails').delete();
-                        query =
-                          filter.by === 'id'
-                            ? query.eq('id', filter.value)
-                            : query.eq('message_id', filter.value);
-                        const { error } = await query;
-                        if (error) throw error;
-                        setEmails((prev) =>
-                          prev.filter((m) => String(m.id) !== String(selectedEmailForView.id)),
-                        );
-                        setSelectedEmailForView(null);
-                        toast.success('Email deleted');
-                      } catch (error) {
-                        console.error('Error deleting email:', error);
-                        toast.error(
-                          error instanceof Error ? error.message : 'Failed to delete email',
-                        );
-                      }
-                    }}
-                    className="btn btn-ghost btn-sm ml-auto gap-1.5 border-0 text-error hover:bg-error/10"
-                    disabled={!selectedEmailForView}
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                    Delete
-                  </button>
-              </div>
+                  <div className="dropdown dropdown-top dropdown-end ml-auto shrink-0 md:ml-0">
+                    <button
+                      type="button"
+                      tabIndex={0}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-800 shadow-sm md:shadow-lg"
+                      title="More actions"
+                      aria-label="More actions"
+                    >
+                      <EllipsisHorizontalIcon className="h-5 w-5" />
+                    </button>
+                    <ul
+                      tabIndex={0}
+                      className="dropdown-content menu z-[80] mb-2 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+                    >
+                      <li className="hidden md:block">
+                        <button
+                          type="button"
+                          className="gap-2 text-sm"
+                          onClick={(event) => {
+                            openReplyCompose();
+                            (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                          }}
+                        >
+                          <ArrowUturnLeftIcon className="h-4 w-4" />
+                          Reply
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          type="button"
+                          className="gap-2 text-sm"
+                          disabled={!selectedEmailForView}
+                          onClick={(event) => {
+                            openReplyAllCompose();
+                            (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                          }}
+                        >
+                          <ArrowUturnLeftIcon className="h-4 w-4" />
+                          Reply all
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          type="button"
+                          className="gap-2 text-sm"
+                          disabled={!selectedEmailForView}
+                          onClick={(event) => {
+                            openForwardCompose();
+                            (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                          }}
+                        >
+                          <ArrowUturnRightIcon className="h-4 w-4" />
+                          Forward
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          type="button"
+                          className="gap-2 text-sm text-error"
+                          disabled={!selectedEmailForView}
+                          onClick={(event) => {
+                            void deleteSelectedEmail();
+                            (event.currentTarget.closest('.dropdown')?.querySelector('button') as HTMLButtonElement | null)?.blur();
+                          }}
+                        >
+                          <TrashIcon className="h-4 w-4" />
+                          Delete
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </>
             ) : null
           }
         >
@@ -9941,6 +10037,37 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
                   <div className="relative z-[10003] flex h-full w-full overflow-hidden bg-white shadow-2xl">
                     {/* Left: email list sidepanel — match main email modal */}
+                    <nav
+                      className="hidden h-full w-36 shrink-0 flex-col gap-1 border-r border-slate-200 bg-slate-100 px-2 py-3 md:flex"
+                      aria-label="Mail folders"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setComposeSideFilter('incoming')}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-semibold ${
+                          composeSideFilter !== 'outgoing'
+                            ? 'bg-[#4218CC] text-white'
+                            : 'text-slate-600 hover:bg-slate-200'
+                        }`}
+                        aria-pressed={composeSideFilter !== 'outgoing'}
+                      >
+                        <InboxIcon className="h-4 w-4 shrink-0" />
+                        Inbox
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setComposeSideFilter('outgoing')}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-semibold ${
+                          composeSideFilter === 'outgoing'
+                            ? 'bg-[#4218CC] text-white'
+                            : 'text-slate-600 hover:bg-slate-200'
+                        }`}
+                        aria-pressed={composeSideFilter === 'outgoing'}
+                      >
+                        <PaperAirplaneIcon className="h-4 w-4 shrink-0" />
+                        Sent
+                      </button>
+                    </nav>
                     <aside className="hidden md:flex w-[22rem] xl:w-96 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100">
                       <div className="shrink-0 px-3 pt-3 pb-2">
                         <div className="relative w-full rounded-xl bg-white shadow-sm">
@@ -9997,6 +10124,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               },
                             ).map((group) => {
                                 const message = group.latest;
+                                const subjectUnread = group.messages.some((item) => {
+                                  const outgoing =
+                                    isOfficeEmail(item.from) || item.direction === 'outgoing';
+                                  return !outgoing && item.is_read !== true;
+                                });
                                 const outgoing =
                                   isOfficeEmail(message.from) || message.direction === 'outgoing';
                                 const preview = String(
@@ -10038,7 +10170,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   <li key={group.key}>
                                     <button
                                       type="button"
-                                      className={`relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition ${
+                                      className={`relative flex w-full gap-2 rounded-xl bg-white px-3 py-2.5 text-left shadow-sm transition ${
                                         isSelected
                                           ? 'ring-2 ring-[#4218CC]/35'
                                           : 'hover:shadow-md'
@@ -10070,48 +10202,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                       )}
                                       <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-2">
-                                          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900">
+                                          <span className="min-w-0 flex-1 truncate text-sm font-normal text-slate-900">
                                             {displayName}
                                           </span>
-                                          <time className="shrink-0 text-[11px] text-slate-400">
+                                          <time className="shrink-0 text-[11px] tabular-nums text-black">
                                             {formatTime(message.date)}
                                           </time>
                                           <span
-                                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums ${
-                                              group.count > 1
-                                                ? 'bg-slate-100 text-slate-600'
-                                                : 'invisible'
+                                            className={`h-2 w-2 shrink-0 rounded-full bg-[#4218CC] ${
+                                              group.count > 1 ? '' : 'invisible'
                                             }`}
                                             title={
                                               group.count > 1
                                                 ? `${group.count} messages in this conversation`
                                                 : undefined
                                             }
-                                            aria-hidden={group.count <= 1}
-                                          >
-                                            {group.count > 1 ? group.count : 0}
-                                          </span>
+                                            aria-hidden
+                                          />
                                         </div>
-                                        <p className="mt-0.5 truncate text-sm font-bold text-slate-800">
+                                        <p
+                                          className={`mt-0.5 truncate text-sm text-slate-800 ${
+                                            subjectUnread ? 'font-bold' : 'font-normal'
+                                          }`}
+                                        >
                                           {displayConversationSubject(message.subject)}
                                         </p>
-                                        <p className="mt-0.5 truncate text-xs text-slate-500">
+                                        <p className="mt-0.5 truncate text-xs font-normal text-slate-500">
                                           {preview || '—'}
                                         </p>
                                       </div>
-                                      <span
-                                        className={`pointer-events-none absolute bottom-1.5 left-2.5 inline-flex items-center justify-center ${
-                                          outgoing ? 'text-blue-600' : 'text-emerald-600'
-                                        }`}
-                                        title={outgoing ? 'Sent' : 'Inbox'}
-                                        aria-label={outgoing ? 'Sent' : 'Inbox'}
-                                      >
-                                        {outgoing ? (
-                                          <PaperAirplaneIcon className="h-5 w-5" />
-                                        ) : (
-                                          <InboxIcon className="h-5 w-5" />
-                                        )}
-                                      </span>
                                     </button>
                                   </li>
                                 );
@@ -10119,35 +10238,252 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           </ul>
                         )}
                       </div>
-                      <div className="shrink-0 px-3 pb-3 pt-1">
-                        <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
-                          {(
-                            [
-                              ['all', 'All', EnvelopeIcon],
-                              ['incoming', 'Inbox', InboxIcon],
-                              ['outgoing', 'Sent', PaperAirplaneIcon],
-                            ] as const
-                          ).map(([key, label, Icon]) => (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => setComposeSideFilter(key)}
-                              className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
-                                composeSideFilter === key
-                                  ? 'bg-[#4218CC] text-white shadow-sm'
-                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                              }`}
-                            >
-                              <Icon className="h-3.5 w-3.5 shrink-0" />
-                              {label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
                     </aside>
 
                     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-slate-100">
-                    <div className="absolute right-3 top-3 z-10 flex items-center gap-2 md:right-4">
+                    <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 bg-slate-100 px-3 py-2 md:inset-x-auto md:right-4 md:top-3 md:bg-transparent md:px-0 md:py-0">
+                      <div className="relative md:hidden" ref={mobileComposeToolsRef}>
+                        <button
+                          type="button"
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-800 shadow-sm"
+                          aria-label="Compose actions"
+                          aria-expanded={mobileComposeToolsOpen}
+                          onClick={() => setMobileComposeToolsOpen((open) => !open)}
+                        >
+                          <EllipsisHorizontalIcon className="h-5 w-5" />
+                        </button>
+                        {mobileComposeToolsOpen ? (
+                          <div className="absolute left-0 top-full z-30 mt-2 max-h-[70vh] w-[min(18rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                void handleAISuggestions();
+                                setMobileComposeToolsOpen(false);
+                              }}
+                              disabled={isLoadingAI || !client}
+                            >
+                              <SparklesIcon className="h-4 w-4" />
+                              {composeBodyEmpty ? 'Create with AI' : 'Improve with AI'}
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50"
+                              onClick={() => {
+                                setShowComposeLinkForm((prev) => !prev);
+                                setMobileComposeToolsOpen(false);
+                              }}
+                              disabled={sending}
+                            >
+                              <LinkIcon className="h-4 w-4" />
+                              Add link
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                handleInsertComposeMeetingSummary();
+                                setMobileComposeToolsOpen(false);
+                              }}
+                              disabled={sending || !composeMeetingSummary.trim()}
+                            >
+                              <DocumentTextIcon className="h-4 w-4" />
+                              Summary
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                void handleInsertComposeAgreementLink();
+                                setMobileComposeToolsOpen(false);
+                              }}
+                              disabled={sending || insertingComposeContractLink || !client}
+                            >
+                              <DocumentCheckIcon className="h-4 w-4" />
+                              Contract
+                            </button>
+                            <button
+                              type="button"
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              onClick={() => {
+                                handleOpenComposeContactsModal();
+                                setMobileComposeToolsOpen(false);
+                              }}
+                              disabled={sending || !client}
+                            >
+                              <UserPlusIcon className="h-4 w-4" />
+                              Add contacts
+                            </button>
+                            <div className="my-1 border-t border-slate-100" />
+                            <div className="flex flex-wrap items-center gap-1.5 px-1 py-1">
+                              <button
+                                type="button"
+                                className={!composeBodyIsRTL ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                                title="Left to right"
+                                disabled={sending || !composeEditor}
+                                onClick={() => {
+                                  composeDirUserOverrideRef.current = true;
+                                  setComposeBodyIsRTL(false);
+                                  composeEditor?.chain().focus().setTextAlign('left').run();
+                                }}
+                              >
+                                <Bars3BottomLeftIcon className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className={composeBodyIsRTL ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                                title="Right to left"
+                                disabled={sending || !composeEditor}
+                                onClick={() => {
+                                  composeDirUserOverrideRef.current = true;
+                                  setComposeBodyIsRTL(true);
+                                  composeEditor?.chain().focus().setTextAlign('right').run();
+                                }}
+                              >
+                                <Bars3BottomRightIcon className="h-4 w-4" />
+                              </button>
+                              <select
+                                className="h-9 shrink-0 rounded-full border-0 bg-slate-100 px-2.5 text-xs font-medium text-gray-600"
+                                title="Text size"
+                                disabled={sending || !composeEditor}
+                                value={
+                                  COMPOSE_FONT_SIZES.includes(
+                                    String(composeEditor?.getAttributes('textStyle').fontSize || '') as (typeof COMPOSE_FONT_SIZES)[number],
+                                  )
+                                    ? String(composeEditor?.getAttributes('textStyle').fontSize)
+                                    : ''
+                                }
+                                onChange={(event) => {
+                                  if (!composeEditor) return;
+                                  const next = event.target.value;
+                                  if (!next) {
+                                    composeEditor.chain().focus().unsetFontSize().run();
+                                    return;
+                                  }
+                                  composeEditor.chain().focus().setFontSize(next).run();
+                                }}
+                              >
+                                <option value="">Size</option>
+                                {COMPOSE_FONT_SIZES.map((size) => (
+                                  <option key={size} value={size}>
+                                    {size.replace('px', '')}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                className={composeEditor?.isActive('bold') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                                title="Bold"
+                                disabled={sending || !composeEditor}
+                                onClick={() => composeEditor?.chain().focus().toggleBold().run()}
+                              >
+                                <BoldIcon className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className={composeEditor?.isActive('underline') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                                title="Underline"
+                                disabled={sending || !composeEditor}
+                                onClick={() => composeEditor?.chain().focus().toggleUnderline().run()}
+                              >
+                                <UnderlineIcon className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                className={composeEditor?.isActive('highlight') ? COMPOSE_FORMAT_BTN_ACTIVE_CLASS : COMPOSE_FORMAT_BTN_CLASS}
+                                title="Highlight"
+                                disabled={sending || !composeEditor}
+                                onClick={() => composeEditor?.chain().focus().toggleHighlight({ color: HIGHLIGHT_YELLOW }).run()}
+                              >
+                                <span className="rounded-sm bg-[#fef08a] px-1 text-[11px] font-bold leading-none text-gray-800">A</span>
+                              </button>
+                            </div>
+                            <div className="my-1 border-t border-slate-100" />
+                            <div className="px-1 py-1">
+                              <input
+                                type="text"
+                                className="input input-bordered input-sm w-full bg-white"
+                                placeholder="Templates..."
+                                value={composeTemplateSearch}
+                                onChange={(event) => setComposeTemplateSearch(event.target.value)}
+                                disabled={sending}
+                              />
+                              <div className="mt-2 flex gap-2">
+                                <select
+                                  className="select select-bordered select-xs min-w-0 flex-1 text-xs"
+                                  value={composeTemplateLanguageFilter || ''}
+                                  onChange={(e) => setComposeTemplateLanguageFilter(e.target.value || null)}
+                                >
+                                  <option value="">Language</option>
+                                  {availableLanguages.map((lang) => (
+                                    <option key={lang.id} value={lang.id}>
+                                      {lang.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  className="select select-bordered select-xs min-w-0 flex-1 text-xs"
+                                  value={composeTemplatePlacementFilter ?? ''}
+                                  onChange={(e) =>
+                                    setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null)
+                                  }
+                                >
+                                  <option value="">Placement</option>
+                                  {availablePlacements.map((placement) => (
+                                    <option key={placement.id} value={placement.id}>
+                                      {placement.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="mt-2 max-h-40 overflow-y-auto">
+                                {filteredComposeTemplates.length === 0 ? (
+                                  <div className="px-1 py-2 text-xs text-gray-500">No templates found</div>
+                                ) : (
+                                  filteredComposeTemplates.map((template) => (
+                                    <button
+                                      key={template.id}
+                                      type="button"
+                                      className="block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-50"
+                                      onClick={() => {
+                                        void handleComposeTemplateSelect(template);
+                                        setMobileComposeToolsOpen(false);
+                                      }}
+                                    >
+                                      {template.name}
+                                    </button>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="ml-auto flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="inline-flex h-9 w-9 items-center justify-center text-slate-800 disabled:opacity-40 md:hidden"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={sending}
+                          title="Attach files"
+                          aria-label="Attach files"
+                        >
+                          <Paperclip className="h-6 w-6" strokeWidth={1.75} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSendEmail}
+                          disabled={sending || composeBodyEmpty}
+                          className="inline-flex h-9 w-9 items-center justify-center text-black disabled:opacity-40 md:hidden"
+                          title="Send"
+                          aria-label="Send"
+                        >
+                          {sending ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : (
+                            <SendHorizontal className="h-6 w-6" strokeWidth={1.75} />
+                          )}
+                        </button>
                       <button
                         type="button"
                         className="inline-flex items-center gap-2 bg-transparent text-black hover:opacity-70 disabled:opacity-50"
@@ -10166,9 +10502,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       >
                         <XMarkIcon className="w-5 h-5" />
                       </button>
+                      </div>
                     </div>
-                    <div className="m-4 mt-12 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-                    <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4 md:px-6">
+                    <div className="mx-1.5 mb-2 mt-14 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm md:m-4 md:mt-12">
+                    <div className="flex-1 space-y-4 overflow-x-hidden overflow-y-auto px-3 py-4 md:px-6 md:py-5">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <label className="font-semibold text-sm">To</label>
@@ -10302,7 +10639,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </ComposeBodyWithSignature>
                   
                   </div>
-                    <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
+                    <div
+                      id="compose-signature-dock"
+                      className="shrink-0 overflow-hidden border-t border-slate-100 bg-white md:hidden"
+                    />
+                    <div className="hidden flex-wrap items-center justify-between gap-4 border-t border-white/40 bg-white/55 px-4 py-4 shadow-[0_-4px_24px_rgba(15,23,42,0.06)] backdrop-blur-xl backdrop-saturate-150 md:flex md:px-6 lg:px-10 supports-[backdrop-filter]:bg-white/40">
                       {/* Left side - Buttons and Template Filters */}
                       <div className="flex items-center gap-4 flex-wrap">
                         {/* Circle action buttons */}

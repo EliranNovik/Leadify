@@ -55,7 +55,7 @@ import {
   markScrollToFlaggedEmail,
 } from '../../lib/handlerEmailFlag';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
-import { classifyHandlerBucket } from '../../lib/handlerCaseBuckets';
+import { classifyHandlerBucket, readPipelineActiveType } from '../../lib/handlerCaseBuckets';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import HandlerAssignedDateBadge from './HandlerAssignedDateBadge';
 import {
@@ -415,10 +415,7 @@ const HandlerPipelineView: React.FC<Props> = ({
 
       for (const lead of newResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const isInactive = lead.unactivated_at != null;
         const bucketId = classifyBucket(stageId, activeHandlerType, isInactive);
         if (!bucketId) continue;
@@ -450,7 +447,7 @@ const HandlerPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive,
           isNewLead: true,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           handlerAssignedDate: assignment?.handlerAssignedDate || null,
           firstHandlerAssignedDate: assignment?.firstHandlerAssignedDate || null,
           previousHandlerName: assignment?.previousHandlerName || null,
@@ -464,10 +461,7 @@ const HandlerPipelineView: React.FC<Props> = ({
 
       for (const lead of legacyResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const isInactive = Number(lead.status) === 10;
         const bucketId = classifyBucket(stageId, activeHandlerType, isInactive);
         if (!bucketId) continue;
@@ -499,7 +493,7 @@ const HandlerPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive,
           isNewLead: false,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           handlerAssignedDate: assignment?.handlerAssignedDate || null,
           firstHandlerAssignedDate: assignment?.firstHandlerAssignedDate || null,
           previousHandlerName: assignment?.previousHandlerName || null,
@@ -595,7 +589,7 @@ const HandlerPipelineView: React.FC<Props> = ({
         void toggleHandlerRetention(row, nextType)
           .then(() => {
             const label =
-              nextType === 1 ? 'Retention' : nextType === 3 ? 'Client Support' : 'Handler';
+              nextType === 1 ? 'Completion' : nextType === 3 ? 'Case Monitoring' : 'Handler';
             toast.success(`Active role set to ${label}`);
             return load({ silent: true });
           })

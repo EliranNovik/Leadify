@@ -232,9 +232,9 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         { value: 'handler', label: 'Handler' },
         { value: 'helper', label: 'Helper' },
         { value: 'expert', label: 'Expert' },
-        { value: 'retainer_handler', label: 'Retention Handler' },
+        { value: 'retainer_handler', label: 'Completion Coordinator' },
         { value: 'helper_handler', label: 'Helper Handler' },
-        { value: 'client_support', label: 'Client Support' },
+        { value: 'client_support', label: 'Case Monitoring Coordinator' },
     ];
 
     const roleLabels: { [key: string]: string } = {
@@ -244,9 +244,9 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         handler: 'Handler',
         helper: 'Helper',
         expert: 'Expert',
-        retainer_handler: 'Retention Handler',
+        retainer_handler: 'Completion Coordinator',
         helper_handler: 'Helper Handler',
-        client_support: 'Client Support',
+        client_support: 'Case Monitoring Coordinator',
     };
     return (
         <>
@@ -350,7 +350,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         <button
                             type="button"
                             className="btn btn-outline btn-sm rounded-full px-3 text-sm flex-shrink-0 border-primary/30"
-                            title="Set whether handler, retention, or client support is active on the case"
+                            title="Set whether handler, completion, or case monitoring is active on the case"
                             onClick={() => onOpenActiveHandlerModal?.()}
                             disabled={selectedLeadsCount === 0}
                         >
@@ -478,7 +478,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         <button
                             type="button"
                             className="btn btn-outline btn-sm shrink-0 whitespace-nowrap rounded-full px-3 text-sm border-primary/30"
-                            title="Set whether handler, retention, or client support is active on the case"
+                            title="Set whether handler, completion, or case monitoring is active on the case"
                             onClick={() => onOpenActiveHandlerModal?.()}
                             disabled={selectedLeadsCount === 0}
                         >

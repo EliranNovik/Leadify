@@ -37,6 +37,11 @@ import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import CasePipelineView, { type CasePipelineRoleTab } from './CasePipelineView';
 import PipelineRoleTabs, { type PipelineRoleTab } from './pipeline/PipelineRoleTabs';
+import {
+  PIPELINE_TAB_LABELS,
+  isMoreHandlingPipelineTab,
+  moreHandlingPipelineByTab,
+} from './pipeline/pipelineUi';
 import ExpertPipelineView from './pipeline/ExpertPipelineView';
 import HandlerPipelineView from './pipeline/HandlerPipelineView';
 import RetentionHandlerPipelineView from './pipeline/RetentionHandlerPipelineView';
@@ -432,12 +437,7 @@ const PipelinePage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [caseRoleCounts, setCaseRoleCounts] = useState({ manager: 0, helper: 0 });
-  const [extraRoleCounts, setExtraRoleCounts] = useState<{
-    expert: number | null;
-    handler: number | null;
-    retention: number | null;
-    support: number | null;
-  }>({
+  const [extraRoleCounts, setExtraRoleCounts] = useState<Partial<Record<PipelineRoleTab, number | null>>>({
     expert: null,
     handler: null,
     retention: null,
@@ -501,6 +501,13 @@ const PipelinePage: React.FC = () => {
   const handleSupportCount = useCallback((count: number) => {
     setExtraRoleCounts((prev) => (prev.support === count ? prev : { ...prev, support: count }));
   }, []);
+
+  const handleOwnedCount = useCallback((count: number) => {
+    setExtraRoleCounts((prev) => {
+      if (!isMoreHandlingPipelineTab(activeTab)) return prev;
+      return prev[activeTab] === count ? prev : { ...prev, [activeTab]: count };
+    });
+  }, [activeTab]);
   
   // Helper to load persisted state for a key based on pipelineMode (needs mode as param for initial load)
   const loadPersistedStateForMode = <T,>(mode: string, baseKey: string, defaultValue: T): T => {
@@ -5391,19 +5398,21 @@ const PipelinePage: React.FC = () => {
             <ChartBarIcon className="w-8 h-8 text-primary" />
             {isCaseTab
               ? 'Case Pipeline'
-              : activeTab === 'expert'
-                ? 'Expert Pipeline'
-                : activeTab === 'handler'
-                  ? 'Handler Pipeline'
-                  : activeTab === 'retention'
-                    ? 'Retention Pipeline'
-                    : activeTab === 'support'
-                      ? 'Client Support Pipeline'
-                  : showSignedAgreements
-                    ? 'Signed Agreements'
-                    : pipelineMode === 'scheduler'
-                      ? 'Scheduler Pipeline'
-                      : 'Closer Pipeline'}
+              : isMoreHandlingPipelineTab(activeTab)
+                ? `${PIPELINE_TAB_LABELS[activeTab]} Pipeline`
+                : activeTab === 'expert'
+                  ? 'Expert Pipeline'
+                  : activeTab === 'handler'
+                    ? 'Handler Pipeline'
+                    : activeTab === 'retention'
+                      ? 'Retention Pipeline'
+                      : activeTab === 'support'
+                        ? 'Case Monitoring Pipeline'
+                        : showSignedAgreements
+                          ? 'Signed Agreements'
+                          : pipelineMode === 'scheduler'
+                            ? 'Scheduler Pipeline'
+                            : 'Closer Pipeline'}
           </h1>
 
           <PipelineRoleTabs
@@ -5414,10 +5423,7 @@ const PipelinePage: React.FC = () => {
               scheduler: modeCounts.scheduler,
               manager: caseRoleCounts.manager,
               helper: caseRoleCounts.helper,
-              expert: extraRoleCounts.expert,
-              handler: extraRoleCounts.handler,
-              retention: extraRoleCounts.retention,
-              support: extraRoleCounts.support,
+              ...extraRoleCounts,
             }}
             blockedTabs={isLoading && isOwnPipelineTab ? ['closer', 'scheduler'] : []}
           />
@@ -5549,6 +5555,21 @@ const PipelinePage: React.FC = () => {
         <ClientSupportPipelineView
           key={pipelineViewIdentityKey(viewAsForPipeline)}
           onCountChange={handleSupportCount}
+          viewAs={viewAsForPipeline}
+          selectedLeadId={railLead ? String(railLead.id) : null}
+          selectedLeadIds={pickedLeadIds}
+          picking={leadPicking}
+          multiSelect={leadMultiSelect}
+          onSelectLead={handlePipelineLeadChosen}
+          refreshToken={stageRefreshToken}
+        />
+      ) : isMoreHandlingPipelineTab(activeTab) ? (
+        <ClientSupportPipelineView
+          key={`${pipelineViewIdentityKey(viewAsForPipeline)}-${activeTab}`}
+          ownedFilterKey={activeTab}
+          ownedColumn={moreHandlingPipelineByTab(activeTab)!.column}
+          ownedActiveType={moreHandlingPipelineByTab(activeTab)!.activeType}
+          onCountChange={handleOwnedCount}
           viewAs={viewAsForPipeline}
           selectedLeadId={railLead ? String(railLead.id) : null}
           selectedLeadIds={pickedLeadIds}

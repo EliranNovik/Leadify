@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -51,9 +51,13 @@ import {
 import { BookmarkIcon as BookmarkIconSolid, CheckIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import {
-    normalizeActiveHandlerType,
-    type ActiveHandlerType,
-} from '../lib/handlerCaseBuckets';
+    employeeIdOnLead,
+    handlingRoleById,
+    handlingStageIdForActiveType,
+    partitionHandlingRoles,
+    readHandlingActiveType,
+} from '../lib/handlingRoles';
+import HandlingStageChip from './HandlingStageChip';
 import {
     prefetchEmployeePhotos,
     resolveEmployeePhotoUrl,
@@ -298,6 +302,48 @@ const TEAM_ROLE_LABEL =
 /** Preferred Client Support assignee — pinned at top of the header assign dropdown. */
 const CLIENT_SUPPORT_SUGGESTED_NAME = 'Lior';
 const CLIENT_HEADER_INNER_PANEL = CLIENT_HEADER_CARD;
+
+/** Green outline that draws once around the active-role photo, then stays. */
+function ActiveRolePhotoRing({
+    drawNonce,
+    children,
+}: {
+    drawNonce: number;
+    children: React.ReactNode;
+}) {
+    return (
+        <div className="relative shrink-0 overflow-visible">
+            <svg
+                className="pointer-events-none absolute -inset-[5px] z-0 h-[calc(100%+10px)] w-[calc(100%+10px)] -rotate-90 [filter:drop-shadow(0_0_2.5px_rgba(16,185,129,0.45))]"
+                viewBox="0 0 100 100"
+                aria-hidden
+            >
+                <circle
+                    key={drawNonce}
+                    cx="50"
+                    cy="50"
+                    r="44"
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="3.25"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    shapeRendering="geometricPrecision"
+                    pathLength="100"
+                    strokeDasharray="100"
+                    strokeDashoffset={drawNonce > 0 ? undefined : 0}
+                    className={drawNonce > 0 ? 'animate-handler-ring-draw' : undefined}
+                />
+            </svg>
+            <div className="relative z-[1] rounded-full bg-white p-[3px] shadow-[0_0_14px_rgba(16,185,129,0.28)] dark:bg-base-100">
+                {children}
+            </div>
+            <div className="absolute -right-0.5 -top-0.5 z-[2] flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-white dark:ring-base-100">
+                <CheckIcon className="h-2.5 w-2.5 text-white" aria-hidden />
+            </div>
+        </div>
+    );
+}
 
 /** Stable avatar for handling menus — avoids remount/reload when ClientHeader re-renders. */
 const HandlingMenuAvatar = React.memo(function HandlingMenuAvatar({
@@ -854,23 +900,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
     const [unpaidExpenseByCurrency, setUnpaidExpenseByCurrency] = useState<UnpaidExpenseByCurrencyMap | null>(null);
     const togglingActiveHandlerRef = useRef(false);
-    type ActiveRoleRevealState = {
-        activeType: ActiveHandlerType;
-        employeeId: string | number | null;
-        displayName: string;
-        roleTitle: string;
-    };
-    const [activeRoleReveal, setActiveRoleReveal] = useState<ActiveRoleRevealState | null>(null);
-    const [activeRoleRevealEntered, setActiveRoleRevealEntered] = useState(false);
-    const activeRoleRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const activeRoleRevealRafRef = useRef<number | null>(null);
     /** Always latest lead row — `updateActiveHandlerType` must not close over stale `active_handler_type` (stable useCallback deps). */
     const selectedClientRef = useRef(selectedClient);
     /** Bumped after a successful active-handler toggle so avatar ring flash replays. */
     const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
     const [activeHandlerMenuOpen, setActiveHandlerMenuOpen] = useState(false);
     const activeHandlerMenuRef = useRef<HTMLDivElement>(null);
-    type AssignHandlingKey = 'handler' | 'retention' | 'support';
+    const mobileActiveHandlerMenuRef = useRef<HTMLDivElement>(null);
+    /** Mobile-only slot under the lead number. The handling switch is portaled here. */
+    const mobileHandlingSlotRef = useRef<HTMLDivElement>(null);
+    const [mobileHandlingSlot, setMobileHandlingSlot] = useState<HTMLDivElement | null>(null);
+    const [mobileStageMenuOpen, setMobileStageMenuOpen] = useState(false);
+    const [mobileClientDetailsOpen, setMobileClientDetailsOpen] = useState(false);
+    const [mobileBalanceOpen, setMobileBalanceOpen] = useState(false);
+    useLayoutEffect(() => {
+        const node = mobileHandlingSlotRef.current;
+        setMobileHandlingSlot((prev) => (prev === node ? prev : node));
+    });
+    type AssignHandlingKey = string;
     const [assignHandlingKey, setAssignHandlingKey] = useState<AssignHandlingKey | null>(null);
     const [assignHandlingSearch, setAssignHandlingSearch] = useState('');
     const [assignHandlingSaving, setAssignHandlingSaving] = useState(false);
@@ -1824,8 +1871,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // Use prop if available, otherwise use local state (matching RolesTab pattern)
     const employeesToUse = (allEmployees && allEmployees.length > 0) ? allEmployees : localAllEmployees;
-    const employeesToUseRef = useRef(employeesToUse);
-    employeesToUseRef.current = employeesToUse;
 
     const closeActiveHandlerMenu = useCallback(() => {
         setActiveHandlerMenuOpen(false);
@@ -1834,10 +1879,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     }, []);
 
     const updateActiveHandlerType = useCallback(
-        async (newType: ActiveHandlerType) => {
+        async (newType: number) => {
             const sc = selectedClientRef.current;
             if (!sc?.id || togglingActiveHandlerRef.current) return;
-            const current = normalizeActiveHandlerType((sc as any).active_handler_type);
+            const current = readHandlingActiveType((sc as any).active_handler_type);
             if (current === newType) {
                 closeActiveHandlerMenu();
                 return;
@@ -1846,96 +1891,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             const idStr = String(sc.id);
             const isLegacy = idStr.startsWith('legacy_') || sc.lead_type === 'legacy';
 
-            const employees = employeesToUseRef.current || [];
-            const resolveNumericEmployeeId = (value: unknown): number | null => {
-                if (value == null || value === '' || value === '---' || value === '--') return null;
-                if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-                const s = String(value).trim();
-                if (!s) return null;
-                if (/^\d+$/.test(s)) {
-                    const n = Number(s);
-                    return Number.isFinite(n) && n > 0 ? n : null;
-                }
-                const emp = employees.find(
-                    (e: any) => e?.display_name && e.display_name.trim().toLowerCase() === s.toLowerCase()
-                );
-                if (emp?.id == null) return null;
-                const n = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
-                return Number.isFinite(n) && n > 0 ? n : null;
-            };
-
-            const isLegacyLead = sc.lead_type === 'legacy' || idStr.startsWith('legacy_');
-            const ch = (sc as any).case_handler_id;
-            let handlerId: number | null = null;
-            if (ch != null && String(ch).trim() !== '') {
-                const n = Number(ch);
-                handlerId = Number.isFinite(n) && n > 0 ? n : null;
-            } else if (!isLegacyLead) {
-                handlerId = resolveNumericEmployeeId((sc as any).handler);
-            }
-            const retentionHandlerId = (sc as any).retainer_handler_id
-                ? Number((sc as any).retainer_handler_id)
-                : null;
-            const clientSupportId = (sc as any).client_support_id
-                ? Number((sc as any).client_support_id)
-                : null;
-
-            const getName = (id: number | null) => {
-                if (id == null) return '---';
-                const idAsNumber = id;
-                const employee = employees.find((emp: any) => {
-                    if (!emp?.id) return false;
-                    const empId = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
-                    return !Number.isNaN(empId) && empId === idAsNumber;
-                });
-                return employee?.display_name || '---';
-            };
-
-            const buildReveal = (): ActiveRoleRevealState => {
-                if (newType === 3) {
-                    return {
-                        activeType: 3,
-                        employeeId: clientSupportId,
-                        displayName: getName(clientSupportId),
-                        roleTitle: 'Client support',
-                    };
-                }
-                if (newType === 1) {
-                    return {
-                        activeType: 1,
-                        employeeId: retentionHandlerId,
-                        displayName: getName(retentionHandlerId),
-                        roleTitle: 'Retention handler',
-                    };
-                }
-                return {
-                    activeType: 2,
-                    employeeId: handlerId,
-                    displayName: getName(handlerId),
-                    roleTitle: 'Case handler',
-                };
-            };
-
             togglingActiveHandlerRef.current = true;
             closeActiveHandlerMenu();
             try {
+                const stageUpdate = {
+                    active_handler_type: newType,
+                    handling_stage_id: handlingStageIdForActiveType(newType),
+                };
                 if (isLegacy) {
                     const legacyId = parseInt(idStr.replace(/^legacy_/, ''), 10);
                     if (Number.isNaN(legacyId)) throw new Error('Invalid legacy lead id');
                     const { error } = await supabase
                         .from('leads_lead')
-                        .update({ active_handler_type: newType })
+                        .update(stageUpdate)
                         .eq('id', legacyId);
                     if (error) throw error;
                 } else {
                     const { error } = await supabase
                         .from('leads')
-                        .update({ active_handler_type: newType })
+                        .update(stageUpdate)
                         .eq('id', sc.id);
                     if (error) throw error;
                 }
                 setHandlerActiveRingNonce((n) => n + 1);
-                setActiveRoleReveal(buildReveal());
                 await refreshClientData(sc.id);
             } catch (e: any) {
                 console.error('updateActiveHandlerType:', e);
@@ -1957,18 +1935,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 return;
             }
 
+            const role = handlingRoleById(key);
+            if (!role) {
+                toast.error('Unknown handling role');
+                return;
+            }
             const idStr = String(sc.id);
             const isLegacy = idStr.startsWith('legacy_') || sc.lead_type === 'legacy';
-            const activeType: ActiveHandlerType = key === 'retention' ? 1 : key === 'support' ? 3 : 2;
-            const updateData: Record<string, unknown> = { active_handler_type: activeType };
-            if (key === 'handler') {
-                updateData.case_handler_id = empId;
-                if (!isLegacy) updateData.handler = employee.display_name;
-            } else if (key === 'retention') {
-                updateData.retainer_handler_id = empId;
-            } else {
-                updateData.client_support_id = empId;
-            }
+            const updateData: Record<string, unknown> = {
+                active_handler_type: role.activeType,
+                handling_stage_id: role.stageId,
+                [role.column]: empId,
+            };
+            if (role.id === 'handler' && !isLegacy) updateData.handler = employee.display_name;
 
             setAssignHandlingSaving(true);
             try {
@@ -1998,9 +1977,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     useEffect(() => {
         if (!activeHandlerMenuOpen) return;
         const onDoc = (e: MouseEvent) => {
-            if (activeHandlerMenuRef.current && !activeHandlerMenuRef.current.contains(e.target as Node)) {
-                closeActiveHandlerMenu();
-            }
+            const target = e.target as Node;
+            if (activeHandlerMenuRef.current?.contains(target)) return;
+            if (mobileActiveHandlerMenuRef.current?.contains(target)) return;
+            closeActiveHandlerMenu();
         };
         document.addEventListener('mousedown', onDoc);
         return () => document.removeEventListener('mousedown', onDoc);
@@ -2013,38 +1993,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             .map((emp: any) => resolveEmployeePhotoUrl(emp?.photo_url, emp?.photo));
         prefetchEmployeePhotos(urls, 96);
     }, [activeHandlerMenuOpen, employeesToUse]);
-
-    useEffect(() => {
-        if (!activeRoleReveal) {
-            setActiveRoleRevealEntered(false);
-            return;
-        }
-        setActiveRoleRevealEntered(false);
-        if (activeRoleRevealRafRef.current != null) {
-            cancelAnimationFrame(activeRoleRevealRafRef.current);
-        }
-        activeRoleRevealRafRef.current = requestAnimationFrame(() => {
-            activeRoleRevealRafRef.current = requestAnimationFrame(() => {
-                setActiveRoleRevealEntered(true);
-                activeRoleRevealRafRef.current = null;
-            });
-        });
-        if (activeRoleRevealTimerRef.current) clearTimeout(activeRoleRevealTimerRef.current);
-        activeRoleRevealTimerRef.current = setTimeout(() => {
-            setActiveRoleReveal(null);
-            activeRoleRevealTimerRef.current = null;
-        }, 2800);
-        return () => {
-            if (activeRoleRevealTimerRef.current) {
-                clearTimeout(activeRoleRevealTimerRef.current);
-                activeRoleRevealTimerRef.current = null;
-            }
-            if (activeRoleRevealRafRef.current != null) {
-                cancelAnimationFrame(activeRoleRevealRafRef.current);
-                activeRoleRevealRafRef.current = null;
-            }
-        };
-    }, [activeRoleReveal]);
 
     // Helper function to get employee by ID or name (matching RolesTab logic exactly)
     const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
@@ -2397,12 +2345,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setShowTopicModal(false);
         setTopicInputValue('');
         setContactDetailsModalOpen(false);
-        setActiveRoleReveal(null);
-        setActiveRoleRevealEntered(false);
-        if (activeRoleRevealTimerRef.current) {
-            clearTimeout(activeRoleRevealTimerRef.current);
-            activeRoleRevealTimerRef.current = null;
-        }
         legacyContactFetchRef.current = null;
     }, [selectedClient?.id]);
 
@@ -3887,6 +3829,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const renderHeaderActionsMenuTrigger = (
         variant: 'floating' | 'connected' = 'floating',
+        extraClass = '',
     ) => {
         if (hideActionsDropdown) return null;
         const triggerClass =
@@ -3895,7 +3838,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             <div className="relative z-40" ref={headerActionsMenuRef} data-header-actions-menu>
                 <button
                     type="button"
-                    className={`${triggerClass} ${headerActionsMenuOpen ? '!bg-black !text-white hover:!bg-neutral-800' : ''}`}
+                    className={`${triggerClass} ${headerActionsMenuOpen && !extraClass ? '!bg-black !text-white hover:!bg-neutral-800' : ''} ${extraClass}`}
                     aria-label={headerActionsMenuOpen ? 'Close actions' : 'Open actions'}
                     aria-expanded={headerActionsMenuOpen}
                     aria-haspopup="dialog"
@@ -4341,6 +4284,119 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         </div>
     );
 
+    const renderMobileClientDetails = () => {
+        const fields: {
+            key: string;
+            label: string;
+            value: string;
+            icon: React.ComponentType<{ className?: string }>;
+            iconClass: string;
+            onClick?: () => void;
+            wide?: boolean;
+        }[] = [
+            {
+                key: 'language',
+                label: 'Language',
+                value: displayLanguageChip,
+                icon: GlobeAltIcon,
+                iconClass: 'text-sky-600',
+                onClick: disableCategoryModal ? undefined : () => openMetaModal('language'),
+            },
+            {
+                key: 'source',
+                label: 'Source',
+                value: displaySourceChip,
+                icon: LinkIcon,
+                iconClass: 'text-violet-600',
+            },
+        ];
+        if (applicantsCount != null && Number(applicantsCount) > 0) {
+            fields.push({
+                key: 'applicants',
+                label: 'Applicants',
+                value: String(applicantsCount),
+                icon: UserIcon,
+                iconClass: 'text-rose-600',
+                wide: true,
+            });
+        }
+        fields.push(
+            {
+                key: 'category',
+                label: 'Category',
+                value: displayCategory,
+                icon: RectangleStackIcon,
+                iconClass: 'text-amber-600',
+                onClick: disableCategoryModal ? undefined : () => openMetaModal('category'),
+                wide: true,
+            },
+            {
+                key: 'topic',
+                label: 'Topic',
+                value: displayTopicChip,
+                icon: DocumentTextIcon,
+                iconClass: 'text-emerald-600',
+                onClick: disableCategoryModal ? undefined : () => openMetaModal('topic'),
+                wide: true,
+            },
+        );
+
+        const renderField = (field: (typeof fields)[number]) => {
+            const Icon = field.icon;
+            const className = `flex min-w-0 flex-col items-start bg-white px-4 py-3 text-left ${
+                field.wide ? 'col-span-2' : ''
+            } ${field.onClick ? 'cursor-pointer hover:bg-base-200/40' : ''}`;
+            const body = (
+                <>
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-base-content/40">
+                        <Icon className={`h-3.5 w-3.5 shrink-0 ${field.iconClass}`} aria-hidden />
+                        {field.label}
+                    </span>
+                    <span className="mt-1 w-full truncate text-sm font-semibold text-base-content/90">
+                        {field.value || '—'}
+                    </span>
+                </>
+            );
+            if (!field.onClick) {
+                return (
+                    <div key={field.key} className={className}>
+                        {body}
+                    </div>
+                );
+            }
+            return (
+                <button key={field.key} type="button" className={className} onClick={field.onClick}>
+                    {body}
+                </button>
+            );
+        };
+
+        const visibleFields = mobileClientDetailsOpen ? fields : fields.filter((field) => !field.wide);
+        const hiddenCount = fields.length - fields.filter((field) => !field.wide).length;
+
+        return (
+            <div className="overflow-hidden rounded-[18px] bg-white shadow-sm">
+                <div className="grid grid-cols-2 gap-px bg-base-200/80">
+                    {visibleFields.map(renderField)}
+                </div>
+                {hiddenCount > 0 ? (
+                    <button
+                        type="button"
+                        className="flex w-full items-center justify-center gap-1 border-t border-base-200/80 py-2.5 text-xs font-semibold text-base-content/55"
+                        aria-expanded={mobileClientDetailsOpen}
+                        onClick={() => setMobileClientDetailsOpen((open) => !open)}
+                    >
+                        {mobileClientDetailsOpen ? 'Show less' : 'Show more'}
+                        <ChevronDownIcon
+                            className={`h-3.5 w-3.5 transition-transform ${mobileClientDetailsOpen ? 'rotate-180' : ''}`}
+                            aria-hidden
+                        />
+                    </button>
+                ) : null}
+            </div>
+        );
+    };
+
     const renderTimelineHistoryButtons = (timelineBtnClass: string, historyBtnClass?: string) => {
         const historyClass = historyBtnClass ?? timelineBtnClass;
         return !hideHistoryAndTimeline ? (
@@ -4664,52 +4720,57 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 ? `flex w-full flex-col gap-5 md:hidden ${CLIENT_HEADER_APP_INSET_MOBILE} ${sidebarPadClass} ${pagePadClass}`
                                 : 'flex w-full flex-col gap-5 md:hidden'
                         }
-                    >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
-                            <div className="flex w-full min-w-0 items-start gap-3">
-                                <div className="min-w-0 flex-1 pr-1 text-left">
-                                    <div className="min-w-0">
-                                        <div className="flex min-w-0 items-center gap-1.5">
-                                            <h1 className="min-w-0 truncate text-2xl font-bold leading-tight tracking-tight text-base-content/95">
-                                                {renderClickableClientName('font-bold')}
-                                            </h1>
-                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                                <button
-                                                    onClick={() => {
-                                                        if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                        else if (isMasterLead && selectedClient) {
-                                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                            const identifier = isLegacyLead
-                                                                ? selectedClient.id.toString().replace('legacy_', '')
-                                                                : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                            navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                        }
-                                                    }}
-                                                    className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
-                                                    title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                                    aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                    >                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2 px-2">
+                            <div className="flex w-full min-w-0 items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1 text-left">
+                                    <div className="flex min-w-0 items-center gap-1.5">
+                                        <h1 className="min-w-0 truncate text-2xl font-bold leading-tight tracking-tight text-base-content/95">
+                                            {renderClickableClientName('font-bold')}
+                                        </h1>
+                                        {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                            <button
+                                                onClick={() => {
+                                                    if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                    else if (isMasterLead && selectedClient) {
+                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                        const identifier = isLegacyLead
+                                                            ? selectedClient.id.toString().replace('legacy_', '')
+                                                            : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                        navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                    }
+                                                }}
+                                                className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 overflow-visible border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                                aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                                            >
+                                                <Squares2X2Icon className="h-6 w-6" />
+                                                <span
+                                                    className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                    style={{ backgroundColor: '#3a3a3a' }}
                                                 >
-                                                    <Squares2X2Icon className="h-6 w-6" />
-                                                    <span
-                                                        className="absolute -right-1 -top-1 z-10 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                                        style={{ backgroundColor: '#3a3a3a' }}
-                                                    >
-                                                        {(subLeadsCount || 0) + 1}
-                                                    </span>
-                                                </button>
-                                            ) : null}
-                                            <div className="shrink-0">{renderStageBadge('mobile')}</div>
-                                            {renderDuplicatesNextToStage()}
-                                        </div>
-                                        <p className={CLIENT_HEADER_LEAD_NUMBER}>
+                                                    {(subLeadsCount || 0) + 1}
+                                                </span>
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                    <div className="mt-0.5 inline-flex max-w-full items-center gap-1.5">
+                                        <p className={`${CLIENT_HEADER_LEAD_NUMBER} shrink-0`}>
                                             {renderLeadNumber()}
                                         </p>
+                                        {renderDuplicatesNextToStage()}
                                     </div>
                                 </div>
+                                <div className="shrink-0 pt-0.5">{renderStageBadge('mobile')}</div>
                             </div>
+                            <div
+                                ref={mobileHandlingSlotRef}
+                                className="w-full min-w-0 [&:not(:empty)]:mt-1"
+                            />
                         </header>
 
-                        <div className="rounded-[18px] bg-white px-4 py-5 shadow-sm sm:px-5">
-                            <div className="flex flex-col gap-4">
+                        <div className="rounded-[18px] bg-white px-4 py-4 shadow-sm sm:px-5">
+                            <div className="flex items-start gap-3">
+                            <div className="flex min-w-0 flex-1 flex-col gap-4">
                                 <div className="flex min-w-0 items-start gap-3">
                                     {displayEmail ? (
                                         <button
@@ -4759,12 +4820,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 </div>
                             </div>
+                            <div className="shrink-0">
+                                {renderHeaderActionsMenuTrigger(
+                                    'floating',
+                                    '!h-11 !w-11 !min-h-11 !min-w-11 !border !border-neutral-300 !bg-white !text-black shadow-sm hover:!bg-neutral-100 [&_svg]:!text-black',
+                                )}
+                            </div>
+                            </div>
                         </div>
 
-                        {renderMetaBadgesRow()}
+                        {renderMobileClientDetails()}
+
+                        {showLeadCostUi ? (
+                            <LeadRemainingTimeBar
+                                summary={leadEmployeeCostSummary}
+                                loading={leadEmployeeCostLoading}
+                                align="start"
+                                fullWidth
+                                className="w-full"
+                                showStatusIcon
+                                onClick={() =>
+                                    openLeadEmployeeCostModal(
+                                        leadEmployeeCostSummary?.exceedsCap ? 'warning' : 'overview',
+                                    )
+                                }
+                            />
+                        ) : null}
 
                         {!hideTotalValueBadge && (
-                            <div className="w-full border-t border-base-200/70 pb-8 pt-4 dark:border-base-300/40">
+                            <div className="w-full">
                             {(() => {
                             const {
                                 currency,
@@ -4781,105 +4865,136 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 unpaidGross,
                                 unpaidExpenseAmount,
                             } = headerTotalBadge;
+                            const money = (value: number) =>
+                                `${currency}${Number(value.toFixed(2)).toLocaleString()}`;
+                            const breakdown: { label: string; value: string }[] = [];
+                            if (netWithoutFeesAndExpenses !== null) {
+                                breakdown.push({ label: 'Net', value: money(netWithoutFeesAndExpenses) });
+                            }
+                            if (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) {
+                                breakdown.push({ label: 'Expenses', value: money(paymentPlanExpenseNoVatTotal) });
+                            }
+                            if (potentialAmount > 0) {
+                                breakdown.push({ label: 'Potential', value: money(potentialAmount) });
+                            }
+                            if (potentialApplicantsMeeting > 0) {
+                                breakdown.push({
+                                    label: 'Applicants',
+                                    value: Math.trunc(potentialApplicantsMeeting).toLocaleString(),
+                                });
+                            }
+                            const showOutstanding = unpaidGross > 0 || unpaidExpenseAmount > 0;
+                            const canExpandBalance = breakdown.length > 0 || showOutstanding;
                             return (
-                                <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
-                                    <div className="space-y-2">
-                                        <div className="flex items-center justify-end gap-2">
-                                            <span
-                                                className="inline-flex items-center gap-1.5"
-                                                onClick={(e) => e.stopPropagation()}
-                                                onKeyDown={(e) => e.stopPropagation()}
-                                            >
-                                                {subcontractorFee > 0 ? (
-                                                    <button
-                                                        type="button"
-                                                        className="badge badge-sm h-5 min-h-5 shrink-0 border-0 bg-red-100 px-2 font-semibold text-red-700 hover:bg-red-200"
-                                                        title="View fees in Finances"
-                                                        onClick={() => openFinancesExpensesFeesTab()}
-                                                    >
-                                                        Fee {currency}
-                                                        {Number(subcontractorFee.toFixed(2)).toLocaleString()}
-                                                    </button>
-                                                ) : null}
-                                            </span>
-                                        </div>
-                                        <div className="flex flex-col items-end">
-                                            <p className="inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content/95">
+                                <div
+                                    className="cursor-pointer overflow-hidden rounded-[18px] bg-white shadow-sm"
+                                    onClick={() => setIsBalanceModalOpen(true)}
+                                >
+                                    <div className="flex items-start justify-between gap-3 px-4 pb-4 pt-4">
+                                        <div className="min-w-0">
+                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Balance</p>
+                                            <p className="mt-1.5 inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content tabular-nums">
                                                 {amountReady ? (
-                                                    <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
+                                                    <span>{money(mainAmount)}</span>
                                                 ) : (
                                                     <span className="inline-block h-8 w-28 animate-pulse rounded-md bg-base-200/80" aria-hidden />
                                                 )}
-                                                {showLocked && <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />}
+                                                {showLocked && (
+                                                    <LockClosedIcon className="h-4 w-4 text-base-content/40" title="Locked by payment plan" />
+                                                )}
                                             </p>
                                             {amountReady && shouldShowVAT && vatAmount > 0 && (
-                                                <p className="mt-0.5 text-sm text-base-content/55">
+                                                <p className="mt-1.5 text-sm tabular-nums text-base-content/50">
                                                     +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                 </p>
                                             )}
+                                            {amountReady ? (
+                                                <ClientHeaderTotalInNis
+                                                    clientId={selectedClient?.id}
+                                                    leadType={selectedClient?.lead_type}
+                                                    currencyInput={(selectedClient as any)?.currency_id ?? 1}
+                                                    subtotal={mainAmount}
+                                                    vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
+                                                    className="mt-1 text-sm font-medium tabular-nums text-base-content/45"
+                                                />
+                                            ) : null}
                                         </div>
-                                        {amountReady ? (
-                                        <ClientHeaderTotalInNis
-                                            clientId={selectedClient?.id}
-                                            leadType={selectedClient?.lead_type}
-                                            currencyInput={(selectedClient as any)?.currency_id ?? 1}
-                                            subtotal={mainAmount}
-                                            vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
-                                        />
+                                        {subcontractorFee > 0 ? (
+                                            <button
+                                                type="button"
+                                                className="badge badge-sm h-6 min-h-6 shrink-0 border-0 bg-red-50 px-2.5 font-semibold text-red-700 hover:bg-red-100"
+                                                title="View fees in Finances"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    openFinancesExpensesFeesTab();
+                                                }}
+                                            >
+                                                Fee {money(subcontractorFee)}
+                                            </button>
                                         ) : null}
-                                        {netWithoutFeesAndExpenses !== null && (
-                                            <p className="text-[11px] text-base-content/50">
-                                                Net {currency}
-                                                {Number(netWithoutFeesAndExpenses.toFixed(2)).toLocaleString()}
-                                            </p>
-                                        )}
-                                        {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
-                                            <p className="text-[11px] text-base-content/50">
-                                                Exp. {currency}
-                                                {Number(paymentPlanExpenseNoVatTotal.toFixed(2)).toLocaleString()}
-                                            </p>
-                                        )}
-                                        {potentialAmount > 0 && (
-                                            <p className="text-[11px] font-medium text-base-content/55">
-                                                Pot. {currency}
-                                                {Number(potentialAmount.toFixed(2)).toLocaleString()}
-                                            </p>
-                                        )}
-                                        {potentialApplicantsMeeting > 0 && (
-                                            <p className="text-[11px] text-base-content/45" title="Potential applicants">
-                                                Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
-                                            </p>
-                                        )}
-                                        {(unpaidGross > 0 || unpaidExpenseAmount > 0) && (
-                                            <div className={`mt-2 ${CLIENT_HEADER_INNER_PANEL} text-right`}>
-                                                <p className={CLIENT_HEADER_SECTION_LABEL}>Outstanding</p>
-                                                {unpaidOutstandingPair !== null && unpaidGross > 0 && (
-                                                    <div className="flex items-end justify-end gap-2">
-                                                        <p className="text-xl font-bold leading-none text-base-content/55">
-                                                            {currency}
-                                                            {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
-                                                        </p>
-                                                        {unpaidOutstandingPair.vat > 0 && (
-                                                            <p className="pb-0.5 text-sm text-base-content/40">
-                                                                +
-                                                                {unpaidOutstandingPair.vat.toLocaleString(undefined, {
-                                                                    minimumFractionDigits: 0,
-                                                                    maximumFractionDigits: 2,
-                                                                })}{' '}
-                                                                VAT
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                )}
-                                                {unpaidExpenseAmount > 0 && (
-                                                    <p className="text-[11px] text-base-content/45">
-                                                        + {currency}
-                                                        {Number(unpaidExpenseAmount.toFixed(2)).toLocaleString()} expenses (no VAT)
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )}
                                     </div>
+                                    {mobileBalanceOpen && breakdown.length > 0 ? (
+                                        <div className="grid grid-cols-2 gap-px border-t border-base-200/80 bg-base-200/80">
+                                            {breakdown.map((item) => (
+                                                <div
+                                                    key={item.label}
+                                                    className="bg-white px-4 py-3 [&:last-child:nth-child(odd)]:col-span-2"
+                                                >
+                                                    <p className={CLIENT_HEADER_SECTION_LABEL}>{item.label}</p>
+                                                    <p className="mt-1 text-base font-semibold tabular-nums text-base-content/85">
+                                                        {item.value}
+                                                    </p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                    {mobileBalanceOpen && showOutstanding ? (
+                                        <div className="border-t border-base-200/80 bg-base-200/40 px-4 py-3.5">
+                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Outstanding</p>
+                                            {unpaidOutstandingPair !== null && unpaidGross > 0 ? (
+                                                <div className="mt-1.5 flex items-baseline justify-between gap-3">
+                                                    <p className="text-xl font-bold leading-none tabular-nums text-base-content">
+                                                        {money(unpaidOutstandingPair.base)}
+                                                    </p>
+                                                    {unpaidOutstandingPair.vat > 0 ? (
+                                                        <p className="text-sm tabular-nums text-base-content/50">
+                                                            +{unpaidOutstandingPair.vat.toLocaleString(undefined, {
+                                                                minimumFractionDigits: 0,
+                                                                maximumFractionDigits: 2,
+                                                            })} VAT
+                                                        </p>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
+                                            {unpaidExpenseAmount > 0 ? (
+                                                <div className="mt-2 flex items-baseline justify-between gap-3">
+                                                    <p className="text-[11px] font-semibold uppercase tracking-widest text-base-content/40">
+                                                        Expenses, no VAT
+                                                    </p>
+                                                    <p className="text-sm font-semibold tabular-nums text-base-content/70">
+                                                        {money(unpaidExpenseAmount)}
+                                                    </p>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    ) : null}
+                                    {canExpandBalance ? (
+                                        <button
+                                            type="button"
+                                            className="flex w-full items-center justify-center gap-1 border-t border-base-200/80 py-2.5 text-xs font-semibold text-base-content/55"
+                                            aria-expanded={mobileBalanceOpen}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                setMobileBalanceOpen((open) => !open);
+                                            }}
+                                        >
+                                            {mobileBalanceOpen ? 'Show less' : 'Show more'}
+                                            <ChevronDownIcon
+                                                className={`h-3.5 w-3.5 transition-transform ${mobileBalanceOpen ? 'rotate-180' : ''}`}
+                                                aria-hidden
+                                            />
+                                        </button>
+                                    ) : null}
                                 </div>
                             );
                         })()}
@@ -5264,20 +5379,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             ? (selectedClient?.status === 10)
                             : (selectedClient?.status === 'inactive');
 
-                        const activeHandlerTypeForLead = normalizeActiveHandlerType(
+                        const activeHandlerTypeForLead = readHandlingActiveType(
                             (selectedClient as any).active_handler_type,
                         );
-                        const hasHandlerRole = showHandlerRolesInHeader && !isRoleEmpty(handlerId, handlerDisplay);
-                        const hasRetentionRole =
-                            showHandlerRolesInHeader && !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
-                        const hasSupportRole =
-                            showHandlerRolesInHeader && !isRoleEmpty(clientSupportId, clientSupportDisplay);
-
                         type HandlingRoleOption = {
-                            type: ActiveHandlerType;
+                            type: number;
                             key: string;
                             id: number | null;
                             rolesLabel: string;
+                            chipLabel: string;
                             display: string;
                             photoUrl: string | null;
                         };
@@ -5289,73 +5399,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             });
                             return resolveEmployeePhotoUrl(emp?.photo_url, emp?.photo);
                         };
-                        const handlingOptions: HandlingRoleOption[] = [];
-                        if (hasHandlerRole) {
-                            handlingOptions.push({
-                                type: 2,
-                                key: 'handler',
-                                id: handlerId,
-                                rolesLabel: 'Handler',
-                                display: handlerDisplay,
-                                photoUrl: photoForEmployeeId(handlerId),
-                            });
-                        }
-                        if (hasRetentionRole) {
-                            handlingOptions.push({
-                                type: 1,
-                                key: 'retention',
-                                id: retentionHandlerId,
-                                rolesLabel: 'R-Handler',
-                                display: retentionHandlerDisplay,
-                                photoUrl: photoForEmployeeId(retentionHandlerId),
-                            });
-                        }
-                        if (hasSupportRole) {
-                            handlingOptions.push({
-                                type: 3,
-                                key: 'support',
-                                id: clientSupportId,
-                                rolesLabel: 'Client Support',
-                                display: clientSupportDisplay,
-                                photoUrl: photoForEmployeeId(clientSupportId),
-                            });
-                        }
+                        const partitioned = partitionHandlingRoles({
+                            visible: showHandlerRolesInHeader,
+                            idFor: (roleId) => {
+                                if (roleId === 'handler') return handlerId;
+                                if (roleId === 'retainer_handler') return retentionHandlerId;
+                                if (roleId === 'client_support') return clientSupportId;
+                                return employeeIdOnLead(selectedClient, roleId);
+                            },
+                            displayFor: (roleId, id) => {
+                                if (roleId === 'handler') return handlerDisplay;
+                                if (roleId === 'retainer_handler') return retentionHandlerDisplay;
+                                if (roleId === 'client_support') return clientSupportDisplay;
+                                return getEmployeeDisplayNameFromId(id);
+                            },
+                            isEmpty: isRoleEmpty,
+                        });
+                        const handlingOptions: HandlingRoleOption[] = partitioned.assigned.map((opt) => ({
+                            ...opt,
+                            photoUrl: photoForEmployeeId(opt.id),
+                        }));
                         const activeHandling =
                             handlingOptions.find((o) => o.type === activeHandlerTypeForLead) ||
                             handlingOptions[0] ||
                             null;
                         const inactiveHandling = handlingOptions.filter((o) => o.key !== activeHandling?.key);
-                        const missingHandling: HandlingRoleOption[] = [];
-                        if (showHandlerRolesInHeader && !hasHandlerRole) {
-                            missingHandling.push({
-                                type: 2,
-                                key: 'handler',
-                                id: null,
-                                rolesLabel: 'Handler',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
-                        if (showHandlerRolesInHeader && !hasRetentionRole) {
-                            missingHandling.push({
-                                type: 1,
-                                key: 'retention',
-                                id: null,
-                                rolesLabel: 'R-Handler',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
-                        if (showHandlerRolesInHeader && !hasSupportRole) {
-                            missingHandling.push({
-                                type: 3,
-                                key: 'support',
-                                id: null,
-                                rolesLabel: 'Client Support',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
+                        const missingHandling: HandlingRoleOption[] = partitioned.missing.map((opt) => ({
+                            ...opt,
+                            photoUrl: null,
+                        }));
                         const canOpenHandlingMenu =
                             !isUnactivated &&
                             Boolean(activeHandling) &&
@@ -5364,14 +5436,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             setAssignHandlingKey(key);
                             setAssignHandlingSearch('');
                         };
-                        const assignRoleLabel =
-                            assignHandlingKey === 'handler'
-                                ? 'Handler'
-                                : assignHandlingKey === 'retention'
-                                  ? 'R-Handler'
-                                  : assignHandlingKey === 'support'
-                                    ? 'Client Support'
-                                    : '';
+                        const assignRoleLabel = handlingRoleById(assignHandlingKey)?.title ?? '';
                         const assignSearchTerm = assignHandlingSearch.trim().toLowerCase();
                         const suggestedSupportName = CLIENT_SUPPORT_SUGGESTED_NAME.toLowerCase();
                         const isSuggestedSupport = (emp: any) => {
@@ -5390,7 +5455,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 return name.toLowerCase().includes(assignSearchTerm);
                             })
                             .sort((a: any, b: any) => {
-                                if (assignHandlingKey !== 'support') return 0;
+                                if (assignHandlingKey !== 'client_support') return 0;
                                 const aSuggested = isSuggestedSupport(a) ? 0 : 1;
                                 const bSuggested = isSuggestedSupport(b) ? 0 : 1;
                                 if (aSuggested !== bSuggested) return aSuggested - bSuggested;
@@ -5450,7 +5515,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         const renderActiveHandlingCard = () => {
                             if (!activeHandling) return null;
                             return (
-                                <div className="relative" ref={activeHandlerMenuRef}>
+                                <div className="relative flex items-center gap-2" ref={activeHandlerMenuRef}>
+                                    <HandlingStageChip
+                                        lead={selectedClient}
+                                        employeeName={(id) => getEmployeeDisplayNameFromId(id)}
+                                    />
                                     <button
                                         type="button"
                                         className={`flex shrink-0 items-center gap-2 rounded-2xl px-1.5 py-1 text-left transition ${
@@ -5477,26 +5546,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 : activeHandling.rolesLabel
                                         }
                                     >
-                                        <div className="relative shrink-0 overflow-visible rounded-full bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-600 p-[3px] opacity-100 shadow-[0_0_14px_rgba(16,185,129,0.32)]">
-                                            <span
-                                                key={handlerActiveRingNonce}
-                                                className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
-                                                aria-hidden
+                                        <ActiveRolePhotoRing drawNonce={handlerActiveRingNonce}>
+                                            <EmployeeAvatar
+                                                employeeId={activeHandling.id}
+                                                fallbackName={activeHandling.display}
+                                                size="md"
                                             />
-                                            <div className="relative z-[1] rounded-full bg-white p-1 dark:bg-base-100">
-                                                <EmployeeAvatar
-                                                    employeeId={activeHandling.id}
-                                                    fallbackName={activeHandling.display}
-                                                    size="md"
-                                                />
-                                            </div>
-                                            <div className="absolute -right-0.5 -top-0.5 z-[2] flex h-4 w-4 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 ring-2 ring-white">
-                                                <CheckIcon className="h-2.5 w-2.5 text-white" aria-hidden />
-                                            </div>
-                                        </div>
+                                        </ActiveRolePhotoRing>
                                         <div className="flex min-w-0 flex-col">
                                             <span className={`inline-flex items-center gap-1 whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
-                                                {activeHandling.rolesLabel}
+                                                {activeHandling.chipLabel || activeHandling.rolesLabel}
                                                 {canOpenHandlingMenu ? (
                                                     <ChevronDownIcon
                                                         className={`h-3.5 w-3.5 text-base-content/40 transition-transform ${
@@ -5513,7 +5572,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </button>
                                     {canOpenHandlingMenu && activeHandlerMenuOpen ? (
                                         <div
-                                            className="absolute right-0 top-full z-50 mt-2 min-w-[16rem] overflow-hidden rounded-2xl border border-black/[0.06] bg-white py-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-base-200"
+                                            className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] min-w-[16rem] overflow-y-auto rounded-2xl border border-black/[0.06] bg-white py-1.5 shadow-[0_14px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-base-200"
                                             role="listbox"
                                             aria-label="Switch or add handling role"
                                         >
@@ -5860,10 +5919,39 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div
                     className={
                         connectToAppHeader
-                            ? `mt-7 flex w-full flex-wrap items-center gap-4 md:hidden ${sidebarPadClass} ${pagePadClass}`
-                            : 'mt-7 flex w-full flex-wrap items-center gap-4 md:hidden'
+                            ? `relative z-30 mt-7 w-full md:hidden ${sidebarPadClass} ${pagePadClass}`
+                            : 'relative z-30 mt-7 w-full md:hidden'
                     }
-                >                    {renderPinnedInteractionsButton()}
+                >
+                    <div className="flex w-full items-center gap-2">
+                    {renderPinnedInteractionsButton()}
+                    <button
+                        type="button"
+                        className={`${STAGE_ACTION_BTN_CLASS} min-w-0 flex-1`}
+                        aria-expanded={mobileStageMenuOpen}
+                        aria-haspopup="dialog"
+                        onClick={() => setMobileStageMenuOpen(true)}
+                    >
+                        Stage actions
+                    </button>
+                    </div>
+                    <MobileBottomSheet
+                        open={mobileStageMenuOpen}
+                        onClose={() => setMobileStageMenuOpen(false)}
+                        title="Stage actions"
+                        zIndex={340}
+                        mobileInitialSnapIndex={1}
+                        contentClassName="!bg-white !px-4 !pb-6"
+                        overlayClassName="bg-black/40"
+                        headerClassName="!border-b-0"
+                    >
+                    <div
+                        className="flex flex-col items-stretch gap-2 [&_button]:w-full [&_button]:justify-start"
+                        onClick={(event) => {
+                            const target = event.target as HTMLElement;
+                            if (target.closest('button')) setMobileStageMenuOpen(false);
+                        }}
+                    >
                     {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -6260,14 +6348,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </>
                         );
                     })()}
+                    </div>
+                    </MobileBottomSheet>
                 </div>
 
                 {/* Mobile: assigned team */}
                 <div
                     className={
                         connectToAppHeader
-                            ? `mt-7 pt-6 md:hidden w-full ${sidebarPadClass} ${pagePadClass}`
-                            : 'mt-7 pt-6 md:hidden w-full px-1 sm:px-2'
+                            ? `md:hidden w-full ${sidebarPadClass} ${pagePadClass}`
+                            : 'md:hidden w-full px-1 sm:px-2'
                     }
                 >                    {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -6406,20 +6496,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             ? (selectedClient?.status === 10)
                             : (selectedClient?.status === 'inactive');
 
-                        const activeHandlerTypeForLead = normalizeActiveHandlerType(
+                        const activeHandlerTypeForLead = readHandlingActiveType(
                             (selectedClient as any).active_handler_type,
                         );
-                        const hasHandlerRole = showHandlerRolesInHeader && !isRoleEmpty(handlerId, handlerDisplay);
-                        const hasRetentionRole =
-                            showHandlerRolesInHeader && !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
-                        const hasSupportRole =
-                            showHandlerRolesInHeader && !isRoleEmpty(clientSupportId, clientSupportDisplay);
-
                         type HandlingRoleOption = {
-                            type: ActiveHandlerType;
+                            type: number;
                             key: string;
                             id: number | null;
                             rolesLabel: string;
+                            chipLabel: string;
                             display: string;
                             photoUrl: string | null;
                         };
@@ -6431,73 +6516,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             });
                             return resolveEmployeePhotoUrl(emp?.photo_url, emp?.photo);
                         };
-                        const handlingOptions: HandlingRoleOption[] = [];
-                        if (hasHandlerRole) {
-                            handlingOptions.push({
-                                type: 2,
-                                key: 'handler',
-                                id: handlerId,
-                                rolesLabel: 'Handler',
-                                display: handlerDisplay,
-                                photoUrl: photoForEmployeeId(handlerId),
-                            });
-                        }
-                        if (hasRetentionRole) {
-                            handlingOptions.push({
-                                type: 1,
-                                key: 'retention',
-                                id: retentionHandlerId,
-                                rolesLabel: 'R-Handler',
-                                display: retentionHandlerDisplay,
-                                photoUrl: photoForEmployeeId(retentionHandlerId),
-                            });
-                        }
-                        if (hasSupportRole) {
-                            handlingOptions.push({
-                                type: 3,
-                                key: 'support',
-                                id: clientSupportId,
-                                rolesLabel: 'Client Support',
-                                display: clientSupportDisplay,
-                                photoUrl: photoForEmployeeId(clientSupportId),
-                            });
-                        }
+                        const partitioned = partitionHandlingRoles({
+                            visible: showHandlerRolesInHeader,
+                            idFor: (roleId) => {
+                                if (roleId === 'handler') return handlerId;
+                                if (roleId === 'retainer_handler') return retentionHandlerId;
+                                if (roleId === 'client_support') return clientSupportId;
+                                return employeeIdOnLead(selectedClient, roleId);
+                            },
+                            displayFor: (roleId, id) => {
+                                if (roleId === 'handler') return handlerDisplay;
+                                if (roleId === 'retainer_handler') return retentionHandlerDisplay;
+                                if (roleId === 'client_support') return clientSupportDisplay;
+                                return getEmployeeDisplayNameFromId(id);
+                            },
+                            isEmpty: isRoleEmpty,
+                        });
+                        const handlingOptions: HandlingRoleOption[] = partitioned.assigned.map((opt) => ({
+                            ...opt,
+                            photoUrl: photoForEmployeeId(opt.id),
+                        }));
                         const activeHandling =
                             handlingOptions.find((o) => o.type === activeHandlerTypeForLead) ||
                             handlingOptions[0] ||
                             null;
                         const inactiveHandling = handlingOptions.filter((o) => o.key !== activeHandling?.key);
-                        const missingHandling: HandlingRoleOption[] = [];
-                        if (showHandlerRolesInHeader && !hasHandlerRole) {
-                            missingHandling.push({
-                                type: 2,
-                                key: 'handler',
-                                id: null,
-                                rolesLabel: 'Handler',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
-                        if (showHandlerRolesInHeader && !hasRetentionRole) {
-                            missingHandling.push({
-                                type: 1,
-                                key: 'retention',
-                                id: null,
-                                rolesLabel: 'R-Handler',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
-                        if (showHandlerRolesInHeader && !hasSupportRole) {
-                            missingHandling.push({
-                                type: 3,
-                                key: 'support',
-                                id: null,
-                                rolesLabel: 'Client Support',
-                                display: 'Not assigned',
-                                photoUrl: null,
-                            });
-                        }
+                        const missingHandling: HandlingRoleOption[] = partitioned.missing.map((opt) => ({
+                            ...opt,
+                            photoUrl: null,
+                        }));
                         const canOpenHandlingMenu =
                             !isUnactivated &&
                             Boolean(activeHandling) &&
@@ -6506,14 +6553,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             setAssignHandlingKey(key);
                             setAssignHandlingSearch('');
                         };
-                        const assignRoleLabel =
-                            assignHandlingKey === 'handler'
-                                ? 'Handler'
-                                : assignHandlingKey === 'retention'
-                                  ? 'R-Handler'
-                                  : assignHandlingKey === 'support'
-                                    ? 'Client Support'
-                                    : '';
+                        const assignRoleLabel = handlingRoleById(assignHandlingKey)?.title ?? '';
                         const assignSearchTerm = assignHandlingSearch.trim().toLowerCase();
                         const suggestedSupportName = CLIENT_SUPPORT_SUGGESTED_NAME.toLowerCase();
                         const isSuggestedSupport = (emp: any) => {
@@ -6532,7 +6572,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 return name.toLowerCase().includes(assignSearchTerm);
                             })
                             .sort((a: any, b: any) => {
-                                if (assignHandlingKey !== 'support') return 0;
+                                if (assignHandlingKey !== 'client_support') return 0;
                                 const aSuggested = isSuggestedSupport(a) ? 0 : 1;
                                 const bSuggested = isSuggestedSupport(b) ? 0 : 1;
                                 if (aSuggested !== bSuggested) return aSuggested - bSuggested;
@@ -6559,22 +6599,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             }
                         }
 
+                        const hasMobileTeam = roleGroups.size > 0;
+
                         return (
-                            <div className="flex w-full flex-col gap-2">
-                                {showLeadCostUi ? (
-                                    <LeadRemainingTimeBar
-                                        summary={leadEmployeeCostSummary}
-                                        loading={leadEmployeeCostLoading}
-                                        align="start"
-                                        className="w-full max-w-md self-stretch"
-                                        showStatusIcon
-                                        onClick={() =>
-                                            openLeadEmployeeCostModal(
-                                                leadEmployeeCostSummary?.exceedsCap ? 'warning' : 'overview',
-                                            )
-                                        }
-                                    />
-                                ) : null}
+                            <div className={hasMobileTeam ? 'mt-7 flex w-full flex-col gap-2 pt-6' : 'contents'}>
                                 {Array.from(roleGroups.values()).map((group, index) => (
                                     <div
                                         key={index}
@@ -6593,11 +6621,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </div>
                                     </div>
                                 ))}
-                                {activeHandling ? (
-                                    <div className={`${CLIENT_HEADER_CARD} relative flex w-full flex-col justify-center`}>
+                                {activeHandling && mobileHandlingSlot
+                                    ? createPortal(
+                                    <div
+                                        ref={mobileActiveHandlerMenuRef}
+                                        className={`${CLIENT_HEADER_CARD} relative flex w-full flex-col justify-center`}
+                                        onMouseDown={(event) => event.stopPropagation()}
+                                    >
+                                        <div className="flex w-full items-center gap-2">
+                                        <HandlingStageChip
+                                            lead={selectedClient}
+                                            employeeName={(id) => getEmployeeDisplayNameFromId(id)}
+                                        />
                                         <button
                                             type="button"
-                                            className={`flex w-full shrink-0 items-center gap-2 rounded-xl text-left ${
+                                            className={`flex min-w-0 flex-1 shrink-0 items-center gap-2 rounded-xl text-left ${
                                                 canOpenHandlingMenu ? '' : 'cursor-default'
                                             }`}
                                             onClick={() => {
@@ -6612,21 +6650,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 });
                                             }}
                                         >
-                                            <div className="relative shrink-0 overflow-visible rounded-full bg-gradient-to-br from-emerald-400 via-emerald-500 to-teal-600 p-[3px]">
-                                                <div className="rounded-full bg-white p-1 dark:bg-base-100">
-                                                    <EmployeeAvatar
-                                                        employeeId={activeHandling.id}
-                                                        fallbackName={activeHandling.display}
-                                                        size="md"
-                                                    />
-                                                </div>
-                                                <div className="absolute -right-0.5 -top-0.5 z-[2] flex h-4 w-4 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 ring-2 ring-white">
-                                                    <CheckIcon className="h-2.5 w-2.5 text-white" aria-hidden />
-                                                </div>
-                                            </div>
+                                            <ActiveRolePhotoRing drawNonce={handlerActiveRingNonce}>
+                                                <EmployeeAvatar
+                                                    employeeId={activeHandling.id}
+                                                    fallbackName={activeHandling.display}
+                                                    size="md"
+                                                />
+                                            </ActiveRolePhotoRing>
                                             <div className="flex min-w-0 flex-1 flex-col">
                                                 <span className={`inline-flex items-center gap-1 whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
-                                                    {activeHandling.rolesLabel}
+                                                    {activeHandling.chipLabel || activeHandling.rolesLabel}
                                                     {canOpenHandlingMenu ? (
                                                         <ChevronDownIcon className="h-3.5 w-3.5 text-base-content/40" aria-hidden />
                                                     ) : null}
@@ -6636,6 +6669,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </span>
                                             </div>
                                         </button>
+                                        </div>
                                         {canOpenHandlingMenu && activeHandlerMenuOpen ? (
                                             <div className="mt-2 space-y-1 border-t border-base-200 pt-2">
                                                 {assignHandlingKey ? (
@@ -6780,8 +6814,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 )}
                                             </div>
                                         ) : null}
-                                    </div>
-                                ) : null}
+                                    </div>,
+                                    mobileHandlingSlot,
+                                    )
+                                    : null}
                             </div>
                         );
                     })()}
@@ -7042,131 +7078,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
                     }}
                 />
-
-                {activeRoleReveal &&
-                    createPortal(
-                        <div
-                            className={`fixed inset-0 z-[500] flex items-center justify-center p-4 sm:p-8 transition-[opacity,backdrop-filter] duration-500 ease-out ${
-                                activeRoleRevealEntered ? 'bg-black/60 opacity-100 backdrop-blur-[10px]' : 'opacity-0 backdrop-blur-0'
-                            }`}
-                            onClick={() => setActiveRoleReveal(null)}
-                            role="dialog"
-                            aria-modal="true"
-                            aria-labelledby="active-role-reveal-title"
-                        >
-                            <div
-                                className={`relative w-full max-w-md overflow-hidden rounded-2xl border px-8 pb-0 pt-11 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.22)] transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none dark:shadow-[0_24px_64px_-16px_rgba(0,0,0,0.55)] ${
-                                    activeRoleRevealEntered
-                                        ? 'translate-y-0 scale-100 rotate-0 opacity-100'
-                                        : 'translate-y-10 scale-[0.82] rotate-[-2deg] opacity-0'
-                                } ${
-                                    activeRoleReveal.activeType === 2
-                                        ? 'border-emerald-200/90 bg-gradient-to-b from-white via-white to-emerald-50/50 dark:border-emerald-900/50 dark:from-gray-950 dark:via-gray-950 dark:to-emerald-950/25'
-                                        : 'border-rose-200/90 bg-gradient-to-b from-white via-white to-rose-50/45 dark:border-rose-900/45 dark:from-gray-950 dark:via-gray-950 dark:to-rose-950/20'
-                                }`}
-                                onClick={(e) => e.stopPropagation()}
-                            >
-                                {/* Single static wash — no pulse/blur stacks (reads cleaner on screen) */}
-                                <div
-                                    className={`pointer-events-none absolute inset-0 ${
-                                        activeRoleReveal.activeType === 2
-                                            ? 'bg-[radial-gradient(ellipse_85%_55%_at_50%_-5%,rgba(16,185,129,0.11),transparent_62%)]'
-                                            : 'bg-[radial-gradient(ellipse_85%_55%_at_50%_-5%,rgba(244,63,94,0.09),transparent_62%)]'
-                                    }`}
-                                    aria-hidden
-                                />
-
-                                <div className="relative flex flex-col items-center text-center">
-                                    <p
-                                        id="active-role-reveal-title"
-                                        className="text-[10px] font-semibold uppercase tracking-[0.28em] text-gray-500/90 dark:text-gray-400"
-                                    >
-                                        Active role on this lead
-                                    </p>
-                                    <p
-                                        className={`mt-3 text-2xl font-bold tracking-tight sm:text-3xl ${
-                                            activeRoleReveal.activeType === 2
-                                                ? 'text-emerald-700 dark:text-emerald-300'
-                                                : 'text-rose-700 dark:text-rose-300'
-                                        }`}
-                                    >
-                                        {activeRoleReveal.roleTitle}
-                                    </p>
-                                    <p className="mt-2 max-w-xs text-sm text-gray-600 dark:text-gray-300">
-                                        {activeRoleReveal.displayName !== '---'
-                                            ? activeRoleReveal.displayName
-                                            : 'This role is now driving the file for workflows and visibility.'}
-                                    </p>
-
-                                    <div
-                                        className={`relative mt-10 flex items-center justify-center transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
-                                            activeRoleRevealEntered ? 'scale-100' : 'scale-50'
-                                        }`}
-                                    >
-                                        <div
-                                            className={`absolute inset-[-14px] rounded-full opacity-80 motion-safe:animate-[ping_1.4s_cubic-bezier(0,0,0.2,1)_1] ${
-                                                activeRoleReveal.activeType === 2
-                                                    ? 'bg-emerald-400/35'
-                                                    : 'bg-rose-400/35'
-                                            }`}
-                                            aria-hidden
-                                        />
-                                        <div
-                                            className={`relative rounded-full p-1 shadow-xl ring-4 ring-offset-4 ring-offset-base-100 dark:ring-offset-gray-950 ${
-                                                activeRoleReveal.activeType === 2
-                                                    ? 'ring-emerald-500/80 shadow-emerald-500/25'
-                                                    : 'ring-rose-500/80 shadow-rose-500/25'
-                                            }`}
-                                        >
-                                            {activeRoleReveal.employeeId ? (
-                                                <EmployeeAvatar employeeId={activeRoleReveal.employeeId} fallbackName={activeRoleReveal.displayName} size="hero" />
-                                            ) : (
-                                                <div
-                                                    className={`flex h-36 w-36 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-inner ${
-                                                        activeRoleReveal.activeType === 2
-                                                            ? 'from-emerald-500 to-teal-700'
-                                                            : 'from-rose-500 to-pink-700'
-                                                    }`}
-                                                >
-                                                    {getEmployeeInitials(activeRoleReveal.displayName) ? (
-                                                        <span className="text-4xl tracking-tight">
-                                                            {getEmployeeInitials(activeRoleReveal.displayName)}
-                                                        </span>
-                                                    ) : (
-                                                        <UserIcon className="h-16 w-16 opacity-90" aria-hidden />
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                        <StarIcon
-                                            className={`pointer-events-none absolute -right-2 -top-2 h-8 w-8 motion-safe:animate-pulse ${
-                                                activeRoleReveal.activeType === 2
-                                                    ? 'text-amber-400 drop-shadow-md'
-                                                    : 'text-amber-300 drop-shadow-md'
-                                            }`}
-                                            aria-hidden
-                                        />
-                                    </div>
-
-                                </div>
-
-                                <div className="relative mt-10 border-t border-gray-200/80 bg-white/60 px-6 py-4 dark:border-gray-700/80 dark:bg-gray-950/40">
-                                    <button
-                                        type="button"
-                                        className="mx-auto flex w-full max-w-[14rem] items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-500 dark:hover:bg-gray-800 dark:active:bg-gray-950"
-                                        onClick={() => setActiveRoleReveal(null)}
-                                    >
-                                        <XMarkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                        Dismiss
-                                    </button>
-                                    <p className="mt-2.5 text-center text-[11px] font-medium text-gray-400 dark:text-gray-500">
-                                        Or click outside to close
-                                    </p>
-                                </div>
-                            </div>
-                        </div>,
-                        document.body
-                    )}
 
                 {pendingProbabilityValues &&
                     createPortal(

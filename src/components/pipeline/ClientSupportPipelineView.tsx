@@ -55,7 +55,7 @@ import {
   markScrollToFlaggedEmail,
 } from '../../lib/handlerEmailFlag';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
-import { classifySupportBucket } from '../../lib/handlerCaseBuckets';
+import { classifyOwnedHandlingBucket, readPipelineActiveType } from '../../lib/handlerCaseBuckets';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import HandlerAssignedDateBadge from './HandlerAssignedDateBadge';
 import {
@@ -93,6 +93,10 @@ import { loadPipelineFilters, savePipelineFilters } from './pipelineFilterPersis
 type Props = {
   onCountChange?: (count: number) => void;
   viewAs?: PipelineViewAs | null;
+  /** Persist key, employee column, and active_handler_type this pipeline owns. Defaults to case monitoring. */
+  ownedFilterKey?: string;
+  ownedColumn?: string;
+  ownedActiveType?: number;
 } & PipelineLeadSelectProps;
 
 const BUCKETS: Array<{ id: HandlerBucket; label: string }> = [
@@ -116,7 +120,7 @@ const DEFAULT_HANDLER_FILTERS: HandlerFilterState = {
   quickFilter: null,
 };
 
-function loadHandlerFilters(key: 'handler' | 'retention' | 'support'): HandlerFilterState {
+function loadHandlerFilters(key: string): HandlerFilterState {
   const loaded = loadPipelineFilters(key, DEFAULT_HANDLER_FILTERS);
   return {
     ...loaded,
@@ -137,16 +141,25 @@ type HandlerSnapshot = {
 
 const HANDLER_CACHE_VERSION = 1;
 const HANDLER_STALE_MS = 5 * 60 * 1000;
-const snapshotStore = createSnapshotStore<HandlerSnapshot>(HANDLER_CACHE_VERSION);
+const snapshotStores = new Map<string, ReturnType<typeof createSnapshotStore<HandlerSnapshot>>>();
 
-function matchingHandlerSnapshot(viewAs: PipelineViewAs | null): HandlerSnapshot | null {
-  const snapshot = snapshotStore.get();
+function snapshotStoreFor(filterKey: string) {
+  let store = snapshotStores.get(filterKey);
+  if (!store) {
+    store = createSnapshotStore<HandlerSnapshot>(HANDLER_CACHE_VERSION);
+    snapshotStores.set(filterKey, store);
+  }
+  return store;
+}
+
+function matchingHandlerSnapshot(
+  store: ReturnType<typeof createSnapshotStore<HandlerSnapshot>>,
+  viewAs: PipelineViewAs | null,
+): HandlerSnapshot | null {
+  const snapshot = store.get();
   if (!snapshot || snapshot.identityKey !== pipelineViewIdentityKey(viewAs)) return null;
   return snapshot;
 }
-
-/** Shared with the Handler Management tables so the two screens cannot count differently. */
-const classifyBucket = classifySupportBucket;
 
 function currencyFromLegacy(currencyId: number | null | undefined, currencyData: unknown): string {
   const currency = Array.isArray(currencyData) ? currencyData[0] : currencyData;
@@ -173,6 +186,9 @@ function valueToNis(amount: number | null | undefined, currency: string | null |
 const ClientSupportPipelineView: React.FC<Props> = ({
   onCountChange,
   viewAs = null,
+  ownedFilterKey = 'support',
+  ownedColumn = 'client_support_id',
+  ownedActiveType = 3,
   selectedLeadId = null,
   selectedLeadIds,
   picking = false,
@@ -181,17 +197,18 @@ const ClientSupportPipelineView: React.FC<Props> = ({
   refreshToken = 0,
 }) => {
   const navigate = useNavigate();
-  const initialSnapshot = matchingHandlerSnapshot(viewAs);
+  const snapshotStore = snapshotStoreFor(ownedFilterKey);
+  const initialSnapshot = matchingHandlerSnapshot(snapshotStore, viewAs);
   const [loading, setLoading] = useState(() => initialSnapshot == null);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<HandlerPipelineRow[]>(() => initialSnapshot?.rows || []);
-  const [search, setSearch] = useState(() => loadHandlerFilters('support').search);
+  const [search, setSearch] = useState(() => loadHandlerFilters(ownedFilterKey).search);
   const [tableFilters, setTableFilters] = useState<HandlerTableFilters>(
-    () => loadHandlerFilters('support').tableFilters,
+    () => loadHandlerFilters(ownedFilterKey).tableFilters,
   );
-  const [bucket, setBucket] = useState<HandlerBucket>(() => loadHandlerFilters('support').bucket);
+  const [bucket, setBucket] = useState<HandlerBucket>(() => loadHandlerFilters(ownedFilterKey).bucket);
   const [quickFilter, setQuickFilter] = useState<HandlerQuickFilter>(
-    () => loadHandlerFilters('support').quickFilter,
+    () => loadHandlerFilters(ownedFilterKey).quickFilter,
   );
   const [metrics, setMetrics] = useState<Map<string, PipelineLeadMetrics>>(
     () => (initialSnapshot?.metrics ? new Map(initialSnapshot.metrics) : new Map()),
@@ -207,13 +224,13 @@ const ClientSupportPipelineView: React.FC<Props> = ({
   useScrollRestoration(snapshotStore, loading, pipelineVisible);
 
   useEffect(() => {
-    savePipelineFilters('support', {
+    savePipelineFilters(ownedFilterKey, {
       search,
       tableFilters,
       bucket,
       quickFilter,
     } satisfies HandlerFilterState);
-  }, [search, tableFilters, bucket, quickFilter]);
+  }, [ownedFilterKey, search, tableFilters, bucket, quickFilter]);
 
   const load = useCallback(async (options: { silent?: boolean } = {}) => {
     const { silent = false } = options;
@@ -240,7 +257,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
               misc_maincategory!parent_id ( id, name )
             )
           `)
-          .eq('client_support_id', employeeId)
+          .eq(ownedColumn, employeeId)
           .order('created_at', { ascending: false })
           .limit(1000),
         supabase
@@ -254,7 +271,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
               misc_maincategory!parent_id ( id, name )
             )
           `)
-          .eq('client_support_id', employeeId)
+          .eq(ownedColumn, employeeId)
           .order('cdate', { ascending: false })
           .limit(1000),
         supabase.from('misc_language').select('id, name'),
@@ -411,12 +428,9 @@ const ClientSupportPipelineView: React.FC<Props> = ({
 
       for (const lead of newResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const isInactive = lead.unactivated_at != null;
-        const bucketId = classifyBucket(stageId, activeHandlerType, isInactive);
+        const bucketId = classifyOwnedHandlingBucket(stageId, activeHandlerType, isInactive, ownedActiveType);
         if (!bucketId) continue;
         const countryJoin = Array.isArray(lead.misc_country) ? lead.misc_country[0] : lead.misc_country;
         const pay = newPaymentFlags(String(lead.id));
@@ -446,7 +460,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive,
           isNewLead: true,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           handlerAssignedDate: assignment?.handlerAssignedDate || null,
           firstHandlerAssignedDate: assignment?.firstHandlerAssignedDate || null,
           previousHandlerName: assignment?.previousHandlerName || null,
@@ -460,12 +474,9 @@ const ClientSupportPipelineView: React.FC<Props> = ({
 
       for (const lead of legacyResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const isInactive = Number(lead.status) === 10;
-        const bucketId = classifyBucket(stageId, activeHandlerType, isInactive);
+        const bucketId = classifyOwnedHandlingBucket(stageId, activeHandlerType, isInactive, ownedActiveType);
         if (!bucketId) continue;
         const countryInfo = legacyCountryMap.get(String(lead.id));
         const pay = legacyPaymentFlags(String(lead.id));
@@ -495,7 +506,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive,
           isNewLead: false,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           handlerAssignedDate: assignment?.handlerAssignedDate || null,
           firstHandlerAssignedDate: assignment?.firstHandlerAssignedDate || null,
           previousHandlerName: assignment?.previousHandlerName || null,
@@ -553,10 +564,10 @@ const ClientSupportPipelineView: React.FC<Props> = ({
       setLoading(false);
       releasePipelineScroll();
     }
-  }, [viewAs]);
+  }, [viewAs, ownedColumn, ownedActiveType, ownedFilterKey]);
 
   useEffect(() => {
-    if (matchingHandlerSnapshot(viewAs)) {
+    if (matchingHandlerSnapshot(snapshotStore, viewAs)) {
       void load({ silent: true });
       return;
     }
@@ -591,7 +602,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
         void toggleHandlerRetention(row, nextType)
           .then(() => {
             const label =
-              nextType === 1 ? 'Retention' : nextType === 3 ? 'Client Support' : 'Handler';
+              nextType === 1 ? 'Completion' : nextType === 3 ? 'Case Monitoring' : 'Handler';
             toast.success(`Active role set to ${label}`);
             return load({ silent: true });
           })
@@ -974,7 +985,7 @@ const ClientSupportPipelineView: React.FC<Props> = ({
                         {row.retentionHandlerName || '—'}
                       </td>
                       <td className={PIPELINE_CELL_LAST} style={PIPELINE_CELL_STYLE}>
-                        <HandlerActionsColumn row={row} handlers={actionHandlers} pipelineRole={3} />
+                        <HandlerActionsColumn row={row} handlers={actionHandlers} pipelineRole={ownedActiveType} />
                       </td>
                     </tr>
                   );

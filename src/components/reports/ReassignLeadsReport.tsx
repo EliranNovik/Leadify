@@ -35,9 +35,9 @@ const REASSIGN_ROLE_LABELS: { [key: string]: string } = {
     handler: 'Handler',
     helper: 'Helper',
     expert: 'Expert',
-    retainer_handler: 'Retention Handler',
+    retainer_handler: 'Completion Coordinator',
     helper_handler: 'Helper Handler',
-    client_support: 'Client Support',
+    client_support: 'Case Monitoring Coordinator',
 };
 
 /**
@@ -124,20 +124,20 @@ const leadHasRoleForActiveChoice = (lead: any, choice: ActiveHandlerType): boole
 const activeChoiceSuccessSummary = (choice: ActiveHandlerType, plural: boolean): string => {
     const cases = plural ? 'the selected cases' : 'this lead';
     if (choice === 1) return `Retention handler is now active on ${cases}.`;
-    if (choice === 3) return `Client support is now active on ${cases}.`;
+    if (choice === 3) return `Case monitoring is now active on ${cases}.`;
     return `Case handler is now active on ${cases}.`;
 };
 
 const activeChoiceMissingTitle = (role: ActiveMissingRole): string => {
     if (role === 'handler') return 'No case handler';
-    if (role === 'client_support') return 'No client support';
-    return 'No retention handler';
+    if (role === 'client_support') return 'No case monitoring coordinator';
+    return 'No completion coordinator';
 };
 
 const activeChoiceAssignLabel = (role: ActiveMissingRole): string => {
     if (role === 'handler') return 'case handler';
-    if (role === 'client_support') return 'client support';
-    return 'retention handler';
+    if (role === 'client_support') return 'case monitoring coordinator';
+    return 'completion coordinator';
 };
 
 /** PostgREST `.or()` fragment for new-leads text columns that store a person name or placeholders. */
@@ -190,7 +190,7 @@ const activeHandlerFilterOptions = (
     }
     return [
         { value: '', label: 'Any' },
-        { value: 'support', label: 'Active client support' },
+        { value: 'support', label: 'Active case monitoring' },
         { value: 'not_support', label: 'Non-active support' },
     ];
 };
@@ -383,9 +383,9 @@ const ROLE_COLUMN_SOURCES: Record<
     helper: { label: 'Helper', idFields: ['meeting_lawyer_id'], nameField: 'helper' },
     // New leads keep the employee id in `expert` itself; the legacy table has its own column.
     expert: { label: 'Expert', idFields: ['expert', 'expert_id'], nameField: 'expert' },
-    retainer_handler: { label: 'Retention', idFields: ['retainer_handler_id'] },
+    retainer_handler: { label: 'Completion', idFields: ['retainer_handler_id'] },
     helper_handler: { label: 'Helper handler', idsField: 'helper_handler_ids' },
-    client_support: { label: 'Client support', idFields: ['client_support_id'] },
+    client_support: { label: 'Case monitoring', idFields: ['client_support_id'] },
 };
 
 /** Column order, which is the order the roles run in the filter tabs. */
@@ -500,8 +500,8 @@ const REASSIGN_ACTIVE_SEGMENTS: Array<{
     pillClass: string;
 }> = [
     { type: 2, letter: 'H', label: 'Handler', pillClass: 'bg-emerald-500' },
-    { type: 1, letter: 'R', label: 'Retention', pillClass: 'bg-blue-500' },
-    { type: 3, letter: 'S', label: 'Client Support', pillClass: 'bg-violet-500' },
+    { type: 1, letter: 'C', label: 'Completion', pillClass: 'bg-blue-500' },
+    { type: 3, letter: 'M', label: 'Case Monitoring', pillClass: 'bg-violet-500' },
 ];
 
 const reassignActiveSegmentIndex = (type: ActiveHandlerType): number =>
@@ -1514,10 +1514,10 @@ const ReassignLeadsReport: React.FC = () => {
         }
         if (reassignFilters.retainer_handler) {
             if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
-                filtered.push({ employee: null, role: 'retainer_handler', roleLabel: 'Retention handler', noneFilter: true });
+                filtered.push({ employee: null, role: 'retainer_handler', roleLabel: 'Completion coordinator', noneFilter: true });
             } else {
                 const emp = employees.find(e => e.display_name === reassignFilters.retainer_handler);
-                if (emp) filtered.push({ employee: emp, role: 'retainer_handler', roleLabel: 'Retention Handler' });
+                if (emp) filtered.push({ employee: emp, role: 'retainer_handler', roleLabel: 'Completion Coordinator' });
             }
         }
         if (reassignFilters.helper_handler) {
@@ -1530,10 +1530,10 @@ const ReassignLeadsReport: React.FC = () => {
         }
         if (reassignFilters.client_support) {
             if (isReassignRoleNoneFilter(reassignFilters.client_support)) {
-                filtered.push({ employee: null, role: 'client_support', roleLabel: 'Client support', noneFilter: true });
+                filtered.push({ employee: null, role: 'client_support', roleLabel: 'Case monitoring coordinator', noneFilter: true });
             } else {
                 const emp = employees.find(e => e.display_name === reassignFilters.client_support);
-                if (emp) filtered.push({ employee: emp, role: 'client_support', roleLabel: 'Client Support' });
+                if (emp) filtered.push({ employee: emp, role: 'client_support', roleLabel: 'Case Monitoring Coordinator' });
             }
         }
 
@@ -4116,7 +4116,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         ['expert', 'Expert'],
                                         ['retainer_handler', 'Retention'],
                                         ['helper_handler', 'Helper handler'],
-                                        ['client_support', 'Client support'],
+                                        ['client_support', 'Case monitoring'],
                                     ] as const
                                 ).map(([id, label]) => (
                                     <button
@@ -4637,8 +4637,8 @@ const ReassignLeadsReport: React.FC = () => {
                                         onChange={(missing) => setOtherRoleMissing('handler', missing)}
                                     />
                                     <ReassignMissingRoleFilter
-                                        missingLabel="Missing client support"
-                                        fieldLabel="Client support role:"
+                                        missingLabel="Missing case monitoring coordinator"
+                                        fieldLabel="Case monitoring role:"
                                         missing={otherRoleMissing('client_support')}
                                         onChange={(missing) => setOtherRoleMissing('client_support', missing)}
                                     />
@@ -4677,7 +4677,7 @@ const ReassignLeadsReport: React.FC = () => {
                                 )}
                                 {roleFilterTab === 'client_support' && (
                                     <ReassignRoleFilterPanel
-                                        label="Client support:"
+                                        label="Case monitoring:"
                                         containerClassName="client-support-dropdown-container"
                                         secondary={isRoleSecondary('client_support')}
                                         searchTerm={clientSupportSearchTerm}
@@ -4794,8 +4794,8 @@ const ReassignLeadsReport: React.FC = () => {
                                     disabled={savingActiveHandlerType}
                                 />
                                 <span>
-                                    <span className="font-medium">Retention handler active</span>
-                                    <span className="mt-0.5 block text-xs text-base-content/60">The retention handler is the active role on the case.</span>
+                                    <span className="font-medium">Completion coordinator active</span>
+                                    <span className="mt-0.5 block text-xs text-base-content/60">The completion coordinator is the active role on the case.</span>
                                 </span>
                             </label>
                             <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${activeHandlerTypeChoice === 3 ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}`}>
@@ -4808,8 +4808,8 @@ const ReassignLeadsReport: React.FC = () => {
                                     disabled={savingActiveHandlerType}
                                 />
                                 <span>
-                                    <span className="font-medium">Client support active</span>
-                                    <span className="mt-0.5 block text-xs text-base-content/60">Client support is the active role on the case.</span>
+                                    <span className="font-medium">Case monitoring coordinator active</span>
+                                    <span className="mt-0.5 block text-xs text-base-content/60">The case monitoring coordinator is the active role on the case.</span>
                                 </span>
                             </label>
                         </div>

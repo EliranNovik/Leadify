@@ -33,7 +33,7 @@ import {
   markHandlerReadyToPay,
 } from './HandlerCaseActions';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
-import { classifyRetentionBucket as sharedClassifyRetentionBucket } from '../../lib/handlerCaseBuckets';
+import { classifyRetentionBucket as sharedClassifyRetentionBucket, readPipelineActiveType } from '../../lib/handlerCaseBuckets';
 import { fetchHandlerEmailFlag5Targets } from '../../lib/handlerEmailFlag';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import {
@@ -374,10 +374,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
 
       for (const lead of newResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const started = lead.retention_handler_started === true;
         const bucketId = classifyRetentionBucket(stageId, activeHandlerType, started);
         if (!bucketId) continue;
@@ -409,7 +406,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive: lead.unactivated_at != null,
           isNewLead: true,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           ...roleFields(lead),
           ...pay,
         });
@@ -417,10 +414,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
 
       for (const lead of legacyResult.data || []) {
         const stageId = lead.stage != null ? Number(lead.stage) : null;
-        const activeHandlerType = (() => {
-          const n = Number(lead.active_handler_type);
-          return n === 1 || n === 3 ? n : 2;
-        })();
+        const activeHandlerType = readPipelineActiveType(lead.active_handler_type);
         const started = lead.retention_handler_started === true;
         const bucketId = classifyRetentionBucket(stageId, activeHandlerType, started);
         if (!bucketId) continue;
@@ -452,7 +446,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           bucket: bucketId,
           isInactive: Number(lead.status) === 10,
           isNewLead: false,
-          active_handler_type: activeHandlerType as 1 | 2 | 3,
+          active_handler_type: activeHandlerType,
           ...roleFields(lead),
           ...pay,
         });
@@ -790,7 +784,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
                               e.stopPropagation();
                               void setRetentionHandlerStarted(target, true)
                                 .then(() => {
-                                  toast.success('Case started by Retention Handler');
+                                  toast.success('Case started by Completion Coordinator');
                                   return load({ silent: true });
                                 })
                                 .catch((err) => {
@@ -818,7 +812,7 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
                                     nextType === 1
                                       ? 'Retention'
                                       : nextType === 3
-                                        ? 'Client Support'
+                                        ? 'Case Monitoring'
                                         : 'Handler';
                                   toast.success(`Active role set to ${label}`);
                                   return load({ silent: true });

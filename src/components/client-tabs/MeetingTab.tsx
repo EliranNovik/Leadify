@@ -6975,7 +6975,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                       <p className="text-xs text-gray-400">Handler is managed in Roles and cannot be changed here.</p>
                     </div>
                     <div className="space-y-2">
-                      <label className={meetingFieldLabelClass}>Retention Handler</label>
+                      <label className={meetingFieldLabelClass}>Completion Coordinator</label>
                       <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                         <EmployeeAvatar employeeId={retentionHandlerId} size="sm" />
                         <span className="text-sm text-gray-700">{getEmployeeDisplayName(retentionHandlerId) || '--'}</span>
@@ -7332,7 +7332,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
                 </div>
                 {isActiveMeeting && (
                   <div className="space-y-2 sm:space-y-2">
-                    <label className={meetingFieldLabelClass}>Retention Handler</label>
+                    <label className={meetingFieldLabelClass}>Completion Coordinator</label>
                     <div className="flex items-center gap-2 sm:gap-2">
                       <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
                       <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(retentionHandlerId) || '--'}</span>

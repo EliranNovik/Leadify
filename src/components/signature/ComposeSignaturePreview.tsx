@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   getCurrentUserEmailSignature,
   prefetchCurrentUserEmailSignature,
@@ -120,6 +121,7 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
+  const [contentWidth, setContentWidth] = useState(PREVIEW_WIDTH);
   const [previewHeight, setPreviewHeight] = useState(compact ? 120 : 160);
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -151,8 +153,14 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
       doc.documentElement.scrollHeight,
       compact ? 120 : 160,
     );
+    const width = Math.max(
+      doc.body.scrollWidth,
+      doc.documentElement.scrollWidth,
+      PREVIEW_WIDTH,
+    );
     const nextHeight = height + 8;
     iframe.style.height = `${nextHeight}px`;
+    setContentWidth(width);
     setPreviewHeight(nextHeight);
   };
 
@@ -161,16 +169,20 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
     if (!container) return;
 
     const updateScale = () => {
-      const horizontalPadding = 32;
-      const availableWidth = Math.max(0, container.clientWidth - horizontalPadding);
-      setPreviewScale(Math.min(1, availableWidth / PREVIEW_WIDTH));
+      const availableWidth = container.clientWidth;
+      let scale = Math.min(1, availableWidth / Math.max(contentWidth, 1));
+      const maxHeight = window.innerWidth < 768 ? window.innerHeight * 0.36 : Number.POSITIVE_INFINITY;
+      if (previewHeight * scale > maxHeight) {
+        scale = maxHeight / previewHeight;
+      }
+      setPreviewScale(scale);
     };
 
     updateScale();
     const observer = new ResizeObserver(updateScale);
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  }, [contentWidth, previewHeight]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -192,13 +204,11 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
   if (!html) return null;
 
   return (
-    <div className={`bg-white ${className}`}>
-      <div ref={previewContainerRef} className="overflow-hidden px-4 pb-1 pt-2">
+    <div className={`w-full max-w-full overflow-hidden bg-white ${className}`}>
+      <div ref={previewContainerRef} className="w-full max-w-full overflow-hidden pb-1 pt-2">
         <div
-          style={{
-            width: PREVIEW_WIDTH * previewScale,
-            height: previewHeight * previewScale,
-          }}
+          className="relative w-full overflow-hidden"
+          style={{ height: previewHeight * previewScale }}
         >
           <iframe
             ref={iframeRef}
@@ -206,9 +216,9 @@ export const ComposeSignaturePreview: React.FC<ComposeSignaturePreviewProps> = (
             srcDoc={srcDoc}
             sandbox="allow-same-origin"
             onLoad={resizeIframe}
-            className="pointer-events-none block origin-top-left border-0 bg-white"
+            className="pointer-events-none absolute left-0 top-0 block origin-top-left border-0 bg-white"
             style={{
-              width: PREVIEW_WIDTH,
+              width: contentWidth,
               height: previewHeight,
               minHeight: compact ? 120 : 160,
               transform: `scale(${previewScale})`,
@@ -244,6 +254,18 @@ export const ComposeBodyWithSignature: React.FC<ComposeBodyWithSignatureProps> =
 }) => {
   const rootRef = useRef<HTMLDivElement>(null);
   const minHeight = compact ? 160 : 280;
+  const [signatureDock, setSignatureDock] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const sync = () => {
+      const dock = document.getElementById('compose-signature-dock');
+      setSignatureDock(media.matches && dock ? dock : null);
+    };
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
 
   const resize = useCallback(() => {
     const textarea = rootRef.current?.querySelector('textarea');
@@ -260,15 +282,19 @@ export const ComposeBodyWithSignature: React.FC<ComposeBodyWithSignatureProps> =
     <div
       ref={rootRef}
       className={`flex flex-1 flex-col bg-white [&_textarea]:border-0 [&_textarea]:shadow-none [&_textarea]:outline-none [&_textarea]:ring-0 [&_textarea]:focus:border-0 [&_textarea]:focus:outline-none [&_textarea]:focus:ring-0 ${
-        compact ? '' : 'min-h-[min(28rem,55vh)]'
+        compact || signatureDock ? '' : 'min-h-[min(28rem,55vh)]'
       } ${className}`}
     >
-      <div className="flex-1" style={{ minHeight }}>
+      <div className="flex-1" style={{ minHeight: signatureDock ? 140 : minHeight }}>
         {children}
       </div>
-      <div className={`shrink-0 ${compact ? 'mt-4' : 'mt-12 pt-2'}`}>
-        <ComposeSignaturePreview compact={compact} />
-      </div>
+      {signatureDock ? (
+        createPortal(<ComposeSignaturePreview compact />, signatureDock)
+      ) : (
+        <div className={`shrink-0 ${compact ? 'mt-4' : 'mt-12 pt-2'}`}>
+          <ComposeSignaturePreview compact={compact} />
+        </div>
+      )}
       {afterSignature}
     </div>
   );

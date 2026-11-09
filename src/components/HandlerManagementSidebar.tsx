@@ -10,8 +10,8 @@ const TABS: Array<{
 }> = [
   { id: 'dashboard', label: 'Dashboard', icon: <HomeIcon className="h-7 w-7" /> },
   { id: 'handlers', label: 'Handlers', icon: <UserGroupIcon className="h-7 w-7" /> },
-  { id: 'retention', label: 'Retention Handler', icon: <UserIcon className="h-7 w-7" /> },
-  { id: 'client_support', label: 'Client Support', icon: <LifebuoyIcon className="h-7 w-7" /> },
+  { id: 'retention', label: 'Completion Coordinator', icon: <UserIcon className="h-7 w-7" /> },
+  { id: 'client_support', label: 'Case Monitoring Coordinator', icon: <LifebuoyIcon className="h-7 w-7" /> },
 ];
 
 type Props = {

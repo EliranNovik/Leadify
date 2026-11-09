@@ -62,7 +62,7 @@ export const LEAD_ROLE_DEFINITIONS: LeadRoleDefinition[] = [
   { id: 'expert', title: 'Expert' },
   { id: 'closer', title: 'Closer' },
   { id: 'handler', title: 'Handler' },
-  { id: 'retainer_handler', title: 'Retention Handler' },
+  { id: 'retainer_handler', title: 'Completion Coordinator' },
   { id: 'collection_manager', title: 'Collection manager' },
   { id: 'marketing_officer', title: 'Marketing Officer' },
 ];

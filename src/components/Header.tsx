@@ -418,7 +418,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, []);
 
   // Mobile detection
-  const [isMobile, setIsMobile] = useState(false);
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < 768,
+  );
 
   useEffect(() => {
     const checkMobile = () => {
@@ -4537,7 +4539,33 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         }}
                       >
                         <RmqAiLogo src={RMQ_AI_HEADER_LOGO_SRC} className="h-6 w-6 shrink-0" />
-                        <span className="text-base font-medium">RMQ AI</span>
+                        <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                          <span className="text-base font-medium">RMQ AI</span>
+                          <span className="badge badge-sm shrink-0 border-none bg-gray-200 uppercase tracking-wide text-[#3b28c7]">
+                            New
+                          </span>
+                        </span>
+                      </button>
+                    )}
+                    {isSuperUser && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                        onClick={() => {
+                          setShowProfileDropdown(false);
+                          setIsClockInApprovalModalOpen(true);
+                        }}
+                      >
+                        <ClipboardDocumentCheckIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                        <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                          <span className="text-base font-medium">Approve hours</span>
+                          {pendingClockInApprovalCount > 0 && (
+                            <span className="badge badge-sm min-w-[1.25rem] border-none bg-red-500 px-1.5 text-white">
+                              {pendingClockInApprovalCount > 99 ? '99+' : pendingClockInApprovalCount}
+                            </span>
+                          )}
+                        </span>
                       </button>
                     )}
                     <button
@@ -4609,7 +4637,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               document.body
             )}
           </div>
-          {renderClockInApprovalButton('md:hidden shrink-0')}
           {renderMailboxReconnectButton('md:hidden ml-1 shrink-0')}
 
           {renderAdminBypassControls('md:hidden ml-1 shrink-0')}
@@ -5674,8 +5701,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {typeof onOpenAIChat === 'function' && (
-            <div className="relative">
+          {typeof onOpenAIChat === 'function' && !isMobile && (
+            <div className="relative hidden max-md:!hidden md:block">
               <button
                 type="button"
                 className="btn btn-ghost border-0 min-h-0 h-11 w-11 p-0 rounded-xl flex items-center justify-center text-base-content/90 hover:bg-base-200/70"

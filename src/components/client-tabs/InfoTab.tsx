@@ -1722,14 +1722,14 @@ const InfoTab: React.FC<ClientTabProps> = ({
       />
 
       {/* Main Info Grid */}
-      <div className="space-y-2">
+      <div className="info-box-carousel space-y-2 max-md:!space-y-0">
         {/* Case Probability + Follow-up; Eligibility + File ID */}
-        <div className="mb-0 flex flex-col gap-2">
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-2">
+        <div className="info-carousel-pass mb-0 flex flex-col gap-2">
+          <div className="info-carousel-pass flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-2">
           {/* Case Probability */}
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="flex h-full min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:py-0">
-              <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border-0 bg-white shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]">
+          <div className="info-carousel-pass flex min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="info-carousel-pass flex h-full min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:py-0">
+              <div className="info-carousel-card flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border-0 bg-white shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]">
                 <div className="flex h-full flex-col space-y-4 px-4 py-3">
                   <div className="flex items-center justify-between gap-2">
                     <h4 className="text-lg font-semibold text-gray-900">Case Probability</h4>
@@ -1803,9 +1803,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
 
           {/* Followup */}
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <div className="flex h-full min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:py-0">
-              <div className="flex h-full min-h-0 flex-1 flex-col space-y-4 rounded-2xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]">
+          <div className="info-carousel-pass flex min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="info-carousel-pass flex h-full min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:py-0">
+              <div className="info-carousel-card flex h-full min-h-0 flex-1 flex-col space-y-4 rounded-2xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="text-lg font-semibold text-gray-900">Follow-up Status</h4>
                 {isFollowupLoading ? (
@@ -1953,11 +1953,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
           </div>
 
-          <div className="flex flex-col gap-2 pt-0 lg:flex-row lg:items-stretch lg:gap-2 lg:pt-0">
+          <div className="info-carousel-pass flex flex-col gap-2 pt-0 lg:flex-row lg:items-stretch lg:gap-2 lg:pt-0">
           {/* Eligibility */}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
-              <div className="rounded-2xl border-0 bg-white shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] overflow-hidden">
+          <div className="info-carousel-pass flex-1 min-w-0 overflow-hidden">
+            <div className="info-carousel-pass px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
+              <div className="info-carousel-card rounded-2xl border-0 bg-white shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] overflow-hidden">
                 <div className="px-4 py-3 space-y-3">
                   <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
                   <div className="flex items-center justify-between gap-3 py-1">
@@ -2038,9 +2038,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
 
           {/* File ID — same row as Eligibility */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
-              <div className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] flex min-h-0 flex-1 flex-col gap-3">
+          <div className="info-carousel-pass flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
+            <div className="info-carousel-pass flex min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
+              <div className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] flex min-h-0 flex-1 flex-col gap-3">
               <div className="flex shrink-0 items-center justify-between gap-1">
                 <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
                 {useMobileEditModal && isEditingFileId ? (
@@ -2115,11 +2115,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
         </div>
 
         {/* Special Notes and General Notes */}
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-2">
+        <div className="info-carousel-pass flex flex-col gap-2 lg:flex-row lg:items-stretch lg:gap-2">
           {/* Special Notes */}
-          <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 sm:px-1 pb-1 lg:pb-0">
-            <div className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
+          <div className="info-carousel-pass flex-1 min-w-0 overflow-hidden">
+            <div className="info-carousel-pass px-0 sm:px-1 pb-1 lg:pb-0">
+            <div className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
                 {useMobileEditModal && isEditingSpecialNotes ? (
@@ -2197,9 +2197,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
 
           {/* General Notes — aligned with File ID column */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
-            <div className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
+          <div className="info-carousel-pass flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
+            <div className="info-carousel-pass flex min-h-0 flex-1 flex-col px-0 pb-1 pt-0 sm:px-1 lg:pb-0 lg:pt-0">
+            <div className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
                 {useMobileEditModal && isEditingGeneralNotes ? (
@@ -2280,10 +2280,10 @@ const InfoTab: React.FC<ClientTabProps> = ({
         </div>
 
         {/* Row 4: Facts of Case */}
-        <div className="grid grid-cols-1 gap-2">
+        <div className="info-carousel-pass grid grid-cols-1 gap-2">
           {/* Facts of Case */}
-          <div className="p-0">
-            <div className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
+          <div className="info-carousel-pass p-0">
+            <div className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
                 {useMobileEditModal && isEditingFacts ? (

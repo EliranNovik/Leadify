@@ -3826,7 +3826,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   return (
     <Fragment>
-      <div className="w-full overflow-x-hidden overflow-y-auto">
+      <div className="w-full md:overflow-x-hidden md:overflow-y-auto">
         <div className="p-1 sm:p-2 md:p-3 max-w-full">
           <ClientTabPageHeader
             className="mb-6"
@@ -3835,7 +3835,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             subtitle="Manage client contacts and contracts"
           />
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-5 w-full pb-6 items-stretch">
+          <div className="mb-4 md:hidden">
+            <button
+              type="button"
+              onClick={handleCreateNewContact}
+              className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-[#d5d9e2] bg-white/60 px-6 py-6 text-center transition-colors hover:border-primary/40 hover:bg-white"
+            >
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-50 text-gray-500">
+                <PlusIcon className="h-7 w-7" />
+              </span>
+              <span className="text-lg font-semibold text-gray-800">Add another contact</span>
+              <span className="max-w-[240px] text-sm text-gray-500">
+                Create a secondary contact for this client
+              </span>
+            </button>
+          </div>
+
+          <div
+            className={`grid w-full grid-cols-1 items-stretch gap-5 pb-6 sm:grid-cols-2 2xl:grid-cols-3 ${
+              contacts.length > 1 ? 'info-box-carousel info-box-carousel-free contact-box-carousel' : ''
+            } ${
+              openContactMenuId != null || openDocsAddMenuId != null || openContractMenuId != null
+                ? 'max-md:!overflow-visible'
+                : ''
+            }`}
+          >
             {contacts.map((contact, index) => {
               const editing = isContactEditing(contact);
               const cardContract =
@@ -3898,7 +3922,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 <div
                   key={contact.id}
                   className={[
-                    'h-full min-w-0 bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
+                    'info-carousel-card h-full min-w-0 bg-white border border-[#e8eaf0] rounded-2xl shadow-[0_4px_18px_rgba(20,24,40,0.04)] overflow-visible flex flex-col',
                     cardMenuOpen ? 'relative z-40' : 'relative z-0',
                   ].join(' ')}
                 >
@@ -4880,8 +4904,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               );
             })}
 
-            {/* Add Contact — same height as contact cards */}
-            <div className="h-full min-h-0 self-stretch">
+            {/* Add Contact — same height as contact cards on desktop; mobile copy sits above the row */}
+            <div className="hidden h-full min-h-0 self-stretch md:block">
               <button
                 type="button"
                 onClick={handleCreateNewContact}

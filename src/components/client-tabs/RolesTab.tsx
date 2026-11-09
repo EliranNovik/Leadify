@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LifebuoyIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LifebuoyIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon, BanknotesIcon, MegaphoneIcon, ChevronDownIcon, UserPlusIcon, UserMinusIcon, DocumentTextIcon, FolderOpenIcon, ShieldCheckIcon, ClipboardDocumentCheckIcon, BuildingLibraryIcon } from '@heroicons/react/24/outline';
+import { EXTRA_HANDLING_ROLES, handlingStageForRole } from '../../lib/handlingRoles';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -95,7 +96,7 @@ type RolesTabCacheSlice = {
  * Everything in `roles` is a name in one column, saved by `handleSaveRoles`. This card keeps its own
  * list of employee ids and writes `lead_helper_handlers` instead, so it has to stay out of that
  * array — a role in it with no matching column would have the save write a name into nothing.
- * `ROLE_SECTIONS` still places it, which is what keeps it sitting beside Retention Handler.
+ * `ROLE_SECTIONS` still places it, which is what keeps it sitting beside Completion Coordinator.
  */
 const HELPER_HANDLER_ROLE_ID = 'helper_handler';
 const HELPER_HANDLER_TITLE = 'Helper Handler';
@@ -103,7 +104,21 @@ const HELPER_HANDLER_TITLE = 'Helper Handler';
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
   { title: 'Sales', roleIds: ['scheduler', 'manager', 'helper', 'expert', 'closer'] },
-  { title: 'Handlers', roleIds: ['handler', 'retainer_handler', 'client_support', HELPER_HANDLER_ROLE_ID] },
+  {
+    title: 'Handlers',
+    roleIds: [
+      'handler',
+      'submission_manager',
+      'application_manager',
+      'digital_case_coordinator',
+      'document_procurement_coordinator',
+      'certification_coordinator',
+      'client_support',
+      'authorities_coordinator',
+      'retainer_handler',
+      HELPER_HANDLER_ROLE_ID,
+    ],
+  },
   { title: 'Finance', roleIds: ['collection_manager'] },
   { title: 'Marketing', roleIds: ['marketing_officer'] },
 ];
@@ -326,8 +341,15 @@ const RolesTab: React.FC<ClientTabProps> = ({
         { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
         { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
         { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
-        { id: 'retainer_handler', title: 'Retention Handler', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
-        { id: 'client_support', title: 'Client Support', assignee: '---', fieldName: 'client_support_id', legacyFieldName: 'client_support_id' },
+        ...EXTRA_HANDLING_ROLES.map((role) => ({
+          id: role.id,
+          title: role.title,
+          assignee: '---',
+          fieldName: role.column,
+          legacyFieldName: role.column,
+        })),
+        { id: 'retainer_handler', title: 'Completion Coordinator', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
+        { id: 'client_support', title: 'Case Monitoring Coordinator', assignee: '---', fieldName: 'client_support_id', legacyFieldName: 'client_support_id' },
         { id: 'collection_manager', title: 'Collection manager', assignee: '---', fieldName: 'meeting_collection_id', legacyFieldName: 'meeting_collection_id' },
         { id: 'marketing_officer', title: 'Marketing Officer', assignee: '---', fieldName: 'marketing_officer_id', legacyFieldName: 'marketing_officer_id' },
       ];
@@ -428,9 +450,16 @@ const RolesTab: React.FC<ClientTabProps> = ({
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'
       },
+      ...EXTRA_HANDLING_ROLES.map((role) => ({
+        id: role.id,
+        title: role.title,
+        assignee: getEmployeeDisplayName((client as any)[role.column], employeesToUse) || '---',
+        fieldName: role.column,
+        legacyFieldName: role.column,
+      })),
       {
         id: 'retainer_handler',
-        title: 'Retention Handler',
+        title: 'Completion Coordinator',
         assignee: isLegacyLead
           ? getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse)
           : getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse) || '---',
@@ -439,7 +468,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
       },
       {
         id: 'client_support',
-        title: 'Client Support',
+        title: 'Case Monitoring Coordinator',
         // One id column of the same name on both lead tables, so there is nothing to tell apart.
         assignee: getEmployeeDisplayName((client as any).client_support_id, employeesToUse) || '---',
         fieldName: 'client_support_id',
@@ -742,7 +771,16 @@ const RolesTab: React.FC<ClientTabProps> = ({
         } else {
           // For new leads, check if this role needs ID conversion
           // Roles stored as employee IDs on new leads
-          const rolesNeedingIdConversion = ['manager', 'expert', 'helper', 'retainer_handler', 'client_support', 'collection_manager', 'marketing_officer'];
+          const rolesNeedingIdConversion = [
+            'manager',
+            'expert',
+            'helper',
+            'retainer_handler',
+            'client_support',
+            'collection_manager',
+            'marketing_officer',
+            ...EXTRA_HANDLING_ROLES.map((role) => role.id),
+          ];
           if (rolesNeedingIdConversion.includes(role.id)) {
             // Convert display name to employee ID for these roles
             const employeeId = getEmployeeIdFromDisplayName(role.assignee);
@@ -1151,6 +1189,18 @@ const RolesTab: React.FC<ClientTabProps> = ({
         return CogIcon;
       case 'retainer_handler':
         return BriefcaseIcon;
+      case 'submission_manager':
+        return DocumentTextIcon;
+      case 'application_manager':
+        return ClipboardDocumentCheckIcon;
+      case 'digital_case_coordinator':
+        return FolderOpenIcon;
+      case 'document_procurement_coordinator':
+        return DocumentTextIcon;
+      case 'certification_coordinator':
+        return ShieldCheckIcon;
+      case 'authorities_coordinator':
+        return BuildingLibraryIcon;
       case 'client_support':
         return LifebuoyIcon;
       case HELPER_HANDLER_ROLE_ID:
@@ -1216,7 +1266,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
               <h3 className="text-lg font-semibold text-gray-900 mb-3">
                 {section.title}
               </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div
+                className={`grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 ${
+                  section.roleIds.length > 1 ? 'info-box-carousel info-box-carousel-free' : ''
+                } ${Object.values(showDropdowns).some(Boolean) ? 'max-md:pb-72' : ''}`}
+              >
                 {section.roleIds.map((roleId) => {
                   if (roleId === HELPER_HANDLER_ROLE_ID) {
                     // Outside the roles lock on purpose: a locked lead still needs helpers moved on and off.
@@ -1233,7 +1287,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
                     return (
                       <div
                         key={HELPER_HANDLER_ROLE_ID}
-                        className="rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]"
+                        className="info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)] dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)]"
                       >
                         <div className="flex items-start justify-between gap-2 mb-2">
                           <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-blue-600 dark:text-blue-400">
@@ -1378,11 +1432,12 @@ const RolesTab: React.FC<ClientTabProps> = ({
                   const hasAssignee = role.assignee && role.assignee !== '---';
                   const isEditingRow = editingRoleId === role.id;
                   const roleUiDisabled = DISABLED_ROLE_IDS.has(role.id);
+                  const handlingStageLabel = handlingStageForRole(role.id)?.shortLabel;
 
                   return (
                     <div
                       key={role.id}
-                      className={`rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] ${
+                      className={`info-carousel-card rounded-xl border-0 bg-white px-4 py-4 shadow-[0_4px_18px_rgba(20,24,40,0.04)] transition-shadow dark:bg-base-100 dark:shadow-[0_4px_18px_rgba(0,0,0,0.25)] ${
                         roleUiDisabled
                           ? 'opacity-45 pointer-events-none select-none'
                           : 'hover:shadow-[0_8px_24px_rgba(20,24,40,0.08)]'
@@ -1391,8 +1446,13 @@ const RolesTab: React.FC<ClientTabProps> = ({
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}
                     >
                       <div className="flex items-start justify-between gap-2 mb-2">
-                        <span className="inline-flex items-center gap-1.5 rounded-md bg-base-200 px-2.5 py-1 text-sm font-medium text-blue-600 dark:text-blue-400">
-                          {role.title}
+                        <span className="inline-flex flex-col items-start rounded-md bg-base-200 px-2.5 py-1">
+                          <span className="text-sm font-medium leading-none text-blue-600 dark:text-blue-400">{role.title}</span>
+                          {handlingStageLabel ? (
+                            <span className="mt-1 text-[10px] font-semibold uppercase leading-none tracking-wide text-gray-400 dark:text-gray-500">
+                              {handlingStageLabel}
+                            </span>
+                          ) : null}
                         </span>
                         <div className="flex items-center gap-1 shrink-0">
                           {roleUiDisabled && (

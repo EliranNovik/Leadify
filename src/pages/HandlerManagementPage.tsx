@@ -61,6 +61,7 @@ import {
   classifyRetentionBucket,
   classifySupportBucket,
   emptyHandlerBucketCounts,
+  readPipelineActiveType,
 } from '../lib/handlerCaseBuckets';
 import { fetchAllPagedRows } from '../lib/invoicedInstallments';
 
@@ -692,10 +693,7 @@ const HandlerManagementPage: React.FC = () => {
           leadRefsByRow.set(rowKey(handlerId, roleField), periodRefs);
 
           // Bucketed by the rules the pipeline tabs use, from the one shared classifier.
-          const parseActiveType = (raw: unknown): 1 | 2 | 3 => {
-            const n = Number(raw);
-            return n === 1 || n === 3 ? n : 2;
-          };
+          const parseActiveType = (raw: unknown): number => readPipelineActiveType(raw);
           const allLeads = [
             ...(newLeads || []).map(l => ({
               stage: l.stage,
@@ -2599,9 +2597,9 @@ const HandlerManagementPage: React.FC = () => {
         value: summary.teamSize,
         label:
           variant === 'retention'
-            ? 'Retention Handlers'
+            ? 'Completion Coordinators'
             : variant === 'client_support'
-              ? 'Client Support'
+              ? 'Case Monitoring Coordinators'
               : 'Handlers',
         hint: filteredView
           ? 'In the current search or department filter'
@@ -3654,7 +3652,7 @@ const HandlerManagementPage: React.FC = () => {
       </div>
       ) : null}
 
-      {/* Retention Handlers and Their Cases */}
+      {/* Completion Coordinators and Their Cases */}
       {activeTab === 'retention' && showingRetentionPipeline && retentionPipelineViewAs ? (
       <div className="mb-8">
         <div className="mb-4 flex items-center gap-3">
@@ -3662,15 +3660,15 @@ const HandlerManagementPage: React.FC = () => {
             type="button"
             onClick={() => setRetentionPipelineViewAs(null)}
             className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-            aria-label="Back to retention handlers"
-            title="Back to retention handlers"
+            aria-label="Back to completion coordinators"
+            title="Back to completion coordinators"
           >
             <ArrowLeftIcon className="h-5 w-5" />
             Back
           </button>
           <div className="min-w-0">
             <h2 className="truncate text-xl font-bold text-gray-900">{retentionPipelineViewAs.displayName}</h2>
-            <p className="text-sm text-gray-500">Retention handler pipeline</p>
+            <p className="text-sm text-gray-500">Completion coordinator pipeline</p>
           </div>
         </div>
         <RetentionHandlerPipelineView
@@ -3763,8 +3761,8 @@ const HandlerManagementPage: React.FC = () => {
             type="button"
             onClick={() => setClientSupportPipelineViewAs(null)}
             className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-            aria-label="Back to client support"
-            title="Back to client support"
+            aria-label="Back to case monitoring coordinators"
+            title="Back to case monitoring coordinators"
           >
             <ArrowLeftIcon className="h-5 w-5" />
             Back
@@ -3773,7 +3771,7 @@ const HandlerManagementPage: React.FC = () => {
             <h2 className="truncate text-xl font-bold text-gray-900">
               {clientSupportPipelineViewAs.displayName}
             </h2>
-            <p className="text-sm text-gray-500">Client support pipeline</p>
+            <p className="text-sm text-gray-500">Case monitoring pipeline</p>
           </div>
         </div>
         <ClientSupportPipelineView
@@ -3795,7 +3793,7 @@ const HandlerManagementPage: React.FC = () => {
               <tbody>
                 <tr>
                   <td className="bg-white px-4 py-12 text-center text-sm text-gray-500" style={PIPELINE_CELL_STYLE}>
-                    No client support employees with cases found
+                    No case monitoring coordinators with cases found
                   </td>
                 </tr>
               </tbody>

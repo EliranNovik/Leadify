@@ -1,7 +1,7 @@
 import React from 'react';
 import {
+  Bars3Icon,
   DocumentTextIcon,
-  EnvelopeIcon,
   InboxIcon,
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -238,6 +238,8 @@ export type InteractionsEmailModalProps = {
   onDeleteMessage?: (message: any) => void;
   /** Hovering reply/forward/delete actions over the reading pane (no bottom bar). */
   floatingActions?: React.ReactNode;
+  /** New email and Reply, shown in the search bar on phones. */
+  mobileSearchActions?: React.ReactNode;
   /** Optional portals / overlays (compose UI) — not shown in the floating pill. */
   children?: React.ReactNode;
 };
@@ -273,9 +275,20 @@ export function InteractionsEmailModal({
   onForwardMessage,
   onDeleteMessage,
   floatingActions,
+  mobileSearchActions,
   children,
 }: InteractionsEmailModalProps) {
-  const [listFilter, setListFilter] = React.useState<'all' | 'incoming' | 'outgoing'>('all');
+  const [listFilter, setListFilter] = React.useState<'all' | 'incoming' | 'outgoing'>('incoming');
+  const [folderMenuOpen, setFolderMenuOpen] = React.useState(false);
+  const folderMenuRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!folderMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!folderMenuRef.current?.contains(event.target as Node)) setFolderMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [folderMenuOpen]);
   const [listMode, setListMode] = React.useState<EmailSidepanelListMode>('newest');
   const [conversationDirectionFilter, setConversationDirectionFilter] = React.useState<
     'all' | 'incoming' | 'outgoing'
@@ -417,11 +430,99 @@ export function InteractionsEmailModal({
             }
           `}</style>
       <div className="flex h-full min-h-0 overflow-hidden">
-          <aside
-            className={`${isMobile && showEmailDetail ? 'hidden' : isMobile ? 'w-full' : 'w-[22rem] md:w-96'} flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100`}
+          <nav
+            className="hidden h-full w-36 shrink-0 flex-col gap-1 border-r border-slate-200 bg-slate-100 px-2 py-3 md:flex"
+            aria-label="Mail folders"
           >
-            <div className="shrink-0 px-3 pt-3 pb-2">
+            <button
+              type="button"
+              onClick={() => setListFilter('incoming')}
+              className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-semibold ${
+                listFilter !== 'outgoing'
+                  ? 'bg-[#4218CC] text-white'
+                  : 'text-slate-600 hover:bg-slate-200'
+              }`}
+              aria-pressed={listFilter !== 'outgoing'}
+            >
+              <InboxIcon className="h-4 w-4 shrink-0" />
+              Inbox
+            </button>
+            <button
+              type="button"
+              onClick={() => setListFilter('outgoing')}
+              className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-semibold ${
+                listFilter === 'outgoing'
+                  ? 'bg-[#4218CC] text-white'
+                  : 'text-slate-600 hover:bg-slate-200'
+              }`}
+              aria-pressed={listFilter === 'outgoing'}
+            >
+              <PaperAirplaneIcon className="h-4 w-4 shrink-0" />
+              Sent
+            </button>
+          </nav>
+          <aside
+            className={`${isMobile && showEmailDetail ? 'hidden' : isMobile ? 'w-full' : 'w-[22rem] md:w-96'} relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-slate-100`}
+          >
+            <div className="shrink-0 px-2 pt-3 pb-2 md:px-3">
               <div className="flex items-center gap-1.5 rounded-xl bg-white p-1.5 shadow-sm">
+                {isMobile ? (
+                  <div className="relative shrink-0" ref={folderMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setFolderMenuOpen((open) => !open)}
+                      className="inline-flex h-9 w-9 items-center justify-center text-slate-800"
+                      aria-label={listFilter === 'outgoing' ? 'Sent' : 'Inbox'}
+                      aria-haspopup="menu"
+                      aria-expanded={folderMenuOpen}
+                      title={listFilter === 'outgoing' ? 'Sent' : 'Inbox'}
+                    >
+                      <Bars3Icon className="h-5 w-5" />
+                    </button>
+                    {folderMenuOpen ? (
+                      <div
+                        role="menu"
+                        className="absolute left-0 top-full z-40 mt-1.5 w-40 overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-lg"
+                      >
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={listFilter !== 'outgoing'}
+                          onClick={() => {
+                            setListFilter('incoming');
+                            setFolderMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold ${
+                            listFilter !== 'outgoing'
+                              ? 'bg-[#4218CC] text-white'
+                              : 'text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <InboxIcon className="h-4 w-4 shrink-0" />
+                          Inbox
+                        </button>
+                        <div className="mx-2 my-1 border-t border-slate-200" />
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={listFilter === 'outgoing'}
+                          onClick={() => {
+                            setListFilter('outgoing');
+                            setFolderMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold ${
+                            listFilter === 'outgoing'
+                              ? 'bg-[#4218CC] text-white'
+                              : 'text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <PaperAirplaneIcon className="h-4 w-4 shrink-0" />
+                          Sent
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <EmailSidepanelListMenu value={listMode} onChange={setListMode} />
                 <div className="relative min-w-0 flex-1">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5">
@@ -447,7 +548,7 @@ export function InteractionsEmailModal({
                 </div>
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2 pb-24 md:px-3 md:pb-2">
               {emailsLoading && emails.length === 0 ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-purple-500"></div>
@@ -518,7 +619,7 @@ export function InteractionsEmailModal({
                           <button
                             onClick={() => {
                               setEmailSearchQuery('');
-                              setListFilter('all');
+                              setListFilter('incoming');
                               setListMode('newest');
                             }}
                             className="mt-3 text-xs text-purple-600 hover:text-purple-800 underline"
@@ -570,7 +671,11 @@ export function InteractionsEmailModal({
                   }
 
                   return (
-                    <ul className="flex flex-col gap-2">
+                    <div className="overflow-hidden rounded-xl bg-white shadow-sm md:overflow-visible md:rounded-none md:bg-transparent md:shadow-none">
+                    <h2 className="border-b border-slate-200 px-3 py-2.5 text-base font-bold text-slate-900 md:hidden">
+                      {listFilter === 'outgoing' ? 'Sent' : 'Inbox'}
+                    </h2>
+                    <ul className="flex flex-col divide-y divide-slate-200 md:gap-2 md:divide-y-0 md:overflow-visible">
                       {conversationGroups.map((group) => {
                           const message = group.latest;
                           const senderEmail = message.from || '';
@@ -607,6 +712,11 @@ export function InteractionsEmailModal({
                             : '';
 
                           const subjectLine = displayConversationSubject(message.subject);
+                          const subjectUnread = group.messages.some((item) => {
+                            const outgoing =
+                              isOfficeEmail(item.from || '') || item.direction === 'outgoing';
+                            return !outgoing && item.is_read !== true;
+                          });
                           const previewOneLine = previewText || '—';
 
                           const initials = initialsFromName(senderDisplayName);
@@ -630,10 +740,10 @@ export function InteractionsEmailModal({
                                     setShowEmailDetail(true);
                                   }
                                 }}
-                                className={`group relative flex w-full gap-2 rounded-xl bg-white px-3 pb-8 pt-2.5 text-left shadow-sm transition-colors md:px-3.5 ${
+                                className={`group relative flex w-full gap-2 px-3 py-2 text-left transition-colors md:rounded-xl md:bg-white md:px-3.5 md:py-2.5 md:shadow-sm ${
                                   isSelected
-                                    ? 'ring-2 ring-[#4218CC]/35'
-                                    : 'hover:shadow-md active:bg-slate-50'
+                                    ? 'bg-[#4218CC]/8 md:bg-white md:ring-2 md:ring-[#4218CC]/35'
+                                    : 'active:bg-slate-50 md:hover:shadow-md'
                                 }`}
                               >
                                 {isOutgoing ? (
@@ -651,97 +761,66 @@ export function InteractionsEmailModal({
                                     {initials}
                                   </div>
                                 )}
-                                <div className="min-w-0 flex-1 py-0.5">
+                                <div className="min-w-0 flex-1 md:py-0.5">
                                   <div className="flex items-center gap-2">
                                     <span
-                                      className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-900 group-hover:text-slate-950"
+                                      className="min-w-0 flex-1 truncate text-sm font-normal text-slate-900 group-hover:text-slate-950"
                                       dir="auto"
                                     >
                                       {senderDisplayName}
                                     </span>
                                     <time
-                                      className="shrink-0 text-[11px] font-medium tabular-nums text-slate-400 group-hover:text-slate-500"
+                                      className="shrink-0 text-[11px] tabular-nums text-black"
                                       dateTime={message.date}
                                     >
                                       {formatTime(message.date)}
                                     </time>
                                     <span
-                                      className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold tabular-nums ${
-                                        group.count > 1
-                                          ? 'bg-slate-100 text-slate-600'
-                                          : 'invisible'
+                                      className={`h-2 w-2 shrink-0 rounded-full bg-[#4218CC] ${
+                                        group.count > 1 ? '' : 'invisible'
                                       }`}
                                       title={
                                         group.count > 1
                                           ? `${group.count} messages in this conversation`
                                           : undefined
                                       }
-                                      aria-hidden={group.count <= 1}
-                                    >
-                                      {group.count > 1 ? group.count : 0}
-                                    </span>
+                                      aria-hidden
+                                    />
                                   </div>
-                                  <p className="mt-0.5 max-w-[11rem] truncate text-sm font-bold text-slate-800 sm:max-w-[13rem] md:max-w-[14rem]" dir="auto">
+                                  <p
+                                    className={`mt-0.5 min-w-0 truncate text-sm text-slate-800 ${
+                                      subjectUnread ? 'font-bold' : 'font-normal'
+                                    }`}
+                                    dir="auto"
+                                  >
                                     {subjectLine}
                                   </p>
-                                  <p className="mt-0.5 line-clamp-2 text-sm leading-snug text-slate-500" dir="auto">
+                                  <p className="mt-0.5 line-clamp-1 text-sm font-normal leading-tight text-slate-500 md:leading-snug" dir="auto">
                                     {previewOneLine}
                                   </p>
                                 </div>
-                                <span
-                                  className={`pointer-events-none absolute bottom-1.5 left-2.5 inline-flex items-center justify-center ${
-                                    isOutgoing ? 'text-blue-600' : 'text-emerald-600'
-                                  }`}
-                                  title={isOutgoing ? 'Sent' : 'Inbox'}
-                                  aria-label={isOutgoing ? 'Sent' : 'Inbox'}
-                                >
-                                  {isOutgoing ? (
-                                    <PaperAirplaneIcon className="h-5 w-5" />
-                                  ) : (
-                                    <InboxIcon className="h-5 w-5" />
-                                  )}
-                                </span>
                               </button>
                             </li>
                           );
                         })}
                     </ul>
+                    </div>
                   );
                 })()
               )}
             </div>
-            <div className="shrink-0 px-3 pb-3 pt-1">
-              <div className="flex gap-1 rounded-xl bg-white p-1.5 shadow-sm">
-                {(
-                  [
-                    ['all', 'All', EnvelopeIcon],
-                    ['incoming', 'Inbox', InboxIcon],
-                    ['outgoing', 'Sent', PaperAirplaneIcon],
-                  ] as const
-                ).map(([key, label, Icon]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setListFilter(key)}
-                    className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition ${
-                      listFilter === key
-                        ? 'bg-[#4218CC] text-white shadow-sm'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    <Icon className="h-3.5 w-3.5 shrink-0" />
-                    {label}
-                  </button>
-                ))}
+            {isMobile && mobileSearchActions ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-end px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                <div className="pointer-events-auto">{mobileSearchActions}</div>
               </div>
-            </div>
+            ) : null}
           </aside>
 
           <section
             className={`${isMobile && !showEmailDetail ? 'hidden' : 'flex-1'} relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-100`}
           >
-            <header className="absolute inset-x-0 top-0 z-20 border-b border-white/40 bg-white/55 px-3 py-2.5 shadow-sm backdrop-blur-xl backdrop-saturate-150 md:px-4 md:py-3 supports-[backdrop-filter]:bg-white/40">
-              <div className="flex items-start gap-2 md:gap-3">
+            <header className="relative z-20 shrink-0 bg-slate-100 px-3 py-2.5 md:absolute md:inset-x-0 md:top-0 md:border-b md:border-white/40 md:bg-white/55 md:px-4 md:py-3 md:shadow-sm md:backdrop-blur-xl md:backdrop-saturate-150 md:supports-[backdrop-filter]:bg-white/40">
+              <div className="flex items-center gap-2 md:gap-3">
                 {isMobile && showEmailDetail && (
                   <button
                     type="button"
@@ -749,43 +828,15 @@ export function InteractionsEmailModal({
                       setShowEmailDetail(false);
                       setSelectedEmailForView(null);
                     }}
-                    className="btn btn-ghost btn-circle btn-sm mt-0.5 shrink-0"
+                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-slate-900"
                     aria-label="Back to list"
                   >
-                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M15 19l-7-7 7-7" />
                     </svg>
                   </button>
                 )}
-                <div className="min-w-0 flex-1">
-                  {selectedEmailForView ? (
-                    <>
-                      <h2
-                        className="truncate text-base font-bold text-slate-900 md:text-lg"
-                        dir="auto"
-                        title={displayConversationSubject(selectedEmailForView.subject)}
-                      >
-                        {displayConversationSubject(selectedEmailForView.subject)}
-                      </h2>
-                      <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
-                        <span className="shrink-0 font-semibold text-slate-600">Participants:</span>
-                        <span className="min-w-0 truncate font-medium text-slate-700" dir="auto">
-                          {collectConversationParticipants(conversationEmails, {
-                            currentUserFullName,
-                            currentUserEmail,
-                            clientName: client.name,
-                            contactName: selectedContactForEmail?.contact.name,
-                          })
-                            .map((participant) => participant.name)
-                            .join(', ') || '—'}
-                        </span>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="text-sm font-medium text-slate-500">Select an email to read</p>
-                  )}
-                </div>
-                <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                <div className="ml-auto flex shrink-0 flex-row items-center gap-1.5 md:gap-2">
                   {selectedEmailForView &&
                     (() => {
                       const sentCount = conversationEmails.filter(
@@ -803,7 +854,7 @@ export function InteractionsEmailModal({
                                 prev === 'incoming' ? 'all' : 'incoming',
                               )
                             }
-                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums transition md:gap-2 md:px-3 md:py-1.5 md:text-sm ${
+                            className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold tabular-nums transition ${
                               inboxActive
                                 ? 'bg-emerald-600 text-white ring-2 ring-emerald-600/30 ring-offset-1'
                                 : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
@@ -811,7 +862,7 @@ export function InteractionsEmailModal({
                             title={inboxActive ? 'Show all messages' : 'Show inbox only'}
                             aria-pressed={inboxActive}
                           >
-                            <InboxIcon className="h-4 w-4 md:h-5 md:w-5" />
+                            <InboxIcon className="h-5 w-5" />
                             {inboxCount}
                           </button>
                           <button
@@ -821,7 +872,7 @@ export function InteractionsEmailModal({
                                 prev === 'outgoing' ? 'all' : 'outgoing',
                               )
                             }
-                            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums transition md:gap-2 md:px-3 md:py-1.5 md:text-sm ${
+                            className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-semibold tabular-nums transition ${
                               sentActive
                                 ? 'bg-blue-600 text-white ring-2 ring-blue-600/30 ring-offset-1'
                                 : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
@@ -829,7 +880,7 @@ export function InteractionsEmailModal({
                             title={sentActive ? 'Show all messages' : 'Show sent only'}
                             aria-pressed={sentActive}
                           >
-                            <PaperAirplaneIcon className="h-4 w-4 md:h-5 md:w-5" />
+                            <PaperAirplaneIcon className="h-5 w-5" />
                             {sentCount}
                           </button>
                         </div>
@@ -877,9 +928,30 @@ export function InteractionsEmailModal({
               </div>
             </header>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100 px-3 pb-20 pt-[5.5rem] sm:px-4 md:px-5 md:pb-24 md:pt-[6.25rem]">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-100 px-1.5 pb-20 pt-1 sm:px-4 md:px-5 md:pb-24 md:pt-[4.75rem]">
               {selectedEmailForView ? (
                 <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+                  <div className="px-0.5">
+                    <h2
+                      className="text-base font-bold leading-snug text-slate-900 md:text-lg"
+                      dir="auto"
+                    >
+                      {displayConversationSubject(selectedEmailForView.subject)}
+                    </h2>
+                    <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
+                      <span className="shrink-0 font-semibold text-slate-600">Participants:</span>
+                      <span className="min-w-0 font-medium text-slate-700" dir="auto">
+                        {collectConversationParticipants(conversationEmails, {
+                          currentUserFullName,
+                          currentUserEmail,
+                          clientName: client.name,
+                          contactName: selectedContactForEmail?.contact.name,
+                        })
+                          .map((participant) => participant.name)
+                          .join(', ') || '—'}
+                      </span>
+                    </div>
+                  </div>
                   {visibleConversationEmails.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-slate-300 bg-white/70 px-4 py-10 text-center text-sm text-slate-500">
                       No {conversationDirectionFilter === 'outgoing' ? 'sent' : 'inbox'} messages
@@ -929,95 +1001,97 @@ export function InteractionsEmailModal({
                           id={`email-msg-${message.id}`}
                           className="rounded-xl border border-slate-200/80 bg-white px-3 py-4 shadow-sm md:px-5 md:py-5"
                         >
-                          <div className="mb-3 flex items-start gap-2.5">
-                            {isOutgoing ? (
-                              <TeamAvatar
-                                photoUrl={teamPhotoUrl}
-                                initials={initials}
-                                name={personName}
-                                size="lg"
-                              />
-                            ) : (
-                              <div
-                                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[0.7rem] font-bold uppercase tracking-wide text-white ${clientAvatarBg}`}
-                                aria-hidden
-                              >
-                                {initials}
-                              </div>
-                            )}
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="text-sm font-semibold text-gray-900" dir="auto">
-                                  {personName}
-                                </span>
-                                <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                                  <span
-                                    className={`inline-flex shrink-0 items-center justify-center ${
-                                      isOutgoing ? 'text-blue-600' : 'text-emerald-600'
-                                    }`}
-                                    title={isOutgoing ? 'Sent' : 'Inbox'}
-                                    aria-label={isOutgoing ? 'Sent' : 'Inbox'}
-                                  >
-                                    {isOutgoing ? (
-                                      <PaperAirplaneIcon className="h-5 w-5" />
-                                    ) : (
-                                      <InboxIcon className="h-5 w-5" />
-                                    )}
+                          <div className="mb-3">
+                            <div className="flex items-center gap-2.5">
+                              {isOutgoing ? (
+                                <TeamAvatar
+                                  photoUrl={teamPhotoUrl}
+                                  initials={initials}
+                                  name={personName}
+                                  size="lg"
+                                />
+                              ) : (
+                                <div
+                                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[0.7rem] font-bold uppercase tracking-wide text-white ${clientAvatarBg}`}
+                                  aria-hidden
+                                >
+                                  {initials}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="min-w-0 truncate text-sm font-semibold text-gray-900" dir="auto">
+                                    {personName}
                                   </span>
-                                  <span className="rounded-full bg-slate-50 px-2.5 py-1 text-xs font-semibold tabular-nums text-slate-600">
-                                    {formatTime(message.date)}
-                                  </span>
-                                  <EmailMessageActionsDropdown
-                                    onReply={() => onReplyMessage?.(message)}
-                                    onForward={() => onForwardMessage?.(message)}
-                                    onComment={() => setCommentComposerEmailId(String(message.id))}
-                                    onDelete={() => onDeleteMessage?.(message)}
-                                  />
+                                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    <span
+                                      className={`inline-flex shrink-0 items-center justify-center ${
+                                        isOutgoing ? 'text-blue-600' : 'text-emerald-600'
+                                      }`}
+                                      title={isOutgoing ? 'Sent' : 'Inbox'}
+                                      aria-label={isOutgoing ? 'Sent' : 'Inbox'}
+                                    >
+                                      {isOutgoing ? (
+                                        <PaperAirplaneIcon className="h-5 w-5" />
+                                      ) : (
+                                        <InboxIcon className="h-5 w-5" />
+                                      )}
+                                    </span>
+                                    <span className="rounded-full bg-slate-50 px-2.5 py-1 text-xs font-semibold tabular-nums text-slate-600">
+                                      {formatTime(message.date)}
+                                    </span>
+                                    <EmailMessageActionsDropdown
+                                      onReply={() => onReplyMessage?.(message)}
+                                      onForward={() => onForwardMessage?.(message)}
+                                      onComment={() => setCommentComposerEmailId(String(message.id))}
+                                      onDelete={() => onDeleteMessage?.(message)}
+                                    />
+                                  </div>
                                 </div>
                               </div>
-                              <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5">
-                                {message.from && (
-                                  <span
-                                    className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600 sm:max-w-[18rem]"
-                                    dir="ltr"
-                                    title={message.from}
+                            </div>
+                            <div className="mt-2 flex w-full min-w-0 items-center gap-1.5">
+                              {message.from && (
+                                <span
+                                  className="inline-flex min-w-0 flex-1 items-center gap-1 rounded-full bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600 md:w-fit md:max-w-full md:flex-none"
+                                  dir="ltr"
+                                  title={message.from}
+                                >
+                                  <span className="shrink-0 font-semibold text-slate-500">From</span>
+                                  <a
+                                    href={`mailto:${message.from}`}
+                                    className="min-w-0 truncate text-blue-600 underline underline-offset-2 hover:text-blue-800"
                                   >
-                                    <span className="shrink-0 font-semibold text-slate-500">From</span>
-                                    <a
-                                      href={`mailto:${message.from}`}
-                                      className="truncate text-blue-600 underline underline-offset-2 hover:text-blue-800"
-                                    >
-                                      {mailboxPartyLabel(message.from, message.from)}
-                                    </a>
+                                    {mailboxPartyLabel(message.from, message.from)}
+                                  </a>
+                                </span>
+                              )}
+                              {message.to && (
+                                <span
+                                  className="inline-flex min-w-0 flex-1 items-center gap-1 rounded-full bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600 md:w-fit md:max-w-full md:flex-none"
+                                  dir="ltr"
+                                  title={String(message.to)}
+                                >
+                                  <span className="shrink-0 font-semibold text-slate-500">To</span>
+                                  <span className="min-w-0 truncate">
+                                    {String(message.to)
+                                      .split(/[,;]/)
+                                      .map((r: string) => r.trim())
+                                      .filter(Boolean)
+                                      .map((recipient: string, idx: number, arr: string[]) => (
+                                        <span key={`${recipient}-${idx}`}>
+                                          <a
+                                            href={`mailto:${recipient}`}
+                                            className="text-blue-600 underline underline-offset-2 hover:text-blue-800"
+                                          >
+                                            {mailboxPartyLabel(recipient, recipient)}
+                                          </a>
+                                          {idx < arr.length - 1 && ', '}
+                                        </span>
+                                      ))}
                                   </span>
-                                )}
-                                {message.to && (
-                                  <span
-                                    className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600 sm:max-w-[18rem]"
-                                    dir="ltr"
-                                    title={String(message.to)}
-                                  >
-                                    <span className="shrink-0 font-semibold text-slate-500">To</span>
-                                    <span className="truncate">
-                                      {String(message.to)
-                                        .split(/[,;]/)
-                                        .map((r: string) => r.trim())
-                                        .filter(Boolean)
-                                        .map((recipient: string, idx: number, arr: string[]) => (
-                                          <span key={`${recipient}-${idx}`}>
-                                            <a
-                                              href={`mailto:${recipient}`}
-                                              className="text-blue-600 underline underline-offset-2 hover:text-blue-800"
-                                            >
-                                              {mailboxPartyLabel(recipient, recipient)}
-                                            </a>
-                                            {idx < arr.length - 1 && ', '}
-                                          </span>
-                                        ))}
-                                    </span>
-                                  </span>
-                                )}
-                              </div>
+                                </span>
+                              )}
                             </div>
                           </div>
 
@@ -1129,9 +1203,9 @@ export function InteractionsEmailModal({
                 </div>
               )}
             </div>
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-end px-3 pb-3 pt-2 md:px-5 md:pb-4">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-end">
               {floatingActions ? (
-                <div className="pointer-events-auto max-w-full rounded-2xl border border-slate-200/80 bg-white/90 px-2 py-2 shadow-[0_8px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/75">
+                <div className="pointer-events-auto w-full bg-slate-100 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 md:w-auto md:bg-transparent md:px-5 md:pb-5 md:pt-0">
                   {floatingActions}
                 </div>
               ) : null}

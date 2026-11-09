@@ -476,6 +476,10 @@ async function runNineHourAutoClockOut() {
     }
   }
 
+  // #region agent log
+  fetch('http://127.0.0.1:7749/ingest/9c9678ba-e2f1-4674-912c-04bfd28cdf03',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'9b49b5'},body:JSON.stringify({sessionId:'9b49b5',runId:'clockout-all',hypothesisId:'B',location:'nineHourAutoClockOutService.js:runNineHourAutoClockOut',message:'auto clock-out run ignores require_clock_in',data:{checked:summary.checked,clockedOut:summary.clockedOut,baseHoursClockOuts:summary.baseHoursClockOuts,endOfDayClockOuts:summary.endOfDayClockOuts,whatsappSent:summary.whatsappSent,skipped:summary.skipped,errors:summary.errors.length,requireClockInGateApplied:false},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+
   return summary;
 }
 

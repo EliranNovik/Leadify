@@ -17,12 +17,25 @@ export function emptyHandlerBucketCounts(): HandlerBucketCounts {
   return { new: 0, active: 0, non_active: 0, closed: 0 };
 }
 
-/** 1 = retention handler, 2 = case handler, 3 = client support. */
+/** 1 = completion coordinator (was retention), 2 = case handler, 3 = client support. */
 export type ActiveHandlerType = 1 | 2 | 3;
 
 export function normalizeActiveHandlerType(value: unknown): ActiveHandlerType {
   const n = Number(value);
   if (n === 1 || n === 3) return n;
+  return 2;
+}
+
+/**
+ * Value the three pipelines should bucket on.
+ * 4–10 are the newer handling roles, so none of those three pipelines owns the case.
+ * Unknown values stay on the case handler (2), which is the historical default.
+ */
+export function readPipelineActiveType(value: unknown): number {
+  const n = Number(value);
+  if (n === 9) return 3;
+  if (n === 1 || n === 2 || n === 3) return n;
+  if (Number.isFinite(n) && n >= 4 && n <= 10) return n;
   return 2;
 }
 
@@ -47,23 +60,34 @@ export function classifyHandlerBucket(
 }
 
 /**
- * Client-support bucket.
- *
- * `active_handler_type` 3 means client support owns the case. Otherwise the row is non-active
- * support work. An inactive lead stays visible under non-active.
+ * Bucket for a handling role that owns the case only while `active_handler_type` matches.
+ * An inactive lead stays visible under non-active. Case monitoring and the newer handling
+ * roles all use this rule.
+ */
+export function classifyOwnedHandlingBucket(
+  stageId: number | null,
+  activeHandlerType: number,
+  isInactive: boolean,
+  ownerType: number,
+): HandlerBucket | null {
+  if (stageId == null || Number.isNaN(stageId)) return null;
+  if (stageId === 200) return 'closed';
+  if (Number(activeHandlerType) !== ownerType) return 'non_active';
+  if (isInactive) return 'non_active';
+  if (stageId <= 105) return 'new';
+  if (stageId >= 110) return 'active';
+  return null;
+}
+
+/**
+ * Case-monitoring bucket. `active_handler_type` 3 means that role owns the case.
  */
 export function classifySupportBucket(
   stageId: number | null,
   activeHandlerType: number,
   isInactive: boolean,
 ): HandlerBucket | null {
-  if (stageId == null || Number.isNaN(stageId)) return null;
-  if (stageId === 200) return 'closed';
-  if (Number(activeHandlerType) !== 3) return 'non_active';
-  if (isInactive) return 'non_active';
-  if (stageId <= 105) return 'new';
-  if (stageId >= 110) return 'active';
-  return null;
+  return classifyOwnedHandlingBucket(stageId, activeHandlerType, isInactive, 3);
 }
 
 /**
