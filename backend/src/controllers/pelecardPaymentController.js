@@ -426,11 +426,7 @@ async function handlePelecardReturn(req, res, outcome) {
         return res.redirect(appRedirect(`/payment/${encodeURIComponent(secureToken)}`, {}, redirectProfile));
       }
       return res.redirect(
-        appRedirect('/payment/failed', {
-          ...failedRedirectQuery,
-          pelecardStatus: statusCode,
-          pelecardMessage: 'Your secure payment session has expired. Please try again.',
-        }, redirectProfile),
+        appRedirect(`/payment/${encodeURIComponent(secureToken)}`, { fresh: '1' }, redirectProfile),
       );
     }
 

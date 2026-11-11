@@ -428,7 +428,13 @@ const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ se
         await reloadDocuments({ selectSequenceCategory: true });
       } catch (err) {
         stopProgressSimulation(file.name);
-        const errorMessage = err instanceof Error ? err.message : t('common.uploadFailed');
+        const rawMessage =
+          err instanceof Error
+            ? err.message
+            : err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+              ? (err as { message: string }).message
+              : '';
+        const errorMessage = rawMessage.trim() || t('common.uploadFailed');
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.name === file.name

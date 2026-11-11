@@ -122,6 +122,7 @@ import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 import WhatsAppDoubleCheckIcon from '../components/whatsapp/WhatsAppDoubleCheckIcon';
 import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
 import WhatsAppLeadInfoPanel from '../components/whatsapp/WhatsAppLeadInfoPanel';
+import { extractParenthesizedSourceCode } from '../lib/whatsappInboundSourceCode';
 
 interface WhatsAppLead {
   id: number;
@@ -1645,21 +1646,71 @@ const WhatsAppLeadsPage: React.FC = () => {
         return;
       }
 
-      // Use sender name, fallback to phone number, then default
       const leadName = lead.sender_name?.trim() || lead.phone_number || 'WhatsApp Lead';
+      const sourceCode = extractParenthesizedSourceCode(
+        [lead.message, lead.caption].filter(Boolean).join('\n'),
+      );
 
-      // Create the new lead using the database function
-      const { data, error } = await supabase.rpc('create_new_lead_v3', {
-        p_lead_name: leadName,
-        p_lead_email: null, // We don't have email from WhatsApp
-        p_lead_phone: lead.phone_number,
-        p_lead_topic: 'WhatsApp Inquiry', // Default topic
-        p_lead_language: 'HE', // Default language (matches misc_language id 2)
-        p_lead_source: 'WhatsApp', // Source is WhatsApp
-        p_created_by: user.email,
-        p_balance_currency: 'NIS', // Default currency
-        p_proposal_currency: 'NIS' // Default currency
-      });
+      let data: any = null;
+      let error: any = null;
+      let savedWithSourceCode = false;
+      if (sourceCode != null) {
+        const { data: sourceRow, error: sourceError } = await supabase
+          .from('misc_leadsource')
+          .select('id, name, active')
+          .eq('code', sourceCode)
+          .eq('active', true)
+          .maybeSingle();
+        if (sourceError) {
+          console.error('WhatsApp source-code lookup failed:', sourceError);
+        }
+        if (sourceRow) {
+          const created = await supabase.rpc('create_lead_with_source_validation', {
+            p_lead_name: leadName,
+            p_lead_email: null,
+            p_lead_phone: lead.phone_number,
+            p_lead_topic: null,
+            p_lead_language: 'HE',
+            p_lead_source: sourceRow.name || 'WhatsApp',
+            p_created_by: user.email,
+            p_source_code: sourceCode,
+            p_balance_currency: 'NIS',
+            p_proposal_currency: 'NIS',
+            p_language_id: 2,
+          });
+          data = created.data;
+          error = created.error;
+          if (!error && data?.[0]?.id) {
+            savedWithSourceCode = true;
+            await supabase
+              .from('leads')
+              .update({
+                language_id: 2,
+                utm_params: {
+                  arrived_via_whatsapp: true,
+                  whatsapp_source_code: sourceCode,
+                },
+              })
+              .eq('id', data[0].id);
+          }
+        }
+      }
+
+      if (!data && !error) {
+        const created = await supabase.rpc('create_new_lead_v3', {
+          p_lead_name: leadName,
+          p_lead_email: null,
+          p_lead_phone: lead.phone_number,
+          p_lead_topic: 'WhatsApp Inquiry',
+          p_lead_language: 'HE',
+          p_lead_source: 'WhatsApp',
+          p_created_by: user.email,
+          p_balance_currency: 'NIS',
+          p_proposal_currency: 'NIS',
+        });
+        data = created.data;
+        error = created.error;
+      }
 
       if (error) {
         console.error('Error creating lead:', error);
@@ -1668,7 +1719,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       const newLead = data?.[0];
-      if (newLead?.id) {
+      if (newLead?.id && !savedWithSourceCode) {
         await supabase.from('leads').update({ language_id: 2 }).eq('id', newLead.id);
       }
       if (!newLead) {
@@ -2098,6 +2149,24 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
       }
 
+      const subLeadSourceCode = extractParenthesizedSourceCode(
+        [selectedLead.message, selectedLead.caption].filter(Boolean).join('\n'),
+      );
+      let subLeadSourceName = 'WhatsApp';
+      let subLeadSourceId: number | null = null;
+      if (subLeadSourceCode != null) {
+        const { data: sourceRow } = await supabase
+          .from('misc_leadsource')
+          .select('id, name')
+          .eq('code', subLeadSourceCode)
+          .eq('active', true)
+          .maybeSingle();
+        if (sourceRow?.id != null) {
+          subLeadSourceId = Number(sourceRow.id);
+          subLeadSourceName = sourceRow.name || subLeadSourceName;
+        }
+      }
+
       // Create sublead (default language_id 2 = HE)
       const subLeadData: Record<string, any> = {
         lead_number: subLeadNumber,
@@ -2109,7 +2178,16 @@ const WhatsAppLeadsPage: React.FC = () => {
         mobile: null,
         topic: 'WhatsApp Inquiry',
         language_id: 2,
-        source: 'WhatsApp',
+        source: subLeadSourceName,
+        ...(subLeadSourceId != null ? { source_id: subLeadSourceId } : {}),
+        ...(subLeadSourceId != null
+          ? {
+              utm_params: {
+                arrived_via_whatsapp: true,
+                whatsapp_source_code: subLeadSourceCode,
+              },
+            }
+          : {}),
         stage: 0,
         status: 'new',
         created_at: new Date().toISOString(),

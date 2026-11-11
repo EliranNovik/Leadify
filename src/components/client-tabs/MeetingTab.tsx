@@ -115,8 +115,8 @@ import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createClientCalendarEventViaServer, createStaffCalendarEvent, createStaffTeamsMeeting } from '../../lib/graph';
-import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../../lib/outlookTeamsMeetingsApi';
+import { createTeamsMeeting, sendEmail, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createClientCalendarEventViaServer, createStaffCalendarEvent, createStaffTeamsMeeting, buildStaffMeetingWindow, isOutlookEventNotFoundError, updateStaffCalendarEvent } from '../../lib/graph';
+import { saveOutlookTeamsMeeting, syncOutlookTeamsMeetingSchedule, type OutlookTeamsMeeting } from '../../lib/outlookTeamsMeetingsApi';
 import { getValidTeamsLink as getValidTeamsLinkShared } from '../../lib/meetingJoinLink';
 import { generateICSFromDateTime, stripHtmlForIcs } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
@@ -4837,7 +4837,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       await fetchMeetings();
       if (isReschedulePage) onRescheduleComplete?.();
     } catch (error) {
-      toast.error('Failed to cancel meeting.');
+      const message = error instanceof Error && error.message ? error.message : 'Failed to cancel meeting.';
+      toast.error(message);
       console.error(error);
     } finally {
       setIsReschedulingMeeting(false);
@@ -4897,7 +4898,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
               }
             } catch (cancelExtError) {
               console.error('❌ Failed to cancel previous meeting after external reschedule:', cancelExtError);
-              toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+              toast.error(
+                cancelExtError instanceof Error && cancelExtError.message
+                  ? cancelExtError.message
+                  : 'New meeting was created, but canceling the previous meeting failed. Please cancel it manually.',
+              );
             }
           }
           toast.success('Internal meeting created with external participants.');
@@ -5167,7 +5172,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({
           }
         } catch (cancelError) {
           console.error('❌ Failed to cancel old meeting after reschedule insert:', cancelError);
-          toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+          toast.error(
+            cancelError instanceof Error && cancelError.message
+              ? cancelError.message
+              : 'New meeting was created, but canceling the previous meeting failed. Please cancel it manually.',
+          );
         }
       }
 
@@ -5549,7 +5558,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({
       await fetchMeetings();
       if (isReschedulePage) onRescheduleComplete?.();
     } catch (error) {
-      toast.error('Failed to reschedule meeting.');
+      const message = error instanceof Error && error.message ? error.message : 'Failed to reschedule meeting.';
+      toast.error(message);
       console.error(error);
     } finally {
       setIsReschedulingMeeting(false);
@@ -5985,12 +5995,67 @@ const MeetingTab: React.FC<ClientTabProps> = ({
             updateData.teams_meeting_url = teamsMeetingUrl;
           }
 
-          const { error } = await supabase
+          const { data: updatedMeetingRows, error } = await supabase
             .from('meetings')
             .update(updateData)
-            .eq('id', editingMeetingId);
+            .eq('id', editingMeetingId)
+            .select('id');
 
           dbError = error;
+          if (!error && (!updatedMeetingRows || updatedMeetingRows.length === 0)) {
+            throw new Error('The meeting record was not updated.');
+          }
+
+          if (!error && meetingCalendarType === 'staff') {
+            const { data: staffRow, error: staffReadError } = await supabase
+              .from('meetings')
+              .select('teams_id, duration')
+              .eq('id', editingMeetingId)
+              .maybeSingle();
+            if (staffReadError) throw staffReadError;
+            const teamsId = staffRow?.teams_id ? String(staffRow.teams_id) : '';
+            if (teamsId) {
+              const staffWindow = buildStaffMeetingWindow(
+                String(editedMeeting.date || ''),
+                String(editedMeeting.time || '09:00'),
+                normalizeMeetingDurationMinutes(staffRow?.duration),
+              );
+              const account = instance.getAllAccounts()[0];
+              if (account) {
+                try {
+                  const accessToken = await getAccessTokenWithFallback(
+                    instance,
+                    {
+                      ...loginRequest,
+                      scopes: ['https://graph.microsoft.com/Calendars.ReadWrite'],
+                      extraQueryParameters: { login_hint: 'shared-staffcalendar@lawoffice.org.il' },
+                    },
+                    account,
+                  );
+                  if (accessToken) {
+                    await updateStaffCalendarEvent(accessToken, teamsId, {
+                      subject: String(updateData.meeting_subject || originalMeeting?.meeting_subject || 'Internal Meeting'),
+                      startDateTime: staffWindow.graphStart,
+                      endDateTime: staffWindow.graphEnd,
+                      description: editedMeeting.brief || '',
+                      locationName: locationText,
+                    });
+                  }
+                } catch (outlookErr) {
+                  if (!isOutlookEventNotFoundError(outlookErr)) {
+                    console.warn('Staff calendar Outlook update failed; saving the calendar row anyway', outlookErr);
+                  }
+                }
+              }
+              await syncOutlookTeamsMeetingSchedule(teamsId, {
+                subject: String(updateData.meeting_subject || originalMeeting?.meeting_subject || ''),
+                start_date_time: staffWindow.start.toISOString(),
+                end_date_time: staffWindow.end.toISOString(),
+                description: editedMeeting.brief || '',
+                location: locationText,
+              });
+            }
+          }
         }
 
         if (dbError) throw dbError;
@@ -6089,7 +6154,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({
         if (onClientUpdate) await onClientUpdate();
       } catch (error) {
         console.error('Error updating meeting:', error);
-        toast.error('Failed to update meeting');
+        toast.error(error instanceof Error && error.message ? error.message : 'Failed to update meeting');
       } finally {
         setIsUpdatingMeeting(false);
       }

@@ -16,6 +16,10 @@ import {
   RECRUITMENT_CANDIDATE_PARTICIPANT_NOTE,
 } from '../lib/recruitmentMeetingParticipants';
 import { syncMeetingAttendeesDisplayColumn } from '../lib/staffMeetingParticipants';
+import {
+  removeOutlookTeamsMeetingRow,
+  syncOutlookTeamsMeetingSchedule,
+} from '../lib/outlookTeamsMeetingsApi';
 
 interface StaffMeetingEditModalProps {
   isOpen: boolean;
@@ -605,21 +609,15 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
 
       // Update the meeting in our database tables
 
-      const { error: metaUpdateError } = await supabase
-        .from('outlook_teams_meetings')
-        .update({
+      const outlookMetaId = String(outlookEventId || meeting?.teams_meeting_id || '').trim();
+      if (outlookMetaId) {
+        await syncOutlookTeamsMeetingSchedule(outlookMetaId, {
           subject: formData.subject,
           start_date_time: startIso,
           end_date_time: endIso,
           description: formData.description,
           location: formData.location,
-          updated_at: new Date().toISOString()
-        })
-        .eq('teams_meeting_id', String(outlookEventId || meeting?.teams_meeting_id || ''));
-
-      // If meta row doesn't exist, ignore (CalendarPage can still show meetings table entry).
-      if (metaUpdateError && metaUpdateError.code !== 'PGRST116') {
-        console.warn('Failed updating outlook_teams_meetings meta row', metaUpdateError);
+        });
       }
 
       // Resolve db meeting id (or create it) so participants can attach to it.
@@ -667,12 +665,13 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       }
 
       if (dbMeetingId != null) {
-        const { error: meetingUpdateError } = await supabase
+        const meetingTimeForDb = formData.time.trim().length === 5 ? `${formData.time.trim()}:00` : formData.time.trim();
+        const { data: meetingUpdated, error: meetingUpdateError } = await supabase
           .from('meetings')
           .update({
             meeting_subject: formData.subject,
             meeting_date: formData.date,
-            meeting_time: formData.time,
+            meeting_time: meetingTimeForDb,
             meeting_location: formData.location,
             meeting_brief: formData.description || null,
             manual_address: formData.manualAddress.trim() || null,
@@ -680,8 +679,12 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             last_edited_timestamp: new Date().toISOString(),
             ...(outlookEventId ? { teams_id: String(outlookEventId) } : {}),
           })
-          .eq('id', dbMeetingId);
+          .eq('id', dbMeetingId)
+          .select('id, meeting_date, meeting_time');
         if (meetingUpdateError) throw meetingUpdateError;
+        if (!meetingUpdated || meetingUpdated.length === 0) {
+          throw new Error('The meeting record was not updated.');
+        }
 
         // Replace participants (simple + reliable)
         const { error: delErr } = await supabase
@@ -751,7 +754,8 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       onClose();
     } catch (error) {
       console.error('Error updating staff meeting:', error);
-      toast.error('Failed to update internal meeting');
+      const message = error instanceof Error ? error.message : 'Failed to update internal meeting';
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -781,13 +785,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
 
       // Remove outlook_teams_meetings meta (prefer stable Outlook event id over UI-prefixed ids).
       if (outlookEventId) {
-        const { error: metaDeleteError } = await supabase
-          .from('outlook_teams_meetings')
-          .delete()
-          .eq('teams_meeting_id', String(outlookEventId));
-        if (metaDeleteError) {
-          console.warn('Failed deleting outlook_teams_meetings row (non-fatal):', metaDeleteError);
-        }
+        await removeOutlookTeamsMeetingRow(String(outlookEventId));
       } else if (formData.subject && formData.date) {
         const { error: metaDeleteError } = await supabase
           .from('outlook_teams_meetings')
@@ -838,9 +836,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       if (meetingsDbId != null) {
         await supabase.from('meeting_participants').delete().eq('meeting_id', meetingsDbId);
         const { error: meetingsDelErr } = await supabase.from('meetings').delete().eq('id', meetingsDbId);
-        if (meetingsDelErr) {
-          console.warn('Failed deleting meetings row (non-fatal):', meetingsDelErr);
-        }
+        if (meetingsDelErr) throw meetingsDelErr;
       }
 
       if (outlookDeleteSkipped) {
@@ -854,7 +850,8 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       onClose();
     } catch (error) {
       console.error('Error deleting staff meeting:', error);
-      toast.error('Failed to delete internal meeting');
+      const message = error instanceof Error ? error.message : 'Failed to delete internal meeting';
+      toast.error(message);
     } finally {
       setIsDeleting(false);
       setShowDeleteConfirm(false);

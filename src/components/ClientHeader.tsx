@@ -138,6 +138,7 @@ import {
     resolveLeadSourceName,
     writeResolvedLeadMeta,
 } from '../lib/leadMetaDisplay';
+import { leadArrivedViaWhatsApp } from '../lib/whatsappInboundSourceCode';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 import EditLeadDrawer from './EditLeadDrawer';
 import MobileBottomSheet from './MobileBottomSheet';
@@ -3082,6 +3083,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const displayLanguageChip = leadMetaChips.language || '---';
     const displayTopicChip = leadMetaChips.topic || '--';
     const displaySourceChip = leadMetaChips.source || '---';
+    const arrivedViaWhatsApp = leadArrivedViaWhatsApp((selectedClient as any)?.utm_params);
 
     const filteredCategories = allCategories.filter((category) => {
         const categoryName = category.misc_maincategory?.name
@@ -3622,6 +3624,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {displaySourceChip}
                     </span>
                 </span>
+                {arrivedViaWhatsApp ? (
+                    <span
+                        className="inline-flex shrink-0 items-center rounded-full bg-[#25D366]/15 px-2.5 py-1 text-xs font-semibold text-[#128C7E]"
+                        title="This lead first arrived in a WhatsApp message"
+                    >
+                        WhatsApp
+                    </span>
+                ) : null}
                 {applicantsCount != null && Number(applicantsCount) > 0 ? (
                     <span className={badge} title="Applicants">
                         <UserIcon className={applicantsIcon} aria-hidden />
@@ -4647,8 +4657,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <span className="block text-[11px] font-semibold uppercase tracking-widest text-slate-500">
                             {field.label}
                         </span>
-                        <span className="mt-1 block w-full truncate text-sm font-semibold text-base-content/90">
-                            {field.value || '—'}
+                        <span className="mt-1 flex w-full min-w-0 items-center gap-2">
+                            <span className="min-w-0 truncate text-sm font-semibold text-base-content/90">
+                                {field.value || '—'}
+                            </span>
+                            {field.key === 'source' && arrivedViaWhatsApp ? (
+                                <span className="inline-flex shrink-0 items-center rounded-full bg-[#25D366]/15 px-2 py-0.5 text-[11px] font-semibold text-[#128C7E]">
+                                    WhatsApp
+                                </span>
+                            ) : null}
                         </span>
                     </span>
                 </span>

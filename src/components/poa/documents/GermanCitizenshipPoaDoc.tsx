@@ -1,5 +1,50 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { PoaField, PoaRadioRow, PoaSignatureBox, type PoaDocController } from '../PoaFormPrimitives';
+
+type HelpLang = 'en' | 'he';
+
+/** EN / עברית tabs at the top of each explanation box. All boxes share one language. */
+const HelpLangSwitch: React.FC<{
+  lang: HelpLang;
+  tone?: 'info' | 'warn';
+  onChange: (next: HelpLang) => void;
+}> = ({ lang, tone = 'info', onChange }) => {
+  const active =
+    tone === 'warn'
+      ? 'bg-amber-600 text-white shadow-sm'
+      : 'bg-indigo-600 text-white shadow-sm';
+  const tab = (selected: boolean) =>
+    `rounded-md px-2 py-1 text-[11px] font-semibold tracking-wide transition ${
+      selected ? active : 'text-gray-500 hover:bg-white/70 hover:text-gray-800'
+    }`;
+  return (
+    <div
+      className="mb-2.5 grid grid-cols-2 gap-1 rounded-lg bg-white/80 p-1 shadow-sm ring-1 ring-black/5"
+      dir="ltr"
+      role="tablist"
+      aria-label={lang === 'he' ? 'שפת ההסבר' : 'Explanation language'}
+    >
+      <button
+        type="button"
+        role="tab"
+        onClick={() => onChange('en')}
+        aria-selected={lang === 'en'}
+        className={tab(lang === 'en')}
+      >
+        English
+      </button>
+      <button
+        type="button"
+        role="tab"
+        onClick={() => onChange('he')}
+        aria-selected={lang === 'he'}
+        className={tab(lang === 'he')}
+      >
+        עברית
+      </button>
+    </div>
+  );
+};
 
 /** Bordered box with a vertical (rotated) section label on the left, as on the official form. */
 const SectionBox: React.FC<{ label: string; caption?: string; children: React.ReactNode }> = ({
@@ -30,22 +75,29 @@ const SectionBox: React.FC<{ label: string; caption?: string; children: React.Re
  * the right of the document (outside the white page); on mobile it stacks below
  * the section. Marked `poa-help` so it never appears in the printed document.
  */
-const HelpBox: React.FC<{ title: string; tone?: 'info' | 'warn'; children: React.ReactNode }> = ({
-  title,
-  tone = 'info',
-  children,
-}) => {
+const HelpBox: React.FC<{
+  title: string;
+  tone?: 'info' | 'warn';
+  lang: HelpLang;
+  onLangChange: (next: HelpLang) => void;
+  children?: React.ReactNode;
+}> = ({ title, tone = 'info', lang, onLangChange, children }) => {
   const styles =
     tone === 'warn'
       ? 'bg-amber-50 text-amber-900'
       : 'bg-indigo-50 text-indigo-900';
   const titleColor = tone === 'warn' ? 'text-amber-700' : 'text-indigo-700';
+  const he = lang === 'he';
   return (
     <aside
+      dir={he ? 'rtl' : 'ltr'}
       className={`poa-help mt-3 rounded-lg p-3 text-[13px] leading-relaxed shadow-sm lg:absolute lg:top-0 lg:left-[calc(100%+4rem)] lg:mt-0 lg:w-60 ${styles}`}
     >
-      <p className={`mb-1 text-xs font-bold uppercase tracking-wide ${titleColor}`}>{title}</p>
-      <div>{children}</div>
+      <HelpLangSwitch lang={lang} tone={tone} onChange={onLangChange} />
+      <p className={`text-xs font-bold ${children ? 'mb-1' : ''} ${he ? '' : 'uppercase tracking-wide'} ${titleColor}`}>
+        {title}
+      </p>
+      {children ? <div>{children}</div> : null}
     </aside>
   );
 };
@@ -70,8 +122,10 @@ const WithHelp: React.FC<{ help: React.ReactNode; children: React.ReactNode; cla
  * Bilingual German / English, faithful to the official August 2021 form.
  */
 const GermanCitizenshipPoaDoc: React.FC<{ ctrl: PoaDocController }> = ({ ctrl }) => {
+  const [helpLang, setHelpLang] = useState<HelpLang>('en');
+  const he = helpLang === 'he';
   return (
-    <div className="poa-doc text-gray-900">
+    <div className="poa-doc text-gray-900 [&_.poa-field>label]:text-[9px] [&_.poa-field>label]:tracking-normal [&_.poa-signature>label]:text-[9px] [&_.poa-signature>label]:tracking-normal">
       {/* Title box — matches the official form's teal "Vollmacht" header */}
       <div className="mb-4 flex justify-end">
         <div className="rounded-2xl bg-[#bcd9dd] px-10 py-4 shadow-sm">
@@ -97,10 +151,24 @@ const GermanCitizenshipPoaDoc: React.FC<{ ctrl: PoaDocController }> = ({ ctrl })
       <WithHelp
         className="mb-4"
         help={
-          <HelpBox title="Applicant — fill this in">
-            These are <strong>your</strong> details (the person applying). Enter your last name,
-            first name, date of birth, place &amp; country of birth, and your full home address. For
-            a minor, enter the <strong>child&apos;s</strong> details here.
+          <HelpBox
+            title={he ? 'המבקש — מלאו כאן' : 'Applicant — fill this in'}
+            lang={helpLang}
+            onLangChange={setHelpLang}
+          >
+            {he ? (
+              <>
+                אלה הפרטים <strong>שלכם</strong> (האדם שמגיש את הבקשה). הזינו שם משפחה, שם פרטי,
+                תאריך לידה, מקום ומדינת לידה, וכתובת מגורים מלאה. עבור קטין, הזינו כאן את פרטי{' '}
+                <strong>הילד</strong>.
+              </>
+            ) : (
+              <>
+                These are <strong>your</strong> details (the person applying). Enter your last name,
+                first name, date of birth, place &amp; country of birth, and your full home address. For
+                a minor, enter the <strong>child&apos;s</strong> details here.
+              </>
+            )}
           </HelpBox>
         }
       >
@@ -127,11 +195,12 @@ const GermanCitizenshipPoaDoc: React.FC<{ ctrl: PoaDocController }> = ({ ctrl })
       <WithHelp
         className="mb-4"
         help={
-          <HelpBox title="Do not fill in" tone="warn">
-            <strong>The law office completes this section.</strong> The authorised representative
-            (Herr/Frau, name, address, phone and e-mail) is filled in by Decker, Pex &amp; Co. —
-            please leave it blank.
-          </HelpBox>
+          <HelpBox
+            title={he ? 'ממולא על ידי המשרד' : 'Filled in by the law office'}
+            tone="warn"
+            lang={helpLang}
+            onLangChange={setHelpLang}
+          />
         }
       >
         <div className="mb-4">
@@ -175,11 +244,26 @@ const GermanCitizenshipPoaDoc: React.FC<{ ctrl: PoaDocController }> = ({ ctrl })
       <WithHelp
         className="mb-4"
         help={
-          <HelpBox title="Place, date &amp; signature">
-            Enter the <strong>place and date</strong> (e.g. &ldquo;Tel Aviv, 22.06.2026&rdquo;), then
-            sign in the box. The <strong>applicant / first parent</strong> signs on the left. A{' '}
-            <strong>second legal guardian (parent)</strong> signs on the right — only needed for a
-            minor with two guardians.
+          <HelpBox
+            title={he ? 'מקום, תאריך וחתימה' : 'Place, date & signature'}
+            lang={helpLang}
+            onLangChange={setHelpLang}
+          >
+            {he ? (
+              <>
+                הזינו <strong>מקום ותאריך</strong> (למשל &ldquo;תל אביב, 22.06.2026&rdquo;), ואז חתמו
+                בתיבה. <strong>המבקש / ההורה הראשון</strong> חותם בצד שמאל.{' '}
+                <strong>אפוטרופוס נוסף (הורה)</strong> חותם בצד ימין — רק כשמדובר בקטין עם שני
+                אפוטרופוסים.
+              </>
+            ) : (
+              <>
+                Enter the <strong>place and date</strong> (e.g. &ldquo;Tel Aviv, 22.06.2026&rdquo;), then
+                sign in the box. The <strong>applicant / first parent</strong> signs on the left. A{' '}
+                <strong>second legal guardian (parent)</strong> signs on the right — only needed for a
+                minor with two guardians.
+              </>
+            )}
           </HelpBox>
         }
       >

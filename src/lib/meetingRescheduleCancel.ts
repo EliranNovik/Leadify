@@ -1,4 +1,5 @@
 import { supabase as defaultSupabase } from './supabase';
+import { removeOutlookTeamsMeetingRow } from './outlookTeamsMeetingsApi';
 
 type MeetingsClient = typeof defaultSupabase;
 
@@ -215,6 +216,7 @@ export async function cancelMeetingById(
   }
 
   if (data) {
+    await removeStaffCalendarRowForCanceledMeeting(data as unknown as MeetingCancelCandidate);
     return data as unknown as MeetingCancelCandidate;
   }
 
@@ -229,6 +231,7 @@ export async function cancelMeetingById(
     throw readError;
   }
   if (existing && isCanceledStatus((existing as MeetingCancelCandidate).status)) {
+    await removeStaffCalendarRowForCanceledMeeting(existing as unknown as MeetingCancelCandidate);
     return existing as unknown as MeetingCancelCandidate;
   }
 
@@ -236,4 +239,14 @@ export async function cancelMeetingById(
     existingStatus: (existing as MeetingCancelCandidate | null)?.status ?? null,
   });
   return null;
+}
+
+/** Internal meetings stay on the calendar until the shared staff row is removed. */
+async function removeStaffCalendarRowForCanceledMeeting(
+  row: MeetingCancelCandidate,
+): Promise<void> {
+  if (String(row.calendar_type || '') !== 'staff') return;
+  const teamsId = row.teams_id ?? row.teams_meeting_id;
+  if (teamsId == null || String(teamsId).trim() === '') return;
+  await removeOutlookTeamsMeetingRow(String(teamsId));
 }

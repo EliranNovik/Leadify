@@ -10,6 +10,8 @@ export interface PoaDocController {
   setSignature: (id: string, dataUrl: string) => void;
   /** ids that failed validation on the last submit attempt (highlighted red). */
   invalid?: Set<string>;
+  /** Filled fields the public signer must not change. */
+  lockedIds?: Set<string>;
 }
 
 // -----------------------------------------------------------------------------
@@ -38,6 +40,7 @@ export const PoaField: React.FC<FieldProps> = ({
 }) => {
   const value = ctrl.values[id] ?? '';
   const isInvalid = ctrl.invalid?.has(id);
+  const locked = Boolean(ctrl.lockedIds?.has(id));
 
   return (
     <div className={`poa-field ${className}`.trim()}>
@@ -59,10 +62,12 @@ export const PoaField: React.FC<FieldProps> = ({
           rows={2}
           value={value}
           placeholder={placeholder}
+          readOnly={locked}
+          disabled={locked}
           onChange={(e) => ctrl.setValue(id, e.target.value)}
-          className={`w-full resize-none rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
-            isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'
-          }`}
+          className={`w-full resize-none rounded-md border px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
+            locked ? 'cursor-not-allowed bg-gray-100 text-gray-700' : 'bg-white'
+          } ${isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'}`}
         />
       ) : (
         <input
@@ -70,10 +75,12 @@ export const PoaField: React.FC<FieldProps> = ({
           type={type}
           value={value}
           placeholder={placeholder}
+          readOnly={locked}
+          disabled={locked}
           onChange={(e) => ctrl.setValue(id, e.target.value)}
-          className={`w-full rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
-            isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'
-          }`}
+          className={`w-full rounded-md border px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
+            locked ? 'cursor-not-allowed bg-gray-100 text-gray-700' : 'bg-white'
+          } ${isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'}`}
         />
       )}
     </div>
@@ -238,20 +245,26 @@ export const PoaRadioRow: React.FC<{
   options: { value: string; label: string }[];
 }> = ({ ctrl, id, options }) => {
   const value = ctrl.values[id] ?? '';
+  const locked = Boolean(ctrl.readOnly || ctrl.lockedIds?.has(id));
   return (
-    <div className="flex flex-wrap items-center gap-4">
+    <div className={`flex flex-wrap items-center gap-4 ${locked ? 'pointer-events-none' : ''}`}>
       {options.map((opt) => {
         const checked = value === opt.value;
         return (
-          <label key={opt.value} className="flex cursor-pointer items-center gap-2 text-[15px] text-gray-900">
+          <label
+            key={opt.value}
+            className={`flex items-center gap-2 text-[15px] text-gray-900 ${
+              locked ? 'cursor-not-allowed' : 'cursor-pointer'
+            }`}
+          >
             <span
               className={`flex h-4 w-4 items-center justify-center border ${
-                checked ? 'border-gray-800' : 'border-gray-400'
-              }`}
+                checked ? 'border-gray-800 bg-gray-100' : 'border-gray-400'
+              } ${locked ? 'bg-gray-100' : ''}`}
             >
               {checked && <span className="h-2 w-2 bg-gray-800" />}
             </span>
-            {!ctrl.readOnly ? (
+            {!locked ? (
               <input
                 type="radio"
                 name={id}

@@ -15,6 +15,11 @@ interface PelecardCheckoutFrameProps {
   sessionExpired?: boolean;
   /** Do not auto-expire the iframe (Open Finance waiting on the bank). */
   disableAutoExpire?: boolean;
+  /**
+   * Start a new hosted session when this one dies.
+   * Return false to stop and show the expired card.
+   */
+  onAutoRenew?: () => boolean;
   title?: string;
   onCheckoutNavigate?: (pathWithQuery: string) => void;
   /** Extra classes on the iframe shell (e.g. full-bleed on mobile). */
@@ -79,6 +84,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   onRetry,
   sessionExpired = false,
   disableAutoExpire = false,
+  onAutoRenew,
   title = 'Payment',
   onCheckoutNavigate,
   shellClassName = '',
@@ -92,11 +98,15 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
     isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE,
   );
   const [timedOut, setTimedOut] = useState(false);
+  const [renewBlocked, setRenewBlocked] = useState(false);
+  const renewingRef = useRef(false);
 
   useEffect(() => {
     setIframeHeight(isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE);
     setIframeLoaded(false);
     setTimedOut(false);
+    setRenewBlocked(false);
+    renewingRef.current = false;
   }, [paymentUrl]);
 
   useEffect(() => {
@@ -108,6 +118,27 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
     const timer = window.setTimeout(() => setTimedOut(true), IFRAME_EXPIRE_MS);
     return () => window.clearTimeout(timer);
   }, [paymentUrl, loading, error, disableAutoExpire, sessionExpired]);
+
+  useEffect(() => {
+    if (disableAutoExpire || loading || error || renewBlocked) return;
+    if (!(sessionExpired || timedOut)) return;
+    if (renewingRef.current) return;
+    if (!onAutoRenew) return;
+    renewingRef.current = true;
+    const started = onAutoRenew();
+    if (!started) {
+      renewingRef.current = false;
+      setRenewBlocked(true);
+    }
+  }, [
+    sessionExpired,
+    timedOut,
+    loading,
+    error,
+    disableAutoExpire,
+    renewBlocked,
+    onAutoRenew,
+  ]);
 
   useEffect(() => {
     if (!paymentUrl || isLgViewport || loading || error) return;
@@ -164,7 +195,10 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       const href = iframeRef.current.contentWindow?.location.href;
       if (!href) return;
       const url = new URL(href);
+      const renewingCheckout =
+        url.searchParams.get('fresh') === '1' && /^\/payment\/[^/]+$/.test(url.pathname);
       if (
+        renewingCheckout ||
         url.pathname.startsWith('/payment/success') ||
         url.pathname.startsWith('/payment/failed') ||
         url.pathname.startsWith('/payment/cancelled')
@@ -178,7 +212,13 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
   const showIframeLoading = paymentUrl && !iframeLoaded && !loading && !error;
   const errCopy = paymentFormErrorCopy(error);
-  const showExpiredOverlay = Boolean(paymentUrl && !loading && !error && (sessionExpired || timedOut));
+  const showExpiredOverlay = Boolean(
+    paymentUrl &&
+      !loading &&
+      !error &&
+      (sessionExpired || timedOut) &&
+      (renewBlocked || !onAutoRenew),
+  );
 
   if (error) {
     console.error('[Pelecard] Payment form error:', error);

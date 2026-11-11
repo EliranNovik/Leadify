@@ -8744,7 +8744,8 @@ const Clients: React.FC<ClientsProps> = ({
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
-      toast.error('Failed to cancel meeting.');
+      const message = error instanceof Error && error.message ? error.message : 'Failed to cancel meeting.';
+      toast.error(message);
       console.error(error);
     }
   };
@@ -9100,7 +9101,11 @@ const Clients: React.FC<ClientsProps> = ({
           }
         } catch (cancelError) {
           console.error('❌ Failed to cancel old meeting after reschedule insert:', cancelError);
-          toast.error('New meeting was created, but canceling the previous meeting failed. Please cancel it manually.');
+          toast.error(
+            cancelError instanceof Error && cancelError.message
+              ? cancelError.message
+              : 'New meeting was created, but canceling the previous meeting failed. Please cancel it manually.',
+          );
         }
       }
 

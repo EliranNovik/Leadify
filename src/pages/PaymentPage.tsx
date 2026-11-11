@@ -290,6 +290,8 @@ const PaymentPage: React.FC<{
   const [checkoutSessionExpired, setCheckoutSessionExpired] = useState(false);
   const [checkoutGeneration, setCheckoutGeneration] = useState(0);
   const sessionStartedAtRef = useRef(0);
+  const expiredRenewalsRef = useRef(0);
+  const lastAutoRenewAtRef = useRef(0);
   const [openFinancePending, setOpenFinancePending] = useState(false);
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
@@ -615,6 +617,24 @@ const PaymentPage: React.FC<{
     scrollToCheckoutPayment();
   }, [scrollToCheckoutPayment]);
 
+  const renewExpiredCheckout = useCallback(() => {
+    const now = Date.now();
+    if (now - lastAutoRenewAtRef.current < 5000) return false;
+    if (expiredRenewalsRef.current >= 4) return false;
+    expiredRenewalsRef.current += 1;
+    lastAutoRenewAtRef.current = now;
+    void loadPelecardSession({ forceNew: true });
+    return true;
+  }, [loadPelecardSession]);
+
+  useEffect(() => {
+    if (!paymentUrl || sessionLoading || checkoutSessionExpired) return;
+    const timer = window.setTimeout(() => {
+      expiredRenewalsRef.current = 0;
+    }, 60_000);
+    return () => window.clearTimeout(timer);
+  }, [paymentUrl, sessionLoading, checkoutSessionExpired]);
+
   useEffect(() => {
     if (!canPay) {
       setPaymentUrl(null);
@@ -889,7 +909,11 @@ const PaymentPage: React.FC<{
               paymentUrl={paymentUrl}
               loading={sessionLoading}
               error={sessionError}
-              onRetry={() => loadPelecardSession({ forceNew: true })}
+              onRetry={() => {
+                expiredRenewalsRef.current = 0;
+                void loadPelecardSession({ forceNew: true });
+              }}
+              onAutoRenew={renewExpiredCheckout}
               sessionExpired={checkoutSessionExpired}
               disableAutoExpire={openFinancePending}
               onCheckoutNavigate={(path) => navigate(path)}

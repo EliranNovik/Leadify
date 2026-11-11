@@ -275,6 +275,15 @@ export function formatPelecardHistoryStatus(input: {
     return { label: status || 'success', code: code || '000', title: null, explanation: null };
   }
 
+  if (status === 'processing' || status === 'pending') {
+    return {
+      label: status,
+      code: code || null,
+      title: 'Checkout started',
+      explanation: 'No charge was made. The same payment link can be used again.',
+    };
+  }
+
   const copy = getPelecardFailureCopy({
     statusCode: code,
     statusDescription: input.errorMessage,

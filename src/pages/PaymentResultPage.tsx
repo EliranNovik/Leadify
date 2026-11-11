@@ -54,6 +54,19 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
   // After iframe checkout, Pelecard redirects inside the frame — break out to full page
   useEffect(() => {
+    if (paymentId && urlSessionExpired) {
+      const target = `/payment/${encodeURIComponent(paymentId)}?fresh=1`;
+      try {
+        if (window.top && window.top !== window.self) {
+          window.top.location.replace(target);
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
+      window.location.replace(target);
+      return;
+    }
     try {
       if (window.self !== window.top) {
         window.top!.location.replace(window.location.href);
@@ -61,7 +74,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     } catch {
       /* cross-origin — ignore */
     }
-  }, []);
+  }, [paymentId, urlSessionExpired]);
 
   useEffect(() => {
     if (variant === 'failed' || variant === 'cancelled') {
@@ -457,6 +470,11 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
                   Back to payment
                 </Link>
               )}
+            </div>
+          ) : urlSessionExpired ? (
+            <div className="flex flex-col items-center gap-4 py-8 text-center">
+              <span className="loading loading-spinner loading-lg text-primary" />
+              <p className="text-sm text-gray-600">Refreshing checkout…</p>
             </div>
           ) : sessionExpired ? (
             <CheckoutSessionExpiredCard

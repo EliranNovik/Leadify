@@ -106,6 +106,37 @@ export const POA_TYPES: Record<PoaTypeKey, PoaTypeMeta> = {
   },
 };
 
+/** Office-only fields on the German Vollmacht. The public signer cannot change these. */
+export const GERMAN_POA_OFFICE_FIELD_IDS = [
+  'aktenzeichen',
+  'salutation',
+  'rep_last_name',
+  'rep_first_name',
+  'rep_address',
+  'rep_phone',
+  'rep_email',
+] as const;
+
+/** Bevollmächtigte Person, filled for the client on the public Vollmacht. */
+export const GERMAN_POA_OFFICE_DEFAULTS: Record<string, string> = {
+  salutation: 'Frau',
+  rep_last_name: 'GRAY',
+  rep_first_name: 'SHIRA',
+  rep_address: 'Postfach 77 02 11 (Ido Shkolnik)\n13002 Berlin',
+  rep_phone: '+4917631214100',
+  rep_email: 'ishkolnik@lawoffice.org.il',
+};
+
+export function applyGermanPoaOfficeDefaults(
+  values: Record<string, string> | null | undefined,
+): Record<string, string> {
+  const next = { ...(values || {}) };
+  for (const [key, value] of Object.entries(GERMAN_POA_OFFICE_DEFAULTS)) {
+    if (!String(next[key] ?? '').trim()) next[key] = value;
+  }
+  return next;
+}
+
 export function getPoaTypeMeta(key: string | null | undefined): PoaTypeMeta | null {
   if (!key) return null;
   return POA_TYPES[key as PoaTypeKey] ?? null;
@@ -132,8 +163,6 @@ export function buildPoaPrefill(
   switch (key) {
     case 'german_citizenship':
       return {
-        applicant_last_name: '',
-        applicant_first_name: name,
         applicant_address: address,
       };
     case 'standard_hebrew':

@@ -18,13 +18,14 @@ import {
   type PoaPublicData,
   type PoaSiblingItem,
 } from '../lib/poaApi';
-import { getPoaTypeMeta } from '../lib/poaTypes';
+import { getPoaTypeMeta, applyGermanPoaOfficeDefaults, GERMAN_POA_OFFICE_FIELD_IDS } from '../lib/poaTypes';
 import { getPoaDocRenderer } from '../components/poa/documents';
 import TemplatePoaDoc from '../components/poa/documents/TemplatePoaDoc';
 import type { PoaDocController } from '../components/poa/PoaFormPrimitives';
 import { listPoaFillableInstances } from '../lib/poaTemplateFields';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
 import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanceWidget';
+import { useAuthContext } from '../contexts/AuthContext';
 
 const PAGE_BG: React.CSSProperties = { background: '#f3f4f6' };
 
@@ -63,6 +64,7 @@ const PoaPage: React.FC<{
   const { token: routeToken } = useParams<{ token: string }>();
   const token = tokenOverride ?? routeToken;
   const navigate = useNavigate();
+  const { isAdmin } = useAuthContext();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +98,12 @@ const PoaPage: React.FC<{
         const result = await fetchPoaByToken(token);
         if (cancelled) return;
         setData(result);
-        setValues(result.poa.field_data || {});
+        const loadedValues = result.poa.field_data || {};
+        setValues(
+          result.type.key === 'german_citizenship'
+            ? applyGermanPoaOfficeDefaults(loadedValues)
+            : loadedValues,
+        );
         setSignatures(result.poa.signatures || {});
         // Load the contact's full signing sequence (best-effort).
         fetchPoaSiblings(token)
@@ -162,6 +169,11 @@ const PoaPage: React.FC<{
   // The German POA renders guidance boxes in a grey gutter to the right of the
   // document on desktop, so reserve the extra width for it.
   const hasSideHelp = data?.type.key === 'german_citizenship';
+  const officeFieldsLocked = data?.type.key === 'german_citizenship' && !isAdmin;
+  const lockedIds = useMemo(
+    () => (officeFieldsLocked ? new Set<string>(GERMAN_POA_OFFICE_FIELD_IDS) : undefined),
+    [officeFieldsLocked],
+  );
 
   const ctrl: PoaDocController = useMemo(
     () => ({
@@ -169,8 +181,11 @@ const PoaPage: React.FC<{
       signatures,
       readOnly: isSigned,
       invalid,
-      setValue: (id, value) =>
-        setValues((prev) => ({ ...prev, [id]: value })),
+      lockedIds,
+      setValue: (id, value) => {
+        if (lockedIds?.has(id)) return;
+        setValues((prev) => ({ ...prev, [id]: value }));
+      },
       setSignature: (id, dataUrl) =>
         setSignatures((prev) => {
           const next = { ...prev };
@@ -179,7 +194,7 @@ const PoaPage: React.FC<{
           return next;
         }),
     }),
-    [values, signatures, isSigned, invalid],
+    [values, signatures, isSigned, invalid, lockedIds],
   );
 
   const handleSubmit = useCallback(async () => {
@@ -556,15 +571,15 @@ ${headStyles}
 
       {/* Header — mobile stacked; desktop: firm left, title center, actions right */}
       <header className="poa-print-hide sticky top-0 z-20 w-full bg-white/90 backdrop-blur">
-        <div className="px-4 py-3 sm:hidden">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <div className="px-4 py-1.5 sm:hidden">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <img
                 src={POA_LOGO_SRC}
                 alt="Decker Pex & Co. Law Offices"
-                className="h-12 w-auto max-w-[64px] shrink-0 object-contain"
+                className="h-10 w-auto max-w-[108px] shrink-0 object-contain"
               />
-              <h1 className="line-clamp-2 text-sm font-semibold leading-snug text-gray-900">
+              <h1 className="line-clamp-2 text-xs font-semibold leading-tight text-gray-900">
                 {LAW_OFFICE_TITLE}
               </h1>
             </div>
@@ -594,7 +609,7 @@ ${headStyles}
             </div>
           </div>
           <p
-            className={`mt-2.5 text-sm font-medium leading-snug text-gray-700 ${
+            className={`mt-1 text-xs font-medium leading-tight text-gray-700 ${
               docDir === 'rtl' ? 'text-right' : 'text-center'
             }`}
             dir={docDir}
@@ -603,19 +618,19 @@ ${headStyles}
           </p>
         </div>
 
-        <div className="relative hidden w-full items-center justify-between gap-4 px-8 py-4 md:px-10 lg:px-12 sm:flex">
-          <div className="z-10 flex min-w-0 items-center justify-start gap-3">
+        <div className="relative hidden w-full items-center justify-between gap-3 px-6 py-1.5 md:px-8 lg:px-10 sm:flex">
+          <div className="z-10 flex min-w-0 items-center justify-start gap-2">
             <img
               src={POA_LOGO_SRC}
               alt="Decker Pex & Co. Law Offices"
-              className="h-16 w-auto max-w-[88px] shrink-0 object-contain sm:h-[4.5rem] sm:max-w-[104px]"
+              className="h-11 w-auto max-w-[120px] shrink-0 object-contain"
             />
-            <h1 className="truncate text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
+            <h1 className="truncate text-sm font-semibold tracking-tight text-gray-900">
               {LAW_OFFICE_TITLE}
             </h1>
           </div>
 
-          <p className="pointer-events-none absolute left-1/2 top-1/2 max-w-[min(52vw,42rem)] -translate-x-1/2 -translate-y-1/2 truncate px-4 text-center text-sm font-medium text-gray-700 md:text-base">
+          <p className="pointer-events-none absolute left-1/2 top-1/2 max-w-[min(52vw,42rem)] -translate-x-1/2 -translate-y-1/2 truncate px-4 text-center text-xs font-medium text-gray-700 md:text-sm">
             {poaHeaderTitle}
           </p>
 
@@ -836,7 +851,9 @@ ${headStyles}
             ) : Renderer ? (
               <Renderer ctrl={ctrl} />
             ) : null}
-            <ProformaDocumentStamp size="lg" side={docDir === 'rtl' ? 'left' : 'right'} />
+            {data?.type.key !== 'german_citizenship' ? (
+              <ProformaDocumentStamp size="lg" side={docDir === 'rtl' ? 'left' : 'right'} />
+            ) : null}
           </div>
 
           {/* Actions */}

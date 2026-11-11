@@ -113,6 +113,83 @@ export async function getOutlookTeamsMeeting(
   }
 }
 
+const CALENDAR_ROW_NOT_SAVED =
+  'The calendar time was not saved. Apply the staff meeting permission, then save again.';
+
+const CALENDAR_ROW_NOT_REMOVED =
+  'The meeting was updated in the case, but the calendar slot was not removed. Apply the staff meeting permission, then delete it again.';
+
+/**
+ * Move the shared staff-calendar row the calendar page reads.
+ * A blocked update returns no error and no row. If the row is still visible, that is a failure.
+ * Returns `missing` when there is no calendar row to move.
+ */
+export async function syncOutlookTeamsMeetingSchedule(
+  teamsMeetingId: string,
+  updates: {
+    subject?: string;
+    start_date_time: string;
+    end_date_time: string;
+    description?: string | null;
+    location?: string | null;
+  }
+): Promise<'updated' | 'missing'> {
+  const id = String(teamsMeetingId || '').trim();
+  if (!id) return 'missing';
+
+  const { data, error } = await supabase
+    .from('outlook_teams_meetings')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('teams_meeting_id', id)
+    .select('teams_meeting_id, start_date_time');
+
+  if (error) throw error;
+  if (data && data.length > 0) return 'updated';
+
+  const { data: existing, error: readError } = await supabase
+    .from('outlook_teams_meetings')
+    .select('teams_meeting_id')
+    .eq('teams_meeting_id', id)
+    .limit(1);
+
+  if (readError) throw readError;
+  if (!existing || existing.length === 0) return 'missing';
+  throw new Error(CALENDAR_ROW_NOT_SAVED);
+}
+
+/**
+ * Remove the shared staff-calendar row so a canceled or deleted internal meeting leaves the calendar.
+ * Returns `missing` when there is no row. Throws when the row is still visible after delete.
+ */
+export async function removeOutlookTeamsMeetingRow(
+  teamsMeetingId: string
+): Promise<'removed' | 'missing'> {
+  const id = String(teamsMeetingId || '').trim();
+  if (!id) return 'missing';
+
+  const { data: existing, error: readError } = await supabase
+    .from('outlook_teams_meetings')
+    .select('teams_meeting_id')
+    .eq('teams_meeting_id', id)
+    .limit(1);
+
+  if (readError) throw readError;
+  if (!existing || existing.length === 0) return 'missing';
+
+  const { data, error } = await supabase
+    .from('outlook_teams_meetings')
+    .delete()
+    .eq('teams_meeting_id', id)
+    .select('teams_meeting_id');
+
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error(CALENDAR_ROW_NOT_REMOVED);
+  return 'removed';
+}
+
 /**
  * Update Teams meeting data
  */

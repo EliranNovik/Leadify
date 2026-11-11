@@ -8176,6 +8176,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               const isSuccess =
                                 String(tx.status || '').toLowerCase() === 'success' ||
                                 String(tx.status || '').toLowerCase() === 'paid';
+                              const isOpen =
+                                String(tx.status || '').toLowerCase() === 'processing' ||
+                                String(tx.status || '').toLowerCase() === 'pending';
                               return (
                               <tr key={tx.id || idx}>
                                 <td className="align-top whitespace-nowrap">
@@ -8192,7 +8195,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     <span className="font-medium text-emerald-700">success</span>
                                   ) : (
                                     <div className="max-w-xs">
-                                      <div className="font-semibold text-rose-700">
+                                      <div className={`font-semibold ${isOpen ? 'text-amber-700' : 'text-rose-700'}`}>
                                         {statusView.code
                                           ? `${statusView.label} · ${statusView.code}`
                                           : statusView.label || 'failed'}

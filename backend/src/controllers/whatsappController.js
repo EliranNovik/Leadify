@@ -12,6 +12,9 @@ const {
   collectWhatsAppPhoneVariants,
   whatsAppPhoneLookupNeedle,
 } = require('../lib/whatsappPhone');
+const {
+  createCrmLeadFromWhatsAppSourceCode,
+} = require('../lib/whatsappInboundSourceCode');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -1151,6 +1154,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     };
 
     const isUnknownLeadMessage = matchingLeads.length === 0;
+    let createdFromWhatsAppSourceCode = null;
     
     // Update phone numbers for all matching new leads if they don't match exactly
     const newLeadsToUpdate = matchingLeads
@@ -1369,6 +1373,28 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       baseMessageData.message_type = 'text';
     }
 
+    // Landing pages prefill "(source code)" in the first WhatsApp message. An unknown
+    // sender with a real misc_leadsource.code becomes that source, not a generic WhatsApp lead.
+    if (matchingLeads.length === 0 && matchingContacts.length === 0) {
+      const inboundText = [baseMessageData.message, baseMessageData.caption].filter(Boolean).join('\n');
+      createdFromWhatsAppSourceCode = await createCrmLeadFromWhatsAppSourceCode(supabase, {
+        phoneNumber,
+        senderName,
+        messageText: inboundText,
+      });
+      if (createdFromWhatsAppSourceCode?.id) {
+        matchingLeads.push({
+          type: 'new',
+          data: {
+            id: createdFromWhatsAppSourceCode.id,
+            name: createdFromWhatsAppSourceCode.name || senderName,
+            phone: phoneNumber,
+            lead_number: createdFromWhatsAppSourceCode.lead_number,
+          },
+        });
+      }
+    }
+
     // One inbound event → one row per matching lead/contact. The UI must filter by
     // that lead so each case shows its own copy, not every copy for the phone.
     const messagesToInsert = [];
@@ -1523,7 +1549,11 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       if (matchingContacts.length > 0) {
         console.log(`  - ${matchingContacts.length} matching contact(s)`);
       }
-      if (isUnknownLeadMessage) {
+      if (createdFromWhatsAppSourceCode?.lead_number) {
+        console.log(
+          `🆕 WhatsApp lead saved as ${createdFromWhatsAppSourceCode.lead_number} (${senderName}, ${phoneNumber})`,
+        );
+      } else if (isUnknownLeadMessage) {
         console.log(`🆕 NEW LEAD: ${senderName} (${phoneNumber}) - This will appear on WhatsApp Leads page!`);
       }
 
@@ -1571,7 +1601,11 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
             body: previewText,
             icon: '/whatsapp-icon.png', // Try PNG first (better mobile support)
             badge: '/icon-72x72.png',
-            url: phoneNumber ? `/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}` : '/whatsapp-leads',
+            url: createdFromWhatsAppSourceCode?.lead_number
+              ? `/clients/${encodeURIComponent(createdFromWhatsAppSourceCode.lead_number)}`
+              : phoneNumber
+                ? `/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}`
+                : '/whatsapp-leads',
             tag: notificationTag, // Browser will deduplicate notifications with the same tag
             id: baseMessageData.whatsapp_message_id || phoneNumber || Date.now(),
             type: 'whatsapp', // Set type to 'whatsapp' for better identification
