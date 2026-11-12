@@ -38,6 +38,7 @@ const { startPelecardPaymentReconciliationScheduler } = require('./src/services/
 const { startPaymentPlanInvoiceAutomationScheduler } = require('./src/services/paymentPlanInvoiceAutomationScheduler');
 const { startNineHourAutoClockOutScheduler } = require('./src/services/nineHourAutoClockOutScheduler');
 const { startHandlerNewCasesDigestScheduler } = require('./src/services/handlerNewCasesDigestScheduler');
+const { startFbLeadsImportScheduler } = require('./src/services/fbLeadsImportScheduler');
 const handlerNewCasesDigestRoutes = require('./src/routes/handlerNewCasesDigestRoutes');
 const aiTranscribeRoutes = require('./src/routes/aiTranscribeRoutes');
 const accessLogger = require('./src/middleware/accessLogger');
@@ -531,6 +532,7 @@ server.listen(PORT, () => {
   startPaymentPlanInvoiceAutomationScheduler();
   startNineHourAutoClockOutScheduler();
   startHandlerNewCasesDigestScheduler();
+  startFbLeadsImportScheduler();
 });
 
 // Graceful shutdown

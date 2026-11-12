@@ -1,0 +1,3 @@
+# Invoked by the backend scheduler with x-cron-secret. The export secret is read from
+# FB_LEADS_EXPORT_SECRET or from the trusted cron request body.
+verify_jwt = false
