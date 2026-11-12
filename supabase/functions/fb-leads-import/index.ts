@@ -370,9 +370,10 @@ serve(async (req) => {
     ? body.formSourceCodes
     : Deno.env.get('FACEBOOK_FORM_SOURCE_CODES');
   const formSourceCodes = parseFormSourceCodes(formSourceRaw);
+  // misc_leadsource.code 978456 is "FB ARDAN". A per-lead source_code or form map still wins.
   const defaultSourceCode = parseIntegerSourceCode(
-    body.defaultSourceCode ?? Deno.env.get('FACEBOOK_DEFAULT_SOURCE_CODE'),
-  );
+    body.defaultSourceCode ?? Deno.env.get('FB_LEADS_DEFAULT_SOURCE_ID'),
+  ) ?? 978456;
   const dryRun = Boolean(body.dryRun);
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');

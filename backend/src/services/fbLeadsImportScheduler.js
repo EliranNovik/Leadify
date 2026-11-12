@@ -70,7 +70,7 @@ async function runImportCycle(trigger = 'scheduled') {
         limit: Number.isFinite(limit) ? limit : 100,
         exportSecret,
         exportUrl: process.env.FB_LEADS_EXPORT_URL?.trim() || undefined,
-        defaultSourceCode: process.env.FACEBOOK_DEFAULT_SOURCE_CODE || null,
+        defaultSourceCode: process.env.FB_LEADS_DEFAULT_SOURCE_ID?.trim() || '978456',
         formSourceCodes: process.env.FACEBOOK_FORM_SOURCE_CODES || null,
       }),
     });
