@@ -992,6 +992,78 @@ const MultiSelectInput = ({
     );
 };
 
+type ReassignCategoryMatch = {
+    categoryIds: number[];
+    textNames: string[];
+};
+
+/**
+ * The category picker lists main categories (`misc_maincategory`).
+ * A lead stores the subcategory in `category_id`, so a text match on `category`
+ * misses every lead under that main category. Resolve the selection to those ids,
+ * and keep the typed name as a text fallback for rows that only have the name.
+ */
+async function resolveReassignCategoryMatch(selected: string[]): Promise<ReassignCategoryMatch> {
+    const textNames = [...new Set(selected.map((name) => name.trim()).filter(Boolean))];
+    if (textNames.length === 0) return { categoryIds: [], textNames: [] };
+
+    const [{ data: mainRows, error: mainError }, { data: namedRows, error: namedError }] = await Promise.all([
+        supabase.from('misc_maincategory').select('id').in('name', textNames),
+        supabase.from('misc_category').select('id').in('name', textNames),
+    ]);
+    if (mainError) console.error('Reassign category main lookup failed:', mainError);
+    if (namedError) console.error('Reassign category name lookup failed:', namedError);
+
+    const mainIds = (mainRows || [])
+        .map((row) => Number(row.id))
+        .filter((id) => Number.isFinite(id));
+
+    let childIds: number[] = [];
+    if (mainIds.length > 0) {
+        const { data: children, error: childError } = await supabase
+            .from('misc_category')
+            .select('id')
+            .in('parent_id', mainIds);
+        if (childError) console.error('Reassign category child lookup failed:', childError);
+        childIds = (children || [])
+            .map((row) => Number(row.id))
+            .filter((id) => Number.isFinite(id));
+    }
+
+    const categoryIds = [...new Set([
+        ...(namedRows || []).map((row) => Number(row.id)).filter((id) => Number.isFinite(id)),
+        ...childIds,
+    ])];
+
+    return { categoryIds, textNames };
+}
+
+function reassignCategoryTextClause(name: string): string {
+    const pattern = `*${name.replace(/"/g, '')}*`;
+    const quoted = /[,.()\s]/.test(pattern) ? `"${pattern}"` : pattern;
+    return `category.ilike.${quoted}`;
+}
+
+function applyReassignCategoryFilter(query: any, match: ReassignCategoryMatch): any {
+    const { categoryIds, textNames } = match;
+    if (categoryIds.length === 0 && textNames.length === 0) return query;
+
+    const textClauses = textNames.map(reassignCategoryTextClause);
+    const idClause = categoryIds.length === 0
+        ? null
+        : categoryIds.length === 1
+            ? `category_id.eq.${categoryIds[0]}`
+            : `category_id.in.(${categoryIds.join(',')})`;
+
+    if (idClause && textClauses.length > 0) {
+        return query.or([idClause, ...textClauses].join(','));
+    }
+    if (categoryIds.length === 1) return query.eq('category_id', categoryIds[0]);
+    if (categoryIds.length > 1) return query.in('category_id', categoryIds);
+    if (textNames.length === 1) return query.ilike('category', `%${textNames[0]}%`);
+    return query.or(textClauses.join(','));
+}
+
 const ReassignLeadsReport: React.FC = () => {
     const { instance } = useMsal();
     const navigate = useNavigate();
@@ -1979,6 +2051,9 @@ const ReassignLeadsReport: React.FC = () => {
 
         try {
             const searchPromises = [];
+            const categoryMatch = reassignFilters.category?.length
+                ? await resolveReassignCategoryMatch(reassignFilters.category)
+                : { categoryIds: [] as number[], textNames: [] as string[] };
 
             // Search in leads table (new leads) with category join
             let leadsQuery = supabase
@@ -2030,15 +2105,9 @@ const ReassignLeadsReport: React.FC = () => {
             if (reassignFilters.toDate) {
                 leadsQuery = leadsQuery.lte('created_at', `${reassignFilters.toDate}T23:59:59`);
             }
-            if (reassignFilters.category && reassignFilters.category.length > 0) {
-                console.log('🏷️ Adding category filter for new leads:', reassignFilters.category);
-                if (reassignFilters.category.length === 1) {
-                    leadsQuery = leadsQuery.ilike('category', `%${reassignFilters.category[0]}%`);
-                } else {
-                    // For multiple categories, use OR condition
-                    const orConditions = reassignFilters.category.map(cat => `category.ilike.%${cat}%`);
-                    leadsQuery = leadsQuery.or(orConditions.join(','));
-                }
+            if (categoryMatch.categoryIds.length > 0 || categoryMatch.textNames.length > 0) {
+                console.log('🏷️ Adding category filter for new leads:', categoryMatch);
+                leadsQuery = applyReassignCategoryFilter(leadsQuery, categoryMatch);
             }
             if (reassignFilters.source && reassignFilters.source.length > 0) {
                 console.log('📡 Adding source filter for new leads:', reassignFilters.source);
@@ -2293,15 +2362,9 @@ const ReassignLeadsReport: React.FC = () => {
             if (reassignFilters.toDate) {
                 legacyLeadsQuery = legacyLeadsQuery.lte('cdate', `${reassignFilters.toDate}T23:59:59`);
             }
-            if (reassignFilters.category && reassignFilters.category.length > 0) {
-                console.log('🏷️ Adding category filter for legacy leads:', reassignFilters.category);
-                if (reassignFilters.category.length === 1) {
-                    legacyLeadsQuery = legacyLeadsQuery.ilike('category', `%${reassignFilters.category[0]}%`);
-                } else {
-                    // For multiple categories, use OR condition
-                    const orConditions = reassignFilters.category.map(cat => `category.ilike.%${cat}%`);
-                    legacyLeadsQuery = legacyLeadsQuery.or(orConditions.join(','));
-                }
+            if (categoryMatch.categoryIds.length > 0 || categoryMatch.textNames.length > 0) {
+                console.log('🏷️ Adding category filter for legacy leads:', categoryMatch);
+                legacyLeadsQuery = applyReassignCategoryFilter(legacyLeadsQuery, categoryMatch);
             }
             if (reassignFilters.source && reassignFilters.source.length > 0) {
                 console.log('📡 Adding source filter for legacy leads:', reassignFilters.source);

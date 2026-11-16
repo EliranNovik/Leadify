@@ -14,7 +14,7 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { clientMatchesLeadRouteKey } from '../lib/leadRouteMatch';
+import { clientMatchesLeadRouteKey, clientRouteLeadKey } from '../lib/leadRouteMatch';
 import { allowsAdditionalLeadMeetings, getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour, getSoftStageBadgeStyle, shouldPreserveLeadStageOnMeeting, isWaitingForMtngSumStage, preferNewerLeadStage, applyLocalLeadStage } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { tryAdvanceClientSignedToHandlerSet } from '../lib/advanceClientSignedToHandlerSet';
@@ -1145,6 +1145,13 @@ const Clients: React.FC<ClientsProps> = ({
     subleadSuffix && lead_number && !lead_number.includes('/')
       ? `${lead_number}/${subleadSuffix}`
       : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
+  // `/clients/210456/2` is the sublead, not the master row 210456. Role edits follow this key.
+  const routeLeadKey = clientRouteLeadKey({
+    leadNumber: lead_number,
+    subleadSuffix,
+    requestedLeadNumber,
+    pathLeadNumber: fullLeadNumberFromPath,
+  });
 
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
@@ -3697,7 +3704,7 @@ const Clients: React.FC<ClientsProps> = ({
       const routeChanged = lastRouteRef.current !== currentRoute;
 
       // Check persisted client data before fetching — use cache for current URL's lead whenever available
-      const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
+      const effectiveLeadNumber = routeLeadKey;
       const isInitialMount = lastRouteRef.current == null || lastRouteRef.current === '';
       if (effectiveLeadNumber && !isFetchingRef.current && !isSettingUpClientRef.current) {
         try {
@@ -3715,40 +3722,34 @@ const Clients: React.FC<ClientsProps> = ({
             const parsedData = JSON.parse(persistedData);
             // Check if persisted data matches current route
             const isLegacy = parsedData.lead_type === 'legacy' || parsedData.id?.toString().startsWith('legacy_');
-            const persistedClientId = isLegacy
-              ? parsedData.id?.toString().replace('legacy_', '')
-              : parsedData.id?.toString();
             const persistedLeadNumber = parsedData.lead_number;
 
-            // For legacy leads, compare by numeric ID; for new leads, compare by lead_number or manual_id
-            let matches = false;
-            if (isLegacy) {
-              // Legacy: compare numeric ID (effectiveLeadNumber should be the numeric ID from URL)
-              matches = persistedClientId === effectiveLeadNumber || persistedClientId === String(effectiveLeadNumber);
-            } else {
-              // New: compare by lead_number or manual_id - must match exactly
-              matches = persistedLeadNumber === effectiveLeadNumber ||
-                (persistedClientId === effectiveLeadNumber && effectiveLeadNumber === persistedLeadNumber) ||
-                parsedData.manual_id === effectiveLeadNumber;
-            }
+            // Legacy subleads match on master/suffix as well as the row id.
+            const matches = clientMatchesLeadRouteKey(
+              {
+                id: parsedData.id,
+                lead_number: persistedLeadNumber,
+                lead_type: isLegacy ? 'legacy' : parsedData.lead_type,
+                manual_id: parsedData.manual_id,
+              },
+              effectiveLeadNumber,
+            );
 
             if (matches) {
               // Check if selectedClient already matches - if so, skip
               if (selectedClient) {
                 const currentIsLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                const currentClientId = currentIsLegacy
-                  ? selectedClient.id?.toString().replace('legacy_', '')
-                  : selectedClient.id?.toString();
                 const currentLeadNumber = selectedClient.lead_number;
 
-                let currentMatches = false;
-                if (currentIsLegacy) {
-                  currentMatches = currentClientId === effectiveLeadNumber || currentClientId === String(effectiveLeadNumber);
-                } else {
-                  currentMatches = currentLeadNumber === effectiveLeadNumber ||
-                    currentClientId === effectiveLeadNumber ||
-                    (selectedClient as any).manual_id === effectiveLeadNumber;
-                }
+                const currentMatches = clientMatchesLeadRouteKey(
+                  {
+                    id: selectedClient.id,
+                    lead_number: currentLeadNumber,
+                    lead_type: currentIsLegacy ? 'legacy' : selectedClient.lead_type,
+                    manual_id: (selectedClient as any).manual_id,
+                  },
+                  effectiveLeadNumber,
+                );
 
                 if (currentMatches) {
                   // Same lead identity, but schedule/reschedule subpages may have moved the stage
@@ -3960,8 +3961,9 @@ const Clients: React.FC<ClientsProps> = ({
 
         // For legacy leads, compare by ID; for new leads, compare by lead_number
         if (isLegacy) {
-          // Legacy lead: compare numeric ID
-          if (currentClientId === lead_number) {
+          // Legacy lead: row id, or master/suffix display number for a sublead.
+          const displayedLeadNumber = String(currentLeadNumber ?? '');
+          if (currentClientId === effectiveLeadNumber || displayedLeadNumber === effectiveLeadNumber) {
             setLocalLoading(false); // Ensure loading is cleared
             // Update lastRouteRef to prevent future refetches
             lastRouteRef.current = currentRoute;
@@ -3969,7 +3971,7 @@ const Clients: React.FC<ClientsProps> = ({
           }
         } else {
           // New lead: compare by lead_number or manual_id
-          if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          if (currentLeadNumber === effectiveLeadNumber || currentClientId === effectiveLeadNumber || String((selectedClient as any).manual_id ?? '') === effectiveLeadNumber) {
             setLocalLoading(false); // Ensure loading is cleared
             // Update lastRouteRef to prevent future refetches
             lastRouteRef.current = currentRoute;
@@ -3982,17 +3984,22 @@ const Clients: React.FC<ClientsProps> = ({
         // Ensure we're still mounted before proceeding
         if (!isMounted) return;
 
-        // Use fullLeadNumber if lead_number is empty (fallback for route parsing)
-        const effectiveLeadNumber = lead_number || fullLeadNumber;
+        // master/suffix stays the sublead. A bare segment stays that row.
+        const effectiveLeadNumber = routeLeadKey;
 
         // Avoid second loading overlay: if we already have the correct client for this route, do not show overlay again
         if (!clearedSelectedClient && selectedClient && effectiveLeadNumber) {
           const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-          const currentId = isLegacy ? selectedClient.id?.toString().replace('legacy_', '') : selectedClient.id?.toString();
           const currentLeadNumber = selectedClient.lead_number;
-          const matches = isLegacy
-            ? (currentId === effectiveLeadNumber || currentId === String(effectiveLeadNumber))
-            : (currentLeadNumber === effectiveLeadNumber || currentId === effectiveLeadNumber);
+          const matches = clientMatchesLeadRouteKey(
+            {
+              id: selectedClient.id,
+              lead_number: currentLeadNumber,
+              lead_type: isLegacy ? 'legacy' : selectedClient.lead_type,
+              manual_id: (selectedClient as any).manual_id,
+            },
+            effectiveLeadNumber,
+          );
           if (matches) {
             setLocalLoading(false);
             return;
@@ -4311,9 +4318,15 @@ const Clients: React.FC<ClientsProps> = ({
                   phone: legacyLead.phone || '',
                   mobile: legacyLead.mobile || '',
                   topic: legacyLead.topic || '',
-                  lead_number: (isNonSelfLinkedMasterLead(legacyLead.linked_master_lead, null, legacyLead.id) && (!legacyLead.master_id || String(legacyLead.master_id).trim() === ''))
-                    ? String(legacyLead.id)
-                    : formatLegacyLeadNumber(legacyLead, subLeadSuffix),
+                  lead_number: (() => {
+                    const routeSub = effectiveLeadNumber.match(/^(\d+)\/(\d+)$/);
+                    if (routeSub && String(legacyLead.master_id ?? '') === routeSub[1]) {
+                      return effectiveLeadNumber;
+                    }
+                    return (isNonSelfLinkedMasterLead(legacyLead.linked_master_lead, null, legacyLead.id) && (!legacyLead.master_id || String(legacyLead.master_id).trim() === ''))
+                      ? String(legacyLead.id)
+                      : formatLegacyLeadNumber(legacyLead, subLeadSuffix);
+                  })(),
                   stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
                   // Carried through so the stage merge can date this row against a local change.
                   stage_changed_at: legacyLead.stage_changed_at ?? null,
@@ -4829,7 +4842,7 @@ const Clients: React.FC<ClientsProps> = ({
       isFetchingRef.current = false;
       fetchingRouteRef.current = null;
     };
-  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
+  }, [lead_number, fullLeadNumber, routeLeadKey, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
   // Background loading for non-essential data (runs after essential data is loaded)
   // Cached in sessionStorage to avoid refetching on navigation
   useEffect(() => {
@@ -6633,9 +6646,6 @@ const Clients: React.FC<ClientsProps> = ({
                 meeting_total_currency: resolvedMeetingCurrency,
                 proposal_total: meetingAmount,
                 potential_value: null,
-                handler: normalizeHandlerToNull(selectedClient.handler),
-                case_handler_id: selectedClient.case_handler_id || null,
-                scheduler: currentUserFullName,
                 stage_changed_by: stageActor.fullName,
                 stage_changed_at: stageTimestamp,
               },
@@ -12424,19 +12434,6 @@ const Clients: React.FC<ClientsProps> = ({
     const defaults = buildSubLeadDefaultsFromClient();
     if (!defaults) return;
 
-    const rawHandlerId =
-      selectedClient.case_handler_id != null
-        ? String(selectedClient.case_handler_id)
-        : (() => {
-          if (!selectedClient.handler) return '';
-          const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
-          return found?.id || '';
-        })();
-
-    const handlerLabel = rawHandlerId
-      ? handlerOptionsMap.get(rawHandlerId) || selectedClient.handler || ''
-      : selectedClient.handler || '';
-
     const resolvedCurrency =
       selectedClient.balance_currency ||
       selectedClient.meeting_total_currency ||
@@ -12476,8 +12473,8 @@ const Clients: React.FC<ClientsProps> = ({
         }
         return prev.tags;
       })(),
-      handler: handlerLabel || '',
-      handlerId: rawHandlerId || '',
+      handler: '',
+      handlerId: '',
       currency: normalizeCurrencyForForm(resolvedCurrency),
       numApplicants: resolvedApplicants,
       proposal: '',
@@ -12485,8 +12482,6 @@ const Clients: React.FC<ClientsProps> = ({
     }));
   }, [
     buildSubLeadDefaultsFromClient,
-    handlerOptions,
-    handlerOptionsMap,
     selectedClient,
     subLeadForm.currency,
     normalizeCurrencyForForm,
@@ -12544,19 +12539,10 @@ const Clients: React.FC<ClientsProps> = ({
   }, [selectedClient, pendingProbabilityAfterFlag, headerFlaggedConversationCount, refreshClientData]);
 
   // Effective lead from URL for route-matching
-  const effectiveLeadForMatch = lead_number || fullLeadNumber || requestedLeadNumber;
+  const effectiveLeadForMatch = routeLeadKey;
   // Only show client content when selectedClient matches current route — prevents flash of wrong client when navigating
   // When no lead in URL (e.g. /clients), never show client — we're about to redirect
-  const clientMatchesRoute = !!effectiveLeadForMatch && !!selectedClient && (() => {
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-    const clientId = isLegacy ? selectedClient.id?.toString().replace('legacy_', '') : selectedClient.id?.toString();
-    const clientLeadNumber = selectedClient.lead_number;
-    if (isLegacy) {
-      return clientId === effectiveLeadForMatch || clientId === String(effectiveLeadForMatch);
-    }
-    return clientLeadNumber === effectiveLeadForMatch || clientId === effectiveLeadForMatch ||
-      (selectedClient as any)?.manual_id === effectiveLeadForMatch;
-  })();
+  const clientMatchesRoute = !!effectiveLeadForMatch && !!selectedClient && clientMatchesLeadRouteKey(selectedClient, effectiveLeadForMatch);
 
   if (!localLoading && !selectedClient) {
     return (
@@ -13317,13 +13303,15 @@ const Clients: React.FC<ClientsProps> = ({
         meeting_total_currency: currencyValue,
         proposal_total: proposalAmount,
         potential_value: potentialValueAmount,
-        handler: handlerLabel,
-        case_handler_id: handlerIdValue,
         number_of_applicants_meeting: applicantCount,
         mobile: subLeadForm.mobile || null,
         phone: subLeadForm.phone || null,
         email: subLeadForm.email || null,
       };
+      if (handlerIdValue != null && handlerLabel) {
+        extraFields.handler = handlerLabel;
+        extraFields.case_handler_id = handlerIdValue;
+      }
 
       // Always create in `leads` with own L-number and link via linked_master_lead (combine-chain)
       const createResult = await createAndLinkLeadToChain({

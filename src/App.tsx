@@ -356,7 +356,10 @@ const AppContentInner: React.FC = () => {
     try {
       // Check if it's a legacy lead
       if (clientId.toString().startsWith('legacy_')) {
-        const legacyId = parseInt(clientId.toString().replace('legacy_', ''));
+        const legacyIdRaw = clientId.toString().replace(/^legacy_/, '').trim();
+        // parseInt("210456/2") is 210456, the master. A sublead must refresh its own row only.
+        if (!/^\d+$/.test(legacyIdRaw)) return;
+        const legacyId = parseInt(legacyIdRaw, 10);
         console.log('🔄 Refreshing legacy client data for ID:', legacyId);
 
         // Fetch legacy lead data with currency information

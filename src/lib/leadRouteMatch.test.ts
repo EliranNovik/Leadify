@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { clientMatchesLeadRouteKey } from './leadRouteMatch';
+import { clientMatchesLeadRouteKey, clientRouteLeadKey } from './leadRouteMatch';
 
 const NEW_LEAD = { id: '073e5418-5728-42aa-9596-367e2c9cf172', lead_number: 'L229882', lead_type: 'new' };
 const LEGACY_LEAD = { id: 'legacy_210456', lead_number: '210456', lead_type: 'legacy' };
@@ -31,6 +31,29 @@ test('a legacy lead is recognised from the id prefix even without lead_type', ()
 test('a legacy sub-lead key is not matched against the master row', () => {
   // The master is loaded but the route asks for 210456/2, which is a different row.
   assert.equal(clientMatchesLeadRouteKey(LEGACY_LEAD, '210456/2'), false);
+});
+
+test('a legacy sub-lead matches its master/suffix display number', () => {
+  const subLead = { id: 'legacy_78481', lead_number: '210456/2', lead_type: 'legacy' };
+  assert.equal(clientMatchesLeadRouteKey(subLead, '210456/2'), true);
+  assert.equal(clientMatchesLeadRouteKey(subLead, '210456'), false);
+  assert.equal(clientMatchesLeadRouteKey(subLead, '78481'), true);
+});
+
+test('a /clients/master/suffix path is the sublead, not the master id', () => {
+  assert.equal(
+    clientRouteLeadKey({ leadNumber: '210456', subleadSuffix: '2' }),
+    '210456/2',
+  );
+  assert.equal(
+    clientRouteLeadKey({ leadNumber: '210456', subleadSuffix: '1' }),
+    '210456',
+  );
+  assert.equal(clientRouteLeadKey({ leadNumber: '78481' }), '78481');
+  assert.equal(
+    clientRouteLeadKey({ leadNumber: '78481', requestedLeadNumber: '210456/2' }),
+    '78481',
+  );
 });
 
 test('a new sub-lead matches its own slashed lead number', () => {

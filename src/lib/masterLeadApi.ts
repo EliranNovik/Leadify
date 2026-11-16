@@ -1596,6 +1596,78 @@ export type CreateAndLinkLeadResult = {
   error?: string;
 };
 
+/** Role columns on `leads`. A new sublead starts with none of these filled in. */
+const NEW_LEAD_ROLE_COLUMNS = [
+  'scheduler',
+  'meeting_scheduler_id',
+  'manager',
+  'meeting_manager_id',
+  'helper',
+  'meeting_lawyer_id',
+  'expert',
+  'expert_id',
+  'closer',
+  'closer_id',
+  'handler',
+  'case_handler_id',
+  'retainer_handler_id',
+  'client_support_id',
+  'meeting_collection_id',
+  'marketing_officer_id',
+  'submission_manager_id',
+  'digital_case_coordinator_id',
+  'document_procurement_coordinator_id',
+  'certification_coordinator_id',
+  'authorities_coordinator_id',
+] as const;
+
+function emptyNewLeadRoles(): Record<string, null> {
+  return Object.fromEntries(NEW_LEAD_ROLE_COLUMNS.map((column) => [column, null]));
+}
+
+/**
+ * Drop any roles copied from the parent. Call this after the lead is linked,
+ * because linking is what used to carry the parent's assignees across.
+ * Role fields the caller set on purpose are written back afterwards.
+ */
+async function clearCopiedRolesOnNewLead(
+  leadId: string,
+  keep: Record<string, unknown>,
+): Promise<void> {
+  const keptRoles: Record<string, unknown> = {};
+  for (const column of NEW_LEAD_ROLE_COLUMNS) {
+    if (Object.prototype.hasOwnProperty.call(keep, column)) {
+      keptRoles[column] = keep[column];
+    }
+  }
+
+  const cleared = { ...emptyNewLeadRoles(), ...keptRoles };
+  const { error } = await supabase.from('leads').update(cleared).eq('id', leadId);
+  if (error) {
+    console.error('clearCopiedRolesOnNewLead batch failed, clearing columns one by one:', error);
+    await Promise.all(
+      Object.entries(cleared).map(async ([column, value]) => {
+        const { error: columnError } = await supabase
+          .from('leads')
+          .update({ [column]: value })
+          .eq('id', leadId);
+        if (columnError) {
+          console.error(`clearCopiedRolesOnNewLead ${column} failed:`, columnError);
+        }
+      }),
+    );
+  }
+
+  const [helpers, submissionManagers] = await Promise.all([
+    supabase.from('lead_helper_handlers').delete().eq('new_lead_id', leadId),
+    supabase.from('lead_submission_managers').delete().eq('new_lead_id', leadId),
+  ]);
+  if (helpers.error) console.error('clear helper handlers on new sublead failed:', helpers.error);
+  if (submissionManagers.error) {
+    console.error('clear submission managers on new sublead failed:', submissionManagers.error);
+  }
+}
+
 /**
  * Create a standalone lead in `leads` (own L-number) and attach it via linked_master_lead.
  * Uses create_new_lead_v4 with v3 fallback — same path as Combine, without traditional master_id / BASE/N.
@@ -1654,15 +1726,20 @@ export async function createAndLinkLeadToChain(
       };
     }
 
-    if (params.extraFields && Object.keys(params.extraFields).length > 0) {
-      // Never set master_id on combine-chain creates
-      const { master_id: _omitMasterId, ...safeFields } = params.extraFields as Record<
-        string,
-        unknown
-      > & { master_id?: unknown };
+    const requestedFields = (params.extraFields || {}) as Record<string, unknown> & {
+      master_id?: unknown;
+    };
+    const { master_id: _omitMasterId, ...safeFields } = requestedFields;
+    const nonRoleFields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(safeFields)) {
+      if (!(NEW_LEAD_ROLE_COLUMNS as readonly string[]).includes(key)) {
+        nonRoleFields[key] = value;
+      }
+    }
+    if (Object.keys(nonRoleFields).length > 0) {
       const { error: updateError } = await supabase
         .from('leads')
-        .update(safeFields)
+        .update(nonRoleFields)
         .eq('id', created.id);
       if (updateError) {
         console.error('createAndLinkLeadToChain: extraFields update failed', updateError);
@@ -1686,6 +1763,8 @@ export async function createAndLinkLeadToChain(
         lead_number: created.lead_number,
       };
     }
+
+    await clearCopiedRolesOnNewLead(created.id, safeFields);
 
     return {
       success: true,

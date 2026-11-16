@@ -275,6 +275,14 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
   // Check if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  // The row being edited. A master/suffix display number is not this id, so it can never
+  // be used to update the connected master (or the other way around).
+  const legacyRowId = (() => {
+    const raw = String(client?.id ?? '').replace(/^legacy_/i, '').trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const id = parseInt(raw, 10);
+    return Number.isFinite(id) ? id : null;
+  })();
   const isUnassignedValue = (value: string | null | undefined): boolean => {
     if (!value) return true;
     const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
@@ -976,16 +984,17 @@ const RolesTab: React.FC<ClientTabProps> = ({
       // quietly matched nothing, so the save used to report success while the roles stayed put.
       let updatedRows: { id: string | number }[] | null = null;
       if (isLegacyLead) {
-        // Update legacy lead in leads_lead table
-        const legacyId = client.id.toString().replace('legacy_', '');
-        // Ensure legacyId is a number if it's numeric
-        const numericLegacyId = /^\d+$/.test(legacyId) ? parseInt(legacyId, 10) : legacyId;
-        console.log('Updating legacy lead with ID:', numericLegacyId);
+        // One row only: this sublead or this master, never the lead it is connected to.
+        if (legacyRowId == null) {
+          toast.error('Could not tell which lead to update. Nothing was saved.');
+          return;
+        }
+        console.log('Updating legacy lead with ID:', legacyRowId);
 
         const { data, error: legacyError } = await supabase
           .from('leads_lead')
           .update(updateData)
-          .eq('id', numericLegacyId)
+          .eq('id', legacyRowId)
           .select('id');
 
         console.log('Legacy update result:', { data, error: legacyError });
@@ -1281,9 +1290,11 @@ const RolesTab: React.FC<ClientTabProps> = ({
       const newLockStatus = !isRolesLocked;
       const tableName = isLegacyLead ? 'leads_lead' : 'leads';
       const idField = isLegacyLead ? 'id' : 'id';
-      const clientId = isLegacyLead
-        ? client.id.toString().replace('legacy_', '')
-        : client.id;
+      const clientId = isLegacyLead ? legacyRowId : client.id;
+      if (isLegacyLead && clientId == null) {
+        toast.error('Could not tell which lead to update. Nothing was saved.');
+        return;
+      }
 
       const updateData: any = {};
 
@@ -1298,7 +1309,7 @@ const RolesTab: React.FC<ClientTabProps> = ({
       const { error } = await supabase
         .from(tableName)
         .update(updateData)
-        .eq(idField, isLegacyLead ? parseInt(clientId as string, 10) : clientId);
+        .eq(idField, clientId);
 
       if (error) {
         console.error('Error toggling lock:', error);
@@ -1356,13 +1367,15 @@ const RolesTab: React.FC<ClientTabProps> = ({
 
       if (isLegacyLead) {
         // Update legacy lead in leads_lead table with employee ID
-        const legacyId = client.id.toString().replace('legacy_', '');
-        const numericLegacyId = /^\d+$/.test(legacyId) ? parseInt(legacyId, 10) : legacyId;
+        if (legacyRowId == null) {
+          toast.error('Could not tell which lead to update. Nothing was saved.');
+          return;
+        }
 
         const { error: legacyError } = await supabase
           .from('leads_lead')
           .update({ closer_id: currentEmployeeId })
-          .eq('id', numericLegacyId);
+          .eq('id', legacyRowId);
         error = legacyError;
       } else {
         // Update new lead in leads table with display name (closer is stored as string for new leads)
