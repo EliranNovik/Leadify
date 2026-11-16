@@ -14,6 +14,7 @@ class GraphNotificationService {
     this.pendingUsers = new Set();
     this.activeUsers = new Set();
     this.flushTimer = null;
+    this.expiredMailboxWarnedAt = new Map();
     this.defaultDebounceMs = Number(process.env.GRAPH_WEBHOOK_DEBOUNCE_MS || 3000);
     this.scanCenterDebounceMs = Number(process.env.SCAN_CENTER_WEBHOOK_DEBOUNCE_MS || 800);
   }
@@ -106,6 +107,18 @@ class GraphNotificationService {
       });
       return summary;
     } catch (error) {
+      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+        const key = String(userId);
+        const now = Date.now();
+        const last = this.expiredMailboxWarnedAt.get(key) || 0;
+        if (now - last > 30 * 60 * 1000) {
+          this.expiredMailboxWarnedAt.set(key, now);
+          console.warn(
+            `⚠️ Mailbox for user ${key} needs reconnect. Sync stays paused until they connect Outlook again.`,
+          );
+        }
+        return null;
+      }
       console.error(`❌ Webhook sync failed for user ${userId}:`, error.message || error);
       console.error(`❌ Error stack:`, error.stack);
       throw error;

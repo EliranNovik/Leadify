@@ -212,6 +212,11 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
   const showIframeLoading = paymentUrl && !iframeLoaded && !loading && !error;
   const errCopy = paymentFormErrorCopy(error);
+  // While a refresh is still allowed, keep the loading state up so the Pelecard
+  // timeout page inside the iframe is not what the payer sees.
+  const renewingQuietly = Boolean(
+    onAutoRenew && (sessionExpired || timedOut) && !renewBlocked && !error && !loading,
+  );
   const showExpiredOverlay = Boolean(
     paymentUrl &&
       !loading &&
@@ -228,7 +233,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
     <div
       className={`iframe-shell flex flex-col w-full border-0 bg-transparent max-lg:h-auto lg:min-h-0 lg:h-full ${shellClassName}`.trim()}
     >
-      {loading && (
+      {(loading || renewingQuietly) && (
         <div className="flex flex-col items-center justify-center text-center py-14 px-6 w-full min-h-[480px]">
           <CheckoutSkeleton />
           <p className="text-sm font-medium text-gray-700 mt-6">Loading secure payment form…</p>
@@ -264,7 +269,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
         </div>
       )}
 
-      {paymentUrl && !loading && !error && !showExpiredOverlay && (
+      {paymentUrl && !loading && !renewingQuietly && !error && !showExpiredOverlay && (
         <div className={`${IFRAME_SCROLL_SHELL_CLASS} ${fillDesktop ? 'lg:!h-full' : ''}`.trim()}>
           {showIframeLoading && (
             <div className="flex flex-col items-center justify-center px-4 sm:px-6 min-h-[280px] max-lg:min-h-[320px] bg-white lg:sticky lg:top-0 lg:z-10 lg:min-h-full">

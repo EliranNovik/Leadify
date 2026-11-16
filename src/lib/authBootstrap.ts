@@ -57,6 +57,35 @@ export function readCachedSupabaseSessionFromStorage(): { user: any; access_toke
   return null;
 }
 
+/** localStorage key written when any tab successfully rotates the Supabase session. */
+const SHARED_AUTH_REFRESH_AT_KEY = 'crm_auth_last_refresh_at';
+
+/** True for the real GoTrue key (`sb-…-auth-token`) and the older `supabase.auth.token` name. */
+export function isSupabaseAuthStorageKey(key: string | null | undefined): boolean {
+  if (!key) return false;
+  return key.includes('supabase.auth.token') || (key.startsWith('sb-') && key.includes('-auth-token'));
+}
+
+/** Tell other tabs a refresh just succeeded so they do not rotate the same token again. */
+export function noteSharedAuthRefresh(at = Date.now()): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SHARED_AUTH_REFRESH_AT_KEY, String(at));
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+export function readSharedAuthRefreshAt(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const n = Number(localStorage.getItem(SHARED_AUTH_REFRESH_AT_KEY));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function hasAnySupabaseAuthKey(): boolean {
   if (typeof window === 'undefined') return false;
   try {

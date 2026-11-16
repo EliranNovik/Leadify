@@ -44,7 +44,17 @@ import {
   type AllocationReportRow,
   type MissingLeadReportingBacklogRow,
 } from '../lib/employeeLeadReporting';
-import { fetchClockInRecordsForAllocationMs } from '../lib/workingHoursExport';
+import {
+  fetchClockInRecordsForAllocationMs,
+  type ClockInForAllocationMs,
+} from '../lib/workingHoursExport';
+import LeadAllocationOvertimeApprovalModal from '../components/employeeLeadReporting/LeadAllocationOvertimeApprovalModal';
+import { fetchActiveClockInLocations, type ClockInLocationOption } from '../lib/clockInLocations';
+import {
+  formatOvertimeDatePlaceholder,
+  formatOvertimeHoursPlaceholder,
+  requestMichaelOvertimeApproval,
+} from '../lib/employeeClockInOvertimeWhatsApp';
 import {
   fetchAverageGrossSalaryLastMonths,
   getSalaryEmployeeInitials,
@@ -115,6 +125,30 @@ type EmployeeDaySlice = {
   totalWorkedMs: number;
   rows: AllocationReportRow[];
 };
+
+type PendingOvertimeDay = {
+  employeeId: number;
+  employeeName: string;
+  dateKey: string;
+  clockInIds: number[];
+  clockInTime: string;
+  clockOutTime: string;
+  extraMinutes: number;
+  baseHours: number;
+  locationId: number | null;
+};
+
+function jerusalemClockTime(iso: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(iso));
+  const hour = parts.find((part) => part.type === 'hour')?.value ?? '00';
+  const minute = parts.find((part) => part.type === 'minute')?.value ?? '00';
+  return `${hour}:${minute}`;
+}
 
 type EmployeeAllocationGroup = {
   employeeId: number;
@@ -441,11 +475,13 @@ function EmployeeAllocationHeader({
   totalCostNis,
   multiDay,
   embedded = false,
+  onSendOvertime,
 }: {
   group: EmployeeAllocationGroup;
   totalCostNis: number | null;
   multiDay: boolean;
   embedded?: boolean;
+  onSendOvertime?: () => void;
 }) {
   const comparison = compareWorkedHoursToMin(group.totalWorkedMs, group.minHours);
   const minMs = minHoursToMs(group.minHours);
@@ -545,6 +581,15 @@ function EmployeeAllocationHeader({
                   <p className="mt-1.5 text-xs font-medium text-emerald-600">
                     {formatAllocationWorkedDuration(comparison.differenceMs)} over minimum
                   </p>
+                ) : null}
+                {onSendOvertime ? (
+                  <button
+                    type="button"
+                    className="mt-1.5 text-xs font-semibold text-primary hover:underline"
+                    onClick={onSendOvertime}
+                  >
+                    Send to Michael
+                  </button>
                 ) : null}
               </div>
               <div className="flex flex-col justify-center rounded-2xl bg-white/55 px-4 py-3 ring-1 ring-white/60">
@@ -769,6 +814,8 @@ type EmployeeAllocationSectionProps = {
   onSort: (key: string) => void;
   onOpenBudgetHistory: (status: AllocationLeadBudgetStatus, row: AllocationReportRow) => void;
   onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
+  pendingOvertimeDates: Set<string>;
+  onSendOvertime: (dateKey: string) => void;
 };
 
 function EmployeeAllocationSection({
@@ -780,6 +827,8 @@ function EmployeeAllocationSection({
   onSort,
   onOpenBudgetHistory,
   onReviewRequest,
+  pendingOvertimeDates,
+  onSendOvertime,
 }: EmployeeAllocationSectionProps) {
   const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
   const showDayBreaks = multiDay && group.days.length > 1;
@@ -791,6 +840,11 @@ function EmployeeAllocationSection({
         totalCostNis={totalCostNis}
         multiDay={multiDay}
         embedded
+        onSendOvertime={
+          group.days.length === 1 && pendingOvertimeDates.has(group.days[0].workDate)
+            ? () => onSendOvertime(group.days[0].workDate)
+            : undefined
+        }
       />
 
       <div className="overflow-x-auto">
@@ -848,6 +902,15 @@ function EmployeeAllocationSection({
                           <span className="font-medium normal-case tracking-normal text-gray-500">
                             {formatAllocationWorkedDuration(day.totalWorkedMs)} worked
                           </span>
+                          {pendingOvertimeDates.has(day.workDate) ? (
+                            <button
+                              type="button"
+                              className="normal-case tracking-normal text-primary hover:underline"
+                              onClick={() => onSendOvertime(day.workDate)}
+                            >
+                              Send to Michael
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -894,6 +957,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   const [clockInMsByEmployeeDate, setClockInMsByEmployeeDate] = useState<Map<string, number>>(
     () => new Map(),
   );
+  const [clockRecords, setClockRecords] = useState<ClockInForAllocationMs[]>([]);
+  const [workplaces, setWorkplaces] = useState<ClockInLocationOption[]>([]);
+  const [overtimeTarget, setOvertimeTarget] = useState<PendingOvertimeDay | null>(null);
+  const [overtimeReason, setOvertimeReason] = useState('');
+  const [sendingOvertime, setSendingOvertime] = useState(false);
   const [missingReportingBacklog, setMissingReportingBacklog] = useState<
     MissingLeadReportingBacklogRow[]
   >([]);
@@ -1012,6 +1080,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       .catch((error) => {
         console.error('[EmployeeLeadAllocationsReport] departments failed:', error);
       });
+    void fetchActiveClockInLocations()
+      .then(setWorkplaces)
+      .catch((error) => {
+        console.error('[EmployeeLeadAllocationsReport] workplaces failed:', error);
+      });
   }, [isSuperUser]);
 
   const loadReport = useCallback(async () => {
@@ -1042,9 +1115,9 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         clockTo = swap;
       }
 
-      const clockRecords = await fetchClockInRecordsForAllocationMs(clockFrom, clockTo);
+      const loadedClockRecords = await fetchClockInRecordsForAllocationMs(clockFrom, clockTo);
       if (requestId !== loadRequestIdRef.current) return;
-      const clockInMs = buildAllocationClockInMsByEmployeeDate(clockRecords);
+      const clockInMs = buildAllocationClockInMsByEmployeeDate(loadedClockRecords);
       const employeeIds = Array.from(
         new Set([
           ...data.map((row) => row.employee_id),
@@ -1055,6 +1128,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       if (requestId !== loadRequestIdRef.current) return;
 
       setRows(data);
+      setClockRecords(loadedClockRecords);
       setClockInMsByEmployeeDate(clockInMs);
       setAvgMonthlySalaryByEmployee(salaryMap);
       hasLoadedOnceRef.current = true;
@@ -1078,6 +1152,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         error instanceof Error ? error.message : 'Failed to load allocation report.',
       );
       setRows([]);
+      setClockRecords([]);
       setClockInMsByEmployeeDate(new Map());
       setAvgMonthlySalaryByEmployee(new Map());
       setBudgetByLeadKey(new Map());
@@ -1162,6 +1237,91 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     () => groupRowsByEmployee(rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee),
     [rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee],
   );
+
+  const pendingOvertimeByKey = useMemo(() => {
+    const minByEmployee = new Map<number, number>();
+    const nameByEmployee = new Map<number, string>();
+    for (const row of rows) {
+      if (!minByEmployee.has(row.employee_id)) {
+        minByEmployee.set(row.employee_id, row.employee_min_hours);
+        nameByEmployee.set(row.employee_id, row.employee_name);
+      }
+    }
+
+    const sessionsByKey = new Map<string, ClockInForAllocationMs[]>();
+    for (const record of clockRecords) {
+      const employeeId = record.employee_id;
+      if (employeeId == null || record.declined === true || !record.clock_out_time) continue;
+      const dateKey = getJerusalemTodayIsoDate(new Date(record.clock_in_time));
+      const key = allocationEmployeeDateKey(employeeId, dateKey);
+      const list = sessionsByKey.get(key);
+      if (list) list.push(record);
+      else sessionsByKey.set(key, [record]);
+    }
+
+    const pending = new Map<string, PendingOvertimeDay>();
+    for (const [key, sessions] of sessionsByKey) {
+      const employeeId = Number(key.split('|')[0]);
+      const dateKey = key.slice(key.indexOf('|') + 1);
+      const baseHours = minByEmployee.get(employeeId);
+      if (baseHours == null) continue;
+      const totalMs = clockInMsByEmployeeDate.get(key) ?? 0;
+      if (totalMs <= minHoursToMs(baseHours)) continue;
+      const unapproved = sessions.filter((session) => session.approved !== true && Number(session.id) > 0);
+      if (unapproved.length === 0) continue;
+      const earliest = sessions.reduce((best, session) =>
+        session.clock_in_time < best.clock_in_time ? session : best,
+      );
+      const latest = sessions.reduce((best, session) =>
+        (session.clock_out_time || '') > (best.clock_out_time || '') ? session : best,
+      );
+      pending.set(key, {
+        employeeId,
+        employeeName: nameByEmployee.get(employeeId) || 'Employee',
+        dateKey,
+        clockInIds: unapproved.map((session) => Number(session.id)).filter((id) => id > 0),
+        clockInTime: jerusalemClockTime(earliest.clock_in_time),
+        clockOutTime: jerusalemClockTime(latest.clock_out_time || earliest.clock_in_time),
+        extraMinutes: Math.max(0, Math.round(totalMs / 60000) - Math.round(baseHours * 60)),
+        baseHours,
+        locationId: unapproved.find((session) => session.clock_in_location_id)?.clock_in_location_id ?? null,
+      });
+    }
+    return pending;
+  }, [rows, clockRecords, clockInMsByEmployeeDate]);
+
+  const sendRecognizedOvertime = async () => {
+    if (!overtimeTarget) return;
+    const reason = overtimeReason.trim();
+    if (!reason) {
+      toast.error('Write the reason for the extra hours');
+      return;
+    }
+    setSendingOvertime(true);
+    try {
+      const workplace = workplaces.find((item) => item.id === overtimeTarget.locationId)?.name || 'Not set';
+      await requestMichaelOvertimeApproval({
+        employeeId: overtimeTarget.employeeId,
+        reason,
+        hours: formatOvertimeHoursPlaceholder({
+          minutes: overtimeTarget.extraMinutes,
+          dateKey: overtimeTarget.dateKey,
+          from: overtimeTarget.clockInTime,
+          to: overtimeTarget.clockOutTime,
+        }),
+        workplace,
+        date: formatOvertimeDatePlaceholder([overtimeTarget.dateKey]),
+        clockInIds: overtimeTarget.clockInIds,
+      });
+      toast.success(`Message sent to Michael Decker for ${overtimeTarget.employeeName}.`);
+      setOvertimeTarget(null);
+      setOvertimeReason('');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not send the overtime request');
+    } finally {
+      setSendingOvertime(false);
+    }
+  };
 
   const multiDayView = dateMode !== 'day';
 
@@ -1430,12 +1590,46 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                     })
                   }
                   onReviewRequest={setReviewRequest}
+                  pendingOvertimeDates={
+                    new Set(
+                      group.days
+                        .map((day) => day.workDate)
+                        .filter((dateKey) =>
+                          pendingOvertimeByKey.has(allocationEmployeeDateKey(group.employeeId, dateKey)),
+                        ),
+                    )
+                  }
+                  onSendOvertime={(dateKey) => {
+                    const pending = pendingOvertimeByKey.get(
+                      allocationEmployeeDateKey(group.employeeId, dateKey),
+                    );
+                    if (!pending) return;
+                    setOvertimeReason('');
+                    setOvertimeTarget(pending);
+                  }}
                 />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <LeadAllocationOvertimeApprovalModal
+        open={overtimeTarget != null}
+        clockInTime={overtimeTarget?.clockInTime || ''}
+        clockOutTime={overtimeTarget?.clockOutTime || ''}
+        dateKey={overtimeTarget?.dateKey || ''}
+        baseHours={overtimeTarget?.baseHours || 8}
+        employeeName={overtimeTarget?.employeeName}
+        busy={sendingOvertime}
+        reason={overtimeReason}
+        onReasonChange={setOvertimeReason}
+        onSend={() => void sendRecognizedOvertime()}
+        onClose={() => {
+          if (sendingOvertime) return;
+          setOvertimeTarget(null);
+        }}
+      />
 
       <LeadBudgetRequestsHistoryModal
         open={Boolean(historyLead)}

@@ -161,6 +161,9 @@ function inferFileType(name: string, fileType?: string): string {
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif'].includes(ext)) {
     return `image/${ext === 'jpg' ? 'jpeg' : ext}`;
   }
+  if (['mp4', 'mov', 'webm', 'm4v', '3gp', 'mkv'].includes(ext)) {
+    return ext === 'mov' ? 'video/quicktime' : `video/${ext === 'm4v' || ext === 'mkv' ? 'mp4' : ext}`;
+  }
   if (ext === 'doc') return 'application/msword';
   if (ext === 'docx') {
     return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -1101,6 +1104,12 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     activeFileType.includes('pdf') ||
     !!activeName.match(/\.pdf$/i) ||
     !!activeUrl.match(/\.pdf$/i);
+  const isVideo =
+    !isImage &&
+    !isPdf &&
+    (activeFileType.toLowerCase().startsWith('video/') ||
+      !!activeName.match(/\.(mp4|mov|webm|m4v|3gp|mkv)$/i) ||
+      !!activeUrl.match(/\.(mp4|mov|webm|m4v|3gp|mkv)(\?|#|$)/i));
   // Outlook's own saved messages, which the browser cannot show but this viewer reads itself.
   const isMsg = !isImage && !isPdf && isOutlookMsgFile(activeName, activeFileType);
   const isOffice =
@@ -2524,6 +2533,17 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 allow="fullscreen"
                 onError={() => setOfficeError(true)}
               />
+            ) : isVideo && displayUrl ? (
+              <video
+                key={displayUrl}
+                src={displayUrl}
+                controls
+                playsInline
+                autoPlay
+                className="max-h-[80vh] max-w-full rounded-lg bg-black"
+              >
+                This browser cannot play the video.
+              </video>
             ) : imageError || pdfError || (isOffice && (officeError || !officeEmbedUrl)) ? (
               <div className="max-w-md text-center text-white/80">
                 <p className="text-lg font-semibold">

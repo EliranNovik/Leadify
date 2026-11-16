@@ -9,6 +9,7 @@ import {
   type ClockInLocationOption,
 } from '../../lib/clockInLocations';
 import {
+  deleteClockInSessions,
   insertManualClockInRecords,
   type ManualClockInSegment,
 } from '../../lib/employeeClockInManual';
@@ -20,11 +21,15 @@ import {
   fetchOvertimeApprovalBaseHours,
   DEFAULT_OVERTIME_APPROVAL_BASE_HOURS,
   formatDurationMinutesLabel,
-  overtimeApprovalRequiredError,
   segmentsTotalMinutes,
   totalExistingDayMinutes,
-  uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
+import {
+  formatOvertimeDatePlaceholder,
+  formatOvertimeHoursPlaceholder,
+  overtimeMinutesBeyondBase,
+  requestMichaelOvertimeApproval,
+} from '../../lib/employeeClockInOvertimeWhatsApp';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
@@ -81,7 +86,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
-  const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
+  const [overtimeReason, setOvertimeReason] = useState('');
   /**
    * The employee's contracted base hours, past which a session needs Michael's approval.
    *
@@ -98,7 +103,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     setDateRows([newDateRow(t)]);
     setSegmentRows([newSegmentRow()]);
     setNotes('');
-    setOvertimeFile(null);
+    setOvertimeReason('');
     setExistingMinutesByDate({});
     void Promise.all([
       fetchActiveClockInLocations(),
@@ -221,24 +226,43 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         : '';
       const mergedNotes = [notes?.trim(), wfhNote].filter(Boolean).join('\n');
 
-      let overtimeApproval = null;
-      if (exceedsOvertimeBase) {
-        if (!overtimeFile) throw overtimeApprovalRequiredError(baseHours);
-        overtimeApproval = await uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
-      }
-      const count = await insertManualClockInRecords({
+      const saved = await insertManualClockInRecords({
         employeeId,
         userId,
         dates: datesToSave,
         segments,
         notes: mergedNotes,
-        overtimeApproval,
+        approvalDeferred: exceedsOvertimeBase,
       });
-      toast.success(
-        count === 1
-          ? 'Clock-in entry added — waiting for admin approval'
-          : `${count} clock-in entries added — waiting for admin approval`,
-      );
+      if (exceedsOvertimeBase) {
+        try {
+          const extraMinutes = datesToSave.reduce((sum, date) => {
+            const total = (existingMinutesByDate[date] || 0) + newMinutes;
+            return sum + overtimeMinutesBeyondBase(total, baseHours);
+          }, 0);
+          await requestMichaelOvertimeApproval({
+            employeeId,
+            reason: overtimeReason.trim(),
+            hours: formatOvertimeHoursPlaceholder({
+              minutes: extraMinutes,
+              dateKey: datesToSave.length === 1 ? datesToSave[0] : undefined,
+            }),
+            workplace: [...new Set(segments.map((seg) => workplaces.find((item) => item.id === seg.workplaceLocationId)?.name).filter(Boolean))].join(', '),
+            date: formatOvertimeDatePlaceholder(datesToSave),
+            clockInIds: saved.ids,
+          });
+        } catch (sendError) {
+          await deleteClockInSessions(saved.ids).catch(() => undefined);
+          throw sendError;
+        }
+        toast.success('Message sent to Michael Decker. Your extra hours are waiting for his approval.');
+      } else {
+        toast.success(
+          saved.count === 1
+            ? 'Clock-in entry added — waiting for admin approval'
+            : `${saved.count} clock-in entries added — waiting for admin approval`,
+        );
+      }
       onSaved();
       onClose();
     } catch (err) {
@@ -276,8 +300,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
       toast.error('Please add notes for Ramat Gan');
       return;
     }
-    if (exceedsOvertimeBase && !overtimeFile) {
-      toast.error(overtimeApprovalRequiredError(baseHours).message);
+    if (exceedsOvertimeBase && !overtimeReason.trim()) {
+      toast.error('Write the reason for the extra hours');
       return;
     }
 
@@ -296,15 +320,15 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const workplaceMissing =
     workplaces.length > 0 && segments.some((seg) => seg.workplaceLocationId == null);
   const notesMissing = ramatGanSelected && !notes.trim();
-  const overtimeDocMissing = exceedsOvertimeBase && !overtimeFile;
+  const overtimeNeedsWhatsApp = exceedsOvertimeBase;
   const submitDisabled =
-    saving || datesToSave.length === 0 || hasDuplicateDates || workplaceMissing || notesMissing || overtimeDocMissing;
+    saving || datesToSave.length === 0 || hasDuplicateDates || workplaceMissing || notesMissing || overtimeNeedsWhatsApp;
   const submitBlockedReason = workplaceMissing
     ? 'Choose a workplace for every period first'
     : notesMissing
       ? 'Add notes for Ramat Gan first'
-      : overtimeDocMissing
-        ? 'Upload the overtime approval screenshot first'
+      : overtimeNeedsWhatsApp
+        ? 'Use Send to Michael in the extra-hours box'
         : null;
 
   return (
@@ -500,8 +524,10 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
               dateKeys={datesToSave}
               notes={notes}
               baseHours={baseHours}
-              file={overtimeFile}
-              onFileChange={setOvertimeFile}
+              reason={overtimeReason}
+              onReasonChange={setOvertimeReason}
+              onSend={() => void handleSave()}
+              sending={saving}
               disabled={saving}
             />
           )}

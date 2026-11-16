@@ -89,6 +89,8 @@ import DocumentViewerModal from '../DocumentViewerModal';
 import { DocumentFileGlyph } from '../../lib/documentFileGlyphs';
 import { CLOCK_IN_OVERTIME_APPROVAL_BUCKET } from '../../lib/employeeClockInOvertimeApproval';
 import UnavailabilityDayEditModal from './UnavailabilityDayEditModal';
+import { CLOCK_IN_OVERTIME_RESOLVED_EVENT } from '../../lib/employeeClockInOvertimeWhatsApp';
+import AddOvertimeModal from './AddOvertimeModal';
 import ManualClockInModal from './ManualClockInModal';
 import BulkManualClockInModal from './BulkManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
@@ -733,6 +735,7 @@ type WorkingHoursRowActionsMenuProps = {
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
+  onAddOvertime: (dateKey: string) => void;
 };
 
 const WORKING_HOURS_ACTIONS_MENU_EST_HEIGHT_PX = 120;
@@ -752,6 +755,7 @@ function WorkingHoursRowActionsMenu({
   onEditClockIn,
   onDeleteClockIn,
   onAddClockIn,
+  onAddOvertime,
 }: WorkingHoursRowActionsMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
@@ -933,6 +937,24 @@ function WorkingHoursRowActionsMenu({
           </li>
         </>
       )}
+      <li aria-hidden className="my-0.5">
+        <div className="border-t border-base-200" />
+      </li>
+      <li role="none">
+        <button
+          type="button"
+          role="menuitem"
+          className="gap-2 text-sm"
+          disabled={isBusy}
+          onClick={(e) => {
+            e.stopPropagation();
+            closeAnd(() => onAddOvertime(dateKey));
+          }}
+        >
+          <PlusIcon className="w-4 h-4" />
+          Add overtime
+        </button>
+      </li>
     </ul>
   );
 
@@ -1046,8 +1068,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const [editingRow, setEditingRow] = useState<EmployeeUnavailabilityDayRow | null>(null);
   const [deletingRowKey, setDeletingRowKey] = useState<string | null>(null);
   const [manualClockInOpen, setManualClockInOpen] = useState(false);
-  const [overtimeDatePickerOpen, setOvertimeDatePickerOpen] = useState(false);
-  const [overtimeDateKey, setOvertimeDateKey] = useState(() => toDateInputValue(new Date()));
+  const [addOvertimeOpen, setAddOvertimeOpen] = useState(false);
+  const [addOvertimeInitialDateKey, setAddOvertimeInitialDateKey] = useState<string | null>(null);
   const [addEntryOpenUpward, setAddEntryOpenUpward] = useState(false);
   const [bulkManualClockInOpen, setBulkManualClockInOpen] = useState(false);
   const [bulkSelectMode, setBulkSelectMode] = useState(false);
@@ -1234,6 +1256,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
   useEffect(() => {
     void fetchRecords();
+  }, [fetchRecords]);
+
+  useEffect(() => {
+    const onResolved = () => {
+      void fetchRecords();
+    };
+    window.addEventListener(CLOCK_IN_OVERTIME_RESOLVED_EVENT, onResolved);
+    return () => window.removeEventListener(CLOCK_IN_OVERTIME_RESOLVED_EVENT, onResolved);
   }, [fetchRecords]);
 
   const loadMonthSubmission = useCallback(async () => {
@@ -2394,8 +2424,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                       type="button"
                       disabled={!user?.id || isMonthSubmitted}
                       onClick={(event) => {
-                        setOvertimeDateKey(toDateInputValue(new Date()));
-                        setOvertimeDatePickerOpen(true);
+                        setAddOvertimeInitialDateKey(null);
+                        setAddOvertimeOpen(true);
                         const details = event.currentTarget.closest('details');
                         if (details) details.open = false;
                       }}
@@ -2486,6 +2516,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           }}
           onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
           onAddClockIn={handlePlaceholderAddClockIn}
+          onAddOvertime={(dateKey) => {
+            if (isRowLockedForSubmission(dateKey)) {
+              toast.error(monthLockedMessage);
+              return;
+            }
+            setAddOvertimeInitialDateKey(dateKey);
+            setAddOvertimeOpen(true);
+          }}
           isAutoFilledDay={isAutoFilledDay}
           onViewDocument={setSelectedDocument}
         />
@@ -2865,6 +2903,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                               }}
                               onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
                               onAddClockIn={handlePlaceholderAddClockIn}
+                              onAddOvertime={(dateKey) => {
+                                if (isRowLockedForSubmission(dateKey)) {
+                                  toast.error(monthLockedMessage);
+                                  return;
+                                }
+                                setAddOvertimeInitialDateKey(dateKey);
+                                setAddOvertimeOpen(true);
+                              }}
                             />
                           </div>
                         </div>
@@ -3182,88 +3228,17 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         }}
       />
 
-      {overtimeDatePickerOpen && typeof document !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 z-[10070] flex items-stretch justify-end bg-black/20 backdrop-blur-[1px]"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setOvertimeDatePickerOpen(false);
-          }}
-        >
-          <aside className="h-full w-full max-w-sm border-l border-gray-200 bg-white shadow-2xl sm:rounded-l-3xl">
-            <div className="flex items-center justify-between px-6 py-5">
-              <div>
-                <h3 className="text-lg font-semibold text-gray-900">Choose overtime date</h3>
-                <p className="mt-1 text-sm text-gray-500">Select the day before entering the hours.</p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-circle btn-sm"
-                onClick={() => setOvertimeDatePickerOpen(false)}
-                aria-label="Close"
-              >
-                <XMarkIcon className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="px-6 py-5">
-              <label className="form-control w-full">
-                <span className="label-text mb-1.5 text-sm font-medium text-gray-500">Date</span>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={overtimeDateKey}
-                  onChange={(event) => setOvertimeDateKey(event.target.value)}
-                />
-              </label>
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                {[
-                  { label: 'Today', offset: 0 },
-                  { label: 'Yesterday', offset: -1 },
-                  { label: 'Tomorrow', offset: 1 },
-                ].map((option) => {
-                  const date = new Date();
-                  date.setDate(date.getDate() + option.offset);
-                  const dateKey = toDateInputValue(date);
-                  const selected = overtimeDateKey === dateKey;
-                  return (
-                    <button
-                      key={option.label}
-                      type="button"
-                      className={`btn btn-sm rounded-full ${
-                        selected ? 'btn-primary' : 'btn-outline border-gray-200'
-                      }`}
-                      onClick={() => setOvertimeDateKey(dateKey)}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="absolute bottom-0 right-0 flex w-full max-w-sm justify-end gap-2 bg-white px-6 py-5 sm:rounded-bl-3xl">
-              <button
-                type="button"
-                className="btn btn-ghost h-10 min-h-10 rounded-full px-5"
-                onClick={() => setOvertimeDatePickerOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary h-10 min-h-10 rounded-full px-7"
-                disabled={!overtimeDateKey}
-                onClick={() => {
-                  setOvertimeDatePickerOpen(false);
-                  setManualClockInInitialDateKey(overtimeDateKey);
-                  setManualClockInOpen(true);
-                }}
-              >
-                Continue
-              </button>
-            </div>
-          </aside>
-        </div>,
-        document.body,
-      )}
+      <AddOvertimeModal
+        isOpen={addOvertimeOpen}
+        employeeId={employeeId}
+        userId={user?.id ?? ''}
+        initialDateKey={addOvertimeInitialDateKey}
+        onClose={() => {
+          setAddOvertimeOpen(false);
+          setAddOvertimeInitialDateKey(null);
+        }}
+        onSaved={() => void fetchRecords()}
+      />
 
       <ManualClockInModal
         isOpen={manualClockInOpen}

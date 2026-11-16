@@ -36,6 +36,11 @@ export interface TemplateParamDefinition {
     | 'portal_link'
     | 'access_code'
     | 'contract_link'
+    | 'employee'
+    | 'description'
+    | 'hours'
+    | 'workplace'
+    | 'date'
     | 'custom';
   value?: string; // For custom params, specify the value
   // Note: 'contact_name' and 'client_name' are deprecated but supported for backward compatibility.
@@ -322,6 +327,14 @@ export async function generateParamsFromDefinitions(
         break;
       case 'contract_link':
         value = sanitizeWhatsAppTemplateVariableText(ctx.contractLink || ctx.invoiceLink || '');
+        break;
+      case 'employee':
+      case 'description':
+      case 'hours':
+      case 'workplace':
+      case 'date':
+        // Filled by the overtime approval send, which has the request in hand.
+        value = '';
         break;
       case 'custom':
         value = def.value || '';

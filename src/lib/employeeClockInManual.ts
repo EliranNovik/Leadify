@@ -35,7 +35,7 @@ export type ManualClockInPayload = {
   clockInLocationId?: number | null;
   clockOutLocationId?: number | null;
   overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
-  /** Save overtime without its screenshot, which only the lead allocation page offers. */
+  /** Save overtime now and wait for Michael's WhatsApp reply. */
   approvalDeferred?: boolean;
   /** Used when replacing derived standard hours that remain within the overtime limit. */
   approveAutomatically?: boolean;
@@ -77,7 +77,7 @@ export async function resolveEmployeeAuthUserId(
 
 export async function insertManualClockInRecord(
   payload: ManualClockInPayload,
-): Promise<void> {
+): Promise<number> {
   const clockIn = combineDateAndTime(payload.date, payload.clockInTime);
   const clockOut = combineDateAndTime(payload.date, payload.clockOutTime);
 
@@ -131,23 +131,27 @@ export async function insertManualClockInRecord(
     row.clock_out_location_id = payload.clockOutLocationId;
   }
 
-  let { error } = await supabase.from('employee_clock_in').insert(row);
+  let inserted = await supabase.from('employee_clock_in').insert(row).select('id').single();
 
-  if (error && (row.clock_in_location_id || row.clock_out_location_id)) {
+  if (inserted.error && (row.clock_in_location_id || row.clock_out_location_id)) {
     const withoutPresets = { ...row };
     delete withoutPresets.clock_in_location_id;
     delete withoutPresets.clock_out_location_id;
-    const retry = await supabase.from('employee_clock_in').insert(withoutPresets);
-    error = retry.error;
+    inserted = await supabase.from('employee_clock_in').insert(withoutPresets).select('id').single();
   }
 
-  if (error && String(error.message || '').includes('overtime_approval')) {
+  if (inserted.error && String(inserted.error.message || '').includes('overtime_approval')) {
     throw new Error(
       'Overtime approval screenshot could not be saved. Run sql/2026-09-24_employee_clock_in_overtime_approval.sql and try again.',
     );
   }
 
-  if (error) throw error;
+  if (inserted.error) throw inserted.error;
+  const id = Number(inserted.data?.id);
+  if (!Number.isFinite(id)) {
+    throw new Error('Clock-in was saved but its id was not returned');
+  }
+  return id;
 }
 
 export async function insertManualClockInRecords(
@@ -158,7 +162,7 @@ export async function insertManualClockInRecords(
     clockInTime?: string;
     clockOutTime?: string;
   },
-): Promise<number> {
+): Promise<{ count: number; ids: number[] }> {
   const uniqueDates = [...new Set(payload.dates)].sort();
   if (uniqueDates.length === 0) {
     throw new Error('Select at least one date');
@@ -188,7 +192,7 @@ export async function insertManualClockInRecords(
   }
 
   const newMinutes = segmentsTotalMinutes(segments);
-  let inserted = 0;
+  const ids: number[] = [];
 
   for (const date of uniqueDates) {
     const existing = await fetchDayOvertimeApprovals(payload.employeeId, date);
@@ -205,7 +209,7 @@ export async function insertManualClockInRecords(
         seg.workplaceLocationId !== undefined && seg.workplaceLocationId !== null
           ? seg.workplaceLocationId
           : payload.clockInLocationId ?? null;
-      await insertManualClockInRecord({
+      const id = await insertManualClockInRecord({
         employeeId: payload.employeeId,
         userId: payload.userId,
         date,
@@ -219,11 +223,11 @@ export async function insertManualClockInRecords(
         approveAutomatically: payload.approveAutomatically,
         skipDurationCheck: true,
       });
-      inserted += 1;
+      ids.push(id);
     }
   }
 
-  return inserted;
+  return { count: ids.length, ids };
 }
 
 export type ClockInSessionUpdate = {
@@ -487,9 +491,9 @@ export async function replaceDayWithPendingManualSession(params: {
   notes?: string | null;
   /** The screenshot for a session past the employee's base hours, new or carried over. */
   overtimeApproval?: ClockInOvertimeApprovalFileMeta | null;
-  /** Write the overtime now and leave its screenshot for later. */
+  /** Write the overtime now and wait for Michael's WhatsApp reply. */
   approvalDeferred?: boolean;
-}): Promise<void> {
+}): Promise<number> {
   const clockIn = combineDateAndTime(params.date, params.clockInTime);
   const clockOut = combineDateAndTime(params.date, params.clockOutTime);
   if (clockOut.getTime() <= clockIn.getTime()) {
@@ -549,7 +553,7 @@ export async function replaceDayWithPendingManualSession(params: {
     ? params.notes?.trim() || LEAD_ALLOCATION_HOURS_NOTE
     : `${LEAD_ALLOCATION_HOURS_NOTE}${params.notes?.trim() ? ` — ${params.notes.trim()}` : ''}`;
 
-  await insertManualClockInRecord({
+  return insertManualClockInRecord({
     employeeId: params.employeeId,
     userId: params.userId,
     date: params.date,

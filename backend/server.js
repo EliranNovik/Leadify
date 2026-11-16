@@ -27,6 +27,7 @@ const nineHourAutoClockOutRoutes = require('./src/routes/nineHourAutoClockOutRou
 const clientBookingRoutes = require('./src/routes/clientBookingRoutes');
 const adminImpersonationRoutes = require('./src/routes/adminImpersonationRoutes');
 const clockInKioskRoutes = require('./src/routes/clockInKioskRoutes');
+const clockInOvertimeApprovalRoutes = require('./src/routes/clockInOvertimeApprovalRoutes');
 const kioskRoutes = require('./src/routes/kioskRoutes');
 const walletPassRoutes = require('./src/routes/walletPassRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
@@ -432,6 +433,7 @@ app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 app.use('/api/nine-hour-auto-clock-out', nineHourAutoClockOutRoutes);
 app.use('/api/client-booking', clientBookingRoutes);
 app.use('/api/clock-in-kiosk', clockInKioskRoutes);
+app.use('/api/clock-in', clockInOvertimeApprovalRoutes);
 app.use('/api/kiosk', kioskRoutes);
 app.use('/api/wallet', walletPassRoutes);
 app.use('/api', adminImpersonationRoutes);
@@ -533,7 +535,26 @@ server.listen(PORT, () => {
   startNineHourAutoClockOutScheduler();
   startHandlerNewCasesDigestScheduler();
   startFbLeadsImportScheduler();
+  startOvertimeApprovalReplyReconciler();
 });
+
+function startOvertimeApprovalReplyReconciler() {
+  const { reconcileHrButtonReplies } = require('./src/services/clockInOvertimeWhatsAppService');
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await reconcileHrButtonReplies();
+    } catch (err) {
+      console.error('[ClockInOvertimeWhatsApp] reconcile failed:', err?.message || err);
+    } finally {
+      running = false;
+    }
+  };
+  void run();
+  setInterval(run, 15000);
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {

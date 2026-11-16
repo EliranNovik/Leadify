@@ -5,6 +5,7 @@ import { StarterKit } from '@tiptap/starter-kit';
 import { Underline } from '@tiptap/extension-underline';
 import { HardBreak } from '@tiptap/extension-hard-break';
 import { supabase } from '../lib/supabase';
+import DeleteOpinionConfirm, { commentPreviewLine } from './DeleteOpinionConfirm';
 import { toast } from 'react-hot-toast';
 
 interface Note {
@@ -26,7 +27,16 @@ interface ExpertNotesModalProps {
     assignedExpertId: number | null;
     getCurrentUserName: () => Promise<string>;
     onSave: (updatedNotes: Note[]) => Promise<void>;
+    title?: string;
+    canEditNote?: (note: Note) => boolean;
+    canDeleteNote?: (note: Note) => boolean;
+    renderEditorBadge?: (note: Note) => React.ReactNode;
 }
+
+const getTextDirection = (text: string): 'rtl' | 'ltr' => {
+    if (!text || !text.trim()) return 'ltr';
+    return /[\u0590-\u05FF]/.test(text) ? 'rtl' : 'ltr';
+};
 
 const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
     isOpen,
@@ -38,11 +48,16 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
     currentUserDisplayName,
     assignedExpertId,
     getCurrentUserName,
-    onSave
+    onSave,
+    title = 'Expert Notes',
+    canEditNote: canEditNoteOverride,
+    canDeleteNote,
+    renderEditorBadge,
 }) => {
     const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
     const [editedContent, setEditedContent] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
+    const [deletePreview, setDeletePreview] = useState<string | null>(null);
 
     // Create editor for each note (we'll create one when editing)
     const editor = useEditor({
@@ -98,6 +113,7 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
 
     // Check if user can edit a note
     const canEditNote = (note: Note): boolean => {
+        if (canEditNoteOverride) return canEditNoteOverride(note);
         if (isSuperuser) return true;
 
         // Check if current user is the assigned expert
@@ -121,6 +137,42 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
         if (!canEditNote(note)) return;
         setEditingNoteId(note.id);
         setEditedContent(note.content);
+    };
+
+    const handleDeleteEdit = async () => {
+        if (!editingNoteId || isSaving) return;
+        const removedId = String(editingNoteId);
+        const target = notes.find((note) => String(note.id) === removedId);
+        if (!target || (canDeleteNote ? !canDeleteNote(target) : !canEditNote(target))) {
+            toast.error('Only an admin or the comment owner can delete it');
+            return;
+        }
+        const updatedNotes = notes.filter((note) => String(note.id) !== removedId);
+        if (updatedNotes.length === notes.length) {
+            toast.error('Could not delete this comment');
+            return;
+        }
+        setDeletePreview(commentPreviewLine(formatNoteText(target.content)));
+    };
+
+    const confirmDeleteEdit = async () => {
+        if (!editingNoteId || isSaving) return;
+        const removedId = String(editingNoteId);
+        const updatedNotes = notes.filter((note) => String(note.id) !== removedId);
+        setDeletePreview(null);
+        setIsSaving(true);
+        try {
+            await onSave(updatedNotes);
+            setEditingNoteId(null);
+            setEditedContent('');
+            if (editor) editor.commands.clearContent();
+            toast.success('Comment deleted');
+        } catch (error) {
+            console.error('Error deleting note:', error);
+            toast.error('Failed to delete comment');
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     const handleCancelEdit = () => {
@@ -237,7 +289,7 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
                 <div className="sticky top-0 z-20 bg-white border-b border-gray-200 shadow-sm">
                     <div className="flex items-center justify-between px-6 py-4">
                         <div>
-                            <h2 className="text-2xl font-bold text-gray-900">Expert Notes</h2>
+                            <h2 className="text-2xl font-bold text-gray-900">{title}</h2>
                             <p className="text-sm text-gray-500 mt-1">
                                 {notes.length} {notes.length === 1 ? 'note' : 'notes'}
                             </p>
@@ -321,6 +373,15 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
                             ↷
                         </button>
                         <div className="flex-1"></div>
+                        {notes.some((note) => String(note.id) === String(editingNoteId) && (canDeleteNote ? canDeleteNote(note) : canEditNote(note))) && (
+                        <button
+                            className="btn btn-sm btn-ghost text-red-600 hover:bg-red-50"
+                            onClick={handleDeleteEdit}
+                            disabled={isSaving}
+                        >
+                            Delete comment
+                        </button>
+                        )}
                         <button
                             className="btn btn-sm btn-ghost hover:bg-red-50"
                             onClick={handleCancelEdit}
@@ -354,55 +415,52 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
                 <div className="flex-1 overflow-y-auto px-8 md:px-12 lg:px-16 xl:px-20 py-8">
                     {notes.length > 0 ? (
                         <div className="max-w-7xl mx-auto">
-                            {notes.map((note, index) => (
-                                <div key={note.id}>
+                            {notes.map((note, index) => {
+                                const direction = getTextDirection(note.content);
+                                return (
+                                <div key={note.id} dir={direction} className={direction === 'rtl' ? 'text-right' : ''}>
                                     {editingNoteId === note.id && editor ? (
-                                        // Edit mode with editor
-                                        <div className="border-2 border-purple-300 rounded-lg bg-white">
+                                        <div className={`rounded-lg border-2 border-purple-300 bg-white ${direction === 'rtl' ? '[&_.ProseMirror]:text-right' : ''}`} dir={direction}>
                                             <EditorContent editor={editor} />
                                         </div>
                                     ) : (
-                                        // View mode
                                         <>
                                             <div className="prose max-w-none">
                                                 {note.content.startsWith('<') ? (
-                                                    // Render HTML content
                                                     <div
-                                                        className="text-base text-gray-800 leading-relaxed"
+                                                        className={`text-base leading-relaxed text-gray-800 ${direction === 'rtl' ? '!text-right' : ''}`}
+                                                        dir={direction}
                                                         dangerouslySetInnerHTML={{ __html: note.content }}
                                                     />
                                                 ) : (
-                                                    // Render plain text
-                                                    <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed">
+                                                    <p
+                                                        className={`whitespace-pre-wrap text-base leading-relaxed text-gray-800 ${direction === 'rtl' ? '!text-right' : ''}`}
+                                                        dir={direction}
+                                                    >
                                                         {formatNoteText(note.content)}
                                                     </p>
                                                 )}
                                             </div>
 
-                                            {/* Edit button and footer */}
-                                            <div className="mt-4 mb-8 flex items-center justify-between">
-                                                <div className="flex items-center gap-2 text-sm text-gray-500">
-                                                    {note.edited_by && (
-                                                        <>
-                                                            <span className="font-medium">Edited by {note.edited_by}</span>
-                                                            <span>•</span>
-                                                        </>
-                                                    )}
-                                                    <span>{note.timestamp}</span>
-                                                    {note.edited_at && note.edited_at !== note.timestamp && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span>Updated: {note.edited_at}</span>
-                                                        </>
-                                                    )}
-                                                </div>
+                                            <div className="mt-4 mb-8 flex items-center justify-between gap-3">
+                                                {renderEditorBadge ? renderEditorBadge(note) : (
+                                                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                                                        {note.edited_by && (
+                                                            <>
+                                                                <span className="font-medium">Edited by {note.edited_by}</span>
+                                                                <span>•</span>
+                                                            </>
+                                                        )}
+                                                        <span>{note.timestamp}</span>
+                                                    </div>
+                                                )}
                                                 {canEditNote(note) && (
                                                     <button
                                                         onClick={() => handleStartEdit(note)}
-                                                        className="btn btn-ghost btn-sm"
+                                                        className="btn btn-ghost btn-sm gap-1.5"
                                                         title="Edit note"
                                                     >
-                                                        <PencilSquareIcon className="w-4 h-4" />
+                                                        <PencilSquareIcon className="w-5 h-5" />
                                                         Edit
                                                     </button>
                                                 )}
@@ -415,18 +473,26 @@ const ExpertNotesModal: React.FC<ExpertNotesModalProps> = ({
                                         <div className="border-b border-gray-200 my-8"></div>
                                     )}
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     ) : (
                         <div className="flex items-center justify-center h-full">
                             <div className="text-center">
-                                <p className="text-xl font-medium text-gray-500 mb-2">No expert notes yet</p>
-                                <p className="text-base text-gray-400">Expert opinions and assessments will appear here</p>
+                                <p className="text-xl font-medium text-gray-500 mb-2">No notes yet</p>
+                                <p className="text-base text-gray-400">Opinions and notes will appear here</p>
                             </div>
                         </div>
                     )}
                 </div>
             </div>
+            <DeleteOpinionConfirm
+                open={deletePreview !== null}
+                preview={deletePreview || ''}
+                busy={isSaving}
+                onCancel={() => { if (!isSaving) setDeletePreview(null); }}
+                onConfirm={() => { void confirmDeleteEdit(); }}
+            />
         </div>
     );
 };

@@ -9,6 +9,8 @@ import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { buildApiUrl } from '../lib/api';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
+import { isWhatsAppSystemNotice } from '../lib/whatsappSystemNotice';
+import { WhatsAppSystemNoticeLine } from './whatsapp/WhatsAppSystemNoticeLine';
 import {
   fetchWhatsAppTemplates,
   type WhatsAppTemplate,
@@ -2152,6 +2154,21 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   : { label: message.sender_name, employeeId: lookedUpSenderId ?? null };
               const outgoingSenderLabel = outgoingSender.label || message.sender_name;
               const outgoingEmployeeId = outgoingSender.employeeId;
+
+              if (isWhatsAppSystemNotice(message)) {
+                return (
+                  <React.Fragment key={message.id || index}>
+                    {showDateSeparator && (
+                      <div className="flex justify-center my-4 w-full">
+                        <div className="text-sm font-medium px-3 py-1.5 rounded-full bg-gray-200 text-gray-900 border border-gray-300">
+                          {formatDateSeparator(message.sent_at)}
+                        </div>
+                      </div>
+                    )}
+                    <WhatsAppSystemNoticeLine text={message.message || 'WhatsApp update'} />
+                  </React.Fragment>
+                );
+              }
 
               return (
                 <React.Fragment key={message.id || index}>

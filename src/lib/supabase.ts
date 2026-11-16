@@ -5,7 +5,7 @@ import {
   buildClockInGateBlockedResponse,
   isClockInGateRestRequestAllowed,
 } from './clockInGateFetchPolicy';
-import { hasAnySupabaseAuthKey } from './authBootstrap';
+import { hasAnySupabaseAuthKey, noteSharedAuthRefresh } from './authBootstrap';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -168,7 +168,10 @@ async function coalescedRefreshSession(): Promise<boolean> {
   refreshSessionInFlight = (async () => {
     try {
       const { data: { session }, error } = await supabase.auth.refreshSession();
-      if (!error && session?.access_token) return true;
+      if (!error && session?.access_token) {
+        noteSharedAuthRefresh();
+        return true;
+      }
 
       // Winner of a rotation race may already have written the new session.
       if (isRefreshTokenReuseRaceError(error)) {
@@ -215,10 +218,12 @@ async function shouldForceSignOutAfterRefreshFailure(): Promise<boolean> {
     const { data: { session }, error } = await supabase.auth.refreshSession();
     if (!error && session?.user) return false;
     if (isRefreshTokenReuseRaceError(error)) {
-      if (await readSessionUserAfterSettle(700)) return false;
-      // Stale already-used token still in storage with no usable session → dead session.
-      // But only wipe if the error is clearly reuse AND getSession stays empty after settle.
-      return !(await readSessionUserAfterSettle(0));
+      if (await readSessionUserAfterSettle(800)) return false;
+      if (await readSessionUserAfterSettle(1200)) return false;
+      // Another tab already rotated this token. Wiping storage here deletes that
+      // tab's new session and signs every tab out. Keep the keys.
+      if (hasAnySupabaseAuthKey()) return false;
+      return true;
     }
     if (isNetworkError(error)) return false;
     if (!isDefinitiveRefreshTokenDead(error)) {
@@ -226,10 +231,11 @@ async function shouldForceSignOutAfterRefreshFailure(): Promise<boolean> {
       return false;
     }
   } catch (e) {
-    if (isNetworkError(e) || isRefreshTokenReuseRaceError(e)) {
-      if (await readSessionUserAfterSettle(700)) return false;
-      if (isNetworkError(e)) return false;
+    if (isRefreshTokenReuseRaceError(e)) {
+      if (await readSessionUserAfterSettle(800)) return false;
+      if (hasAnySupabaseAuthKey()) return false;
     }
+    if (isNetworkError(e)) return false;
   }
 
   // Final gate: if auth keys vanished, sign out; otherwise require empty session.
@@ -426,13 +432,24 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
 // for Navigator LockManager key lock:sb-…-auth-token.
 const supabaseGlobal = globalThis as typeof globalThis & { __leadifySupabase?: SupabaseClient };
 
-/** GoTrue's default lock uses ifAvailable and throws if another tab/HMR client holds it. */
-async function supabaseAuthLock<T>(
-  _name: string,
-  _acquireTimeout: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  return fn();
+/**
+ * One tab at a time may refresh the rotating token.
+ * GoTrue's built-in lock throws when another tab already holds it (timeout 0).
+ * That rejection shows up as an uncaught error. Here a busy lock means "skip this
+ * tick" instead of throwing. Longer waits still queue until the other tab finishes.
+ */
+async function supabaseAuthLock<T>(name: string, acquireTimeout: number, fn: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks?.request) return fn();
+
+  if (acquireTimeout === 0) {
+    return locks.request(name, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      if (!lock) return undefined as T;
+      return fn();
+    });
+  }
+
+  return locks.request(name, { mode: 'exclusive' }, async () => fn());
 }
 
 export const supabase =
@@ -479,7 +496,7 @@ if (typeof window !== 'undefined') {
 
 // Storage key for cross-tab coordination
 const REDIRECTING_KEY = 'supabase_auth_redirecting';
-const REDIRECTING_TIMEOUT = 1000; // 1 second
+const REDIRECTING_TIMEOUT = 8000;
 
 /**
  * Try to recover session via refresh; only redirect to login if refresh is unrecoverable.
@@ -535,7 +552,10 @@ export const handleSessionExpiration = async () => {
     try {
       const { data: { session }, error } = await supabase.auth.refreshSession();
       if (!error && session?.user) return;
-      if (isRefreshTokenReuseRaceError(error) && (await readSessionUserAfterSettle(800))) return;
+      if (isRefreshTokenReuseRaceError(error)) {
+        if (await readSessionUserAfterSettle(800)) return;
+        if (hasAnySupabaseAuthKey()) return;
+      }
       if (isNetworkError(error)) {
         console.warn('Skipping forced sign-out after network error during session check');
         return;
@@ -549,7 +569,10 @@ export const handleSessionExpiration = async () => {
         console.warn('Skipping forced sign-out after network error', e);
         return;
       }
-      if (isRefreshTokenReuseRaceError(e) && (await readSessionUserAfterSettle(800))) return;
+      if (isRefreshTokenReuseRaceError(e)) {
+        if (await readSessionUserAfterSettle(800)) return;
+        if (hasAnySupabaseAuthKey()) return;
+      }
     }
   }
 
@@ -562,14 +585,16 @@ export const handleSessionExpiration = async () => {
 
   clearGlobalResponseCache();
 
-  // Set flag in localStorage to coordinate across tabs
+  // Hold the flag long enough for the other tabs to see it. Removing it
+  // immediately let every tab run its own wipe.
   const redirectUntil = Date.now() + REDIRECTING_TIMEOUT;
   localStorage.setItem(REDIRECTING_KEY, redirectUntil.toString());
   
   try {
     console.log('Session expired - signing out and redirecting to login');
-    // Clear auth state immediately
-    await supabase.auth.signOut();
+    // Local only. A global sign-out revokes the refresh token on the server,
+    // which also signs out every other tab that still had a valid session.
+    await supabase.auth.signOut({ scope: 'local' });
     
     // Clear any cached session data (both key patterns Supabase may use)
     Object.keys(localStorage).forEach(key => {
@@ -578,17 +603,12 @@ export const handleSessionExpiration = async () => {
       }
     });
     
-    // Clear redirecting flag
-    localStorage.removeItem(REDIRECTING_KEY);
-    
     // Only redirect if we're not already on login page
     if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
   } catch (error) {
     console.error('Error during session expiration handling:', error);
-    // Even if signOut fails, still redirect
-    localStorage.removeItem(REDIRECTING_KEY);
     if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }

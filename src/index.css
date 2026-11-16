@@ -766,6 +766,17 @@ body:has(main.clients-detail-scroll) .navbar {
     min-height: 0 !important;
     overflow: hidden;
   }
+
+  /* Public POA is this fixed shell, with no inner .app-main-scroll.
+     Let the page itself scroll, or a phone cannot move past the first screen. */
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div.poa-page {
+    height: 100% !important;
+    max-height: 100% !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
 }
 @media (min-width: 768px) {
   .app-main-scroll {

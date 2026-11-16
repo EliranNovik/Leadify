@@ -17,7 +17,7 @@ import {
   isDefinitiveRefreshTokenDead,
   supabase,
 } from './supabase';
-import { hasAnySupabaseAuthKey } from './authBootstrap';
+import { hasAnySupabaseAuthKey, noteSharedAuthRefresh, readSharedAuthRefreshAt } from './authBootstrap';
 
 /** Treat the user as "actively using the app" within this window. */
 const RECENT_ACTIVITY_MS = 20 * 60 * 1000; // 20 minutes
@@ -96,8 +96,9 @@ export function stopAuthActivityTracking(): void {
 
 function shouldProactiveRefreshWhileActive(now = Date.now()): boolean {
   if (!wasRecentlyActive()) return false;
-  if (!lastSuccessfulRefreshAt) return true;
-  return now - lastSuccessfulRefreshAt >= PROACTIVE_REFRESH_MIN_INTERVAL_MS;
+  const last = Math.max(lastSuccessfulRefreshAt, readSharedAuthRefreshAt());
+  if (!last) return true;
+  return now - last >= PROACTIVE_REFRESH_MIN_INTERVAL_MS;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -123,6 +124,7 @@ export async function refreshSessionIfNeeded(options?: {
         const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
         if (!refreshError && refreshed?.user) {
           lastSuccessfulRefreshAt = Date.now();
+          noteSharedAuthRefresh(lastSuccessfulRefreshAt);
           markAuthActivity();
           return 'refreshed';
         }
@@ -131,6 +133,7 @@ export async function refreshSessionIfNeeded(options?: {
           const { data: { session: winner } } = await supabase.auth.getSession();
           if (winner?.user) {
             lastSuccessfulRefreshAt = Date.now();
+            noteSharedAuthRefresh(lastSuccessfulRefreshAt);
             markAuthActivity();
             return 'refreshed';
           }
@@ -152,9 +155,24 @@ export async function refreshSessionIfNeeded(options?: {
         return 'skipped';
       }
 
+      // Wait out another tab that is already inside the auth lock, then skip if
+      // that tab already rotated the token. refreshSession() always rotates,
+      // even when the access token it loads is still fresh.
+      const { data: { session: latest } } = await supabase.auth.getSession();
+      if (latest?.user) {
+        const latestExpires = typeof latest.expires_at === 'number' ? latest.expires_at : null;
+        const latestNear =
+          !latestExpires || latestExpires - Math.floor(Date.now() / 1000) <= getAccessRefreshBufferSec();
+        if (!latestNear && !shouldProactiveRefreshWhileActive()) {
+          lastSuccessfulRefreshAt = Math.max(lastSuccessfulRefreshAt, readSharedAuthRefreshAt(), Date.now());
+          return 'skipped';
+        }
+      }
+
       const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
       if (!refreshError && refreshed?.user) {
         lastSuccessfulRefreshAt = Date.now();
+        noteSharedAuthRefresh(lastSuccessfulRefreshAt);
         return 'refreshed';
       }
       if (isRefreshTokenReuseRaceError(refreshError)) {
@@ -162,6 +180,7 @@ export async function refreshSessionIfNeeded(options?: {
         const { data: { session: winner } } = await supabase.auth.getSession();
         if (winner?.user) {
           lastSuccessfulRefreshAt = Date.now();
+          noteSharedAuthRefresh(lastSuccessfulRefreshAt);
           return 'refreshed';
         }
       }
@@ -172,6 +191,7 @@ export async function refreshSessionIfNeeded(options?: {
         const { data: { session: winner } } = await supabase.auth.getSession();
         if (winner?.user) {
           lastSuccessfulRefreshAt = Date.now();
+          noteSharedAuthRefresh(lastSuccessfulRefreshAt);
           return 'refreshed';
         }
       }
@@ -212,6 +232,7 @@ export async function resolveSessionWithRecovery(options?: {
         await supabase.auth.refreshSession();
       if (refreshed?.user) {
         lastSuccessfulRefreshAt = Date.now();
+        noteSharedAuthRefresh(lastSuccessfulRefreshAt);
         markAuthActivity();
         return refreshed;
       }
@@ -221,6 +242,7 @@ export async function resolveSessionWithRecovery(options?: {
         const { data: { session: winner } } = await supabase.auth.getSession();
         if (winner?.user) {
           lastSuccessfulRefreshAt = Date.now();
+          noteSharedAuthRefresh(lastSuccessfulRefreshAt);
           markAuthActivity();
           return winner;
         }
@@ -234,7 +256,11 @@ export async function resolveSessionWithRecovery(options?: {
       if (isRefreshTokenReuseRaceError(e)) {
         await sleep(baseDelayMs * (attempt + 1));
         const { data: { session: winner } } = await supabase.auth.getSession();
-        if (winner?.user) return winner;
+        if (winner?.user) {
+          lastSuccessfulRefreshAt = Date.now();
+          noteSharedAuthRefresh(lastSuccessfulRefreshAt);
+          return winner;
+        }
         continue;
       }
       if (!isNetworkError(e) && isDefinitiveRefreshTokenDead(e)) return null;

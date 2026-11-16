@@ -834,8 +834,12 @@ const isGraphMessageNotFound = (err) => {
 
 const isInvalidMailboxItemId = (err) => {
   const msg = err?.message || String(err);
-  return msg.includes('ErrorInvalidMailboxItemId');
+  return msg.includes('ErrorInvalidMailboxItemId') || msg.includes('ErrorInvalidIdMalformed');
 };
+
+/** Ids the CRM writes itself. They are not Exchange item ids, so Graph will reject them. */
+const isLocalOnlyMessageId = (messageId) =>
+  /^(meeting_invitation_|offer_|smart-scan)/i.test(String(messageId || '').trim());
 
 const isRetryableMailboxGraphError = (err) =>
   isInvalidMailboxItemId(err) ||
@@ -1529,8 +1533,8 @@ class GraphMailboxSyncService {
     let lastError = '';
     for (const address of SCAN_CENTER_ALIASES) {
       const urls = [
-        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders/inbox/messages?$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
-        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders('Inbox')/messages?$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
+        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders/inbox/messages?$orderby=receivedDateTime desc&$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
+        `${GRAPH_BASE_URL}/users/${encodeURIComponent(address)}/mailFolders('Inbox')/messages?$orderby=receivedDateTime desc&$select=${DELTA_MESSAGE_SELECT}&$top=${top}`,
       ];
       for (const snapshotUrl of urls) {
         const snapshotResponse = await fetch(snapshotUrl, {
@@ -1978,6 +1982,7 @@ class GraphMailboxSyncService {
     const messages = [];
     let nextLink = null;
     let retriedRestart = false;
+    let throttleAttempts = 0;
     let pages = 0;
 
     while (url && pages < MAX_DELTA_PAGES) {
@@ -1991,9 +1996,25 @@ class GraphMailboxSyncService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        const canRestart =
-          !retriedRestart &&
-          (response.status === 410 || (Boolean(deltaLink) && url === deltaLink));
+        // 429/503 means Exchange is busy. A full folder crawl makes that worse and can
+        // skip mail, so keep the stored delta token and retry this same URL.
+        const throttled = response.status === 429 || response.status === 503;
+        if (throttled && throttleAttempts < 3) {
+          throttleAttempts += 1;
+          let waitSec = parseInt(response.headers.get('Retry-After') || '', 10);
+          if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = Math.min(20, 2 ** throttleAttempts);
+          else waitSec = Math.min(60, waitSec);
+          console.warn(
+            `⚠️ Graph ${folderName} delta returned ${response.status}; keeping the delta token and retrying in ${waitSec}s (${throttleAttempts}/3). ${errorText.slice(0, 180)}`
+          );
+          await sleep(waitSec * 1000);
+          pages -= 1;
+          continue;
+        }
+        const tokenDead =
+          response.status === 410 ||
+          /SyncStateNotFound|ResyncRequired|ErrorInvalidDeltaToken|sync state is invalid/i.test(errorText);
+        const canRestart = !retriedRestart && tokenDead;
         if (canRestart) {
           console.warn(
             `⚠️ Graph ${folderName} delta returned ${response.status}; restarting that folder once. ${errorText.slice(0, 240)}`
@@ -2007,6 +2028,7 @@ class GraphMailboxSyncService {
         }
         throw new Error(`Graph ${folderName} delta request failed (${response.status}): ${errorText}`);
       }
+      throttleAttempts = 0;
 
       const json = await response.json();
       if (Array.isArray(json.value)) {
@@ -2342,6 +2364,7 @@ class GraphMailboxSyncService {
 
   async persistGraphAttachmentsForEmail({ emailId, messageId, accessToken, mailboxAddress }) {
     if (!emailId || !messageId || !accessToken || !mailboxAddress) return [];
+    if (isLocalOnlyMessageId(messageId)) return [];
 
     const stored = await emailAttachmentStorage.listStoredForEmail(emailId);
     const storedIds = new Set(stored.map((att) => String(att.id)));
@@ -2464,6 +2487,7 @@ class GraphMailboxSyncService {
     const seen = new Set();
     for (const row of emailRows) {
       if (!row?.id || !row.message_id || seen.has(row.message_id)) continue;
+      if (isLocalOnlyMessageId(row.message_id)) continue;
       if (row._hasAttachments === false && !row._backfillAttachments) continue;
       seen.add(row.message_id);
       unique.push(row);
@@ -2534,6 +2558,7 @@ class GraphMailboxSyncService {
 
     for (let u = 0; u < uniqueMessageIds.length; u++) {
       const messageId = uniqueMessageIds[u];
+      if (isLocalOnlyMessageId(messageId)) continue;
       const encodedUser = encodeURIComponent(mailboxAddress);
       const encodedMsg = encodeURIComponent(messageId);
 
@@ -2720,6 +2745,7 @@ class GraphMailboxSyncService {
     const needsPersist = [];
     for (const row of rows) {
       if (!row?.id || !row.message_id) continue;
+      if (isLocalOnlyMessageId(row.message_id)) continue;
       if (attachmentBackfillWasChecked(row.id)) continue;
       if (await emailAttachmentStorage.emailHasStoredAttachments(row.id)) {
         markAttachmentBackfillChecked(row.id);

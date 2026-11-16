@@ -61,12 +61,18 @@ import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { fetchClockInRecordsInRange } from '../lib/workingHoursExport';
 import { replaceDayWithPendingManualSession } from '../lib/employeeClockInManual';
 import {
-  attachOvertimeApprovalToSession,
   clockSessionExceedsOvertimeBase,
   fetchDayOvertimeApprovals,
-  uploadClockInOvertimeApprovalDocument,
   type StoredOvertimeApproval,
 } from '../lib/employeeClockInOvertimeApproval';
+import {
+  fetchLatestOvertimeRequestStatus,
+  formatOvertimeDatePlaceholder,
+  formatOvertimeHoursPlaceholder,
+  overtimeMinutesBeyondBase,
+  requestMichaelOvertimeApproval,
+  type OvertimeApprovalRequestStatus,
+} from '../lib/employeeClockInOvertimeWhatsApp';
 import {
   fetchActiveClockInLocations,
   filterClockInLocationsForEmployee,
@@ -272,9 +278,11 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
   const [locationId, setLocationId] = useState<number | ''>('');
-  /** The day's stored overtime session, with whatever approval screenshot it already carries. */
+  /** The day's stored overtime session, including whether Michael already approved it. */
   const [storedOvertime, setStoredOvertime] = useState<StoredOvertimeApproval | null>(null);
-  const [overtimePrompt, setOvertimePrompt] = useState<'before-save' | 'attach' | null>(null);
+  const [overtimeRequestStatus, setOvertimeRequestStatus] = useState<OvertimeApprovalRequestStatus | null>(null);
+  const [overtimePrompt, setOvertimePrompt] = useState<'before-save' | 'send' | null>(null);
+  const [overtimeReason, setOvertimeReason] = useState('');
   const [locations, setLocations] = useState<ClockInLocationOption[]>([]);
   const loadRequestIdRef = useRef(0);
 
@@ -376,6 +384,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         setLocationId('');
         setLocations([]);
         setStoredOvertime(null);
+        setOvertimeRequestStatus(null);
         return;
       }
 
@@ -402,10 +411,13 @@ const EmployeeLeadReportingPage: React.FC = () => {
         ]);
       if (requestId !== loadRequestIdRef.current) return;
 
-      setStoredOvertime(
+      const overtimeSession =
         dayApprovals.find((session) =>
           clockSessionExceedsOvertimeBase(session.clockInTime, session.clockOutTime, ctx.minHours),
-        ) ?? null,
+        ) ?? null;
+      setStoredOvertime(overtimeSession);
+      setOvertimeRequestStatus(
+        overtimeSession ? await fetchLatestOvertimeRequestStatus(overtimeSession.sessionId) : null,
       );
 
       // Only Handler Nominated (105) and later stages appear on the allocation list.
@@ -729,26 +741,23 @@ const EmployeeLeadReportingPage: React.FC = () => {
   }, [loading, isAllocationLocked, rows, dayWorkedMs, refreshBudgetHints]);
 
   /**
-   * The approval already on file for exactly these hours.
-   *
-   * Nothing about the hours has to be written again when they are the ones already stored, which
-   * is what lets a day whose overtime was approved be re-allocated without asking for the
-   * screenshot a second time — and keeps the rewrite from dropping the screenshot it holds.
+   * These exact hours are already stored. An approved day, or one already sent to Michael,
+   * can be re-allocated without writing the clock row or the WhatsApp again.
    */
-  const storedApprovalForTimes =
-    storedOvertime &&
+  const storedHoursMatch =
+    storedOvertime != null &&
     storedOvertime.clockInTime === fromTime &&
     storedOvertime.clockOutTime === toTime &&
-    storedOvertime.storagePath
+    (storedOvertime.locationId ?? '') === locationId;
+  const storedHoursApproved = storedHoursMatch && storedOvertime?.approved === true;
+  const storedHoursAwaitingReply = storedHoursMatch && overtimeRequestStatus === 'pending';
+  /** Saved overtime that still needs a reason sent to Michael. */
+  const overtimeAwaitingSend =
+    storedOvertime && !storedOvertime.approved && overtimeRequestStatus !== 'pending'
       ? storedOvertime
       : null;
-  const storedHoursUnchanged =
-    !!storedApprovalForTimes && (storedApprovalForTimes.locationId ?? '') === locationId;
-  /** Hours already saved as overtime, still waiting for their screenshot. */
-  const overtimeAwaitingDocument =
-    storedOvertime && !storedOvertime.storagePath ? storedOvertime : null;
 
-  const handleSave = async (options: { overtimeFile?: File; approvalDeferred?: boolean } = {}) => {
+  const handleSave = async (options: { overtimeReason?: string } = {}) => {
     if (!employeeContext) return;
     if (!canSave) {
       toast.error('Select at least one lead or set other work before saving.');
@@ -783,22 +792,59 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
       if (showHoursForm && fromTime && toTime && locationId) {
         const needsApproval = clockSessionExceedsOvertimeBase(fromTime, toTime, minHours);
-        const haveApproval = Boolean(options.overtimeFile || storedApprovalForTimes);
+        const reason = options.overtimeReason?.trim() || '';
 
-        if (needsApproval && storedHoursUnchanged) {
-          // These are the stored hours, approval and all. Nothing to write — the allocation saves.
+        if (needsApproval && (storedHoursApproved || storedHoursAwaitingReply)) {
           effectiveWorkedMs = workIntervalDurationMs(workDate, fromTime, toTime);
-        } else if (needsApproval && !haveApproval && !options.approvalDeferred) {
-          // Asked for rather than refused: the allocation is saved by whichever answer comes back.
+        } else if (needsApproval && !reason) {
           setOvertimePrompt('before-save');
           return;
+        } else if (needsApproval) {
+          let sessionId = storedHoursMatch && storedOvertime ? storedOvertime.sessionId : 0;
+          if (!sessionId) {
+            sessionId = await replaceDayWithPendingManualSession({
+              employeeId: employeeContext.employeeId,
+              userId: employeeContext.userId,
+              date: workDate,
+              clockInTime: fromTime,
+              clockOutTime: toTime,
+              locationId: Number(locationId),
+              approvalDeferred: true,
+            });
+            setStoredOvertime({
+              sessionId,
+              clockInTime: fromTime,
+              clockOutTime: toTime,
+              notes: null,
+              locationId: Number(locationId),
+              clockOutLocationId: Number(locationId),
+              approved: false,
+              storagePath: null,
+              fileName: null,
+              mimeType: null,
+            });
+          }
+          const totalMinutes = Math.round(workIntervalDurationMs(workDate, fromTime, toTime) / 60000);
+          const workplace = locations.find((item) => item.id === Number(locationId))?.name || 'Not set';
+          await requestMichaelOvertimeApproval({
+            employeeId: employeeContext.employeeId,
+            reason,
+            hours: formatOvertimeHoursPlaceholder({
+              minutes: overtimeMinutesBeyondBase(totalMinutes, minHours),
+              dateKey: workDate,
+              from: fromTime,
+              to: toTime,
+            }),
+            workplace,
+            date: formatOvertimeDatePlaceholder([workDate]),
+            clockInIds: [sessionId],
+          });
+          setOvertimeRequestStatus('pending');
+          persistLastSelectedWorkplaceId(Number(locationId));
+          effectiveWorkedMs = workIntervalDurationMs(workDate, fromTime, toTime);
+          setRecordedDayWorkedMs(effectiveWorkedMs);
+          toast.success('Message sent to Michael Decker. Your extra hours are waiting for his approval.');
         } else {
-          const uploaded = options.overtimeFile
-            ? await uploadClockInOvertimeApprovalDocument(
-                employeeContext.employeeId,
-                options.overtimeFile,
-              )
-            : null;
           await replaceDayWithPendingManualSession({
             employeeId: employeeContext.employeeId,
             userId: employeeContext.userId,
@@ -806,39 +852,15 @@ const EmployeeLeadReportingPage: React.FC = () => {
             clockInTime: fromTime,
             clockOutTime: toTime,
             locationId: Number(locationId),
-            // The rewrite replaces the day's rows, so an approval already on file moves across
-            // with the hours it was given for.
-            overtimeApproval:
-              uploaded ??
-              (storedApprovalForTimes
-                ? {
-                    storagePath: storedApprovalForTimes.storagePath as string,
-                    fileName: storedApprovalForTimes.fileName || 'approval',
-                    mimeType: storedApprovalForTimes.mimeType || 'image/jpeg',
-                  }
-                : null),
-            approvalDeferred: options.approvalDeferred,
           });
           persistLastSelectedWorkplaceId(Number(locationId));
           effectiveWorkedMs = workIntervalDurationMs(workDate, fromTime, toTime);
           setRecordedDayWorkedMs(effectiveWorkedMs);
-          // The day now has a new session row, so the approval state is re-read: a skipped
-          // screenshot has to be offered again, and against the right session.
-          const refreshed = await fetchDayOvertimeApprovals(
-            employeeContext.employeeId,
-            workDate,
-          ).catch(() => []);
-          setStoredOvertime(
-            refreshed.find((session) =>
-              clockSessionExceedsOvertimeBase(
-                session.clockInTime,
-                session.clockOutTime,
-                minHours,
-              ),
-            ) ?? null,
-          );
+          setStoredOvertime(null);
+          setOvertimeRequestStatus(null);
         }
         setOvertimePrompt(null);
+        setOvertimeReason('');
       }
 
       const effectiveOtherMax = otherWorkPercentCap(effectiveWorkedMs, minHours);
@@ -921,29 +943,41 @@ const EmployeeLeadReportingPage: React.FC = () => {
     }
   };
 
-  /** Upload the screenshot for hours that were already saved with it skipped. */
-  const handleAttachApproval = async (file: File) => {
-    if (!employeeContext || !overtimeAwaitingDocument) return;
+  /** Send Michael the reason for overtime that is already saved on this day. */
+  const handleSendExistingOvertime = async () => {
+    if (!employeeContext || !overtimeAwaitingSend) return;
+    const reason = overtimeReason.trim();
+    if (!reason) {
+      toast.error('Write the reason for the extra hours');
+      return;
+    }
     setSaving(true);
     try {
-      const meta = await uploadClockInOvertimeApprovalDocument(
-        employeeContext.employeeId,
-        file,
+      const totalMinutes = Math.round(
+        workIntervalDurationMs(workDate, overtimeAwaitingSend.clockInTime, overtimeAwaitingSend.clockOutTime) / 60000,
       );
-      await attachOvertimeApprovalToSession(overtimeAwaitingDocument.sessionId, meta);
-      setStoredOvertime({
-        ...overtimeAwaitingDocument,
-        storagePath: meta.storagePath,
-        fileName: meta.fileName,
-        mimeType: meta.mimeType,
+      const workplace =
+        locations.find((item) => item.id === overtimeAwaitingSend.locationId)?.name || 'Not set';
+      await requestMichaelOvertimeApproval({
+        employeeId: employeeContext.employeeId,
+        reason,
+        hours: formatOvertimeHoursPlaceholder({
+          minutes: overtimeMinutesBeyondBase(totalMinutes, minHours),
+          dateKey: workDate,
+          from: overtimeAwaitingSend.clockInTime,
+          to: overtimeAwaitingSend.clockOutTime,
+        }),
+        workplace,
+        date: formatOvertimeDatePlaceholder([workDate]),
+        clockInIds: [overtimeAwaitingSend.sessionId],
       });
+      setOvertimeRequestStatus('pending');
       setOvertimePrompt(null);
-      toast.success('Approval screenshot uploaded.');
+      setOvertimeReason('');
+      toast.success('Message sent to Michael Decker. Your extra hours are waiting for his approval.');
     } catch (error) {
-      console.error('[EmployeeLeadReportingPage] approval upload failed:', error);
-      toast.error(
-        error instanceof Error ? error.message : 'Failed to upload the approval screenshot.',
-      );
+      console.error('[EmployeeLeadReportingPage] overtime send failed:', error);
+      toast.error(error instanceof Error ? error.message : 'Could not send the overtime request');
     } finally {
       setSaving(false);
     }
@@ -1207,20 +1241,24 @@ const EmployeeLeadReportingPage: React.FC = () => {
             </div>
           ) : null}
 
-          {overtimeAwaitingDocument ? (
+          {storedOvertime && !storedOvertime.approved && overtimeRequestStatus === 'pending' ? (
+            <div className="rounded-[18px] bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-sm">
+              Your {storedOvertime.clockInTime}–{storedOvertime.clockOutTime} day is past your {minHours}h.
+              Michael has the request and it is waiting for his reply.
+            </div>
+          ) : overtimeAwaitingSend ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-sm">
               <span>
-                Your {overtimeAwaitingDocument.clockInTime}–{overtimeAwaitingDocument.clockOutTime}{' '}
-                day is saved as overtime past your {minHours}h, still without Michael&apos;s
-                approval screenshot.
+                Your {overtimeAwaitingSend.clockInTime}–{overtimeAwaitingSend.clockOutTime} day is past
+                your {minHours}h and still needs Michael&apos;s approval.
               </span>
               <button
                 type="button"
                 className="btn btn-sm rounded-full border-0 bg-amber-600 px-4 text-white hover:bg-amber-700"
                 disabled={saving}
-                onClick={() => setOvertimePrompt('attach')}
+                onClick={() => setOvertimePrompt('send')}
               >
-                Upload approval
+                Send to Michael
               </button>
             </div>
           ) : null}
@@ -1264,30 +1302,28 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
           <LeadAllocationOvertimeApprovalModal
             open={overtimePrompt !== null}
-            clockInTime={overtimePrompt === 'attach' && overtimeAwaitingDocument
-              ? overtimeAwaitingDocument.clockInTime
+            clockInTime={overtimePrompt === 'send' && overtimeAwaitingSend
+              ? overtimeAwaitingSend.clockInTime
               : fromTime}
-            clockOutTime={overtimePrompt === 'attach' && overtimeAwaitingDocument
-              ? overtimeAwaitingDocument.clockOutTime
+            clockOutTime={overtimePrompt === 'send' && overtimeAwaitingSend
+              ? overtimeAwaitingSend.clockOutTime
               : toTime}
             dateKey={workDate}
             baseHours={minHours}
             busy={saving}
-            onUpload={(file) => {
-              if (overtimePrompt === 'attach') {
-                void handleAttachApproval(file);
+            reason={overtimeReason}
+            onReasonChange={setOvertimeReason}
+            onSend={() => {
+              if (overtimePrompt === 'send') {
+                void handleSendExistingOvertime();
                 return;
               }
-              void handleSave({ overtimeFile: file });
+              void handleSave({ overtimeReason });
             }}
-            onSkip={
-              overtimePrompt === 'before-save'
-                ? () => {
-                    void handleSave({ approvalDeferred: true });
-                  }
-                : undefined
-            }
-            onClose={() => setOvertimePrompt(null)}
+            onClose={() => {
+              if (saving) return;
+              setOvertimePrompt(null);
+            }}
           />
 
           <LeadAllocationBudgetAssistModal

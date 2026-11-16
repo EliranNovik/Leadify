@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
@@ -22,10 +22,15 @@ import {
   assertManualDurationAllowed,
   fetchOvertimeApprovalBaseHours,
   formatDurationMinutesLabel,
-  overtimeApprovalRequiredError,
   segmentsTotalMinutes,
-  uploadClockInOvertimeApprovalDocument,
 } from '../../lib/employeeClockInOvertimeApproval';
+import {
+  filterPendingClockInIds,
+  formatOvertimeDatePlaceholder,
+  formatOvertimeHoursPlaceholder,
+  overtimeMinutesBeyondBase,
+  requestMichaelOvertimeApproval,
+} from '../../lib/employeeClockInOvertimeWhatsApp';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
@@ -97,7 +102,8 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
-  const [overtimeFile, setOvertimeFile] = useState<File | null>(null);
+  const [overtimeReason, setOvertimeReason] = useState('');
+  const savedOvertimeIdsRef = useRef<number[] | null>(null);
   /**
    * The employee's contracted base hours, past which a session needs Michael's approval.
    *
@@ -119,7 +125,8 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
         ? rows
         : [newFormRow(dateKey, '09:00', '17:00')],
     );
-    setOvertimeFile(null);
+    setOvertimeReason('');
+    savedOvertimeIdsRef.current = null;
     void fetchActiveClockInLocations().then(setWorkplaces);
     void fetchOvertimeApprovalBaseHours(employeeId).then(setBaseHours);
   }, [isOpen, sessions, employeeId, dateKey]);
@@ -142,16 +149,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
     setFormRows((prev) => (prev.length > 1 ? prev.filter((row) => row.id !== id) : prev));
   };
 
-  const existingOvertime = useMemo(() => {
-    const withPath = sessions.find((s) => s.overtime_approval_storage_path?.trim());
-    if (!withPath?.overtime_approval_storage_path?.trim()) return null;
-    return {
-      path: withPath.overtime_approval_storage_path.trim(),
-      fileName: withPath.overtime_approval_file_name || 'Overtime approval screenshot',
-      mimeType: withPath.overtime_approval_mime_type || null,
-    };
-  }, [sessions]);
-
   const segments: ManualClockInSegment[] = useMemo(
     () =>
       formRows.map((row) => ({
@@ -164,8 +161,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
   const dayMinutes = segmentsTotalMinutes(segments);
   const exceedsOvertimeBase = clockInSegmentsExceedOvertimeBase(segments, 0, baseHours);
-  const overtimeDocMissing =
-    exceedsOvertimeBase && !overtimeFile && !existingOvertime?.path;
 
   const rowWorkplace = (row: SessionFormRow): ClockInLocationOption | null => {
     const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
@@ -182,105 +177,119 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
     workplaces.length > 0
     && formRows.some((row) => (row.clockInLocationId ?? row.clockOutLocationId ?? null) == null);
 
-  const resolveOvertimeApproval = async () => {
-    if (!exceedsOvertimeBase) return null;
-    if (overtimeFile) {
-      return uploadClockInOvertimeApprovalDocument(employeeId, overtimeFile);
-    }
-    if (existingOvertime?.path) {
-      return {
-        storagePath: existingOvertime.path,
-        fileName: existingOvertime.fileName,
-        mimeType: existingOvertime.mimeType || 'image/jpeg',
-      };
-    }
-    throw overtimeApprovalRequiredError(baseHours);
-  };
-
   const performSave = async () => {
     if (formRows.length === 0) return;
 
     setSaving(true);
     try {
-      const overtimeApproval = await resolveOvertimeApproval();
+      let pendingIds = exceedsOvertimeBase ? savedOvertimeIdsRef.current : null;
+      if (!exceedsOvertimeBase) savedOvertimeIdsRef.current = null;
 
-      await assertManualDurationAllowed({
-        employeeId,
-        totalDayMinutes: dayMinutes,
-        overtimeApprovalStoragePath: overtimeApproval?.storagePath,
-      });
+      if (!pendingIds) {
+        await assertManualDurationAllowed({
+          employeeId,
+          totalDayMinutes: dayMinutes,
+          approvalDeferred: exceedsOvertimeBase,
+        });
 
-      if (createFromAutoFill) {
-        for (const row of formRows) {
-          const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
-          await insertManualClockInRecord({
-            employeeId,
-            userId,
-            date: dateKey,
-            clockInTime: row.clockInTime,
-            clockOutTime: row.clockOutTime,
-            notes: row.notes,
-            clockInLocationId: locationId,
-            clockOutLocationId: locationId,
-            overtimeApproval,
-            approveAutomatically: !exceedsOvertimeBase,
-            skipDurationCheck: true,
-          });
-        }
-      } else {
-        const keptIds = new Set(formRows.filter((r) => r.id > 0).map((r) => r.id));
-        const toDelete = [...originalSessionIds].filter((id) => !keptIds.has(id));
-        if (toDelete.length > 0) {
-          await deleteClockInSessions(toDelete);
-        }
+        const touchedIds: number[] = [];
 
-        const toUpdate: ClockInSessionUpdate[] = [];
-        const toInsert: SessionFormRow[] = [];
+        if (createFromAutoFill) {
+          for (const row of formRows) {
+            const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
+            const id = await insertManualClockInRecord({
+              employeeId,
+              userId,
+              date: dateKey,
+              clockInTime: row.clockInTime,
+              clockOutTime: row.clockOutTime,
+              notes: row.notes,
+              clockInLocationId: locationId,
+              clockOutLocationId: locationId,
+              approvalDeferred: exceedsOvertimeBase,
+              approveAutomatically: !exceedsOvertimeBase,
+              skipDurationCheck: true,
+            });
+            touchedIds.push(id);
+          }
+        } else {
+          const keptIds = new Set(formRows.filter((r) => r.id > 0).map((r) => r.id));
+          const toDelete = [...originalSessionIds].filter((id) => !keptIds.has(id));
+          if (toDelete.length > 0) {
+            await deleteClockInSessions(toDelete);
+          }
 
-        for (const row of formRows) {
-          const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
-          const payload: ClockInSessionUpdate = {
-            ...row,
-            date: dateKey,
-            clockInLocationId: locationId,
-            clockOutLocationId: locationId,
-            overtimeApproval,
-            skipDurationCheck: true,
-            dayExceedsOvertimeBase: exceedsOvertimeBase,
-          };
-          if (row.id > 0 && originalSessionIds.has(row.id)) {
-            toUpdate.push(payload);
-          } else {
-            toInsert.push(payload);
+          const toUpdate: ClockInSessionUpdate[] = [];
+          const toInsert: SessionFormRow[] = [];
+
+          for (const row of formRows) {
+            const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
+            const payload: ClockInSessionUpdate = {
+              ...row,
+              date: dateKey,
+              clockInLocationId: locationId,
+              clockOutLocationId: locationId,
+              skipDurationCheck: true,
+              dayExceedsOvertimeBase: exceedsOvertimeBase,
+            };
+            if (row.id > 0 && originalSessionIds.has(row.id)) {
+              toUpdate.push(payload);
+            } else {
+              toInsert.push(payload);
+            }
+          }
+
+          if (toUpdate.length > 0) {
+            await updateClockInSessions(toUpdate);
+            touchedIds.push(...toUpdate.map((row) => row.id));
+          }
+
+          for (const row of toInsert) {
+            const id = await insertManualClockInRecord({
+              employeeId,
+              userId,
+              date: dateKey,
+              clockInTime: row.clockInTime,
+              clockOutTime: row.clockOutTime,
+              notes: row.notes,
+              clockInLocationId: row.clockInLocationId,
+              clockOutLocationId: row.clockOutLocationId,
+              approvalDeferred: exceedsOvertimeBase,
+              approveAutomatically: !exceedsOvertimeBase,
+              skipDurationCheck: true,
+            });
+            touchedIds.push(id);
           }
         }
 
-        if (toUpdate.length > 0) {
-          await updateClockInSessions(toUpdate);
-        }
-
-        for (const row of toInsert) {
-          await insertManualClockInRecord({
-            employeeId,
-            userId,
-            date: dateKey,
-            clockInTime: row.clockInTime,
-            clockOutTime: row.clockOutTime,
-            notes: row.notes,
-            clockInLocationId: row.clockInLocationId,
-            clockOutLocationId: row.clockOutLocationId,
-            overtimeApproval,
-            approveAutomatically: !exceedsOvertimeBase,
-            skipDurationCheck: true,
-          });
-        }
+        pendingIds = exceedsOvertimeBase ? await filterPendingClockInIds(touchedIds) : [];
+        if (exceedsOvertimeBase) savedOvertimeIdsRef.current = pendingIds;
       }
 
-      toast.success(
-        createFromAutoFill
-          ? 'Auto-added hours replaced with your edited hours'
-          : 'Clock-in entries updated',
-      );
+      if (exceedsOvertimeBase && pendingIds.length > 0) {
+        await requestMichaelOvertimeApproval({
+          employeeId,
+          reason: overtimeReason.trim(),
+          hours: formatOvertimeHoursPlaceholder({
+            minutes: overtimeMinutesBeyondBase(dayMinutes, baseHours),
+            dateKey,
+          }),
+          workplace: [...new Set(formRows.map((row) => {
+            const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
+            return workplaces.find((item) => item.id === locationId)?.name;
+          }).filter(Boolean))].join(', '),
+          date: formatOvertimeDatePlaceholder([dateKey]),
+          clockInIds: pendingIds,
+        });
+        toast.success('Message sent to Michael Decker. Your extra hours are waiting for his approval.');
+      } else {
+        toast.success(
+          createFromAutoFill
+            ? 'Auto-added hours replaced with your edited hours'
+            : 'Clock-in entries updated',
+        );
+      }
+      savedOvertimeIdsRef.current = null;
       onSaved();
       onClose();
     } catch (err) {
@@ -306,8 +315,8 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
       toast.error('Please add notes for Ramat Gan');
       return;
     }
-    if (overtimeDocMissing) {
-      toast.error(overtimeApprovalRequiredError(baseHours).message);
+    if (exceedsOvertimeBase && !overtimeReason.trim()) {
+      toast.error('Write the reason for the extra hours');
       return;
     }
 
@@ -322,12 +331,13 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
   };
 
   const hadAutomatic = sessions.some((s) => !s.manually);
+  const overtimeNeedsWhatsApp = exceedsOvertimeBase;
   const submitBlocked =
     saving
     || formRows.length === 0
     || workplaceMissing
     || formRows.some(rowMissingRamatGanNotes)
-    || overtimeDocMissing;
+    || overtimeNeedsWhatsApp;
 
   return (
     <>
@@ -348,10 +358,10 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
               Cancel
             </button>
             <span
-              className={overtimeDocMissing || workplaceMissing ? 'tooltip tooltip-top' : ''}
+              className={overtimeNeedsWhatsApp || workplaceMissing ? 'tooltip tooltip-top' : ''}
               data-tip={
-                overtimeDocMissing
-                  ? 'Upload the overtime approval screenshot before submitting.'
+                overtimeNeedsWhatsApp
+                  ? 'Use Send to Michael in the extra-hours box'
                   : workplaceMissing
                     ? 'Choose a workplace for every period first'
                     : undefined
@@ -517,9 +527,10 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
               dateKeys={[dateKey]}
               notes={formRows.map((r) => r.notes?.trim()).filter(Boolean).join('\n')}
               baseHours={baseHours}
-              file={overtimeFile}
-              onFileChange={setOvertimeFile}
-              existingFileName={existingOvertime?.path ? existingOvertime.fileName : null}
+              reason={overtimeReason}
+              onReasonChange={setOvertimeReason}
+              onSend={() => void handleSave()}
+              sending={saving}
               disabled={saving}
             />
           )}

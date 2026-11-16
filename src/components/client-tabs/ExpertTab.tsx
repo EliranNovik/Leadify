@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
 import {
   AcademicCapIcon,
   ShareIcon,
   PencilSquareIcon,
+  PlusIcon,
   DocumentArrowUpIcon,
   PaperClipIcon,
   HashtagIcon,
@@ -42,6 +43,7 @@ import {
 import FlagTypeFlagButton from '../FlagTypeFlagButton';
 import DocumentModal from '../DocumentModal';
 import ExpertNotesModal from '../ExpertNotesModal';
+import DeleteOpinionConfirm, { commentPreviewLine } from '../DeleteOpinionConfirm';
 import { toast } from 'react-hot-toast';
 import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET, resolveCaseDocumentUploadContentType } from '../../lib/caseDocumentsStorage';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
@@ -86,6 +88,8 @@ interface Note {
   id: string;
   content: string;
   timestamp: string;
+  /** Auth user id of the person who wrote the comment. */
+  author_id?: string;
   edited_by?: string;
   edited_at?: string;
 }
@@ -119,6 +123,111 @@ const getTextDirection = (text: string): 'rtl' | 'ltr' => {
   return hebrewRegex.test(text) ? 'rtl' : 'ltr';
 };
 
+const rtlTextClass = (text: string): string => (getTextDirection(text) === 'rtl' ? 'text-right' : '');
+
+const OPINION_LINK_CLASS = 'break-all font-medium text-blue-600 underline underline-offset-2 hover:text-blue-800';
+
+const decodeUrlForDisplay = (url: string): string => {
+  let current = url;
+  for (let i = 0; i < 2; i += 1) {
+    if (!/%[0-9A-Fa-f]{2}/.test(current)) break;
+    try {
+      const next = decodeURIComponent(current);
+      if (next === current) break;
+      current = next;
+    } catch {
+      break;
+    }
+  }
+  return current;
+};
+
+const trimUrlTail = (raw: string): { url: string; tail: string } => {
+  const trimmed = raw.replace(/[)\].,;:!?]+$/g, '');
+  return { url: trimmed || raw, tail: raw.slice((trimmed || raw).length) };
+};
+
+const renderOpinionPlainText = (text: string): React.ReactNode[] => {
+  const re = /https?:\/\/[^\s<>"']+/gi;
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = re.exec(text)) !== null) {
+    const { url, tail } = trimUrlTail(match[0]);
+    const end = match.index + url.length + tail.length;
+    re.lastIndex = end;
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    nodes.push(
+      <a
+        key={`opinion-link-${key}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        dir="ltr"
+        className={OPINION_LINK_CLASS}
+      >
+        {decodeUrlForDisplay(url)}
+      </a>
+    );
+    key += 1;
+    if (tail) nodes.push(tail);
+    last = end;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+};
+
+const escapeOpinionHtml = (value: string): string => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+const linkifyOpinionHtml = (html: string): string => html.split(/(<[^>]+>)/g).map((part) => {
+  if (part.startsWith('<')) return part;
+  return part.replace(/https?:\/\/[^\s<>"']+/gi, (full) => {
+    const { url, tail } = trimUrlTail(full);
+    return `<a href="${escapeOpinionHtml(url)}" target="_blank" rel="noopener noreferrer" dir="ltr" class="${OPINION_LINK_CLASS}">${escapeOpinionHtml(decodeUrlForDisplay(url))}</a>${tail}`;
+  });
+}).join('');
+
+const OpinionEditorBadge: React.FC<{ name: string; added?: string; edited?: string; photoUrl: string | null; dotColor: string }> = ({ name, added = '', edited = '', photoUrl, dotColor }) => {
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const wasEdited = Boolean(edited && added && edited !== added);
+  const singleDate = wasEdited ? '' : (edited || added);
+  if (!name && !wasEdited && !singleDate) return null;
+  return (
+    <span className="inline-flex max-w-full items-center gap-2 rounded-full bg-gray-100 px-3 py-1.5 text-sm font-medium text-base-content/80">
+      <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: dotColor }} aria-hidden />
+      {photoUrl && !photoFailed ? (
+        <img
+          src={photoUrl}
+          alt=""
+          className="h-6 w-6 shrink-0 rounded-full object-cover"
+          onError={() => setPhotoFailed(true)}
+        />
+      ) : null}
+      <span className="min-w-0 break-words">
+        {name}
+        {wasEdited ? (
+          <>
+            {name ? ' · ' : ''}
+            <span className="font-normal text-gray-400">Added {added}</span>
+            {' · '}
+            Edited {edited}
+          </>
+        ) : singleDate ? (
+          <>
+            {name ? ' · ' : ''}
+            {singleDate}
+          </>
+        ) : null}
+      </span>
+    </span>
+  );
+};
+
 const formatBytes = (bytes?: number): string => {
   const b = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
   if (b <= 0) return '0 B';
@@ -144,6 +253,36 @@ const safeFormatDate = (dateVal: string | number | Date | undefined | null): str
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleString();
 };
+
+const formatOpinionClock = (date: Date): string => {
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const withoutSeconds = (value: string): string => value.replace(/(\d{1,2}:\d{2}):\d{2}/, '$1');
+
+const formatOpinionDate = (value: unknown): string => {
+  if (value instanceof Date) return formatOpinionClock(value);
+  if (typeof value === 'number') return formatOpinionClock(new Date(value));
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (/^\d{12,}$/.test(raw)) return formatOpinionClock(new Date(Number(raw)));
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) return formatOpinionClock(parsed);
+  if (/\d/.test(raw) && /[/.:,-]/.test(raw)) return withoutSeconds(raw);
+  return '';
+};
+
+const opinionDates = (note?: { id?: string; timestamp?: string; edited_at?: string } | null): { added: string; edited: string } => ({
+  added: formatOpinionDate(note?.timestamp) || formatOpinionDate(note?.id),
+  edited: formatOpinionDate(note?.edited_at),
+});
 
 /** leads.management_notes is JSONB: an array of note objects, a single object, or plain text. */
 const flattenManagementNotes = (raw: unknown): string => {
@@ -358,13 +497,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploy
         return;
       }
 
-      // Update section-level tracking for footer display
-      if (data.expert_notes_last_edited_by) setExpertNotesLastEditedBy(data.expert_notes_last_edited_by);
-      if (data.expert_notes_last_edited_at) setExpertNotesLastEditedAt(data.expert_notes_last_edited_at);
-      if (data.handler_notes_last_edited_by) setHandlerNotesLastEditedBy(data.handler_notes_last_edited_by);
-      if (data.handler_notes_last_edited_at) setHandlerNotesLastEditedAt(data.handler_notes_last_edited_at);
-
-      // Update expert notes with tracking info if available
+      // Fill missing per-note author and date from the section tracking columns.
       if (data.expert_notes_last_edited_by && expertNotes.length > 0) {
         const updatedExpertNotes = expertNotes.map(note => ({
           ...note,
@@ -729,11 +862,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploy
   });
   const [sectionEligibilityLastEditedBy, setSectionEligibilityLastEditedBy] = useState<string | null>(null);
   const [sectionEligibilityLastEditedAt, setSectionEligibilityLastEditedAt] = useState<string | null>(null);
-  const [expertNotesLastEditedBy, setExpertNotesLastEditedBy] = useState<string | null>(null);
-  const [expertNotesLastEditedAt, setExpertNotesLastEditedAt] = useState<string | null>(null);
-  const [handlerNotesLastEditedBy, setHandlerNotesLastEditedBy] = useState<string | null>(null);
-  const [handlerNotesLastEditedAt, setHandlerNotesLastEditedAt] = useState<string | null>(null);
-
   // AI Summary state - MUST be declared before useEffect hooks that use them
   const [showAISummary, setShowAISummary] = useState(false);
   const [isSummaryCollapsed, setIsSummaryCollapsed] = useState(false);
@@ -1299,10 +1427,6 @@ ${combinedText}`;
   // Fetch legacy expert data on component mount
   useEffect(() => {
     const runFetches = async () => {
-      setExpertNotesLastEditedBy(null);
-      setExpertNotesLastEditedAt(null);
-      setHandlerNotesLastEditedBy(null);
-      setHandlerNotesLastEditedAt(null);
       // Fetch notes first so we have current data before fetchLegacyExpertData may add expert_opinion
       await fetchNotesFromDatabase();
       fetchLegacyExpertData();
@@ -1317,14 +1441,34 @@ ${combinedText}`;
     runFetches();
   }, [client.id]);
 
+  // Ids removed locally. A slower parent refresh must not put those comments back.
+  const deletedOpinionIdsRef = useRef<{ expert: Set<string>; handler: Set<string> }>({
+    expert: new Set(),
+    handler: new Set(),
+  });
+
+  const incomingStillHasDeleted = (list: Note[] | null | undefined, deleted: Set<string>) => {
+    const ids = new Set((Array.isArray(list) ? list : []).map((note) => String(note?.id)));
+    let blocked = false;
+    for (const id of Array.from(deleted)) {
+      if (ids.has(id)) blocked = true;
+      else deleted.delete(id);
+    }
+    return blocked;
+  };
+
   // Sync notes when client data changes (e.g., after refresh)
   // Only update if the client data is different from current state to avoid overwriting unsaved changes
   useEffect(() => {
-    if (client.expert_notes && JSON.stringify(client.expert_notes) !== JSON.stringify(expertNotes)) {
-      setExpertNotes(client.expert_notes);
+    if (Array.isArray(client.expert_notes) && !incomingStillHasDeleted(client.expert_notes, deletedOpinionIdsRef.current.expert)) {
+      if (JSON.stringify(client.expert_notes) !== JSON.stringify(expertNotes)) {
+        setExpertNotes(client.expert_notes);
+      }
     }
-    if (client.handler_notes && JSON.stringify(client.handler_notes) !== JSON.stringify(handlerNotes)) {
-      setHandlerNotes(client.handler_notes);
+    if (Array.isArray(client.handler_notes) && !incomingStillHasDeleted(client.handler_notes, deletedOpinionIdsRef.current.handler)) {
+      if (JSON.stringify(client.handler_notes) !== JSON.stringify(handlerNotes)) {
+        setHandlerNotes(client.handler_notes);
+      }
     }
   }, [client.expert_notes, client.handler_notes]);
 
@@ -1386,6 +1530,8 @@ ${combinedText}`;
   const [editingExpertNoteId, setEditingExpertNoteId] = useState<string | null>(null);
   const [newExpertNoteContent, setNewExpertNoteContent] = useState('');
   const [isExpertNotesModalOpen, setIsExpertNotesModalOpen] = useState(false);
+  const [isHandlerNotesModalOpen, setIsHandlerNotesModalOpen] = useState(false);
+  const [pendingOpinionDelete, setPendingOpinionDelete] = useState<null | { scope: 'expert' | 'handler'; id: string; preview: string }>(null);
 
   // Handler Notes
   const [handlerNotes, setHandlerNotes] = useState<Note[]>(client.handler_notes || []);
@@ -1605,7 +1751,7 @@ ${combinedText}`;
     : null;
   const newLeadUuidForFlags = !isLegacyLead && client.id != null ? String(client.id) : null;
 
-  const { user } = useAuthContext();
+  const { user, userFullName } = useAuthContext();
   const authUserId = user?.id ?? null;
   const [publicUserId, setPublicUserId] = useState<string | null>(null);
   const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
@@ -2306,12 +2452,12 @@ ${combinedText}`;
       let updatedNotes;
       const cleanedContent = formatNoteText(newExpertNoteContent);
       const currentUser = await getCurrentUserName();
-      const currentTime = new Date().toLocaleString();
+      const currentTime = new Date().toISOString();
 
       if (editingExpertNoteId) {
         updatedNotes = expertNotes.map(note =>
           note.id === editingExpertNoteId
-            ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
+            ? { ...note, content: cleanedContent, author_id: note.author_id || user?.id, edited_by: currentUser, edited_at: currentTime }
             : note
         );
         setEditingExpertNoteId(null);
@@ -2320,6 +2466,7 @@ ${combinedText}`;
           id: Date.now().toString(),
           content: cleanedContent,
           timestamp: currentTime,
+          author_id: user?.id,
           edited_by: currentUser,
           edited_at: currentTime
         };
@@ -2346,18 +2493,65 @@ ${combinedText}`;
     setIsAddingExpertNote(false);
   };
 
+  const isOpinionOwner = (note: Note) => {
+    if (note.author_id && user?.id && note.author_id === user.id) return true;
+    const author = (note.edited_by || '').trim().toLowerCase();
+    if (!author) return false;
+    const mine = [userFullName, currentUserDisplayName, user?.email]
+      .map((name) => (name || '').trim().toLowerCase())
+      .filter(Boolean);
+    return mine.includes(author);
+  };
+
+  const canDeleteOpinion = (note: Note) => isSuperuser || isOpinionOwner(note);
+
+  const handleDeleteExpertNote = async () => {
+    if (!editingExpertNoteId) return;
+    const removedId = String(editingExpertNoteId);
+    const target = expertNotes.find((note) => String(note.id) === removedId);
+    if (!target || !canDeleteOpinion(target)) {
+      toast.error('Only an admin or the comment owner can delete it');
+      return;
+    }
+    const updatedNotes = expertNotes.filter((note) => String(note.id) !== removedId);
+    if (updatedNotes.length === expertNotes.length) {
+      toast.error('Could not delete this comment');
+      return;
+    }
+    setPendingOpinionDelete({ scope: 'expert', id: removedId, preview: commentPreviewLine(target.content) });
+    return;
+  };
+
+  const confirmPendingOpinionDelete = async () => {
+    if (!pendingOpinionDelete || pendingOpinionDelete.scope !== 'expert') return;
+    const removedId = pendingOpinionDelete.id;
+    const updatedNotes = expertNotes.filter((note) => String(note.id) !== removedId);
+    setPendingOpinionDelete(null);
+    deletedOpinionIdsRef.current.expert.add(removedId);
+    try {
+      await handleSaveExpertNotes(updatedNotes);
+      setEditingExpertNoteId(null);
+      setNewExpertNoteContent('');
+      toast.success('Comment deleted');
+    } catch (error) {
+      deletedOpinionIdsRef.current.expert.delete(removedId);
+      console.error('Error deleting expert note:', error);
+      toast.error('Failed to delete comment');
+    }
+  };
+
   // Handler Notes logic
   const handleSaveHandlerNote = async () => {
     try {
       let updatedNotes;
       const cleanedContent = formatNoteText(newHandlerNoteContent);
       const currentUser = await getCurrentUserName();
-      const currentTime = new Date().toLocaleString();
+      const currentTime = new Date().toISOString();
 
       if (editingHandlerNoteId) {
         updatedNotes = handlerNotes.map(note =>
           note.id === editingHandlerNoteId
-            ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
+            ? { ...note, content: cleanedContent, author_id: note.author_id || user?.id, edited_by: currentUser, edited_at: currentTime }
             : note
         );
         setEditingHandlerNoteId(null);
@@ -2366,6 +2560,7 @@ ${combinedText}`;
           id: Date.now().toString(),
           content: cleanedContent,
           timestamp: currentTime,
+          author_id: user?.id,
           edited_by: currentUser,
           edited_at: currentTime
         };
@@ -2391,6 +2586,43 @@ ${combinedText}`;
     setNewHandlerNoteContent('');
     setIsAddingHandlerNote(false);
   };
+
+  const handleDeleteHandlerNote = async () => {
+    if (!editingHandlerNoteId) return;
+    const removedId = String(editingHandlerNoteId);
+    const target = handlerNotes.find((note) => String(note.id) === removedId);
+    if (!target || !canDeleteOpinion(target)) {
+      toast.error('Only an admin or the comment owner can delete it');
+      return;
+    }
+    const updatedNotes = handlerNotes.filter((note) => String(note.id) !== removedId);
+    if (updatedNotes.length === handlerNotes.length) {
+      toast.error('Could not delete this comment');
+      return;
+    }
+    setPendingOpinionDelete({ scope: 'handler', id: removedId, preview: commentPreviewLine(target.content) });
+    return;
+  };
+
+  const confirmPendingHandlerDelete = async () => {
+    if (!pendingOpinionDelete || pendingOpinionDelete.scope !== 'handler') return;
+    const removedId = pendingOpinionDelete.id;
+    const updatedNotes = handlerNotes.filter((note) => String(note.id) !== removedId);
+    setPendingOpinionDelete(null);
+    deletedOpinionIdsRef.current.handler.add(removedId);
+    try {
+      await handleSaveHandlerNotes(updatedNotes);
+      setEditingHandlerNoteId(null);
+      setNewHandlerNoteContent('');
+      toast.success('Comment deleted');
+    } catch (error) {
+      deletedOpinionIdsRef.current.handler.delete(removedId);
+      console.error('Error deleting handler note:', error);
+      toast.error('Failed to delete comment');
+    }
+  };
+
+  const canEditOwnNote = (note: Note) => isSuperuser || isOpinionOwner(note);
 
   // Handle file drop
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -2605,6 +2837,38 @@ ${combinedText}`;
 
   const navigate = useNavigate();
   const [expertImageError, setExpertImageError] = useState(false);
+
+  const editorDotColorForName = (name?: string | null): string => {
+    const target = String(name || '').trim().toLowerCase();
+    const match = target
+      ? allEmployees.find((emp: any) => {
+          const display = String(emp?.display_name || '').trim().toLowerCase();
+          return Boolean(display) && (display === target || target.startsWith(`${display} `) || display.startsWith(`${target} `));
+        })
+      : null;
+    const employeeId = Number(match?.id);
+    let slot = Number.isFinite(employeeId) ? employeeId : 0;
+    if (!slot) {
+      const seed = target || 'note';
+      for (let i = 0; i < seed.length; i += 1) slot = (slot * 31 + seed.charCodeAt(i)) >>> 0;
+    }
+    const hue = Math.round((slot * 137.508) % 360);
+    const saturation = 58 + (slot % 22);
+    const lightness = 38 + (slot % 14);
+    return `hsl(${hue} ${saturation}% ${lightness}%)`;
+  };
+
+  const editorPhotoForName = (name?: string | null): string | null => {
+    const target = String(name || '').trim().toLowerCase();
+    if (!target || !allEmployees?.length) return null;
+    const match = allEmployees.find((emp: any) => {
+      const display = String(emp?.display_name || '').trim().toLowerCase();
+      if (!display) return false;
+      return display === target || target.startsWith(`${display} `) || display.startsWith(`${target} `);
+    });
+    const photo = match?.photo_url || match?.photo;
+    return photo ? String(photo) : null;
+  };
 
   const assignedExpertEmployee = useMemo(() => {
     if (!allEmployees || allEmployees.length === 0) return null;
@@ -2911,8 +3175,8 @@ ${combinedText}`;
           </div>
 
           {/* Expert Opinion */}
-          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm" id="expert-opinion-section">
-            <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-base-200 bg-base-100 shadow-sm" id="expert-opinion-section">
+            <div className="flex shrink-0 items-center justify-between gap-2 bg-base-200 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <h4 className="text-base font-semibold text-base-content">Expert Opinion</h4>
                 <FlagTypeFlagButton
@@ -2926,36 +3190,47 @@ ${combinedText}`;
                   className="shrink-0 text-amber-600 hover:bg-amber-50"
                 />
               </div>
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setIsExpertNotesModalOpen(true)}
+                  title="View full screen"
+                >
+                  <ArrowsPointingOutIcon className="w-5 h-5 text-gray-600" />
+                </button>
+                <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-base-100 px-2 py-0.5 text-xs font-bold tabular-nums text-base-content/70">
+                  {expertNotes.length}
+                </span>
                 {!isAddingExpertNote && !editingExpertNoteId && (
-                  <>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setIsExpertNotesModalOpen(true)}
-                      title="View full screen"
-                    >
-                      <ArrowsPointingOutIcon className="w-5 h-5 text-gray-600" />
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => {
-                        setIsAddingExpertNote(true);
-                        setNewExpertNoteContent('');
-                      }}
-                      title="Add note"
-                    >
-                      <PencilSquareIcon className="w-5 h-5 text-gray-600" />
-                    </button>
-                  </>
+                  <button
+                    className="btn btn-ghost gap-1.5"
+                    onClick={() => {
+                      setEditingExpertNoteId(null);
+                      setIsAddingExpertNote(true);
+                      setNewExpertNoteContent('');
+                    }}
+                    title="Add comment"
+                  >
+                    <PlusIcon className="h-6 w-6 text-gray-600" />
+                    Add
+                  </button>
                 )}
               </div>
             </div>
-            <div>
+            {editingExpertNoteId ? (
+              <textarea
+                className={`min-h-[240px] w-full resize-none bg-base-100 px-4 py-4 text-sm text-base-content outline-none ${rtlTextClass(newExpertNoteContent)}`}
+                value={newExpertNoteContent}
+                onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                dir={getTextDirection(newExpertNoteContent)}
+              />
+            ) : (
+            <div className="flex min-h-0 flex-1 flex-col">
                 {/* Add Expert Note Form */}
                 {isAddingExpertNote && !editingExpertNoteId && (
-                  <div className="mb-6">
+                  <div className="border-b border-base-200 p-4">
                     <textarea
-                      className="textarea textarea-bordered w-full h-32 mb-3"
+                      className={`textarea textarea-bordered w-full h-32 mb-3 ${rtlTextClass(newExpertNoteContent)}`}
                       placeholder="Enter your note..."
                       value={newExpertNoteContent}
                       onChange={(e) => setNewExpertNoteContent(e.target.value)}
@@ -2963,19 +3238,18 @@ ${combinedText}`;
                     />
                     <div className="flex justify-end gap-2">
                       <button
-                        className="btn btn-ghost btn-sm hover:bg-red-50"
+                        className="btn btn-ghost rounded-full px-5 hover:bg-red-50"
                         onClick={handleCancelExpertEdit}
                       >
-                        <XMarkIcon className="w-4 h-4 text-red-600" />
                         Cancel
                       </button>
                       <button
-                        className="btn btn-sm"
+                        className="btn !rounded-full px-8"
                         style={{ backgroundColor: '#3b28c7', color: 'white' }}
                         onClick={handleSaveExpertNote}
                         disabled={!newExpertNoteContent.trim()}
                       >
-                        <CheckIcon className="w-4 h-4" />
+                        <CheckIcon className="w-5 h-5" />
                         Save
                       </button>
                     </div>
@@ -2983,99 +3257,120 @@ ${combinedText}`;
                 )}
 
                 {/* Expert Notes List */}
-                <div className="space-y-6 overflow-y-auto max-h-[340px]">
-                  {expertNotes.length > 0 ? (
-                    expertNotes.map((note, index) => (
-                      <div
-                        key={note.id}
-                        className={`rounded-lg transition-all duration-200 ${editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : ''
-                          }`}
-                        style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
-                      >
-                        {/* Note Content */}
-                        {editingExpertNoteId === note.id ? (
-                          <div className="p-4">
-                            <textarea
-                              className="textarea textarea-bordered w-full h-32 mb-3"
-                              value={newExpertNoteContent}
-                              onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                              dir="rtl"
+                {expertNotes.length > 0 ? (
+                  <div className="flex w-full flex-col p-4">
+                    {expertNotes.map((note, index) => {
+                      const editedWhen = opinionDates(note);
+                      return (
+                        <div key={note.id} dir={getTextDirection(note.content)} className={rtlTextClass(note.content)}>
+                          {index > 0 ? <div className="mb-4 mt-4 h-px w-full bg-gray-200" /> : null}
+                          {note.content && note.content.trim().startsWith('<') ? (
+                            <div
+                              className={`prose max-w-none w-full break-words text-sm text-base-content [&_a]:text-blue-600 [&_a]:underline ${rtlTextClass(note.content)}`}
+                              dir={getTextDirection(note.content)}
+                              dangerouslySetInnerHTML={{ __html: linkifyOpinionHtml(note.content) }}
                             />
-                            <div className="flex justify-end gap-2">
+                          ) : (
+                            <p className={`w-full whitespace-pre-wrap break-words text-sm text-base-content ${rtlTextClass(note.content)}`} dir={getTextDirection(note.content)}>
+                              {renderOpinionPlainText(formatNoteText(note.content))}
+                            </p>
+                          )}
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <OpinionEditorBadge
+                              name={note.edited_by || ''}
+                              added={editedWhen.added}
+                              edited={editedWhen.edited}
+                              photoUrl={editorPhotoForName(note.edited_by)}
+                              dotColor={editorDotColorForName(note.edited_by)}
+                            />
+                            {canEditOwnNote(note) && (
                               <button
-                                className="btn btn-ghost btn-sm hover:bg-red-50"
-                                onClick={handleCancelExpertEdit}
+                                type="button"
+                                className="btn btn-ghost btn-sm gap-1.5"
+                                onClick={() => handleEditExpertNote(note)}
+                                title={isSuperuser ? 'Edit comment' : 'Edit your comment'}
                               >
-                                <XMarkIcon className="w-4 h-4 text-red-600" />
-                                Cancel
+                                <PencilSquareIcon className="w-5 h-5" />
+                                Edit
                               </button>
-                              <button
-                                className="btn btn-sm"
-                                style={{ backgroundColor: '#3b28c7', color: 'white' }}
-                                onClick={handleSaveExpertNote}
-                                disabled={!newExpertNoteContent.trim()}
-                              >
-                                <CheckIcon className="w-4 h-4" />
-                                Save
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="p-4">
-                            {note.content && note.content.trim().startsWith('<') ? (
-                              // Render HTML content
-                              <div
-                                className="text-base text-gray-800 leading-relaxed mb-3 prose max-w-none"
-                                dir={getTextDirection(note.content)}
-                                dangerouslySetInnerHTML={{ __html: note.content }}
-                              />
-                            ) : (
-                              // Render plain text
-                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3" dir={getTextDirection(note.content)}>{formatNoteText(note.content)}</p>
-                            )}
-
-                            {/* Note Footer - Last edited by/at */}
-                            {(note.edited_by || note.edited_at || note.timestamp) && (
-                              <div className="pt-3 border-t border-gray-100">
-                                <div className="flex items-center gap-2 text-sm text-gray-500">
-                                  {note.edited_by && <span>Last edited by {note.edited_by}</span>}
-                                  {(() => {
-                                    const formatted = safeFormatDate(note.edited_at || note.timestamp);
-                                    return formatted ? (
-                                      <>
-                                        {note.edited_by && <span>•</span>}
-                                        <span>{formatted}</span>
-                                      </>
-                                    ) : null;
-                                  })()}
-                                </div>
-                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-8 text-base-content/60">
-                      <div className="min-h-[80px]">
-                        <p className="text-lg font-medium mb-1">No expert opinion yet</p>
-                        <p className="text-base">Expert opinions and assessments will appear here</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {((client as any).expert_notes_last_edited_by || expertNotesLastEditedBy || (client as any).expert_notes_last_edited_at || expertNotesLastEditedAt) && (
-                  <div className="text-xs text-gray-400 flex justify-between mt-3 pt-3 border-t border-gray-100">
-                    <span>Last edited by {(client as any).expert_notes_last_edited_by || expertNotesLastEditedBy || 'Unknown'}</span>
-                    <span>{safeFormatDate((client as any).expert_notes_last_edited_at || expertNotesLastEditedAt)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
+                ) : !isAddingExpertNote ? (
+                  <div className="flex min-h-[220px] w-full flex-1 flex-col items-center justify-center px-4 py-8 text-center text-base-content/60">
+                    <p className="text-lg font-medium text-base-content">No expert opinion yet</p>
+                    <p className="mt-1 text-base">Expert opinions and assessments will appear here</p>
+                    <button
+                      type="button"
+                      className="btn mt-5 gap-2 !rounded-full px-8 text-base"
+                      style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                      onClick={() => {
+                        setEditingExpertNoteId(null);
+                        setIsAddingExpertNote(true);
+                        setNewExpertNoteContent('');
+                      }}
+                    >
+                      <PlusIcon className="h-6 w-6" />
+                      Add
+                    </button>
+                  </div>
+                ) : null}
             </div>
+            )}
+            {editingExpertNoteId ? (
+              <div
+                dir={getTextDirection(newExpertNoteContent)}
+                className="flex shrink-0 items-center justify-between gap-3 bg-base-200 px-4 py-3"
+              >
+                {(() => {
+                  const note = expertNotes.find((item) => item.id === editingExpertNoteId);
+                  const editedWhen = opinionDates(note);
+                  return (
+                    <OpinionEditorBadge
+                      name={note?.edited_by || ''}
+                      added={editedWhen.added}
+                      edited={editedWhen.edited}
+                      photoUrl={editorPhotoForName(note?.edited_by)}
+                      dotColor={editorDotColorForName(note?.edited_by)}
+                    />
+                  );
+                })()}
+                <div className="flex shrink-0 items-center gap-2" dir="ltr">
+                  <button
+                    type="button"
+                    className="btn btn-ghost rounded-full px-5 text-red-600 hover:bg-red-50"
+                    onClick={handleDeleteExpertNote}
+                  >
+                    Delete comment
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost rounded-full px-5 hover:bg-red-50"
+                    onClick={handleCancelExpertEdit}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn !rounded-full px-8"
+                    style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                    onClick={handleSaveExpertNote}
+                    disabled={!newExpertNoteContent.trim()}
+                  >
+                    <CheckIcon className="w-5 h-5" />
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Handler Opinion */}
-          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm" id="handler-opinion-section">
-            <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-base-200 bg-base-100 shadow-sm" id="handler-opinion-section">
+            <div className="flex shrink-0 items-center justify-between gap-2 bg-base-200 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <h4 className="text-base font-semibold text-base-content">Handler Opinion</h4>
                 <FlagTypeFlagButton
@@ -3089,25 +3384,47 @@ ${combinedText}`;
                   className="shrink-0 text-amber-600 hover:bg-amber-50"
                 />
               </div>
-              {!isAddingHandlerNote && !editingHandlerNoteId && (
+              <div className="flex items-center gap-2">
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    setIsAddingHandlerNote(true);
-                    setNewHandlerNoteContent('');
-                  }}
-                  title="Add Handler Note"
+                  onClick={() => setIsHandlerNotesModalOpen(true)}
+                  title="View full screen"
                 >
-                  <PencilSquareIcon className="w-5 h-5 text-gray-600" />
+                  <ArrowsPointingOutIcon className="w-5 h-5 text-gray-600" />
                 </button>
-              )}
+                <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-base-100 px-2 py-0.5 text-xs font-bold tabular-nums text-base-content/70">
+                  {handlerNotes.length}
+                </span>
+                {!isAddingHandlerNote && !editingHandlerNoteId && (
+                  <button
+                    className="btn btn-ghost gap-1.5"
+                    onClick={() => {
+                      setEditingHandlerNoteId(null);
+                      setIsAddingHandlerNote(true);
+                      setNewHandlerNoteContent('');
+                    }}
+                    title="Add comment"
+                  >
+                    <PlusIcon className="h-6 w-6 text-gray-600" />
+                    Add
+                  </button>
+                )}
+              </div>
             </div>
-            <div>
-                {/* Add/Edit Handler Note Form */}
-                {(isAddingHandlerNote || editingHandlerNoteId) && (
-                  <div className="mb-6">
+            {editingHandlerNoteId ? (
+              <textarea
+                className={`min-h-[240px] w-full resize-none bg-base-100 px-4 py-4 text-sm text-base-content outline-none ${rtlTextClass(newHandlerNoteContent)}`}
+                value={newHandlerNoteContent}
+                onChange={(e) => setNewHandlerNoteContent(e.target.value)}
+                dir={getTextDirection(newHandlerNoteContent)}
+              />
+            ) : (
+            <div className="flex min-h-0 flex-1 flex-col">
+                {/* Add Handler Note Form */}
+                {isAddingHandlerNote && !editingHandlerNoteId && (
+                  <div className="border-b border-base-200 p-4">
                     <textarea
-                      className="textarea textarea-bordered w-full h-32 mb-3"
+                      className={`textarea textarea-bordered w-full h-32 mb-3 ${rtlTextClass(newHandlerNoteContent)}`}
                       placeholder="Enter your note..."
                       value={newHandlerNoteContent}
                       onChange={(e) => setNewHandlerNoteContent(e.target.value)}
@@ -3115,19 +3432,18 @@ ${combinedText}`;
                     />
                     <div className="flex justify-end gap-2">
                       <button
-                        className="btn btn-ghost btn-sm hover:bg-red-50"
+                        className="btn btn-ghost rounded-full px-5 hover:bg-red-50"
                         onClick={handleCancelHandlerEdit}
                       >
-                        <XMarkIcon className="w-4 h-4 text-red-600" />
                         Cancel
                       </button>
                       <button
-                        className="btn btn-sm"
+                        className="btn !rounded-full px-8"
                         style={{ backgroundColor: '#3b28c7', color: 'white' }}
                         onClick={handleSaveHandlerNote}
                         disabled={!newHandlerNoteContent.trim()}
                       >
-                        <CheckIcon className="w-4 h-4" />
+                        <CheckIcon className="w-5 h-5" />
                         Save
                       </button>
                     </div>
@@ -3135,53 +3451,107 @@ ${combinedText}`;
                 )}
 
                 {/* Handler Notes List */}
-                <div className="space-y-6 overflow-y-auto max-h-[340px]">
-                  {handlerNotes.length > 0 ? (
-                    handlerNotes.map((note, index) => (
-                      <div
-                        key={note.id}
-                        className="relative py-4"
-                      >
-                        {/* Note Content */}
-                        <div>
-                          <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed" dir={getTextDirection(note.content)}>{formatNoteText(note.content)}</p>
-                        </div>
-
-                        {/* Note Footer - Last edited by/at */}
-                        {(note.edited_by || note.edited_at || note.timestamp) && (
-                          <div className="mt-3 pt-3 border-t border-gray-100">
-                            <div className="flex items-center gap-2 text-sm text-gray-500">
-                              {note.edited_by && <span>Last edited by {note.edited_by}</span>}
-                              {(() => {
-                                const formatted = safeFormatDate(note.edited_at || note.timestamp);
-                                return formatted ? (
-                                  <>
-                                    {note.edited_by && <span>•</span>}
-                                    <span>{formatted}</span>
-                                  </>
-                                ) : null;
-                              })()}
-                            </div>
+                {handlerNotes.length > 0 ? (
+                  <div className="flex w-full flex-col p-4">
+                    {handlerNotes.map((note, index) => {
+                      const editedWhen = opinionDates(note);
+                      return (
+                        <div key={note.id} dir={getTextDirection(note.content)} className={rtlTextClass(note.content)}>
+                          {index > 0 ? <div className="mb-4 mt-4 h-px w-full bg-gray-200" /> : null}
+                          <p className={`w-full whitespace-pre-wrap break-words text-sm text-base-content ${rtlTextClass(note.content)}`} dir={getTextDirection(note.content)}>
+                            {renderOpinionPlainText(formatNoteText(note.content))}
+                          </p>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <OpinionEditorBadge
+                              name={note.edited_by || ''}
+                              added={editedWhen.added}
+                              edited={editedWhen.edited}
+                              photoUrl={editorPhotoForName(note.edited_by)}
+                              dotColor={editorDotColorForName(note.edited_by)}
+                            />
+                            {canEditOwnNote(note) && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm gap-1.5"
+                                onClick={() => handleEditHandlerNote(note)}
+                                title={isSuperuser ? 'Edit comment' : 'Edit your comment'}
+                              >
+                                <PencilSquareIcon className="w-5 h-5" />
+                                Edit
+                              </button>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-center py-8 text-base-content/60">
-                      <div className="min-h-[80px]">
-                        <p className="text-lg font-medium mb-1">No handler opinion yet</p>
-                        <p className="text-base">Case handling notes and updates will appear here</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {((client as any).handler_notes_last_edited_by || handlerNotesLastEditedBy || (client as any).handler_notes_last_edited_at || handlerNotesLastEditedAt) && (
-                  <div className="text-xs text-gray-400 flex justify-between mt-3 pt-3 border-t border-gray-100">
-                    <span>Last edited by {(client as any).handler_notes_last_edited_by || handlerNotesLastEditedBy || 'Unknown'}</span>
-                    <span>{safeFormatDate((client as any).handler_notes_last_edited_at || handlerNotesLastEditedAt)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
+                ) : !isAddingHandlerNote ? (
+                  <div className="flex min-h-[220px] w-full flex-1 flex-col items-center justify-center px-4 py-8 text-center text-base-content/60">
+                    <p className="text-lg font-medium text-base-content">No handler opinion yet</p>
+                    <p className="mt-1 text-base">Case handling notes and updates will appear here</p>
+                    <button
+                      type="button"
+                      className="btn mt-5 gap-2 !rounded-full px-8 text-base"
+                      style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                      onClick={() => {
+                        setEditingHandlerNoteId(null);
+                        setIsAddingHandlerNote(true);
+                        setNewHandlerNoteContent('');
+                      }}
+                    >
+                      <PlusIcon className="h-6 w-6" />
+                      Add
+                    </button>
+                  </div>
+                ) : null}
             </div>
+            )}
+            {editingHandlerNoteId ? (
+              <div
+                dir={getTextDirection(newHandlerNoteContent)}
+                className="flex shrink-0 items-center justify-between gap-3 bg-base-200 px-4 py-3"
+              >
+                {(() => {
+                  const note = handlerNotes.find((item) => item.id === editingHandlerNoteId);
+                  const editedWhen = opinionDates(note);
+                  return (
+                    <OpinionEditorBadge
+                      name={note?.edited_by || ''}
+                      added={editedWhen.added}
+                      edited={editedWhen.edited}
+                      photoUrl={editorPhotoForName(note?.edited_by)}
+                      dotColor={editorDotColorForName(note?.edited_by)}
+                    />
+                  );
+                })()}
+                <div className="flex shrink-0 items-center gap-2" dir="ltr">
+                  <button
+                    type="button"
+                    className="btn btn-ghost rounded-full px-5 text-red-600 hover:bg-red-50"
+                    onClick={handleDeleteHandlerNote}
+                  >
+                    Delete comment
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost rounded-full px-5 hover:bg-red-50"
+                    onClick={handleCancelHandlerEdit}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn !rounded-full px-8"
+                    style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                    onClick={handleSaveHandlerNote}
+                    disabled={!newHandlerNoteContent.trim()}
+                  >
+                    <CheckIcon className="w-5 h-5" />
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -3477,6 +3847,16 @@ ${combinedText}`;
         enableFolders
       />
 
+      <DeleteOpinionConfirm
+        open={pendingOpinionDelete !== null}
+        preview={pendingOpinionDelete?.preview || ''}
+        onCancel={() => setPendingOpinionDelete(null)}
+        onConfirm={() => {
+          if (pendingOpinionDelete?.scope === 'handler') void confirmPendingHandlerDelete();
+          else void confirmPendingOpinionDelete();
+        }}
+      />
+
       {/* Expert Notes Modal */}
       <ExpertNotesModal
         isOpen={isExpertNotesModalOpen}
@@ -3489,6 +3869,47 @@ ${combinedText}`;
         assignedExpertId={assignedExpertId}
         getCurrentUserName={getCurrentUserName}
         onSave={handleSaveExpertNotes}
+        canDeleteNote={canDeleteOpinion}
+        renderEditorBadge={(note) => {
+          const dates = opinionDates(note);
+          return (
+            <OpinionEditorBadge
+              name={note.edited_by || ''}
+              added={dates.added}
+              edited={dates.edited}
+              photoUrl={editorPhotoForName(note.edited_by)}
+              dotColor={editorDotColorForName(note.edited_by)}
+            />
+          );
+        }}
+      />
+
+      <ExpertNotesModal
+        isOpen={isHandlerNotesModalOpen}
+        onClose={() => setIsHandlerNotesModalOpen(false)}
+        title="Handler Opinion"
+        notes={handlerNotes}
+        formatNoteText={formatNoteText}
+        isSuperuser={isSuperuser}
+        currentUserEmployeeId={currentUserEmployeeId}
+        currentUserDisplayName={currentUserDisplayName}
+        assignedExpertId={assignedExpertId}
+        getCurrentUserName={getCurrentUserName}
+        onSave={handleSaveHandlerNotes}
+        canEditNote={canEditOwnNote}
+        canDeleteNote={canDeleteOpinion}
+        renderEditorBadge={(note) => {
+          const dates = opinionDates(note);
+          return (
+            <OpinionEditorBadge
+              name={note.edited_by || ''}
+              added={dates.added}
+              edited={dates.edited}
+              photoUrl={editorPhotoForName(note.edited_by)}
+              dotColor={editorDotColorForName(note.edited_by)}
+            />
+          );
+        }}
       />
 
       {/* OneDrive legacy documents drawer */}

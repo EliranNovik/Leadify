@@ -152,6 +152,7 @@ type WorkingHoursMobileListProps = {
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
+  onAddOvertime: (dateKey: string) => void;
   /** Days whose hours are auto-filled and so have no stored row to edit. */
   isAutoFilledDay: (dateKey: string) => boolean;
   onViewDocument: (doc: {
@@ -255,6 +256,7 @@ function MobileDayActions({
   onEditClockIn,
   onDeleteClockIn,
   onAddClockIn,
+  onAddOvertime,
 }: {
   dateKey: string;
   unavailabilities: EmployeeUnavailabilityDayRow[];
@@ -269,6 +271,7 @@ function MobileDayActions({
   onEditClockIn: (dateKey: string) => void;
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
+  onAddOvertime: (dateKey: string) => void;
 }) {
   if (readOnly || (!hasClock && unavailabilities.length === 0)) return null;
 
@@ -346,6 +349,15 @@ function MobileDayActions({
           </button>
         </>
       )}
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
+        disabled={loading || isDeletingClock}
+        onClick={() => onAddOvertime(dateKey)}
+      >
+        <PlusIcon className="w-4 h-4" />
+        Add overtime
+      </button>
     </div>
   );
 }
@@ -375,6 +387,7 @@ export default function WorkingHoursMobileList({
   onEditClockIn,
   onDeleteClockIn,
   onAddClockIn,
+  onAddOvertime,
   isAutoFilledDay,
   onViewDocument,
 }: WorkingHoursMobileListProps) {
@@ -687,6 +700,7 @@ export default function WorkingHoursMobileList({
                 onEditClockIn={onEditClockIn}
                 onDeleteClockIn={onDeleteClockIn}
                 onAddClockIn={onAddClockIn}
+                onAddOvertime={onAddOvertime}
                 autoFilledClock={autoFilledClock}
               />
             </div>

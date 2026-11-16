@@ -19,6 +19,11 @@ export type ParamType =
   | 'portal_link'
   | 'access_code'
   | 'contract_link'
+  | 'employee'
+  | 'description'
+  | 'hours'
+  | 'workplace'
+  | 'date'
   | 'custom';
 
 export interface ParameterDefinition {
@@ -89,6 +94,11 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
     label: 'Contract signing link',
     description: 'Public digital-contract URL (/public-contract/{id}/{token})',
   },
+  { value: 'employee', label: 'Employee', description: 'The employee who requested the extra hours' },
+  { value: 'description', label: 'Description', description: 'The reason the employee typed for the extra hours' },
+  { value: 'hours', label: 'Hours', description: 'The extra hours on this request' },
+  { value: 'workplace', label: 'Workplace', description: 'The workplace on the overtime record' },
+  { value: 'date', label: 'Date', description: 'The day the extra hours apply to' },
   { value: 'custom', label: 'Custom Text', description: 'Enter a custom static value' },
 ];
 

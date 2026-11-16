@@ -18,6 +18,8 @@ import {
   resolveOutgoingTemplateDisplayMessage,
   sortWhatsAppMessagesBySentAt,
 } from '../lib/whatsappOptimisticMessage';
+import { isWhatsAppSystemNotice } from '../lib/whatsappSystemNotice';
+import { WhatsAppSystemNoticeLine } from '../components/whatsapp/WhatsAppSystemNoticeLine';
 import {
   archiveWhatsAppLeadPhone,
   fetchArchivedWhatsAppLeadPhones,
@@ -117,6 +119,7 @@ import {
 } from '@heroicons/react/24/outline';
 import EmojiPicker from 'emoji-picker-react';
 import { FaWhatsapp } from 'react-icons/fa';
+import DocumentViewerModal, { type DocumentViewerItem } from '../components/DocumentViewerModal';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 import WhatsAppDoubleCheckIcon from '../components/whatsapp/WhatsAppDoubleCheckIcon';
@@ -166,6 +169,19 @@ const resolveWhatsAppMediaUrl = (mediaRef?: string | null) => {
   if (mediaRef.startsWith('http')) return mediaRef;
   return buildApiUrl(`/api/whatsapp/media/${mediaRef}`);
 };
+
+function isWhatsAppVideoMessage(message: {
+  message_type?: string | null;
+  media_mime_type?: string | null;
+  media_filename?: string | null;
+  message?: string | null;
+}): boolean {
+  if (message.message_type === 'video') return true;
+  const mime = (message.media_mime_type || '').toLowerCase();
+  if (mime.startsWith('video/')) return true;
+  const name = `${message.media_filename || ''} ${message.message || ''}`;
+  return /\.(mp4|mov|webm|m4v|3gp|mkv)\b/i.test(name);
+}
 
 const UNCONNECTED_INBOUND_PAGE = 1000;
 const UNCONNECTED_INBOUND_MAX = 8000;
@@ -297,6 +313,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
   // Media modal state
   const [selectedMedia, setSelectedMedia] = useState<{ url: string, type: 'image' | 'video', caption?: string } | null>(null);
+  const [videoViewer, setVideoViewer] = useState<{ docs: DocumentViewerItem[]; index: number } | null>(null);
 
   // Edit/Delete message state
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
@@ -3810,6 +3827,21 @@ const WhatsAppLeadsPage: React.FC = () => {
                           : message.sender_first_name || outgoingSender.label || message.sender_name || 'You';
                       const outgoingEmployeeId = outgoingSender.employeeId;
 
+                      if (isWhatsAppSystemNotice(message)) {
+                        return (
+                          <React.Fragment key={message.id || index}>
+                            {showDateSeparator && (
+                              <div className="w-full text-center my-3 shrink-0">
+                                <span className="text-sm font-medium text-gray-500">
+                                  {formatDateSeparator(message.sent_at)}
+                                </span>
+                              </div>
+                            )}
+                            <WhatsAppSystemNoticeLine text={message.message || 'WhatsApp update'} />
+                          </React.Fragment>
+                        );
+                      }
+
                       return (
                         <React.Fragment key={message.id || index}>
                           {/* Date Separator */}
@@ -4055,8 +4087,60 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   </div>
                                 )}
 
+                                {isWhatsAppVideoMessage(message) && getMessageMediaRef(message) && (
+                                  <div className="mb-2">
+                                    <button
+                                      type="button"
+                                      className="relative block w-full overflow-hidden rounded-lg bg-black text-left"
+                                      onClick={() => {
+                                        const videos = messages.filter(
+                                          (item) => isWhatsAppVideoMessage(item) && getMessageMediaRef(item),
+                                        );
+                                        const docs: DocumentViewerItem[] = videos.flatMap((item) => {
+                                          const url = resolveWhatsAppMediaUrl(getMessageMediaRef(item));
+                                          if (!url) return [];
+                                          return [{
+                                            id: String(item.id),
+                                            name: item.media_filename || item.caption || 'Video',
+                                            url,
+                                            fileType: item.media_mime_type || 'video/mp4',
+                                          }];
+                                        });
+                                        const index = Math.max(0, videos.findIndex((item) => item.id === message.id));
+                                        if (docs.length > 0) setVideoViewer({ docs, index });
+                                      }}
+                                    >
+                                      <video
+                                        src={resolveWhatsAppMediaUrl(getMessageMediaRef(message)) || ''}
+                                        muted
+                                        playsInline
+                                        preload="metadata"
+                                        className="max-h-80 w-full object-contain md:max-h-[420px]"
+                                      />
+                                      <span className="absolute inset-0 flex items-center justify-center bg-black/25">
+                                        <span className="flex h-14 w-14 items-center justify-center rounded-full bg-black/60 text-white">
+                                          <FilmIcon className="h-7 w-7" />
+                                        </span>
+                                      </span>
+                                    </button>
+                                    {(message.caption || (message.message && message.message !== 'Video message')) && (
+                                      <p
+                                        className={`${WHATSAPP_BUBBLE_TEXT_CLASS} text-base mt-2`}
+                                        dir={whatsAppComposerDir(message.caption || message.message || '')}
+                                        style={{
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined,
+                                        }}
+                                      >
+                                        {renderTextWithLinks(message.caption || message.message || '', 'outgoing')}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+
                                 {/* Document message with WhatsApp-style design */}
-                                {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && getMessageMediaRef(message) && (
+                                {!isWhatsAppVideoMessage(message) && (message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && getMessageMediaRef(message) && (
                                   <div className="mb-2">
                                     {/* WhatsApp-style document card */}
                                     <div className="bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm">
@@ -4444,6 +4528,13 @@ const WhatsAppLeadsPage: React.FC = () => {
           className="fixed inset-0 z-[110] w-full max-w-none h-[100dvh] min-h-[100dvh] border-0 shadow-none"
         />
       )}
+
+      <DocumentViewerModal
+        isOpen={videoViewer != null}
+        onClose={() => setVideoViewer(null)}
+        documents={videoViewer?.docs || []}
+        initialIndex={videoViewer?.index || 0}
+      />
 
       {/* Media Modal */}
       {selectedMedia && (

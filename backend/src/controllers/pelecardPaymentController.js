@@ -418,16 +418,15 @@ async function handlePelecardReturn(req, res, outcome) {
     }
 
     if (reconciliation.isSessionExpiredCode(statusCode)) {
-      const expired = await reconciliation.handleSessionExpired(payment, data);
-      if (expired?.ignored) {
-        if (req.method === 'POST') {
-          return res.status(200).send('OK');
-        }
-        return res.redirect(appRedirect(`/payment/${encodeURIComponent(secureToken)}`, {}, redirectProfile));
+      await reconciliation.handleSessionExpired(payment, data);
+      // Keep this inside the iframe. A redirect to the payment page (or the failed
+      // page) either mints a new Pelecard session on every timeout, or shows
+      // "session expired" immediately. The open payment page refreshes the form
+      // itself, and only shows that screen after 4 refreshes.
+      if (req.method === 'POST') {
+        return res.status(200).send('OK');
       }
-      return res.redirect(
-        appRedirect(`/payment/${encodeURIComponent(secureToken)}`, { fresh: '1' }, redirectProfile),
-      );
+      return res.status(200).type('html').send('<!doctype html><title>Payment</title>');
     }
 
     const verifyResult = await reconciliation.verifyPelecardTransaction(

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
 
@@ -20,7 +20,32 @@ interface ExpandedRow {
 
 const escapeIlikePattern = (value: string) => value.replace(/[%_]/g, '\\$&');
 
-const HOOK_ENDPOINTS = ['/api/hook/catch', '/api/hook/facebook'];
+const HOOK_ENDPOINTS = ['/api/hook/catch', '/api/hook/facebook', '/api/hook/facebook-export'];
+const PAGE_SIZE = 50;
+
+const logMatchesFilters = (
+  log: AccessLog,
+  filters: { endpoint: string; responseCode: string; searchTerm: string; dateFrom: string; dateTo: string },
+) => {
+  const endpoint = filters.endpoint.trim();
+  if (endpoint) {
+    if (log.endpoint !== endpoint) return false;
+  } else if (!HOOK_ENDPOINTS.includes(log.endpoint)) {
+    return false;
+  }
+
+  if (filters.responseCode.trim()) {
+    const code = parseInt(filters.responseCode, 10);
+    if (!Number.isNaN(code) && log.response_code !== code) return false;
+  }
+
+  const search = filters.searchTerm.trim().toLowerCase();
+  if (search && !(log.request_body || '').toLowerCase().includes(search)) return false;
+
+  if (filters.dateFrom && log.created_at < filters.dateFrom) return false;
+  if (filters.dateTo && log.created_at > `${filters.dateTo}T23:59:59.999Z`) return false;
+  return true;
+};
 
 const AccessLogsManager: React.FC = () => {
   const [logs, setLogs] = useState<AccessLog[]>([]);
@@ -37,6 +62,11 @@ const AccessLogsManager: React.FC = () => {
     dateTo: ''
   });
   const [availableResponseCodes, setAvailableResponseCodes] = useState<number[]>([]);
+  const [live, setLive] = useState(false);
+  const filtersRef = useRef(filters);
+  const pageRef = useRef(currentPage);
+  filtersRef.current = filters;
+  pageRef.current = currentPage;
 
   const fetchLogs = async () => {
     try {
@@ -80,7 +110,7 @@ const AccessLogsManager: React.FC = () => {
       }
 
       // Pagination
-      const pageSize = 50;
+      const pageSize = PAGE_SIZE;
       const from = (currentPage - 1) * pageSize;
       const to = from + pageSize - 1;
       
@@ -117,6 +147,37 @@ const AccessLogsManager: React.FC = () => {
   useEffect(() => {
     fetchLogs();
   }, [currentPage, filters]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const channel = supabase
+      .channel('admin-hook-access-logs')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'access_logs' },
+        (payload) => {
+          const row = payload.new as AccessLog;
+          if (!row?.id || !logMatchesFilters(row, filtersRef.current)) return;
+          if (pageRef.current !== 1) return;
+          setLogs((prev) => {
+            if (prev.some((item) => item.id === row.id)) return prev;
+            return [row, ...prev].slice(0, PAGE_SIZE);
+          });
+          setAvailableResponseCodes((codes) =>
+            codes.includes(row.response_code) ? codes : [...codes, row.response_code].sort((a, b) => a - b),
+          );
+        },
+      )
+      .subscribe((status) => {
+        if (!cancelled) setLive(status === 'SUBSCRIBED');
+      });
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -176,6 +237,7 @@ const getMethodColor = (method: string) => {
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Hook Endpoint Logs</h2>
         <p className="text-gray-600">
           View access logs for {HOOK_ENDPOINTS.join(' & ')}
+          {live ? <span className="ml-2 text-sm font-medium text-green-700">Live</span> : null}
         </p>
       </div>
 

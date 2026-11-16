@@ -620,20 +620,14 @@ const PaymentPage: React.FC<{
   const renewExpiredCheckout = useCallback(() => {
     const now = Date.now();
     if (now - lastAutoRenewAtRef.current < 5000) return false;
+    // Cap is for this visit. Do not clear it when a new iframe stays up for a minute:
+    // Pelecard sessions last ~10 minutes, so that reset minted a new session forever.
     if (expiredRenewalsRef.current >= 4) return false;
     expiredRenewalsRef.current += 1;
     lastAutoRenewAtRef.current = now;
     void loadPelecardSession({ forceNew: true });
     return true;
   }, [loadPelecardSession]);
-
-  useEffect(() => {
-    if (!paymentUrl || sessionLoading || checkoutSessionExpired) return;
-    const timer = window.setTimeout(() => {
-      expiredRenewalsRef.current = 0;
-    }, 60_000);
-    return () => window.clearTimeout(timer);
-  }, [paymentUrl, sessionLoading, checkoutSessionExpired]);
 
   useEffect(() => {
     if (!canPay) {

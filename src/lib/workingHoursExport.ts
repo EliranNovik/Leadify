@@ -158,9 +158,11 @@ export type ClockInWithEmployee = ClockInExportRecord & {
 
 /** Lightweight clock-in rows for allocation time totals (no GPS / location joins). */
 export type ClockInForAllocationMs = {
+  id?: number | null;
   employee_id?: number | null;
   clock_in_time: string;
   clock_out_time: string | null;
+  clock_in_location_id?: number | null;
   notes?: string | null;
   manually?: boolean;
   approved?: boolean;
@@ -168,7 +170,7 @@ export type ClockInForAllocationMs = {
 };
 
 const CLOCK_IN_ALLOCATION_MS_SELECT =
-  'id, employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined';
+  'id, employee_id, clock_in_time, clock_out_time, clock_in_location_id, notes, manually, approved, declined';
 
 /** Paginated clock-in fetch sized for allocation report aggregation. */
 export async function fetchClockInRecordsForAllocationMs(

@@ -25,10 +25,16 @@ interface ClockInOvertimeApprovalBoxProps {
   notes?: string | null;
   /** The employee's contracted base hours, which is what this session has gone past. */
   baseHours: number;
-  file: File | null;
-  onFileChange: (file: File | null) => void;
+  /** Screenshot upload, used where a WhatsApp request is not sent from this box. */
+  file?: File | null;
+  onFileChange?: (file: File | null) => void;
   existingFileName?: string | null;
   disabled?: boolean;
+  /** When set, the employee writes a reason and this box sends the WhatsApp request. */
+  reason?: string;
+  onReasonChange?: (value: string) => void;
+  onSend?: () => void;
+  sending?: boolean;
 }
 
 const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
@@ -39,10 +45,14 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   dateKeys = [],
   notes = '',
   baseHours,
-  file,
+  file = null,
   onFileChange,
   existingFileName = null,
   disabled = false,
+  reason = '',
+  onReasonChange,
+  onSend,
+  sending = false,
 }) => {
   const [whatsAppUrl, setWhatsAppUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,6 +76,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   });
 
   useEffect(() => {
+    if (onSend) return;
     let cancelled = false;
     void fetchMichaelDeckerWhatsAppUrl(message).then((url) => {
       if (!cancelled) setWhatsAppUrl(url);
@@ -73,7 +84,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [message]);
+  }, [message, onSend]);
 
   const acceptFile = (next: File | undefined) => {
     if (!next) return;
@@ -82,25 +93,37 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
       toast.error(err);
       return;
     }
-    onFileChange(next);
+    onFileChange?.(next);
   };
 
   return (
     <div className="rounded-xl bg-red-50 px-3 py-3 space-y-3 text-sm text-red-950">
-      <p className="font-medium">
-        This day totals {durationLabel}
-        {existingMinutes > 0
-          ? ` (${formatDurationMinutesLabel(existingMinutes)} already logged + ${formatDurationMinutesLabel(newMinutes)} new)`
-          : resolvedSegments.length > 1
-            ? ` across ${resolvedSegments.length} clock-in / out periods`
-            : ''}
-        , which is more than your {baseHours}h standard day.
+      <p className="flex items-center gap-2">
+        <span className="badge border-0 bg-red-600 px-2.5 font-semibold text-white">{durationLabel}</span>
+        <span>Over your {baseHours}h day</span>
       </p>
-      <p>
-        Get approval from <strong>Michael Decker</strong> on WhatsApp for all clock-in / outs on
-        this day together. After he approves, upload one screenshot here, then click Submit for
-        approval.
-      </p>
+      {onSend ? (
+        <>
+          <textarea
+            className="textarea textarea-bordered w-full min-h-[88px] bg-white text-base-content"
+            value={reason}
+            maxLength={500}
+            onChange={(e) => onReasonChange?.(e.target.value)}
+            placeholder="Reason for the extra hours"
+            disabled={disabled || sending}
+          />
+          <button
+            type="button"
+            className="btn btn-sm btn-success gap-2 rounded-full px-4 text-white"
+            onClick={onSend}
+            disabled={disabled || sending || !reason.trim()}
+          >
+            {sending ? <span className="loading loading-spinner loading-xs" /> : <FaWhatsapp className="h-5 w-5" />}
+            Send to Michael
+          </button>
+        </>
+      ) : (
+        <>
       {whatsAppUrl ? (
         <a
           href={whatsAppUrl}
@@ -169,7 +192,7 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
               disabled={disabled}
               onClick={(e) => {
                 e.stopPropagation();
-                onFileChange(null);
+                onFileChange?.(null);
               }}
             >
               Remove
@@ -191,6 +214,8 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 };

@@ -13,6 +13,7 @@ import ClockInGateHeader from './ClockInGateHeader';
 // TEMP: "9 hours reached" modal hidden — re-enable with the monitor below.
 // import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
 import ClockInPresenceHeartbeat from './ClockInPresenceHeartbeat';
+import ClockInOvertimeApprovalListener from './ClockInOvertimeApprovalListener';
 import LeadAllocationReminderMonitor from './LeadAllocationReminderMonitor';
 
 const LazyCalendarPage = lazy(() => import('./CalendarPage'));
@@ -94,6 +95,7 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
       <>
         {children}
         <ClockInPresenceHeartbeat />
+        <ClockInOvertimeApprovalListener />
         {/* TEMP: hide "9 hours reached" modal only */}
         {/* <NineHourOvertimeMonitor /> */}
         <LeadAllocationReminderMonitor />

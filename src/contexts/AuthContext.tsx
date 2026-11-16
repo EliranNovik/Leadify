@@ -13,6 +13,8 @@ import { preCheckExternalUser } from '../hooks/useExternalUser';
 import {
   readCachedSupabaseSessionFromStorage,
   hasAnySupabaseAuthKey,
+  isSupabaseAuthStorageKey,
+  noteSharedAuthRefresh,
   readAuthDisplayCache,
   writeAuthDisplayCache,
   clearAuthDisplayCache,
@@ -947,6 +949,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           // Handle TOKEN_REFRESHED: refresh session state, user details, and signal Header once
           if (event === 'TOKEN_REFRESHED' && session?.user && isMounted) {
+            noteSharedAuthRefresh();
             updateAuthState(session, true);
             fetchUserDetails(session.user).catch(() => {});
             setAuthState((prev) => ({
@@ -991,7 +994,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Add debouncing to prevent excessive checks
         storageListener = (e: StorageEvent) => {
           // Only react to Supabase auth token changes
-          if (e.key && e.key.includes('supabase.auth.token') && e.newValue !== e.oldValue) {
+          if (isSupabaseAuthStorageKey(e.key) && e.newValue !== e.oldValue) {
             // Debounce storage events to prevent excessive checks
             const existingTimeout = storageCheckTimeouts.get(e.key);
             if (existingTimeout) {

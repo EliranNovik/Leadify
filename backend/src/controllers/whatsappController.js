@@ -72,6 +72,18 @@ function sanitizeWhatsAppTemplateVariableText(text) {
   return s;
 }
 
+function whatsAppSystemNoticeText(systemNotice) {
+  const body = typeof systemNotice?.body === 'string' ? systemNotice.body.trim() : '';
+  if (body) return body;
+  const kind = typeof systemNotice?.type === 'string' ? systemNotice.type : '';
+  if (kind === 'user_changed_number') {
+    const next = systemNotice?.wa_id ? ` to ${systemNotice.wa_id}` : '';
+    return `WhatsApp number changed${next}`;
+  }
+  if (kind === 'user_changed_user_id') return 'WhatsApp user id changed';
+  return 'WhatsApp system notice';
+}
+
 function isStatementTimeoutError(error) {
   const msg = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
   const code = String(error?.code || '');
@@ -824,11 +836,19 @@ const handleWebhook = async (req, res) => {
 };
 
 // Process incoming message
+async function maybeApplyOvertimeButtonReply(phoneNumber, contextId, text) {
+  try {
+    const overtimeWhatsApp = require('../services/clockInOvertimeWhatsAppService');
+    await overtimeWhatsApp.handleButtonReply({ phoneNumber, contextId, text });
+  } catch (err) {
+    console.error('[ClockInOvertimeWhatsApp] button reply failed:', err?.message || err);
+  }
+}
+
 const processIncomingMessage = async (message, webhookContacts = []) => {
   let inboundSaved = false;
   try {
     const {
-      from: phoneNumber,
       timestamp,
       type,
       id: whatsappMessageId,
@@ -844,7 +864,29 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       sticker,
       reaction,
       errors,
+      system: systemNotice,
     } = message;
+
+    const systemRecord = systemNotice && typeof systemNotice === 'object' ? systemNotice : null;
+    const isSystemNotice = type === 'system' || Boolean(systemRecord);
+    // Customer chats always include `from`. System notices omit it when WhatsApp
+    // cannot share the phone (username, or a user-id change). Use the new id if present.
+    let phoneNumber = typeof message?.from === 'string' ? message.from.trim() : '';
+    if (!phoneNumber) {
+      const fallback = [systemRecord?.wa_id, systemRecord?.customer]
+        .map((value) => (typeof value === 'string' ? value.trim() : ''))
+        .find(Boolean);
+      if (fallback) phoneNumber = fallback;
+    }
+    if (!phoneNumber) {
+      console.warn(
+        isSystemNotice
+          ? 'Skipping WhatsApp system notice with no phone or user id'
+          : 'Skipping inbound WhatsApp item with no sender',
+        { type: type || null, id: whatsappMessageId || null },
+      );
+      return true;
+    }
 
     // Existing copies of this Meta id (fan-out writes one row per lead). Skip those
     // identities later; do not abort the whole webhook or remaining leads never save.
@@ -1108,6 +1150,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         console.log('⚠️ No profile name available, using formatted phone:', formattedPhone);
       }
     }
+    if (isSystemNotice) senderName = 'WhatsApp notice';
 
     // Store profile picture in all matching leads/contacts if available
     if (profilePictureUrl) {
@@ -1162,7 +1205,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       .map(ml => ml.data)
       .filter(lead => lead.phone !== phoneNumber && lead.mobile !== phoneNumber);
     
-    if (newLeadsToUpdate.length > 0) {
+    if (!isSystemNotice && newLeadsToUpdate.length > 0) {
       const leadIdsToUpdate = newLeadsToUpdate.map(l => l.id);
       await supabase
         .from('leads')
@@ -1267,6 +1310,11 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           baseMessageData.message = '📅 Client clicked "Reschedule" button';
           console.log('📅 Reschedule request from:', senderName || phoneNumber);
         }
+        await maybeApplyOvertimeButtonReply(
+          phoneNumber,
+          message.context?.id,
+          button?.text || button?.payload,
+        );
         break;
       
       case 'interactive':
@@ -1279,6 +1327,11 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
             buttonId: interactive.button_reply.id,
             phoneNumber
           });
+          await maybeApplyOvertimeButtonReply(
+            phoneNumber,
+            message.context?.id,
+            interactive.button_reply.title || interactive.button_reply.id,
+          );
         } else if (interactive?.type === 'list_reply') {
           baseMessageData.message = `List option selected: ${interactive.list_reply.title}`;
           baseMessageData.message_type = 'list_response';
@@ -1318,6 +1371,16 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           ? `Reacted ${reaction.emoji}`
           : 'Reaction';
         baseMessageData.message_type = 'text';
+        break;
+
+      case 'system':
+        baseMessageData.message = whatsAppSystemNoticeText(systemRecord);
+        baseMessageData.message_type = 'text';
+        console.log('ℹ️ WhatsApp system notice', {
+          phoneNumber,
+          whatsappMessageId,
+          systemType: systemRecord?.type || null,
+        });
         break;
 
       case 'unsupported':
@@ -1375,7 +1438,8 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
     // Landing pages prefill "(source code)" in the first WhatsApp message. An unknown
     // sender with a real misc_leadsource.code becomes that source, not a generic WhatsApp lead.
-    if (matchingLeads.length === 0 && matchingContacts.length === 0) {
+    // System notices must not open a new lead.
+    if (!isSystemNotice && matchingLeads.length === 0 && matchingContacts.length === 0) {
       const inboundText = [baseMessageData.message, baseMessageData.caption].filter(Boolean).join('\n');
       createdFromWhatsAppSourceCode = await createCrmLeadFromWhatsAppSourceCode(supabase, {
         phoneNumber,

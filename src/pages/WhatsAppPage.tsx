@@ -6,6 +6,8 @@ import { toast } from 'react-hot-toast';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
+import { isWhatsAppSystemNotice } from '../lib/whatsappSystemNotice';
+import { WhatsAppSystemNoticeLine } from '../components/whatsapp/WhatsAppSystemNoticeLine';
 import { fetchWhatsAppTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import WhatsAppTemplatePicker from '../components/whatsapp/WhatsAppTemplatePicker';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
@@ -6529,6 +6531,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           : { label: message.sender_name, employeeId: lookedUpSenderId ?? null };
                       const outgoingSenderLabel = outgoingSender.label || message.sender_name;
                       const outgoingEmployeeId = outgoingSender.employeeId;
+
+                      if (isWhatsAppSystemNotice(message)) {
+                        return (
+                          <React.Fragment key={message.id || index}>
+                            {showDateSeparator && (
+                              <div className="w-full text-center my-3 shrink-0">
+                                <span className="text-sm font-medium text-gray-500">
+                                  {formatDateSeparator(message.sent_at)}
+                                </span>
+                              </div>
+                            )}
+                            <WhatsAppSystemNoticeLine text={message.message || 'WhatsApp update'} />
+                          </React.Fragment>
+                        );
+                      }
 
                       return (
                         <React.Fragment key={message.id || index}>

@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supa
 import { corsHeaders } from '../_shared/cors.ts';
 
 const LOG_PREFIX = '[fb-leads-import]';
+const FACEBOOK_EXPORT_LOG_ENDPOINT = '/api/hook/facebook-export';
 const DEFAULT_EXPORT_URL =
   'https://bjwobzmsizdhfygzxgnt.supabase.co/functions/v1/fb-leads-export';
 const MAX_PAGES_PER_RUN = 10;
@@ -252,9 +253,27 @@ async function fetchExportPage(
   return { count, nextSince: textOrNull(body.next_since), leads };
 }
 
+async function writeAccessLog(
+  admin: SupabaseClient,
+  rawLead: unknown,
+  responseBody: unknown,
+  responseCode: number,
+): Promise<void> {
+  const { error } = await admin.from('access_logs').insert({
+    request_method: 'POST',
+    endpoint: FACEBOOK_EXPORT_LOG_ENDPOINT,
+    request_body: JSON.stringify(rawLead),
+    response_body: JSON.stringify(responseBody).slice(0, 10000),
+    response_code: responseCode,
+    user_agent: 'fb-leads-import',
+  });
+  if (error) logError('Could not write hook access log', error.message);
+}
+
 async function importLead(
   admin: SupabaseClient,
   mapped: MappedLead,
+  rawLead: ExportLead,
 ): Promise<'created' | 'duplicate' | 'skipped'> {
   const { data: existing, error: existingError } = await admin
     .from('fb_imported_leadgen')
@@ -262,14 +281,19 @@ async function importLead(
     .eq('leadgen_id', mapped.leadgenId)
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
-  if (existing?.lead_id) return 'duplicate';
+  if (existing?.lead_id) {
+    await writeAccessLog(admin, rawLead, { duplicate: true, leadgen_id: mapped.leadgenId }, 200);
+    return 'duplicate';
+  }
 
   if (!mapped.name || !mapped.email) {
     log('Skipped lead missing name or email', { leadgenId: mapped.leadgenId });
+    await writeAccessLog(admin, rawLead, { skipped: true, reason: 'missing name or email', leadgen_id: mapped.leadgenId }, 200);
     return 'skipped';
   }
   if (mapped.sourceCode === null) {
     log('Skipped lead with no source code', { leadgenId: mapped.leadgenId, formId: mapped.formId });
+    await writeAccessLog(admin, rawLead, { skipped: true, reason: 'no source code', leadgen_id: mapped.leadgenId }, 200);
     return 'skipped';
   }
 
@@ -294,12 +318,18 @@ async function importLead(
     p_source_code: mapped.sourceCode,
     p_balance_currency: 'NIS',
     p_proposal_currency: 'NIS',
+    // These three exist only on the bigint overload. Passing them avoids
+    // PGRST203 when an older integer overload is also still in the database.
+    p_language_id: null,
+    p_country_id: null,
+    p_source_url: null,
   });
 
   if (insertError) {
     await admin.from('fb_imported_leadgen').delete().eq('leadgen_id', mapped.leadgenId).is('lead_id', null);
     if (isSourceRejection(insertError.message || '')) {
       log('Skipped lead, source rejected', { leadgenId: mapped.leadgenId, message: insertError.message });
+      await writeAccessLog(admin, rawLead, { skipped: true, reason: insertError.message, leadgen_id: mapped.leadgenId }, 200);
       return 'skipped';
     }
     throw new Error(insertError.message);
@@ -335,6 +365,13 @@ async function importLead(
   if (metaError) logError('Lead created but facebook meta was not saved', mapped.leadgenId, metaError.message);
 
   log('Created lead', { leadgenId: mapped.leadgenId, leadNumber: row?.lead_number, sourceCode: mapped.sourceCode });
+  await writeAccessLog(admin, rawLead, {
+    success: true,
+    lead_number: row?.lead_number ?? null,
+    lead_id: leadId,
+    source_code: mapped.sourceCode,
+    source_name: row?.source_name ?? null,
+  }, 201);
   return 'created';
 }
 
@@ -410,14 +447,16 @@ serve(async (req) => {
         }
         if (dryRun) continue;
         try {
-          const outcome = await importLead(admin, mapped);
+          const outcome = await importLead(admin, mapped, rawLead);
           if (outcome === 'created') summary.created += 1;
           else if (outcome === 'duplicate') summary.duplicates += 1;
           else summary.skipped += 1;
         } catch (error) {
           pageFailed = true;
           summary.blocked = true;
-          logError('Lead insert failed, cursor not advanced', mapped.leadgenId, error instanceof Error ? error.message : error);
+          const message = error instanceof Error ? error.message : 'Lead insert failed';
+          logError('Lead insert failed, cursor not advanced', mapped.leadgenId, message);
+          await writeAccessLog(admin, rawLead, { success: false, error: message, leadgen_id: mapped.leadgenId }, 500);
           break;
         }
       }

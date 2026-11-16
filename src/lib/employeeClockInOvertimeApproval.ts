@@ -247,7 +247,11 @@ export type StoredOvertimeApproval = {
   sessionId: number;
   clockInTime: string;
   clockOutTime: string;
+  notes: string | null;
   locationId: number | null;
+  clockOutLocationId: number | null;
+  /** True once Michael (or a stored screenshot) has already cleared this session. */
+  approved: boolean;
   storagePath: string | null;
   fileName: string | null;
   mimeType: string | null;
@@ -271,7 +275,7 @@ export async function fetchDayOvertimeApprovals(
   dateKey: string,
 ): Promise<StoredOvertimeApproval[]> {
   const { start, end } = dateRangeToIsoBounds(dateKey, dateKey);
-  const core = 'id, clock_in_time, clock_out_time, clock_in_location_id, declined';
+  const core = 'id, clock_in_time, clock_out_time, notes, clock_in_location_id, clock_out_location_id, declined, approved';
   const read = (columns: string) =>
     supabase
       .from('employee_clock_in')
@@ -296,7 +300,10 @@ export async function fetchDayOvertimeApprovals(
       sessionId: Number(row.id),
       clockInTime: isoToHhMm(row.clock_in_time),
       clockOutTime: isoToHhMm(row.clock_out_time),
+      notes: typeof row.notes === 'string' ? row.notes : null,
       locationId: row.clock_in_location_id ?? null,
+      clockOutLocationId: row.clock_out_location_id ?? null,
+      approved: row.approved === true || Boolean(row.overtime_approval_storage_path),
       storagePath: row.overtime_approval_storage_path ?? null,
       fileName: row.overtime_approval_file_name ?? null,
       mimeType: row.overtime_approval_mime_type ?? null,
