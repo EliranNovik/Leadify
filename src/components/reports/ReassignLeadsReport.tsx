@@ -8,11 +8,13 @@ import { usePersistedFilters, usePersistedState } from '../../hooks/usePersisted
 import { getStageName, getStageColour, fetchStageNames } from '../../lib/stageUtils';
 import { convertToNIS } from '../../lib/currencyConversion';
 import { normalizeActiveHandlerType, type ActiveHandlerType } from '../../lib/handlerCaseBuckets';
+import { EXTRA_HANDLING_ROLES } from '../../lib/handlingRoles';
 import { Bars3Icon, CheckIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { PIPELINE_TABLE_SHELL } from '../pipeline/pipelineUi';
 import FloatingFilterBar from './FloatingFilterBar';
 import ReassignNotifyEmailModal from './ReassignNotifyEmailModal';
 import { buildHelperHandlerRow, type LeadHelperHandlerRow } from '../../lib/leadHelperHandlers';
+import { buildSubmissionManagerRow, type LeadSubmissionManagerRow } from '../../lib/leadSubmissionManagers';
 import {
     MailboxNotConnectedError,
     sendReassignNotifications,
@@ -38,7 +40,46 @@ const REASSIGN_ROLE_LABELS: { [key: string]: string } = {
     retainer_handler: 'Completion Coordinator',
     helper_handler: 'Helper Handler',
     client_support: 'Case Monitoring Coordinator',
+    submission_manager: 'Submission Manager',
+    digital_case_coordinator: 'Digital Case Coordinator',
+    document_procurement_coordinator: 'Document Procurement Coordinator',
+    certification_coordinator: 'Certification Coordinator',
+    authorities_coordinator: 'Authorities Coordinator',
 };
+
+/**
+ * Handling roles added after handler, completion coordinator and case monitoring.
+ * Submission Manager is a list, like Helper Handler. The others are one person, stored in an id column.
+ * Titles match the Roles tab.
+ */
+const REASSIGN_EXTRA_ROLES: ReadonlyArray<{
+    id:
+        | 'submission_manager'
+        | 'digital_case_coordinator'
+        | 'document_procurement_coordinator'
+        | 'certification_coordinator'
+        | 'authorities_coordinator';
+    title: string;
+    tabLabel: string;
+    activeType: number;
+    /** Id column, or the id array for Submission Manager. */
+    column: string;
+    multi: boolean;
+}> = EXTRA_HANDLING_ROLES.map((role) => ({
+    id: role.id as
+        | 'submission_manager'
+        | 'digital_case_coordinator'
+        | 'document_procurement_coordinator'
+        | 'certification_coordinator'
+        | 'authorities_coordinator',
+    title: role.title,
+    tabLabel: role.shortLabel,
+    activeType: role.activeType,
+    column: role.id === 'submission_manager' ? 'submission_manager_ids' : role.column,
+    multi: role.id === 'submission_manager',
+}));
+
+const extraRoleById = (id: string) => REASSIGN_EXTRA_ROLES.find((role) => role.id === id) ?? null;
 
 /**
  * Roles whose reassignment the client is told about by email, and which therefore get the
@@ -123,7 +164,7 @@ const leadHasRoleForActiveChoice = (lead: any, choice: ActiveHandlerType): boole
 
 const activeChoiceSuccessSummary = (choice: ActiveHandlerType, plural: boolean): string => {
     const cases = plural ? 'the selected cases' : 'this lead';
-    if (choice === 1) return `Retention handler is now active on ${cases}.`;
+    if (choice === 1) return `Completion coordinator is now active on ${cases}.`;
     if (choice === 3) return `Case monitoring is now active on ${cases}.`;
     return `Case handler is now active on ${cases}.`;
 };
@@ -144,6 +185,37 @@ const activeChoiceAssignLabel = (role: ActiveMissingRole): string => {
 const newLeadsUnassignedTextRoleOr = (column: string): string =>
     `${column}.is.null,${column}.eq.---,${column}.eq.--,${column}.eq.,${column}.eq.Not assigned,${column}.eq.not_assigned,${column}.eq.Not_assigned`;
 
+/** PostgREST `.or()` fragment for an id column with nobody in it. `0` is treated as unassigned. */
+const unassignedIdRoleOr = (column: string): string =>
+    `${column}.is.null,${column}.eq.0`;
+
+/** Narrow a lead query by whichever of the newer handling roles is filtered. */
+const applyExtraRoleFilters = (
+    query: any,
+    filters: { [key: string]: unknown },
+    employeesList: Array<{ id: number; display_name: string }>,
+) => {
+    let next = query;
+    for (const role of REASSIGN_EXTRA_ROLES) {
+        const value = String(filters[role.id] || '');
+        if (!value) continue;
+        if (isReassignRoleNoneFilter(value)) {
+            next = role.multi
+                ? next.or(`${role.column}.is.null,${role.column}.eq.{}`)
+                : next.or(unassignedIdRoleOr(role.column));
+            continue;
+        }
+        const emp = employeesList.find((employee) => employee.display_name === value);
+        if (!emp) continue;
+        next = role.multi ? next.contains(role.column, [emp.id]) : next.eq(role.column, emp.id);
+    }
+    return next;
+};
+
+/** The field shows this label once Empty is chosen; it is not an employee search. */
+const reassignEmployeeQuery = (term: string): string =>
+    term.trim() === REASSIGN_ROLE_NONE_LABEL ? '' : term;
+
 type ReassignRoleFilterTab =
     | 'scheduler'
     | 'closer'
@@ -153,23 +225,21 @@ type ReassignRoleFilterTab =
     | 'expert'
     | 'retainer_handler'
     | 'helper_handler'
-    | 'client_support';
+    | 'client_support'
+    | 'submission_manager'
+    | 'digital_case_coordinator'
+    | 'document_procurement_coordinator'
+    | 'certification_coordinator'
+    | 'authorities_coordinator';
 
 /**
- * Filter on `active_handler_type` (1=retention, 2=handler, 3=client support).
+ * Filter on `active_handler_type` (1=completion coordinator, 2=handler, 3=case monitoring, 4–10=the newer handling roles).
  *
  * "Active X" is equality on that role's type. "Non-active X" is the other two types — with three
  * owners, non-active is no longer the same as "the other role is active".
  */
 type ActiveHandlerFilterTab = 'handler' | 'retainer_handler' | 'client_support';
-type ActiveHandlerFilterValue =
-    | ''
-    | 'handler'
-    | 'retention'
-    | 'support'
-    | 'not_handler'
-    | 'not_retention'
-    | 'not_support';
+type ActiveHandlerFilterValue = string;
 
 const activeHandlerFilterOptions = (
     tab: ActiveHandlerFilterTab,
@@ -184,8 +254,8 @@ const activeHandlerFilterOptions = (
     if (tab === 'retainer_handler') {
         return [
             { value: '', label: 'Any' },
-            { value: 'retention', label: 'Active retention' },
-            { value: 'not_retention', label: 'Non-active retention' },
+            { value: 'retention', label: 'Active completion coordinator' },
+            { value: 'not_retention', label: 'Non-active completion coordinator' },
         ];
     }
     return [
@@ -196,7 +266,7 @@ const activeHandlerFilterOptions = (
 };
 
 /** Apply the Active-state role filter to a Supabase query builder. */
-const applyActiveHandlerTypeFilter = <T extends { eq: Function; in: Function }>(
+const applyActiveHandlerTypeFilter = <T extends { eq: Function; in: Function; neq: Function; or: Function }>(
     query: T,
     filter: string | null | undefined,
 ): T => {
@@ -208,13 +278,21 @@ const applyActiveHandlerTypeFilter = <T extends { eq: Function; in: Function }>(
         case 'support':
             return query.eq('active_handler_type', 3);
         case 'not_handler':
-            return query.in('active_handler_type', [1, 3]);
+            return query.neq('active_handler_type', 2);
         case 'not_retention':
-            return query.in('active_handler_type', [2, 3]);
+            return query.or('active_handler_type.neq.1,active_handler_type.is.null');
         case 'not_support':
-            return query.in('active_handler_type', [1, 2]);
-        default:
+            return query.or('active_handler_type.neq.3,active_handler_type.is.null');
+        default: {
+            const active = /^type:(\d+)$/.exec(filter || '');
+            if (active) return query.eq('active_handler_type', Number(active[1]));
+            const inactive = /^not:(\d+)$/.exec(filter || '');
+            if (inactive) {
+                const type = Number(inactive[1]);
+                return query.or(`active_handler_type.neq.${type},active_handler_type.is.null`);
+            }
             return query;
+        }
     }
 };
 
@@ -222,14 +300,39 @@ const applyActiveHandlerTypeFilter = <T extends { eq: Function; in: Function }>(
 const reassignPillClass = (selected: boolean): string =>
     `btn btn-sm rounded-full normal-case text-sm ${selected ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`;
 
+/** Visible choice for "this role has nobody". Sits above the employee search on every role. */
+const ReassignEmptyRoleButton = ({
+    selected,
+    onPick,
+    onClear,
+}: {
+    selected: boolean;
+    onPick: () => void;
+    onClear: () => void;
+}) => (
+    <div className="mb-2">
+        <button
+            type="button"
+            aria-pressed={selected}
+            className={reassignPillClass(selected)}
+            onClick={() => (selected ? onClear() : onPick())}
+        >
+            Role is empty
+        </button>
+    </div>
+);
+
 const ReassignActiveHandlerFilter: React.FC<{
-    tab: ActiveHandlerFilterTab;
+    tab?: ActiveHandlerFilterTab;
+    options?: Array<{ value: string; label: string }>;
     value: ActiveHandlerFilterValue;
     onChange: (next: ActiveHandlerFilterValue) => void;
-}> = ({ tab, value, onChange }) => (
+    emptySelected?: boolean;
+    onToggleEmpty?: () => void;
+}> = ({ tab, options, value, onChange, emptySelected = false, onToggleEmpty }) => (
     <div className="mt-3">
         <div role="group" aria-label="Active state" className="flex flex-wrap gap-1">
-            {activeHandlerFilterOptions(tab).map(({ value: optionValue, label }) => (
+            {(options ?? (tab ? activeHandlerFilterOptions(tab) : [])).map(({ value: optionValue, label }) => (
                 <button
                     key={optionValue || 'any'}
                     type="button"
@@ -240,6 +343,16 @@ const ReassignActiveHandlerFilter: React.FC<{
                     {label}
                 </button>
             ))}
+            {onToggleEmpty && (
+                <button
+                    type="button"
+                    aria-pressed={emptySelected}
+                    className={reassignPillClass(emptySelected)}
+                    onClick={onToggleEmpty}
+                >
+                    Role is empty
+                </button>
+            )}
         </div>
         <label className="block text-sm font-medium mt-2">Active state:</label>
     </div>
@@ -328,7 +441,12 @@ type ReassignRoleFilterKey =
     | 'expert'
     | 'retainer_handler'
     | 'helper_handler'
-    | 'client_support';
+    | 'client_support'
+    | 'submission_manager'
+    | 'digital_case_coordinator'
+    | 'document_procurement_coordinator'
+    | 'certification_coordinator'
+    | 'authorities_coordinator';
 
 /** Each tab and the filter key holding its employee. Only the scheduler's two names differ. */
 const ROLE_TAB_FILTER_KEY: Record<ReassignRoleFilterTab, ReassignRoleFilterKey> = {
@@ -341,6 +459,11 @@ const ROLE_TAB_FILTER_KEY: Record<ReassignRoleFilterTab, ReassignRoleFilterKey> 
     retainer_handler: 'retainer_handler',
     helper_handler: 'helper_handler',
     client_support: 'client_support',
+    submission_manager: 'submission_manager',
+    digital_case_coordinator: 'digital_case_coordinator',
+    document_procurement_coordinator: 'document_procurement_coordinator',
+    certification_coordinator: 'certification_coordinator',
+    authorities_coordinator: 'authorities_coordinator',
 };
 
 /** A name the role columns treat as nobody rather than as a person. */
@@ -361,6 +484,11 @@ const ALL_ROLE_FILTER_KEYS: readonly ReassignRoleFilterKey[] = [
     'retainer_handler',
     'helper_handler',
     'client_support',
+    'submission_manager',
+    'digital_case_coordinator',
+    'document_procurement_coordinator',
+    'certification_coordinator',
+    'authorities_coordinator',
 ];
 
 type ReassignRoleAssignee = { name: string; photoUrl?: string | null };
@@ -386,6 +514,11 @@ const ROLE_COLUMN_SOURCES: Record<
     retainer_handler: { label: 'Completion', idFields: ['retainer_handler_id'] },
     helper_handler: { label: 'Helper handler', idsField: 'helper_handler_ids' },
     client_support: { label: 'Case monitoring', idFields: ['client_support_id'] },
+    submission_manager: { label: 'Submission Mgr', idsField: 'submission_manager_ids' },
+    digital_case_coordinator: { label: 'Digital Case', idFields: ['digital_case_coordinator_id'] },
+    document_procurement_coordinator: { label: 'Doc Procurement', idFields: ['document_procurement_coordinator_id'] },
+    certification_coordinator: { label: 'Certification', idFields: ['certification_coordinator_id'] },
+    authorities_coordinator: { label: 'Authorities', idFields: ['authorities_coordinator_id'] },
 };
 
 /** Column order, which is the order the roles run in the filter tabs. */
@@ -399,6 +532,11 @@ const ROLE_COLUMN_ORDER: readonly ReassignRoleFilterKey[] = [
     'retainer_handler',
     'helper_handler',
     'client_support',
+    'submission_manager',
+    'digital_case_coordinator',
+    'document_procurement_coordinator',
+    'certification_coordinator',
+    'authorities_coordinator',
 ];
 
 /** The roles a result row shows unless the view settings say otherwise. */
@@ -436,6 +574,17 @@ const roleColumnAssignees = (
     // A number here is an id that matched nobody, not somebody called '47'.
     if (!name || Number.isFinite(Number(name)) || isUnassignedRoleName(name)) return [];
     return [{ name, photoUrl: employeeByName.get(name.toLowerCase())?.photo_url ?? null }];
+};
+
+/** Roles the Completion column can be switched to. Handler keeps its own column. */
+const SECOND_ROLE_COLUMN_OPTIONS: readonly ReassignRoleFilterKey[] = ROLE_COLUMN_ORDER.filter(
+    (role) => role !== 'handler',
+);
+
+const secondRoleColumnLabel = (role: ReassignRoleFilterKey): string => {
+    if (role === 'meetingScheduler') return 'Scheduler';
+    if (role === 'meetingManager') return 'Meeting Manager';
+    return REASSIGN_ROLE_LABELS[role] || ROLE_COLUMN_SOURCES[role].label;
 };
 
 /** One role's people in a table cell or on a card, or a dash when nobody holds it. */
@@ -758,7 +907,7 @@ const ReassignRoleFilterPanel: React.FC<{
     label: string;
     /** Matches the class the click-outside handler looks for, so the dropdown closes on a stray click. */
     containerClassName: string;
-    /** True when another role already holds the employee filter, leaving only NONE to pick here. */
+    /** True when another role already holds the employee filter, so this one can only be set to empty. */
     secondary: boolean;
     searchTerm: string;
     selectedEmployee: { display_name: string; photo_url?: string | null } | null;
@@ -770,6 +919,8 @@ const ReassignRoleFilterPanel: React.FC<{
     onPickNone: () => void;
     onPickEmployee: (emp: ReassignEmployeeOption) => void;
     onClear: () => void;
+    /** When the role has an Active-state row, the empty pill sits there instead of above the search. */
+    showEmptyButton?: boolean;
     children?: React.ReactNode;
 }> = ({
     label,
@@ -785,14 +936,25 @@ const ReassignRoleFilterPanel: React.FC<{
     onPickNone,
     onPickEmployee,
     onClear,
+    showEmptyButton = true,
     children,
 }) => {
+    const employeeQuery = searchTerm.trim() === REASSIGN_ROLE_NONE_LABEL ? '' : searchTerm;
     const matches = employees.filter(emp =>
-        emp.display_name.toLowerCase().includes(searchTerm.toLowerCase()),
+        emp.display_name.toLowerCase().includes(employeeQuery.toLowerCase()),
     );
+
+    const emptySelected = searchTerm.trim() === REASSIGN_ROLE_NONE_LABEL;
 
     return (
         <div>
+            {showEmptyButton && (
+                <ReassignEmptyRoleButton
+                    selected={emptySelected}
+                    onPick={onPickNone}
+                    onClear={onClear}
+                />
+            )}
             <div className={`relative ${containerClassName}`}>
                 <input
                     type="text"
@@ -812,18 +974,16 @@ const ReassignRoleFilterPanel: React.FC<{
                 {open && (
                     <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                         <div className="p-2">
-                            {secondary && (
-                                <button
-                                    type="button"
-                                    className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        onPickNone();
-                                    }}
-                                >
-                                    {REASSIGN_ROLE_NONE_LABEL}
-                                </button>
-                            )}
+                            <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onPickNone();
+                                }}
+                            >
+                                {REASSIGN_ROLE_NONE_LABEL}
+                            </button>
                             {!secondary && matches.map((emp) => (
                                 <ReassignRoleEmployeeRow
                                     key={emp.id}
@@ -832,7 +992,7 @@ const ReassignRoleFilterPanel: React.FC<{
                                     onPick={() => onPickEmployee(emp)}
                                 />
                             ))}
-                            {!secondary && matches.length === 0 && searchTerm.trim() !== '' && (
+                            {!secondary && matches.length === 0 && employeeQuery.trim() !== '' && (
                                 <div className="px-3 py-2 text-sm text-base-content/60">
                                     No employees found
                                 </div>
@@ -1115,6 +1275,11 @@ const ReassignLeadsReport: React.FC = () => {
         retainer_handler: '',
         helper_handler: '',
         client_support: '',
+        submission_manager: '',
+        digital_case_coordinator: '',
+        document_procurement_coordinator: '',
+        certification_coordinator: '',
+        authorities_coordinator: '',
         /** '' | handler|retention|support|not_* — active_handler_type role filter. */
         activeHandlerType: '',
         eligibilityDeterminedOnly: false,
@@ -1128,6 +1293,14 @@ const ReassignLeadsReport: React.FC = () => {
     const [viewMode, setViewMode] = usePersistedState<'list' | 'cards'>('reassignLeadsReport_viewMode', 'list', {
         storage: 'sessionStorage',
     });
+    const [secondRoleColumn, setSecondRoleColumn] = usePersistedState<ReassignRoleFilterKey>(
+        'reassignLeadsReport_secondRoleColumn',
+        'retainer_handler',
+        { storage: 'sessionStorage' },
+    );
+    const [secondRoleMenuOpen, setSecondRoleMenuOpen] = useState(false);
+    const [secondRoleMenuPos, setSecondRoleMenuPos] = useState<{ top: number; left: number } | null>(null);
+    const secondRoleMenuRef = useRef<HTMLTableCellElement>(null);
     /** Which roles the results show, in both views. Chosen from the bottom bar's settings menu. */
     const [visibleRoleColumns, setVisibleRoleColumns] = usePersistedState<string[]>(
         'reassignLeadsReport_visibleRoleColumns',
@@ -1265,6 +1438,12 @@ const ReassignLeadsReport: React.FC = () => {
     const [selectedClientSupport, setSelectedClientSupport] = usePersistedState<string>('reassignLeadsReport_selectedClientSupport', '', {
         storage: 'sessionStorage',
     });
+    const [extraRoleUi, setExtraRoleUi] = usePersistedState<Record<string, { selected: string; search: string }>>(
+        'reassignLeadsReport_extraRoleUi',
+        {},
+        { storage: 'sessionStorage' },
+    );
+    const [openExtraRoleDropdown, setOpenExtraRoleDropdown] = useState<string | null>(null);
     const [showAssignEmployeeDropdown, setShowAssignEmployeeDropdown] = useState(false);
     const [showRoleDropdown, setShowRoleDropdown] = useState(false);
     const [assignEmployeeSearchTerm, setAssignEmployeeSearchTerm] = usePersistedState<string>('reassignLeadsReport_assignEmployeeSearchTerm', '', {
@@ -1606,6 +1785,16 @@ const ReassignLeadsReport: React.FC = () => {
             } else {
                 const emp = employees.find(e => e.display_name === reassignFilters.client_support);
                 if (emp) filtered.push({ employee: emp, role: 'client_support', roleLabel: 'Case Monitoring Coordinator' });
+            }
+        }
+        for (const role of REASSIGN_EXTRA_ROLES) {
+            const value = reassignFilters[role.id];
+            if (!value) continue;
+            if (isReassignRoleNoneFilter(value)) {
+                filtered.push({ employee: null, role: role.id, roleLabel: role.title, noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === value);
+                if (emp) filtered.push({ employee: emp, role: role.id, roleLabel: role.title });
             }
         }
 
@@ -1976,6 +2165,16 @@ const ReassignLeadsReport: React.FC = () => {
                     setClientSupportSearchTerm('');
                 }
             }
+            if (openExtraRoleDropdown && !target.closest(`.extra-role-dropdown-${openExtraRoleDropdown}`)) {
+                const closing = openExtraRoleDropdown;
+                setOpenExtraRoleDropdown(null);
+                if (!extraRoleUi[closing]?.selected) {
+                    setExtraRoleUi(prev => ({
+                        ...prev,
+                        [closing]: { selected: '', search: '' },
+                    }));
+                }
+            }
             if (showAssignEmployeeDropdown && !target.closest('.assign-employee-dropdown-container')) {
                 setShowAssignEmployeeDropdown(false);
                 if (!selectedEmployeeForReassign) {
@@ -2008,11 +2207,11 @@ const ReassignLeadsReport: React.FC = () => {
             }
         };
 
-        if (showMeetingSchedulerDropdown || showCloserDropdown || showMeetingManagerDropdown || showHandlerDropdown || showHelperDropdown || showExpertDropdown || showRetainerHandlerDropdown || showHelperHandlerDropdown || showClientSupportDropdown || showAssignEmployeeDropdown || showLeadSearchDropdown || showReassignCategoryDropdown || showReassignSourceDropdown || showReassignStageDropdown || showLanguageDropdown || showStatusDropdown || showRoleDropdown || showMissingFlowAssignDropdown) {
+        if (showMeetingSchedulerDropdown || showCloserDropdown || showMeetingManagerDropdown || showHandlerDropdown || showHelperDropdown || showExpertDropdown || showRetainerHandlerDropdown || showHelperHandlerDropdown || showClientSupportDropdown || openExtraRoleDropdown || showAssignEmployeeDropdown || showLeadSearchDropdown || showReassignCategoryDropdown || showReassignSourceDropdown || showReassignStageDropdown || showLanguageDropdown || showStatusDropdown || showRoleDropdown || showMissingFlowAssignDropdown) {
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
         }
-    }, [showMeetingSchedulerDropdown, selectedMeetingScheduler, showCloserDropdown, selectedCloser, showMeetingManagerDropdown, selectedMeetingManager, showHandlerDropdown, selectedHandler, showHelperDropdown, selectedHelper, showExpertDropdown, selectedExpert, showRetainerHandlerDropdown, selectedRetainerHandler, showHelperHandlerDropdown, selectedHelperHandler, showClientSupportDropdown, selectedClientSupport, showAssignEmployeeDropdown, selectedEmployeeForReassign, showLeadSearchDropdown, showReassignCategoryDropdown, showReassignSourceDropdown, showReassignStageDropdown, showLanguageDropdown, showStatusDropdown, showRoleDropdown, showMissingFlowAssignDropdown]);
+    }, [showMeetingSchedulerDropdown, selectedMeetingScheduler, showCloserDropdown, selectedCloser, showMeetingManagerDropdown, selectedMeetingManager, showHandlerDropdown, selectedHandler, showHelperDropdown, selectedHelper, showExpertDropdown, selectedExpert, showRetainerHandlerDropdown, selectedRetainerHandler, showHelperHandlerDropdown, selectedHelperHandler, showClientSupportDropdown, selectedClientSupport, openExtraRoleDropdown, extraRoleUi, showAssignEmployeeDropdown, selectedEmployeeForReassign, showLeadSearchDropdown, showReassignCategoryDropdown, showReassignSourceDropdown, showReassignStageDropdown, showLanguageDropdown, showStatusDropdown, showRoleDropdown, showMissingFlowAssignDropdown]);
 
     // Toggle lead selection
     const toggleLeadSelection = (leadId: string) => {
@@ -2074,6 +2273,11 @@ const ReassignLeadsReport: React.FC = () => {
           retainer_handler_id,
           helper_handler_ids,
           client_support_id,
+          submission_manager_ids,
+          digital_case_coordinator_id,
+          document_procurement_coordinator_id,
+          certification_coordinator_id,
+          authorities_coordinator_id,
           active_handler_type,
           category,
           category_id,
@@ -2239,7 +2443,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.expert) {
                 if (isReassignRoleNoneFilter(reassignFilters.expert)) {
-                    leadsQuery = leadsQuery.is('expert', null);
+                    leadsQuery = leadsQuery.or(unassignedIdRoleOr('expert'));
                 } else {
                     const expertEmp = employees.find(emp => emp.display_name === reassignFilters.expert);
                     if (expertEmp) {
@@ -2249,7 +2453,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.retainer_handler) {
                 if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
-                    leadsQuery = leadsQuery.is('retainer_handler_id', null);
+                    leadsQuery = leadsQuery.or(unassignedIdRoleOr('retainer_handler_id'));
                 } else {
                     const rhEmp = employees.find(emp => emp.display_name === reassignFilters.retainer_handler);
                     if (rhEmp) {
@@ -2264,7 +2468,7 @@ const ReassignLeadsReport: React.FC = () => {
                  * trigger, which is what makes it safe to filter on here.
                  */
                 if (isReassignRoleNoneFilter(reassignFilters.helper_handler)) {
-                    leadsQuery = leadsQuery.eq('helper_handler_ids', '{}');
+                    leadsQuery = leadsQuery.or('helper_handler_ids.is.null,helper_handler_ids.eq.{}');
                 } else {
                     const hhEmp = employees.find(emp => emp.display_name === reassignFilters.helper_handler);
                     if (hhEmp) {
@@ -2274,7 +2478,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.client_support) {
                 if (isReassignRoleNoneFilter(reassignFilters.client_support)) {
-                    leadsQuery = leadsQuery.is('client_support_id', null);
+                    leadsQuery = leadsQuery.or(unassignedIdRoleOr('client_support_id'));
                 } else {
                     const csEmp = employees.find(emp => emp.display_name === reassignFilters.client_support);
                     if (csEmp) {
@@ -2282,6 +2486,7 @@ const ReassignLeadsReport: React.FC = () => {
                     }
                 }
             }
+            leadsQuery = applyExtraRoleFilters(leadsQuery, reassignFilters, employees);
             if (reassignFilters.activeHandlerType) {
                 leadsQuery = applyActiveHandlerTypeFilter(leadsQuery, reassignFilters.activeHandlerType);
             }
@@ -2324,6 +2529,11 @@ const ReassignLeadsReport: React.FC = () => {
           retainer_handler_id,
           helper_handler_ids,
           client_support_id,
+          submission_manager_ids,
+          digital_case_coordinator_id,
+          document_procurement_coordinator_id,
+          certification_coordinator_id,
+          authorities_coordinator_id,
           active_handler_type,
           category,
           category_id,
@@ -2492,7 +2702,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.meetingScheduler) {
                 if (isReassignRoleNoneFilter(reassignFilters.meetingScheduler)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_scheduler_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('meeting_scheduler_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.meetingScheduler);
                     if (employee) {
@@ -2502,7 +2712,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.closer) {
                 if (isReassignRoleNoneFilter(reassignFilters.closer)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('closer_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('closer_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.closer);
                     if (employee) {
@@ -2512,7 +2722,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.meetingManager) {
                 if (isReassignRoleNoneFilter(reassignFilters.meetingManager)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_manager_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('meeting_manager_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.meetingManager);
                     if (employee) {
@@ -2522,7 +2732,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.handler) {
                 if (isReassignRoleNoneFilter(reassignFilters.handler)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('case_handler_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('case_handler_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.handler);
                     if (employee) {
@@ -2532,7 +2742,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.helper) {
                 if (isReassignRoleNoneFilter(reassignFilters.helper)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_lawyer_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('meeting_lawyer_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.helper);
                     if (employee) {
@@ -2542,7 +2752,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.expert) {
                 if (isReassignRoleNoneFilter(reassignFilters.expert)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('expert_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('expert_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.expert);
                     if (employee) {
@@ -2552,7 +2762,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.retainer_handler) {
                 if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('retainer_handler_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('retainer_handler_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.retainer_handler);
                     if (employee) {
@@ -2562,7 +2772,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.helper_handler) {
                 if (isReassignRoleNoneFilter(reassignFilters.helper_handler)) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('helper_handler_ids', '{}');
+                    legacyLeadsQuery = legacyLeadsQuery.or('helper_handler_ids.is.null,helper_handler_ids.eq.{}');
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.helper_handler);
                     if (employee) {
@@ -2572,7 +2782,7 @@ const ReassignLeadsReport: React.FC = () => {
             }
             if (reassignFilters.client_support) {
                 if (isReassignRoleNoneFilter(reassignFilters.client_support)) {
-                    legacyLeadsQuery = legacyLeadsQuery.is('client_support_id', null);
+                    legacyLeadsQuery = legacyLeadsQuery.or(unassignedIdRoleOr('client_support_id'));
                 } else {
                     const employee = employees.find(emp => emp.display_name === reassignFilters.client_support);
                     if (employee) {
@@ -2580,6 +2790,7 @@ const ReassignLeadsReport: React.FC = () => {
                     }
                 }
             }
+            legacyLeadsQuery = applyExtraRoleFilters(legacyLeadsQuery, reassignFilters, employees);
             if (reassignFilters.activeHandlerType) {
                 legacyLeadsQuery = applyActiveHandlerTypeFilter(
                     legacyLeadsQuery,
@@ -2956,13 +3167,86 @@ const ReassignLeadsReport: React.FC = () => {
         }
     };
 
-    /** The employee a Helper Handler reassignment takes the role away from, if the search named one. */
-    const helperHandlerBeingReplaced = () => {
-        const name = isReassignRoleNoneFilter(reassignFilters.helper_handler)
+    /**
+     * The employee a multi-person role reassignment takes the role away from, if the search named one.
+     * Helper Handler and Submission Manager are the roles several people can hold at once.
+     */
+    const multiAssigneeBeingReplaced = (roleId: 'helper_handler' | 'submission_manager') => {
+        const name = isReassignRoleNoneFilter(reassignFilters[roleId])
             ? ''
-            : String(reassignFilters.helper_handler || '').trim();
+            : String(reassignFilters[roleId] || '').trim();
         if (!name || name === selectedEmployeeForReassign) return null;
         return employees.find(emp => emp.display_name === name) ?? null;
+    };
+
+    const assignSubmissionManagerRows = async (
+        leadsToChange: any[],
+        employeeId: number,
+        removeEmployeeId: number | null,
+        createdBy: string,
+    ): Promise<void> => {
+        const newLeadIds = leadsToChange
+            .filter(lead => lead.lead_type === 'new')
+            .map(lead => String(lead.id));
+        const legacyLeadIds = leadsToChange
+            .filter(lead => lead.lead_type === 'legacy')
+            .map(lead => Number(String(lead.id).replace(/^legacy_/, '')))
+            .filter(id => Number.isFinite(id));
+
+        const alreadyHeld = new Set<string>();
+        if (newLeadIds.length > 0) {
+            const { data, error } = await supabase
+                .from('lead_submission_managers')
+                .select('new_lead_id')
+                .eq('employee_id', employeeId)
+                .in('new_lead_id', newLeadIds);
+            if (error) throw error;
+            (data ?? []).forEach((row: any) => alreadyHeld.add(`new:${row.new_lead_id}`));
+        }
+        if (legacyLeadIds.length > 0) {
+            const { data, error } = await supabase
+                .from('lead_submission_managers')
+                .select('legacy_lead_id')
+                .eq('employee_id', employeeId)
+                .in('legacy_lead_id', legacyLeadIds);
+            if (error) throw error;
+            (data ?? []).forEach((row: any) => alreadyHeld.add(`legacy:${row.legacy_lead_id}`));
+        }
+
+        const rows = leadsToChange
+            .map(lead =>
+                buildSubmissionManagerRow(
+                    lead.lead_type === 'legacy' ? `legacy_${String(lead.id).replace(/^legacy_/, '')}` : String(lead.id),
+                    employeeId,
+                    createdBy,
+                ),
+            )
+            .filter((row): row is LeadSubmissionManagerRow => row !== null)
+            .filter(row => !alreadyHeld.has(row.new_lead_id ? `new:${row.new_lead_id}` : `legacy:${row.legacy_lead_id}`));
+
+        if (rows.length > 0) {
+            const { error } = await supabase.from('lead_submission_managers').insert(rows);
+            if (error) throw error;
+        }
+
+        if (removeEmployeeId) {
+            if (newLeadIds.length > 0) {
+                const { error } = await supabase
+                    .from('lead_submission_managers')
+                    .delete()
+                    .eq('employee_id', removeEmployeeId)
+                    .in('new_lead_id', newLeadIds);
+                if (error) throw error;
+            }
+            if (legacyLeadIds.length > 0) {
+                const { error } = await supabase
+                    .from('lead_submission_managers')
+                    .delete()
+                    .eq('employee_id', removeEmployeeId)
+                    .in('legacy_lead_id', legacyLeadIds);
+                if (error) throw error;
+            }
+        }
     };
 
     /**
@@ -3009,7 +3293,12 @@ const ReassignLeadsReport: React.FC = () => {
 
             const newLeads = selectedLeadsArray.filter(lead => lead.lead_type === 'new');
             const legacyLeads = selectedLeadsArray.filter(lead => lead.lead_type === 'legacy');
-            const replacedHelperHandler = helperHandlerBeingReplaced();
+            const replacedHelperHandler = selectedRoleForReassign === 'helper_handler'
+                ? multiAssigneeBeingReplaced('helper_handler')
+                : selectedRoleForReassign === 'submission_manager'
+                    ? multiAssigneeBeingReplaced('submission_manager')
+                    : null;
+            const extraAssignRole = extraRoleById(selectedRoleForReassign);
 
             // Prepare update object based on selected role
             const updateFields: any = {
@@ -3039,6 +3328,8 @@ const ReassignLeadsReport: React.FC = () => {
                 updateFields.retainer_handler_id = selectedEmployee.id;
             } else if (selectedRoleForReassign === 'client_support') {
                 updateFields.client_support_id = selectedEmployee.id;
+            } else if (extraAssignRole && !extraAssignRole.multi) {
+                updateFields[extraAssignRole.column] = selectedEmployee.id;
             }
 
             if (newLeads.length > 0) {
@@ -3074,6 +3365,8 @@ const ReassignLeadsReport: React.FC = () => {
                 legacyUpdateFields.retainer_handler_id = selectedEmployee.id;
             } else if (selectedRoleForReassign === 'client_support') {
                 legacyUpdateFields.client_support_id = selectedEmployee.id;
+            } else if (extraAssignRole && !extraAssignRole.multi) {
+                legacyUpdateFields[extraAssignRole.column] = selectedEmployee.id;
             }
 
             if (legacyLeads.length > 0) {
@@ -3088,6 +3381,14 @@ const ReassignLeadsReport: React.FC = () => {
 
             if (selectedRoleForReassign === 'helper_handler') {
                 await assignHelperHandlerRows(
+                    selectedLeadsArray,
+                    selectedEmployee.id,
+                    replacedHelperHandler?.id ?? null,
+                    currentUserFullName,
+                );
+            }
+            if (selectedRoleForReassign === 'submission_manager') {
+                await assignSubmissionManagerRows(
                     selectedLeadsArray,
                     selectedEmployee.id,
                     replacedHelperHandler?.id ?? null,
@@ -3115,10 +3416,11 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
 
+            const multiAssign = selectedRoleForReassign === 'helper_handler' || selectedRoleForReassign === 'submission_manager';
             toast.success(
-                selectedRoleForReassign === 'helper_handler'
+                multiAssign
                     ? `${selectedEmployeeForReassign} is now a ${roleName} on ${selectedLeads.size} lead(s)` +
-                      (replacedHelperHandler ? `, and ${replacedHelperHandler.display_name} is not.` : '. Other helper handlers were kept.')
+                      (replacedHelperHandler ? `, and ${replacedHelperHandler.display_name} is not.` : `. Other ${roleName}s were kept.`)
                     : `Assigned ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} lead(s). Other roles were not changed.`
             );
 
@@ -3176,12 +3478,17 @@ const ReassignLeadsReport: React.FC = () => {
             return;
         }
 
-        const replaced = selectedRoleForReassign === 'helper_handler' ? helperHandlerBeingReplaced() : null;
+        const multiAssign = selectedRoleForReassign === 'helper_handler' || selectedRoleForReassign === 'submission_manager';
+        const replaced = selectedRoleForReassign === 'helper_handler'
+            ? multiAssigneeBeingReplaced('helper_handler')
+            : selectedRoleForReassign === 'submission_manager'
+                ? multiAssigneeBeingReplaced('submission_manager')
+                : null;
         const confirmReassign = confirm(
-            selectedRoleForReassign === 'helper_handler'
+            multiAssign
                 ? `Add ${selectedEmployeeForReassign} as a ${roleName} on ${selectedLeads.size} selected lead(s)?\n\n` +
                       (replaced
-                          ? `${replaced.display_name} loses the role on those leads. Any other helper handler keeps it, and no other role changes.`
+                          ? `${replaced.display_name} loses the role on those leads. Anyone else holding it keeps it, and no other role changes.`
                           : `Several people can hold this role, so anyone already holding it keeps it. No other role changes.`)
                 : `Assign ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} selected lead(s)?\n\n` +
                       `Only the ${roleName} field will be updated; other roles on each lead stay unchanged.`
@@ -3570,6 +3877,9 @@ const ReassignLeadsReport: React.FC = () => {
         if (reassignFilters.retainer_handler && !isReassignRoleNoneFilter(reassignFilters.retainer_handler)) return 'retainer_handler';
         if (reassignFilters.helper_handler && !isReassignRoleNoneFilter(reassignFilters.helper_handler)) return 'helper_handler';
         if (reassignFilters.client_support && !isReassignRoleNoneFilter(reassignFilters.client_support)) return 'client_support';
+        for (const role of REASSIGN_EXTRA_ROLES) {
+            if (reassignFilters[role.id] && !isReassignRoleNoneFilter(reassignFilters[role.id])) return role.id;
+        }
         return null;
     };
 
@@ -3592,6 +3902,17 @@ const ReassignLeadsReport: React.FC = () => {
     const roleFilterEmployee = (selectedName: string) =>
         selectedName ? employees.find(emp => emp.display_name === selectedName) ?? null : null;
 
+    const setExtraRoleField = (id: string, field: 'selected' | 'search', value: string) => {
+        setExtraRoleUi(prev => ({
+            ...prev,
+            [id]: {
+                selected: prev[id]?.selected || '',
+                search: prev[id]?.search || '',
+                [field]: value,
+            },
+        }));
+    };
+
     /** The two setters that, with `reassignFilters`, hold each role's chosen employee. */
     const roleFilterSetters: Record<ReassignRoleFilterKey, [(v: string) => void, (v: string) => void]> = {
         meetingScheduler: [setSelectedMeetingScheduler, setMeetingSchedulerSearchTerm],
@@ -3603,6 +3924,26 @@ const ReassignLeadsReport: React.FC = () => {
         retainer_handler: [setSelectedRetainerHandler, setRetainerHandlerSearchTerm],
         helper_handler: [setSelectedHelperHandler, setHelperHandlerSearchTerm],
         client_support: [setSelectedClientSupport, setClientSupportSearchTerm],
+        submission_manager: [
+            (value) => setExtraRoleField('submission_manager', 'selected', value),
+            (value) => setExtraRoleField('submission_manager', 'search', value),
+        ],
+        digital_case_coordinator: [
+            (value) => setExtraRoleField('digital_case_coordinator', 'selected', value),
+            (value) => setExtraRoleField('digital_case_coordinator', 'search', value),
+        ],
+        document_procurement_coordinator: [
+            (value) => setExtraRoleField('document_procurement_coordinator', 'selected', value),
+            (value) => setExtraRoleField('document_procurement_coordinator', 'search', value),
+        ],
+        certification_coordinator: [
+            (value) => setExtraRoleField('certification_coordinator', 'selected', value),
+            (value) => setExtraRoleField('certification_coordinator', 'search', value),
+        ],
+        authorities_coordinator: [
+            (value) => setExtraRoleField('authorities_coordinator', 'selected', value),
+            (value) => setExtraRoleField('authorities_coordinator', 'search', value),
+        ],
     };
 
     const setRoleFilterEmployee = (role: ReassignRoleFilterKey, name: string) => {
@@ -3712,6 +4053,9 @@ const ReassignLeadsReport: React.FC = () => {
     );
 
     const roleColumnVisible = (role: ReassignRoleFilterKey) => visibleRoleColumns.includes(role);
+    const shownSecondRole: ReassignRoleFilterKey = SECOND_ROLE_COLUMN_OPTIONS.includes(secondRoleColumn)
+        ? secondRoleColumn
+        : 'retainer_handler';
     const roleAssignees = (role: ReassignRoleFilterKey, lead: any) =>
         roleColumnAssignees(role, lead, employeeById, employeeByName);
 
@@ -3720,8 +4064,20 @@ const ReassignLeadsReport: React.FC = () => {
      * switch, so the roles added to the view are every other one that is switched on.
      */
     const extraRoleColumns = ROLE_COLUMN_ORDER.filter(
-        role => role !== 'handler' && role !== 'retainer_handler' && roleColumnVisible(role),
+        role => role !== 'handler' && role !== shownSecondRole && roleColumnVisible(role),
     );
+
+    useEffect(() => {
+        if (!secondRoleMenuOpen) return;
+        const close = (event: MouseEvent) => {
+            const target = event.target as Node;
+            if (secondRoleMenuRef.current?.contains(target)) return;
+            if ((target as HTMLElement).closest?.('[data-second-role-menu]')) return;
+            setSecondRoleMenuOpen(false);
+        };
+        document.addEventListener('mousedown', close);
+        return () => document.removeEventListener('mousedown', close);
+    }, [secondRoleMenuOpen]);
 
     const toggleRoleColumn = (role: string) => {
         setVisibleRoleColumns(prev =>
@@ -4177,9 +4533,14 @@ const ReassignLeadsReport: React.FC = () => {
                                         ['handler', 'Handler'],
                                         ['helper', 'Helper'],
                                         ['expert', 'Expert'],
-                                        ['retainer_handler', 'Retention'],
-                                        ['helper_handler', 'Helper handler'],
+                                        ['submission_manager', 'Submission Manager'],
+                                        ['digital_case_coordinator', 'Digital Case'],
+                                        ['document_procurement_coordinator', 'Doc Procurement'],
+                                        ['certification_coordinator', 'Certification'],
                                         ['client_support', 'Case monitoring'],
+                                        ['authorities_coordinator', 'Authorities'],
+                                        ['retainer_handler', 'Completion Coordinator'],
+                                        ['helper_handler', 'Helper handler'],
                                     ] as const
                                 ).map(([id, label]) => (
                                     <button
@@ -4198,6 +4559,14 @@ const ReassignLeadsReport: React.FC = () => {
                             <div>
                                 {roleFilterTab === 'scheduler' && (
                                 <div>
+                                    <ReassignEmptyRoleButton
+                                        selected={isReassignRoleNoneFilter(reassignFilters.meetingScheduler)}
+                                        onPick={() => {
+                                            pickRoleFilterNone('meetingScheduler');
+                                            setShowMeetingSchedulerDropdown(false);
+                                        }}
+                                        onClear={() => clearRoleFilter('meetingScheduler')}
+                                    />
                                     <div className="relative meeting-scheduler-dropdown-container">
                                         <input
                                             type="text"
@@ -4221,7 +4590,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showMeetingSchedulerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('scheduler') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4238,7 +4607,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('scheduler') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(meetingSchedulerSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(meetingSchedulerSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4252,8 +4621,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('scheduler') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(meetingSchedulerSearchTerm.toLowerCase())
-                                                    ).length === 0 && meetingSchedulerSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(meetingSchedulerSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(meetingSchedulerSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4267,6 +4636,14 @@ const ReassignLeadsReport: React.FC = () => {
                                 )}
                                 {roleFilterTab === 'closer' && (
                                 <div>
+                                    <ReassignEmptyRoleButton
+                                        selected={isReassignRoleNoneFilter(reassignFilters.closer)}
+                                        onPick={() => {
+                                            pickRoleFilterNone('closer');
+                                            setShowCloserDropdown(false);
+                                        }}
+                                        onClear={() => clearRoleFilter('closer')}
+                                    />
                                     <div className="relative closer-dropdown-container">
                                         <input
                                             type="text"
@@ -4290,7 +4667,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showCloserDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('closer') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4307,7 +4684,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('closer') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(closerSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(closerSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4321,8 +4698,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('closer') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(closerSearchTerm.toLowerCase())
-                                                    ).length === 0 && closerSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(closerSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(closerSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4336,6 +4713,14 @@ const ReassignLeadsReport: React.FC = () => {
                                 )}
                                 {roleFilterTab === 'meetingManager' && (
                                 <div>
+                                    <ReassignEmptyRoleButton
+                                        selected={isReassignRoleNoneFilter(reassignFilters.meetingManager)}
+                                        onPick={() => {
+                                            pickRoleFilterNone('meetingManager');
+                                            setShowMeetingManagerDropdown(false);
+                                        }}
+                                        onClear={() => clearRoleFilter('meetingManager')}
+                                    />
                                     <div className="relative meeting-manager-dropdown-container">
                                         <input
                                             type="text"
@@ -4359,7 +4744,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showMeetingManagerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('meetingManager') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4376,7 +4761,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('meetingManager') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(meetingManagerSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(meetingManagerSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4390,8 +4775,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('meetingManager') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(meetingManagerSearchTerm.toLowerCase())
-                                                    ).length === 0 && meetingManagerSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(meetingManagerSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(meetingManagerSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4428,7 +4813,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showHandlerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('handler') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4445,7 +4830,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('handler') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(handlerSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(handlerSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4459,8 +4844,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('handler') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(handlerSearchTerm.toLowerCase())
-                                                    ).length === 0 && handlerSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(handlerSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(handlerSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4474,10 +4859,19 @@ const ReassignLeadsReport: React.FC = () => {
                                         tab="handler"
                                         value={activeHandlerFilter}
                                         onChange={(next) => setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))}
+                                        emptySelected={isReassignRoleNoneFilter(reassignFilters.handler)}
+                                        onToggleEmpty={() => {
+                                            if (isReassignRoleNoneFilter(reassignFilters.handler)) {
+                                                clearRoleFilter('handler');
+                                            } else {
+                                                pickRoleFilterNone('handler');
+                                                setShowHandlerDropdown(false);
+                                            }
+                                        }}
                                     />
                                     <ReassignMissingRoleFilter
-                                        missingLabel="Missing retention"
-                                        fieldLabel="Retention role:"
+                                        missingLabel="Missing completion coordinator"
+                                        fieldLabel="Completion coordinator:"
                                         missing={otherRoleMissing('retainer_handler')}
                                         onChange={(missing) => setOtherRoleMissing('retainer_handler', missing)}
                                     />
@@ -4485,6 +4879,14 @@ const ReassignLeadsReport: React.FC = () => {
                                 )}
                                 {roleFilterTab === 'helper' && (
                                 <div>
+                                    <ReassignEmptyRoleButton
+                                        selected={isReassignRoleNoneFilter(reassignFilters.helper)}
+                                        onPick={() => {
+                                            pickRoleFilterNone('helper');
+                                            setShowHelperDropdown(false);
+                                        }}
+                                        onClear={() => clearRoleFilter('helper')}
+                                    />
                                     <div className="relative helper-dropdown-container">
                                         <input
                                             type="text"
@@ -4508,7 +4910,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showHelperDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('helper') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4525,7 +4927,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('helper') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(helperSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(helperSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4539,8 +4941,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('helper') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(helperSearchTerm.toLowerCase())
-                                                    ).length === 0 && helperSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(helperSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(helperSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4554,6 +4956,14 @@ const ReassignLeadsReport: React.FC = () => {
                                 )}
                                 {roleFilterTab === 'expert' && (
                                 <div>
+                                    <ReassignEmptyRoleButton
+                                        selected={isReassignRoleNoneFilter(reassignFilters.expert)}
+                                        onPick={() => {
+                                            pickRoleFilterNone('expert');
+                                            setShowExpertDropdown(false);
+                                        }}
+                                        onClear={() => clearRoleFilter('expert')}
+                                    />
                                     <div className="relative expert-dropdown-container">
                                         <input
                                             type="text"
@@ -4577,7 +4987,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showExpertDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('expert') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4594,7 +5004,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('expert') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(expertSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(expertSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4608,8 +5018,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('expert') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(expertSearchTerm.toLowerCase())
-                                                    ).length === 0 && expertSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(expertSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(expertSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4646,7 +5056,7 @@ const ReassignLeadsReport: React.FC = () => {
                                         {showRetainerHandlerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    {isRoleSecondary('retainer_handler') && (
+                                                    {(
                                                         <button
                                                             type="button"
                                                             className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
@@ -4663,7 +5073,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                     )}
                                                     {!isRoleSecondary('retainer_handler') && employees
                                                         .filter(emp =>
-                                                            emp.display_name.toLowerCase().includes(retainerHandlerSearchTerm.toLowerCase())
+                                                            emp.display_name.toLowerCase().includes(reassignEmployeeQuery(retainerHandlerSearchTerm).toLowerCase())
                                                         )
                                                         .map((emp) => (
                                                             <ReassignRoleEmployeeRow
@@ -4677,8 +5087,8 @@ const ReassignLeadsReport: React.FC = () => {
                                                             />
                                                         ))}
                                                     {!isRoleSecondary('retainer_handler') && employees.filter(emp =>
-                                                        emp.display_name.toLowerCase().includes(retainerHandlerSearchTerm.toLowerCase())
-                                                    ).length === 0 && retainerHandlerSearchTerm.trim() !== '' && (
+                                                        emp.display_name.toLowerCase().includes(reassignEmployeeQuery(retainerHandlerSearchTerm).toLowerCase())
+                                                    ).length === 0 && reassignEmployeeQuery(retainerHandlerSearchTerm).trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -4687,11 +5097,20 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
-                                    <label className="block text-sm font-medium mt-2">Retention handler:</label>
+                                    <label className="block text-sm font-medium mt-2">Completion Coordinator:</label>
                                     <ReassignActiveHandlerFilter
                                         tab="retainer_handler"
                                         value={activeHandlerFilter}
                                         onChange={(next) => setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))}
+                                        emptySelected={isReassignRoleNoneFilter(reassignFilters.retainer_handler)}
+                                        onToggleEmpty={() => {
+                                            if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
+                                                clearRoleFilter('retainer_handler');
+                                            } else {
+                                                pickRoleFilterNone('retainer_handler');
+                                                setShowRetainerHandlerDropdown(false);
+                                            }
+                                        }}
                                     />
                                     <ReassignMissingRoleFilter
                                         missingLabel="Missing handler"
@@ -4738,6 +5157,61 @@ const ReassignLeadsReport: React.FC = () => {
                                         </p>
                                     </ReassignRoleFilterPanel>
                                 )}
+                                {REASSIGN_EXTRA_ROLES.map((role) => roleFilterTab === role.id && (
+                                    <ReassignRoleFilterPanel
+                                        key={role.id}
+                                        label={`${role.title}:`}
+                                        containerClassName={`extra-role-dropdown-${role.id}`}
+                                        secondary={isRoleSecondary(role.id)}
+                                        searchTerm={extraRoleUi[role.id]?.search || ''}
+                                        selectedEmployee={roleFilterEmployee(extraRoleUi[role.id]?.selected || '')}
+                                        employees={employees}
+                                        getInitials={getInitials}
+                                        open={openExtraRoleDropdown === role.id}
+                                        onOpen={() => setOpenExtraRoleDropdown(role.id)}
+                                        onSearchTermChange={(value) => {
+                                            setExtraRoleField(role.id, 'search', value);
+                                            setReassignFilters(prev => ({ ...prev, [role.id]: value }));
+                                        }}
+                                        onPickNone={() => {
+                                            pickRoleFilterNone(role.id);
+                                            setOpenExtraRoleDropdown(null);
+                                        }}
+                                        onPickEmployee={(emp) => {
+                                            pickRoleFilterEmployee(role.id, emp.display_name);
+                                            setOpenExtraRoleDropdown(null);
+                                        }}
+                                        onClear={() => clearRoleFilter(role.id)}
+                                        showEmptyButton={false}
+                                    >
+                                        <ReassignActiveHandlerFilter
+                                            options={[
+                                                { value: '', label: 'Any' },
+                                                { value: `type:${role.activeType}`, label: `Active ${role.title}` },
+                                                { value: `not:${role.activeType}`, label: `Non-active ${role.title}` },
+                                            ]}
+                                            value={activeHandlerFilter}
+                                            onChange={(next) =>
+                                                setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))
+                                            }
+                                            emptySelected={isReassignRoleNoneFilter(reassignFilters[role.id])}
+                                            onToggleEmpty={() => {
+                                                if (isReassignRoleNoneFilter(reassignFilters[role.id])) {
+                                                    clearRoleFilter(role.id);
+                                                } else {
+                                                    pickRoleFilterNone(role.id);
+                                                    setOpenExtraRoleDropdown(null);
+                                                }
+                                            }}
+                                        />
+                                        {role.multi && (
+                                            <p className="mt-2 text-xs text-base-content/60">
+                                                Several people can hold this role on one lead. Assigning adds the person you
+                                                pick; the employee searched for here is the one it is taken away from.
+                                            </p>
+                                        )}
+                                    </ReassignRoleFilterPanel>
+                                ))}
                                 {roleFilterTab === 'client_support' && (
                                     <ReassignRoleFilterPanel
                                         label="Case monitoring:"
@@ -4762,6 +5236,7 @@ const ReassignLeadsReport: React.FC = () => {
                                             setShowClientSupportDropdown(false);
                                         }}
                                         onClear={() => clearRoleFilter('client_support')}
+                                        showEmptyButton={false}
                                     >
                                         <ReassignActiveHandlerFilter
                                             tab="client_support"
@@ -4769,6 +5244,15 @@ const ReassignLeadsReport: React.FC = () => {
                                             onChange={(next) =>
                                                 setReassignFilters(prev => ({ ...prev, activeHandlerType: next }))
                                             }
+                                            emptySelected={isReassignRoleNoneFilter(reassignFilters.client_support)}
+                                            onToggleEmpty={() => {
+                                                if (isReassignRoleNoneFilter(reassignFilters.client_support)) {
+                                                    clearRoleFilter('client_support');
+                                                } else {
+                                                    pickRoleFilterNone('client_support');
+                                                    setShowClientSupportDropdown(false);
+                                                }
+                                            }}
                                         />
                                     </ReassignRoleFilterPanel>
                                 )}
@@ -5244,6 +5728,32 @@ const ReassignLeadsReport: React.FC = () => {
                 </dialog>
             )}
 
+            {secondRoleMenuOpen && secondRoleMenuPos && createPortal(
+                <div
+                    data-second-role-menu
+                    role="listbox"
+                    className="fixed z-[10060] max-h-72 w-64 overflow-y-auto rounded-lg border border-base-300 bg-base-100 py-1 text-left shadow-lg"
+                    style={{ top: secondRoleMenuPos.top, left: secondRoleMenuPos.left }}
+                >
+                    {SECOND_ROLE_COLUMN_OPTIONS.map((role) => (
+                        <button
+                            key={role}
+                            type="button"
+                            role="option"
+                            aria-selected={role === shownSecondRole}
+                            className={`block w-full px-3 py-1.5 text-left text-sm hover:bg-base-200 ${role === shownSecondRole ? 'bg-primary/10 font-medium text-primary' : 'text-base-content'}`}
+                            onClick={() => {
+                                setSecondRoleColumn(role);
+                                setSecondRoleMenuOpen(false);
+                            }}
+                        >
+                            {secondRoleColumnLabel(role)}
+                        </button>
+                    ))}
+                </div>,
+                document.body,
+            )}
+
             {/* Results Section */}
             {reassignResults.length > 0 && (() => {
                 // Calculate totals for all filtered leads
@@ -5364,7 +5874,26 @@ const ReassignLeadsReport: React.FC = () => {
                                             <th className="px-2 py-3 text-center">Stage</th>
                                             {roleColumnVisible('handler') && <th className="px-2 py-3 text-left">Handler</th>}
                                             <th className="px-2 py-3 text-center">Active</th>
-                                            {roleColumnVisible('retainer_handler') && <th className="px-2 py-3 text-left">Retention</th>}
+                                            {roleColumnVisible('retainer_handler') && (
+                                                <th ref={secondRoleMenuRef} className="relative px-2 py-3 text-left normal-case">
+                                                    <button
+                                                        type="button"
+                                                        className="inline-flex items-center gap-1 uppercase tracking-wide text-gray-500 hover:text-base-content"
+                                                        aria-haspopup="listbox"
+                                                        aria-expanded={secondRoleMenuOpen}
+                                                        onClick={(event) => {
+                                                            const rect = event.currentTarget.getBoundingClientRect();
+                                                            setSecondRoleMenuPos({ top: rect.bottom + 4, left: rect.left });
+                                                            setSecondRoleMenuOpen((open) => !open);
+                                                        }}
+                                                    >
+                                                        {secondRoleColumnLabel(shownSecondRole)}
+                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                                        </svg>
+                                                    </button>
+                                                </th>
+                                            )}
                                             {extraRoleColumns.map(role => (
                                                 <th key={role} className="px-2 py-3 text-left">
                                                     {ROLE_COLUMN_SOURCES[role].label}
@@ -5446,19 +5975,10 @@ const ReassignLeadsReport: React.FC = () => {
                                                     </td>
                                                     {roleColumnVisible('retainer_handler') && (
                                                         <td className="px-2 py-3 text-left">
-                                                            {info.retention ? (
-                                                                <div className="flex items-center gap-2">
-                                                                    <ReassignRoleAvatar
-                                                                        name={info.retention.display_name}
-                                                                        photoUrl={info.retention.photo_url}
-                                                                        tone="secondary"
-                                                                        className="h-8 w-8"
-                                                                    />
-                                                                    <span className="truncate text-xs font-medium">{info.retention.display_name}</span>
-                                                                </div>
-                                                            ) : (
-                                                                <span className="text-base-content/30">-</span>
-                                                            )}
+                                                            <ReassignRoleCell
+                                                                assignees={roleAssignees(shownSecondRole, lead)}
+                                                                tone="secondary"
+                                                            />
                                                         </td>
                                                     )}
                                                     {extraRoleColumns.map(role => (
@@ -5573,26 +6093,24 @@ const ReassignLeadsReport: React.FC = () => {
                                                     </div>
 
                                                     {roleColumnVisible('retainer_handler') && (
-                                                    <div
-                                                        className={`min-w-0 text-center transition-opacity duration-300 ${
-                                                            activeTypeCard === 1 ? 'opacity-100' : 'opacity-[0.52]'
-                                                        }`}
-                                                    >
+                                                    <div className="min-w-0 text-center">
                                                         <span className="text-[10px] font-semibold uppercase tracking-wide text-base-content/55">
-                                                            Retention
+                                                            {secondRoleColumnLabel(shownSecondRole)}
                                                         </span>
                                                         <div className="mt-1.5 flex min-h-[2.5rem] flex-col items-center justify-center gap-1 sm:min-h-[2.75rem]">
-                                                            {info.retention ? (
-                                                                <>
-                                                                    <ReassignRoleAvatar
-                                                                        name={info.retention.display_name}
-                                                                        photoUrl={info.retention.photo_url}
-                                                                        tone="secondary"
-                                                                    />
-                                                                    <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
-                                                                        {info.retention.display_name}
-                                                                    </span>
-                                                                </>
+                                                            {roleAssignees(shownSecondRole, lead).length > 0 ? (
+                                                                roleAssignees(shownSecondRole, lead).map((person) => (
+                                                                    <div key={person.name} className="flex flex-col items-center gap-1">
+                                                                        <ReassignRoleAvatar
+                                                                            name={person.name}
+                                                                            photoUrl={person.photoUrl}
+                                                                            tone="secondary"
+                                                                        />
+                                                                        <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
+                                                                            {person.name}
+                                                                        </span>
+                                                                    </div>
+                                                                ))
                                                             ) : (
                                                                 <span className="text-[11px] text-base-content/40">Not assigned</span>
                                                             )}

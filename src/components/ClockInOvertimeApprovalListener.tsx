@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { fetchCurrentEmployeeContext } from '../lib/employeeLeadReporting';
+import { toDateInputValue } from '../lib/employeeClockInFormat';
 import {
   CLOCK_IN_OVERTIME_RESOLVED_EVENT,
   fetchRecentOvertimeApprovalRequests,
@@ -30,18 +32,58 @@ function writeSeen(seen: Record<string, OvertimeApprovalRequestStatus>) {
   }
 }
 
-function notifyResolved(status: OvertimeApprovalRequestStatus) {
-  if (status === 'approved') {
-    toast.success('Michael Decker approved your extra hours.');
-  } else if (status === 'declined') {
-    toast.error('Michael Decker did not approve the extra hours. The entry was declined.');
-  } else {
-    return;
-  }
+/** The working-hours day those clock-in rows belong to, as YYYY-MM-DD. */
+async function dateKeyForClockIns(clockInIds: number[]): Promise<string | null> {
+  if (clockInIds.length === 0) return null;
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select('clock_in_time')
+    .in('id', clockInIds)
+    .order('clock_in_time', { ascending: true })
+    .limit(1);
+  if (error || !data?.[0]?.clock_in_time) return null;
+  const parsed = new Date(data[0].clock_in_time);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return toDateInputValue(parsed);
+}
+
+function notifyResolved(
+  status: OvertimeApprovalRequestStatus,
+  dateKey: string | null,
+  openRow: (dateKey: string | null) => void,
+) {
+  const approved = status === 'approved';
+  if (!approved && status !== 'declined') return;
+
+  const message = approved
+    ? 'Michael Decker approved your extra hours.'
+    : 'Michael Decker did not approve the extra hours. The entry was declined.';
+
+  toast.custom((t) => (
+    <div
+      className={`pointer-events-auto flex max-w-md items-center gap-3 rounded-lg px-4 py-3 text-white shadow-lg ${approved ? 'bg-emerald-600' : 'bg-red-600'}`}
+    >
+      <span className="text-sm leading-snug">{message}</span>
+      <button
+        type="button"
+        className="shrink-0 rounded-full bg-white/20 px-3 py-1 text-sm font-semibold hover:bg-white/30"
+        onClick={() => {
+          toast.dismiss(t.id);
+          openRow(dateKey);
+        }}
+      >
+        Show the row
+      </button>
+    </div>
+  ), { duration: 15000 });
+
   window.dispatchEvent(new CustomEvent(CLOCK_IN_OVERTIME_RESOLVED_EVENT));
 }
 
-function applyRows(rows: OvertimeApprovalRequestRow[]) {
+async function applyRows(
+  rows: OvertimeApprovalRequestRow[],
+  openRow: (dateKey: string | null) => void,
+) {
   const seen = readSeen();
   let changed = false;
 
@@ -61,7 +103,8 @@ function applyRows(rows: OvertimeApprovalRequestRow[]) {
     const stamp = new Date(row.resolved_at || row.created_at).getTime();
     const fresh = Number.isFinite(stamp) && Date.now() - stamp < FRESH_MS;
     if (previous === 'pending' || (previous == null && fresh)) {
-      notifyResolved(row.status);
+      const dateKey = await dateKeyForClockIns(row.clock_in_ids);
+      notifyResolved(row.status, dateKey, openRow);
     }
     seen[key] = row.status;
     changed = true;
@@ -75,15 +118,26 @@ function applyRows(rows: OvertimeApprovalRequestRow[]) {
  * Michael's Yes/No reply updates the rows on the server; this surfaces the toast.
  */
 export default function ClockInOvertimeApprovalListener() {
+  const navigate = useNavigate();
+
   useEffect(() => {
     let cancelled = false;
     let employeeId: number | null = null;
     let timer: number | null = null;
 
+    const openRow = (dateKey: string | null) => {
+      const params = new URLSearchParams({ tab: 'working-hours' });
+      if (dateKey) {
+        params.set('hoursDate', dateKey);
+        params.set('hoursAt', String(Date.now()));
+      }
+      navigate(`/my-profile?${params.toString()}`);
+    };
+
     const tick = async () => {
       if (employeeId == null) return;
       const rows = await fetchRecentOvertimeApprovalRequests(employeeId);
-      if (!cancelled) applyRows(rows);
+      if (!cancelled) await applyRows(rows, openRow);
     };
 
     void fetchCurrentEmployeeContext().then((ctx) => {
@@ -111,7 +165,7 @@ export default function ClockInOvertimeApprovalListener() {
       if (timer != null) window.clearInterval(timer);
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [navigate]);
 
   return null;
 }

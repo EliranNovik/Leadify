@@ -1,4 +1,5 @@
 import React from 'react';
+import { EXTRA_HANDLING_ROLES } from '../../lib/handlingRoles';
 
 interface FloatingFilterBarProps {
     fromDate: string;
@@ -235,6 +236,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         { value: 'retainer_handler', label: 'Completion Coordinator' },
         { value: 'helper_handler', label: 'Helper Handler' },
         { value: 'client_support', label: 'Case Monitoring Coordinator' },
+        ...EXTRA_HANDLING_ROLES.map((role) => ({ value: role.id, label: role.title })),
     ];
 
     const roleLabels: { [key: string]: string } = {
@@ -247,6 +249,7 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         retainer_handler: 'Completion Coordinator',
         helper_handler: 'Helper Handler',
         client_support: 'Case Monitoring Coordinator',
+        ...Object.fromEntries(EXTRA_HANDLING_ROLES.map((role) => [role.id, role.title])),
     };
     return (
         <>

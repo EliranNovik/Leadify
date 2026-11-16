@@ -129,6 +129,7 @@ type MappedLead = {
   campaignId: string | null;
   adId: string | null;
   createdAt: string | null;
+  facts: string | null;
 };
 
 function mapExportLead(
@@ -172,6 +173,7 @@ function mapExportLead(
     campaignId: textOrNull(lead.campaign_id),
     adId: textOrNull(lead.ad_id),
     createdAt: textOrNull(lead.created_at),
+    facts: textOrNull((lead as { facts?: unknown }).facts) || field('facts'),
   };
 }
 
@@ -270,6 +272,16 @@ async function writeAccessLog(
   if (error) logError('Could not write hook access log', error.message);
 }
 
+function blockedDuplicateBody(leadgenId: string) {
+  return {
+    duplicate: true,
+    blocked: true,
+    created: false,
+    leadgen_id: leadgenId,
+    message: 'Lead was blocked and not created. This leadgen id was already imported.',
+  };
+}
+
 async function importLead(
   admin: SupabaseClient,
   mapped: MappedLead,
@@ -282,7 +294,7 @@ async function importLead(
     .maybeSingle();
   if (existingError) throw new Error(existingError.message);
   if (existing?.lead_id) {
-    await writeAccessLog(admin, rawLead, { duplicate: true, leadgen_id: mapped.leadgenId }, 200);
+    await writeAccessLog(admin, rawLead, blockedDuplicateBody(mapped.leadgenId), 200);
     return 'duplicate';
   }
 
@@ -302,7 +314,10 @@ async function importLead(
       .from('fb_imported_leadgen')
       .insert({ leadgen_id: mapped.leadgenId });
     if (claimError) {
-      if (claimError.code === '23505') return 'duplicate';
+      if (claimError.code === '23505') {
+        await writeAccessLog(admin, rawLead, blockedDuplicateBody(mapped.leadgenId), 200);
+        return 'duplicate';
+      }
       throw new Error(claimError.message);
     }
   }
@@ -351,6 +366,7 @@ async function importLead(
   const { error: metaError } = await admin
     .from('leads')
     .update({
+      ...(mapped.facts ? { facts: mapped.facts } : {}),
       utm_params: {
         leadgen_id: mapped.leadgenId,
         form_id: mapped.formId,

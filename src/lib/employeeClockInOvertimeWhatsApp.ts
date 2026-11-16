@@ -17,6 +17,8 @@ export type OvertimeApprovalRequestRow = {
   status: OvertimeApprovalRequestStatus;
   created_at: string;
   resolved_at: string | null;
+  /** Clock-in rows this request covers, so the toast can open that day in the hours table. */
+  clock_in_ids: number[];
 };
 
 /** Placeholder {{5}}. One label per day, for example "Monday 16 November 2026". */
@@ -157,7 +159,7 @@ export async function fetchRecentOvertimeApprovalRequests(
   const since = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from('employee_clock_in_overtime_requests')
-    .select('id, status, created_at, resolved_at')
+    .select('id, status, created_at, resolved_at, clock_in_ids')
     .eq('employee_id', employeeId)
     .gte('created_at', since)
     .order('created_at', { ascending: false });
@@ -175,11 +177,15 @@ export async function fetchRecentOvertimeApprovalRequests(
     const status = row.status;
     if (!Number.isFinite(id)) return [];
     if (status !== 'pending' && status !== 'approved' && status !== 'declined') return [];
+    const clockInIds = Array.isArray(row.clock_in_ids)
+      ? row.clock_in_ids.map((value: unknown) => Number(value)).filter((value: number) => Number.isFinite(value) && value > 0)
+      : [];
     return [{
       id,
       status,
       created_at: row.created_at,
       resolved_at: row.resolved_at ?? null,
+      clock_in_ids: clockInIds,
     }];
   });
 }

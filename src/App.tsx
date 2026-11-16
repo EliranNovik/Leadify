@@ -32,7 +32,7 @@ import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
 import MailboxHealthMonitor from './components/MailboxHealthMonitor';
-import PWAUpdateNotification from './components/PWAUpdateNotification';
+// import PWAUpdateNotification from './components/PWAUpdateNotification';
 import AppUrlBar from './components/AppUrlBar';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
@@ -1413,7 +1413,7 @@ const AppContent: React.FC = () => {
               <AppContentInner />
               <MoneyRainCelebration />
               <MailboxReconnectModal />
-              <PWAUpdateNotification />
+              {/* <PWAUpdateNotification /> */}
               <Toaster
                 position="top-center"
                 reverseOrder={false}

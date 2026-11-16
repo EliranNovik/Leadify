@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/solid';
@@ -56,6 +56,13 @@ import {
 } from '../../lib/handlerEmailFlag';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
 import { classifyOwnedHandlingBucket, readPipelineActiveType } from '../../lib/handlerCaseBuckets';
+import {
+  PIPELINE_PAGE_SIZE,
+  applyPipelineListFilter,
+  countPipelineBuckets,
+  emptyPipelineBucketTotals,
+  type PipelineBucketTotals,
+} from '../../lib/pipelineCasePages';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import HandlerAssignedDateBadge from './HandlerAssignedDateBadge';
 import {
@@ -202,6 +209,14 @@ const ClientSupportPipelineView: React.FC<Props> = ({
   const [loading, setLoading] = useState(() => initialSnapshot == null);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<HandlerPipelineRow[]>(() => initialSnapshot?.rows || []);
+  const [bucketTotals, setBucketTotals] = useState<PipelineBucketTotals>(emptyPipelineBucketTotals);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const pagingRef = useRef({ newFrom: 0, legacyFrom: 0, newDone: false, legacyDone: false });
+  const loadingMoreRef = useRef(false);
+  const generationRef = useRef(0);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const rowsRef = useRef<HandlerPipelineRow[]>(initialSnapshot?.rows || []);
   const [search, setSearch] = useState(() => loadHandlerFilters(ownedFilterKey).search);
   const [tableFilters, setTableFilters] = useState<HandlerTableFilters>(
     () => loadHandlerFilters(ownedFilterKey).tableFilters,
@@ -232,9 +247,19 @@ const ClientSupportPipelineView: React.FC<Props> = ({
     } satisfies HandlerFilterState);
   }, [ownedFilterKey, search, tableFilters, bucket, quickFilter]);
 
-  const load = useCallback(async (options: { silent?: boolean } = {}) => {
-    const { silent = false } = options;
-    if (!silent) setLoading(true);
+  const load = useCallback(async (options: { silent?: boolean; append?: boolean } = {}) => {
+    const { silent = false, append = false } = options;
+    if (append) {
+      if (loadingMoreRef.current || (pagingRef.current.newDone && pagingRef.current.legacyDone)) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else {
+      pagingRef.current = { newFrom: 0, legacyFrom: 0, newDone: false, legacyDone: false };
+      loadingMoreRef.current = false;
+      generationRef.current += 1;
+      if (!silent) setLoading(true);
+    }
+    const generation = generationRef.current;
     setError(null);
     try {
       await initializeStageNames();
@@ -244,41 +269,65 @@ const ClientSupportPipelineView: React.FC<Props> = ({
       const currentUserId = identity.userId;
       setCurrentUserId(currentUserId);
 
-      const [newResult, legacyResult, languagesResult, employeesResult, countriesResult] = await Promise.all([
-        supabase
-          .from('leads')
-          .select(`
-            id, lead_number, name, stage, category_id, category, created_at,
-            balance, balance_currency, handler, case_handler_id, retainer_handler_id, client_support_id,
-            active_handler_type, language, country_id, unactivated_at, phone, mobile, email,
-            misc_country!country_id ( id, name, timezone ),
-            misc_category!category_id (
-              id, name, parent_id,
-              misc_maincategory!parent_id ( id, name )
+      const page = pagingRef.current;
+      const openOnly = Boolean(quickFilter);
+      const role = { kind: 'owned' as const, ownerType: ownedActiveType };
+      const applyIdentity = (query: any) => query.eq(ownedColumn, employeeId);
+      const [newResult, legacyResult, languagesResult, employeesResult, countriesResult, bucketCounts] = await Promise.all([
+        page.newDone
+          ? Promise.resolve({ data: [] as any[], error: null })
+          : applyPipelineListFilter(
+              applyIdentity(
+                supabase
+                  .from('leads')
+                  .select(`
+                    id, lead_number, name, stage, category_id, category, created_at,
+                    balance, balance_currency, handler, case_handler_id, retainer_handler_id, client_support_id,
+                    active_handler_type, language, country_id, unactivated_at, phone, mobile, email,
+                    misc_country!country_id ( id, name, timezone ),
+                    misc_category!category_id (
+                      id, name, parent_id,
+                      misc_maincategory!parent_id ( id, name )
+                    )
+                  `),
+              ),
+              role,
+              'new',
+              bucket,
+              openOnly,
             )
-          `)
-          .eq(ownedColumn, employeeId)
-          .order('created_at', { ascending: false })
-          .limit(1000),
-        supabase
-          .from('leads_lead')
-          .select(`
-            id, name, stage, category_id, cdate, no_of_applicants, total, currency_id,
-            language_id, active_handler_type, case_handler_id, retainer_handler_id, client_support_id, status, phone,
-            accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
-            misc_category!category_id (
-              id, name, parent_id,
-              misc_maincategory!parent_id ( id, name )
+              .order('created_at', { ascending: false })
+              .range(page.newFrom, page.newFrom + PIPELINE_PAGE_SIZE - 1),
+        page.legacyDone
+          ? Promise.resolve({ data: [] as any[], error: null })
+          : applyPipelineListFilter(
+              applyIdentity(
+                supabase
+                  .from('leads_lead')
+                  .select(`
+                    id, name, stage, category_id, cdate, no_of_applicants, total, currency_id,
+                    language_id, active_handler_type, case_handler_id, retainer_handler_id, client_support_id, status, phone,
+                    accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
+                    misc_category!category_id (
+                      id, name, parent_id,
+                      misc_maincategory!parent_id ( id, name )
+                    )
+                  `),
+              ),
+              role,
+              'legacy',
+              bucket,
+              openOnly,
             )
-          `)
-          .eq(ownedColumn, employeeId)
-          .order('cdate', { ascending: false })
-          .limit(1000),
+              .order('cdate', { ascending: false })
+              .range(page.legacyFrom, page.legacyFrom + PIPELINE_PAGE_SIZE - 1),
         supabase.from('misc_language').select('id, name'),
         supabase.from('tenants_employee').select('id, display_name, photo_url, photo'),
         supabase.from('misc_country').select('id, name, timezone'),
+        append ? Promise.resolve(null) : countPipelineBuckets(role, applyIdentity, applyIdentity),
       ]);
 
+      if (generation !== generationRef.current) return;
       if (newResult.error) throw newResult.error;
       if (legacyResult.error) throw legacyResult.error;
       const nextCountries = (countriesResult.data || []) as HandlerCountry[];
@@ -518,17 +567,31 @@ const ClientSupportPipelineView: React.FC<Props> = ({
         });
       }
 
-      processed.sort((a, b) => {
-        const da = a.assigned_date ? Date.parse(a.assigned_date) : 0;
-        const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
-        return db - da;
-      });
+      const newLen = (newResult.data || []).length;
+      const legacyLen = (legacyResult.data || []).length;
+      if (newLen < PIPELINE_PAGE_SIZE) pagingRef.current.newDone = true;
+      else pagingRef.current.newFrom += newLen;
+      if (legacyLen < PIPELINE_PAGE_SIZE) pagingRef.current.legacyDone = true;
+      else pagingRef.current.legacyFrom += legacyLen;
+      setHasMore(!pagingRef.current.newDone || !pagingRef.current.legacyDone);
+      if (bucketCounts) setBucketTotals(bucketCounts);
+
+      const sortRows = (list: HandlerPipelineRow[]) =>
+        list.sort((a, b) => {
+          const da = a.assigned_date ? Date.parse(a.assigned_date) : 0;
+          const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
+          return db - da;
+        });
+      const baseRows = append
+        ? sortRows([...rowsRef.current.filter((row) => !processed.some((next) => next.id === row.id)), ...processed])
+        : sortRows(processed);
+      rowsRef.current = baseRows;
 
       holdPipelineScroll();
-      setRows(processed);
+      setRows(baseRows);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
-        rows: processed,
+        rows: baseRows,
         metrics: snapshotStore.get()?.metrics || new Map(),
         countries: nextCountries,
         currentUserId,
@@ -536,10 +599,12 @@ const ClientSupportPipelineView: React.FC<Props> = ({
 
       try {
         const flag5ByRowId = await fetchHandlerEmailFlag5Targets(supabase, processed);
-        const withEmailFlags = processed.map((row) => ({
+        if (generation !== generationRef.current) return;
+        const withEmailFlags = baseRows.map((row) => ({
           ...row,
-          emailFlag5: flag5ByRowId.get(row.id) || null,
+          emailFlag5: flag5ByRowId.get(row.id) || row.emailFlag5 || null,
         }));
+        rowsRef.current = withEmailFlags;
         holdPipelineScroll();
         setRows(withEmailFlags);
         snapshotStore.set({
@@ -560,11 +625,15 @@ const ClientSupportPipelineView: React.FC<Props> = ({
       setRows([]);
       setMetrics(new Map());
     } finally {
-      holdPipelineScroll();
-      setLoading(false);
-      releasePipelineScroll();
+      if (generation === generationRef.current) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+        holdPipelineScroll();
+        setLoading(false);
+        releasePipelineScroll();
+      }
     }
-  }, [viewAs, ownedColumn, ownedActiveType, ownedFilterKey]);
+  }, [viewAs, ownedColumn, ownedActiveType, ownedFilterKey, bucket, quickFilter]);
 
   useEffect(() => {
     if (matchingHandlerSnapshot(snapshotStore, viewAs)) {
@@ -730,18 +799,23 @@ const ClientSupportPipelineView: React.FC<Props> = ({
 
   const openRows = useMemo(() => rows.filter((row) => row.bucket !== 'closed'), [rows]);
 
-  const counts = useMemo(() => {
-    const next = { new: 0, active: 0, non_active: 0, closed: 0 };
-    rows.forEach((row) => {
-      if (!matchesHandlerTableFilters(row, tableFilters)) return;
-      next[row.bucket] += 1;
-    });
-    return next;
-  }, [rows, tableFilters]);
+  const counts = bucketTotals;
 
   useEffect(() => {
-    onCountChange?.(rows.length);
-  }, [onCountChange, rows.length]);
+    onCountChange?.(counts.new + counts.active + counts.non_active + counts.closed);
+  }, [onCountChange, counts]);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore || loading) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void load({ silent: true, append: true });
+      }
+    }, { root: null, rootMargin: '600px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, load, loading, rows.length]);
 
   const summaryCounts: HandlerSummaryCounts = useMemo(() => {
     const todayKey = localTodayYmd();
@@ -995,6 +1069,14 @@ const ClientSupportPipelineView: React.FC<Props> = ({
           </table>
         </div>
       )}
+
+      <div ref={sentinelRef} className="py-3 text-center text-sm text-gray-400">
+        {loadingMore
+          ? 'Loading more cases…'
+          : hasMore
+            ? `${quickFilter ? rows.length : filtered.length} of ${quickFilter ? counts.new + counts.active + counts.non_active : counts[bucket]}`
+            : null}
+      </div>
 
       <HandlerCaseOverlays
         rmqTarget={rmqTarget}

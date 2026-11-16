@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/solid';
@@ -34,6 +34,13 @@ import {
 } from './HandlerCaseActions';
 import { type HandlerBucket, type HandlerPipelineRow } from './handlerTypes';
 import { classifyRetentionBucket as sharedClassifyRetentionBucket, readPipelineActiveType } from '../../lib/handlerCaseBuckets';
+import {
+  PIPELINE_PAGE_SIZE,
+  applyPipelineListFilter,
+  countPipelineBuckets,
+  emptyPipelineBucketTotals,
+  type PipelineBucketTotals,
+} from '../../lib/pipelineCasePages';
 import { fetchHandlerEmailFlag5Targets } from '../../lib/handlerEmailFlag';
 import PipelineFollowUpButton from './PipelineFollowUpButton';
 import {
@@ -160,6 +167,14 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
   const [loading, setLoading] = useState(() => initialSnapshot == null);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<HandlerPipelineRow[]>(() => initialSnapshot?.rows || []);
+  const [bucketTotals, setBucketTotals] = useState<PipelineBucketTotals>(emptyPipelineBucketTotals);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const pagingRef = useRef({ newFrom: 0, legacyFrom: 0, newDone: false, legacyDone: false });
+  const loadingMoreRef = useRef(false);
+  const generationRef = useRef(0);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const rowsRef = useRef<HandlerPipelineRow[]>(initialSnapshot?.rows || []);
   const [search, setSearch] = useState(() => loadRetentionFilters().search);
   const [tableFilters, setTableFilters] = useState<HandlerTableFilters>(
     () => loadRetentionFilters().tableFilters,
@@ -183,9 +198,19 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
     } satisfies RetentionFilterState);
   }, [search, tableFilters, bucket]);
 
-  const load = useCallback(async (options: { silent?: boolean } = {}) => {
-    const { silent = false } = options;
-    if (!silent) setLoading(true);
+  const load = useCallback(async (options: { silent?: boolean; append?: boolean } = {}) => {
+    const { silent = false, append = false } = options;
+    if (append) {
+      if (loadingMoreRef.current || (pagingRef.current.newDone && pagingRef.current.legacyDone)) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else {
+      pagingRef.current = { newFrom: 0, legacyFrom: 0, newDone: false, legacyDone: false };
+      loadingMoreRef.current = false;
+      generationRef.current += 1;
+      if (!silent) setLoading(true);
+    }
+    const generation = generationRef.current;
     setError(null);
     try {
       await initializeStageNames();
@@ -194,43 +219,65 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
       const employeeId = identity.employeeId;
       const currentUserId = identity.userId;
 
-      const [newResult, legacyResult, languagesResult, employeesResult, countriesResult] = await Promise.all([
-        supabase
-          .from('leads')
-          .select(`
-            id, lead_number, name, stage, category_id, category, created_at,
-            balance, balance_currency, case_handler_id, retainer_handler_id, client_support_id,
-            retention_handler_started, active_handler_type, language, country_id,
-            unactivated_at, phone, mobile, email,
-            misc_country!country_id ( id, name, timezone ),
-            misc_category!category_id (
-              id, name, parent_id,
-              misc_maincategory!parent_id ( id, name )
+      const page = pagingRef.current;
+      const applyIdentity = (query: any) => query.eq('retainer_handler_id', employeeId);
+      const [newResult, legacyResult, languagesResult, employeesResult, countriesResult, bucketCounts] = await Promise.all([
+        page.newDone
+          ? Promise.resolve({ data: [] as any[], error: null })
+          : applyPipelineListFilter(
+              applyIdentity(
+                supabase
+                  .from('leads')
+                  .select(`
+                    id, lead_number, name, stage, category_id, category, created_at,
+                    balance, balance_currency, case_handler_id, retainer_handler_id, client_support_id,
+                    retention_handler_started, active_handler_type, language, country_id,
+                    unactivated_at, phone, mobile, email,
+                    misc_country!country_id ( id, name, timezone ),
+                    misc_category!category_id (
+                      id, name, parent_id,
+                      misc_maincategory!parent_id ( id, name )
+                    )
+                  `),
+              ),
+              { kind: 'retention' },
+              'new',
+              bucket,
+              false,
             )
-          `)
-          .eq('retainer_handler_id', employeeId)
-          .order('created_at', { ascending: false })
-          .limit(1000),
-        supabase
-          .from('leads_lead')
-          .select(`
-            id, name, stage, category_id, cdate, no_of_applicants, total, currency_id,
-            language_id, active_handler_type, retainer_handler_id, retention_handler_started,
-            case_handler_id, client_support_id, status, phone,
-            accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
-            misc_category!category_id (
-              id, name, parent_id,
-              misc_maincategory!parent_id ( id, name )
+              .order('created_at', { ascending: false })
+              .range(page.newFrom, page.newFrom + PIPELINE_PAGE_SIZE - 1),
+        page.legacyDone
+          ? Promise.resolve({ data: [] as any[], error: null })
+          : applyPipelineListFilter(
+              applyIdentity(
+                supabase
+                  .from('leads_lead')
+                  .select(`
+                    id, name, stage, category_id, cdate, no_of_applicants, total, currency_id,
+                    language_id, active_handler_type, retainer_handler_id, retention_handler_started,
+                    case_handler_id, client_support_id, status, phone,
+                    accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
+                    misc_category!category_id (
+                      id, name, parent_id,
+                      misc_maincategory!parent_id ( id, name )
+                    )
+                  `),
+              ),
+              { kind: 'retention' },
+              'legacy',
+              bucket,
+              false,
             )
-          `)
-          .eq('retainer_handler_id', employeeId)
-          .order('cdate', { ascending: false })
-          .limit(1000),
+              .order('cdate', { ascending: false })
+              .range(page.legacyFrom, page.legacyFrom + PIPELINE_PAGE_SIZE - 1),
         supabase.from('misc_language').select('id, name'),
         supabase.from('tenants_employee').select('id, display_name, photo_url, photo'),
         supabase.from('misc_country').select('id, name, timezone'),
+        append ? Promise.resolve(null) : countPipelineBuckets({ kind: 'retention' }, applyIdentity, applyIdentity),
       ]);
 
+      if (generation !== generationRef.current) return;
       if (newResult.error) throw newResult.error;
       if (legacyResult.error) throw legacyResult.error;
       const nextCountries = (countriesResult.data || []) as RetentionCountry[];
@@ -452,27 +499,43 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
         });
       }
 
-      processed.sort((a, b) => {
-        const da = a.assigned_date ? Date.parse(a.assigned_date) : 0;
-        const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
-        return db - da;
-      });
+      const newLen = (newResult.data || []).length;
+      const legacyLen = (legacyResult.data || []).length;
+      if (newLen < PIPELINE_PAGE_SIZE) pagingRef.current.newDone = true;
+      else pagingRef.current.newFrom += newLen;
+      if (legacyLen < PIPELINE_PAGE_SIZE) pagingRef.current.legacyDone = true;
+      else pagingRef.current.legacyFrom += legacyLen;
+      setHasMore(!pagingRef.current.newDone || !pagingRef.current.legacyDone);
+      if (bucketCounts) setBucketTotals(bucketCounts);
+
+      const sortRows = (list: HandlerPipelineRow[]) =>
+        list.sort((a, b) => {
+          const da = a.assigned_date ? Date.parse(a.assigned_date) : 0;
+          const db = b.assigned_date ? Date.parse(b.assigned_date) : 0;
+          return db - da;
+        });
+      const baseRows = append
+        ? sortRows([...rowsRef.current.filter((row) => !processed.some((next) => next.id === row.id)), ...processed])
+        : sortRows(processed);
+      rowsRef.current = baseRows;
 
       holdPipelineScroll();
-      setRows(processed);
+      setRows(baseRows);
       snapshotStore.set({
         identityKey: pipelineViewIdentityKey(viewAs),
-        rows: processed,
+        rows: baseRows,
         countries: nextCountries,
         currentUserId,
       });
 
       try {
         const flag5ByRowId = await fetchHandlerEmailFlag5Targets(supabase, processed);
-        const withEmailFlags = processed.map((row) => ({
+        if (generation !== generationRef.current) return;
+        const withEmailFlags = baseRows.map((row) => ({
           ...row,
-          emailFlag5: flag5ByRowId.get(row.id) || null,
+          emailFlag5: flag5ByRowId.get(row.id) || row.emailFlag5 || null,
         }));
+        rowsRef.current = withEmailFlags;
         holdPipelineScroll();
         setRows(withEmailFlags);
         snapshotStore.set({
@@ -491,11 +554,15 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
       setError(err instanceof Error ? err.message : 'Failed to load retention pipeline');
       setRows([]);
     } finally {
-      holdPipelineScroll();
-      setLoading(false);
-      releasePipelineScroll();
+      if (generation === generationRef.current) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+        holdPipelineScroll();
+        setLoading(false);
+        releasePipelineScroll();
+      }
     }
-  }, [viewAs]);
+  }, [viewAs, bucket]);
 
   useEffect(() => {
     if (matchingRetentionSnapshot(viewAs)) {
@@ -515,18 +582,23 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
     onRevalidate: () => void load({ silent: true }),
   });
 
-  useEffect(() => {
-    onCountChange?.(rows.length);
-  }, [rows.length, onCountChange]);
+  const counts = bucketTotals;
 
-  const counts = useMemo(() => {
-    const next = { new: 0, active: 0, non_active: 0, closed: 0 };
-    rows.forEach((row) => {
-      if (!matchesHandlerTableFilters(row, tableFilters)) return;
-      next[row.bucket] += 1;
-    });
-    return next;
-  }, [rows, tableFilters]);
+  useEffect(() => {
+    onCountChange?.(counts.new + counts.active + counts.non_active + counts.closed);
+  }, [onCountChange, counts]);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore || loading) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void load({ silent: true, append: true });
+      }
+    }, { root: null, rootMargin: '600px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, load, loading, rows.length]);
 
   const filterOptions = useMemo(
     () => ({
@@ -845,6 +917,14 @@ const RetentionHandlerPipelineView: React.FC<Props> = ({
           </table>
         </div>
       )}
+
+      <div ref={sentinelRef} className="py-3 text-center text-sm text-gray-400">
+        {loadingMore
+          ? 'Loading more cases…'
+          : hasMore
+            ? `${filtered.length} of ${counts[bucket]}`
+            : null}
+      </div>
 
       <HandlerCaseOverlays
         rmqTarget={rmqTarget}

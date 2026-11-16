@@ -63,7 +63,7 @@ import {
   emptyHandlerBucketCounts,
   readPipelineActiveType,
 } from '../lib/handlerCaseBuckets';
-import { fetchAllPagedRows } from '../lib/invoicedInstallments';
+import { fetchAllPagedRows, fetchAllRowsForLeadIds } from '../lib/invoicedInstallments';
 
 /** Handler Nominated / Handler Set: the stage that records a case arriving on a handler's desk. */
 const HANDLER_RECEIVED_STAGE = 105;
@@ -629,53 +629,66 @@ const HandlerManagementPage: React.FC = () => {
            * The case-handler side also has to match on the legacy `handler` text column, since some
            * leads name their handler there and never got a `case_handler_id`.
            */
-          const newLeadQuery = supabase
-            .from('leads')
-            .select(`
-              id,
-              stage,
-              category_id,
-              case_handler_id,
-              retainer_handler_id,
-              active_handler_type,
-              retention_handler_started,
-              unactivated_at,
-              balance,
-              balance_currency,
-              proposal_total,
-              proposal_currency,
-              misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
-            `);
           const handlerNameMatches = [handler.full_name, handler.display_name, handler.official_name]
             .map((name) => String(name || '').trim())
             // A comma or bracket in a name would break the filter string PostgREST parses.
             .filter((name) => name.length > 0 && !/[,()]/.test(name));
-          const { data: newLeads } = await (isRetentionRole || isSupportRole
-            ? newLeadQuery.eq(roleField, handlerId)
-            : newLeadQuery.or(
+          const newLeadFilter = isRetentionRole || isSupportRole
+            ? (query: any) => query.eq(roleField, handlerId)
+            : (query: any) => query.or(
                 [
                   `case_handler_id.eq.${handlerId}`,
                   `handler.eq.${handlerId}`,
                   ...handlerNameMatches.map((name) => `handler.eq.${name}`),
                 ].join(','),
-              ));
+              );
+          /*
+           * A plain select stops at the server's page (1,000 per table, 2,000 together). Page
+           * through every match so New, Active, Non-active, Total and Closed are the real counts.
+           */
+          const newLeads = await fetchAllPagedRows<any>((from, to) =>
+            newLeadFilter(
+              supabase
+                .from('leads')
+                .select(`
+                  id,
+                  stage,
+                  category_id,
+                  case_handler_id,
+                  retainer_handler_id,
+                  active_handler_type,
+                  retention_handler_started,
+                  unactivated_at,
+                  balance,
+                  balance_currency,
+                  proposal_total,
+                  proposal_currency,
+                  misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+                `)
+                .order('id', { ascending: true }),
+            ).range(from, to),
+          );
 
-          const { data: legacyLeads } = await supabase
-            .from('leads_lead')
-            .select(`
-              id,
-              stage,
-              total,
-              total_base,
-              currency_id,
-              category_id,
-              active_handler_type,
-              retention_handler_started,
-              status,
-              accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
-              misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
-            `)
-            .eq(roleField, handlerId);
+          const legacyLeads = await fetchAllPagedRows<any>((from, to) =>
+            supabase
+              .from('leads_lead')
+              .select(`
+                id,
+                stage,
+                total,
+                total_base,
+                currency_id,
+                category_id,
+                active_handler_type,
+                retention_handler_started,
+                status,
+                accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
+                misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))
+              `)
+              .eq(roleField, handlerId)
+              .order('id', { ascending: true })
+              .range(from, to),
+          );
 
           // Lead ids and per-lead signed value, read later by the one period pass for the page.
           const periodRefs = emptyHandlerLeadRefs();
@@ -738,30 +751,32 @@ const HandlerManagementPage: React.FC = () => {
 
             // For new leads - count distinct leads from leads_leadstage where stage >= 150
             if (handlerNewLeadIds.length > 0) {
-              const { data: newStageRecords, error: newStageError } = await supabase
-                .from('leads_leadstage')
-                .select('newlead_id', { count: 'exact', head: false })
-                .in('newlead_id', handlerNewLeadIds)
-                .gte('stage', 150);
-
-              if (!newStageError && newStageRecords) {
-                const uniqueNewLeadIds = new Set(newStageRecords.map(r => r.newlead_id).filter(Boolean));
-                applicationsSentCount += uniqueNewLeadIds.size;
-              }
+              const newStageRecords = await fetchAllRowsForLeadIds<{ newlead_id?: string | null }>(
+                handlerNewLeadIds,
+                (chunk) =>
+                  supabase
+                    .from('leads_leadstage')
+                    .select('newlead_id')
+                    .in('newlead_id', chunk)
+                    .gte('stage', 150),
+                'newlead_id',
+              );
+              applicationsSentCount += new Set(newStageRecords.map(r => r.newlead_id).filter(Boolean)).size;
             }
 
             // For legacy leads - count distinct leads from leads_leadstage where stage >= 150
             if (handlerLegacyLeadIds.length > 0) {
-              const { data: legacyStageRecords, error: legacyStageError } = await supabase
-                .from('leads_leadstage')
-                .select('lead_id', { count: 'exact', head: false })
-                .in('lead_id', handlerLegacyLeadIds)
-                .gte('stage', 150);
-
-              if (!legacyStageError && legacyStageRecords) {
-                const uniqueLegacyLeadIds = new Set(legacyStageRecords.map(r => r.lead_id).filter(Boolean));
-                applicationsSentCount += uniqueLegacyLeadIds.size;
-              }
+              const legacyStageRecords = await fetchAllRowsForLeadIds<{ lead_id?: number | null }>(
+                handlerLegacyLeadIds,
+                (chunk) =>
+                  supabase
+                    .from('leads_leadstage')
+                    .select('lead_id')
+                    .in('lead_id', chunk)
+                    .gte('stage', 150),
+                'lead_id',
+              );
+              applicationsSentCount += new Set(legacyStageRecords.map(r => r.lead_id).filter(Boolean)).size;
             }
           } catch (error) {
             console.error(`Error calculating applications sent count for handler ${handlerId}:`, error);
@@ -1064,24 +1079,32 @@ const HandlerManagementPage: React.FC = () => {
        * other leavers are skipped on purpose: each row costs a handful of queries and they have
        * nothing to show.
        */
-      const [{ data: newCaseHandlerRows }, { data: legacyCaseHandlerRows }] = await Promise.all([
-        supabase
-          .from('leads')
-          .select('case_handler_id')
-          .not('case_handler_id', 'is', null)
-          .gte('stage', 60)
-          .neq('stage', 91)
-          .is('unactivated_at', null),
-        supabase
-          .from('leads_lead')
-          .select('case_handler_id')
-          .not('case_handler_id', 'is', null)
-          .gte('stage', 60)
-          .neq('stage', 91)
-          .or('status.eq.0,status.is.null'),
+      const [newCaseHandlerRows, legacyCaseHandlerRows] = await Promise.all([
+        fetchAllPagedRows<{ case_handler_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads')
+            .select('case_handler_id')
+            .not('case_handler_id', 'is', null)
+            .gte('stage', 60)
+            .neq('stage', 91)
+            .is('unactivated_at', null)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
+        fetchAllPagedRows<{ case_handler_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads_lead')
+            .select('case_handler_id')
+            .not('case_handler_id', 'is', null)
+            .gte('stage', 60)
+            .neq('stage', 91)
+            .or('status.eq.0,status.is.null')
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
       ]);
       const caseHandlerIdSet = new Set<number>();
-      [...(newCaseHandlerRows || []), ...(legacyCaseHandlerRows || [])].forEach((row) => {
+      [...newCaseHandlerRows, ...legacyCaseHandlerRows].forEach((row) => {
         const id = Number((row as { case_handler_id?: number | string | null }).case_handler_id);
         if (Number.isFinite(id) && id > 0) caseHandlerIdSet.add(id);
       });
@@ -1092,24 +1115,32 @@ const HandlerManagementPage: React.FC = () => {
           .map((handler) => buildHandlerRow(handler, 'case_handler_id')),
       );
 
-      const [{ data: newRetentionRows }, { data: legacyRetentionRows }] = await Promise.all([
-        supabase
-          .from('leads')
-          .select('retainer_handler_id')
-          .not('retainer_handler_id', 'is', null)
-          .gte('stage', 60)
-          .neq('stage', 91)
-          .is('unactivated_at', null),
-        supabase
-          .from('leads_lead')
-          .select('retainer_handler_id')
-          .not('retainer_handler_id', 'is', null)
-          .gte('stage', 60)
-          .neq('stage', 91)
-          .or('status.eq.0,status.is.null'),
+      const [newRetentionRows, legacyRetentionRows] = await Promise.all([
+        fetchAllPagedRows<{ retainer_handler_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads')
+            .select('retainer_handler_id')
+            .not('retainer_handler_id', 'is', null)
+            .gte('stage', 60)
+            .neq('stage', 91)
+            .is('unactivated_at', null)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
+        fetchAllPagedRows<{ retainer_handler_id?: number | string | null }>((from, to) =>
+          supabase
+            .from('leads_lead')
+            .select('retainer_handler_id')
+            .not('retainer_handler_id', 'is', null)
+            .gte('stage', 60)
+            .neq('stage', 91)
+            .or('status.eq.0,status.is.null')
+            .order('id', { ascending: true })
+            .range(from, to),
+        ),
       ]);
       const retentionIdSet = new Set<number>();
-      [...(newRetentionRows || []), ...(legacyRetentionRows || [])].forEach((row) => {
+      [...newRetentionRows, ...legacyRetentionRows].forEach((row) => {
         const id = Number((row as { retainer_handler_id?: number | string | null }).retainer_handler_id);
         if (Number.isFinite(id) && id > 0) retentionIdSet.add(id);
       });

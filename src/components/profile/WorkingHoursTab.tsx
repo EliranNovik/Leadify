@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import {
   CalendarDaysIcon,
@@ -1023,6 +1024,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   headerActionsSlot = null,
 }) => {
   const { user } = useAuthContext();
+  const [searchParams] = useSearchParams();
+  const hoursDate = searchParams.get('hoursDate') || '';
+  const hoursAt = searchParams.get('hoursAt') || '';
   const calendarRef = useRef<CompactAvailabilityCalendarRef>(null);
   const hoursShellRef = useRef<HTMLDivElement>(null);
   const headerMonthFilterRef = useRef<HTMLDetailsElement>(null);
@@ -1087,6 +1091,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
   const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
   const [scrollToTodayRequested, setScrollToTodayRequested] = useState(false);
+  const [scrollToDateKey, setScrollToDateKey] = useState<string | null>(null);
   const [selectedWeekNum, setSelectedWeekNum] = useState(1);
   const [manualClockInInitialDateKey, setManualClockInInitialDateKey] = useState<string | null>(null);
   const [pendingCalendarDateKey, setPendingCalendarDateKey] = useState<string | null>(null);
@@ -1672,6 +1677,48 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     setSelectedWeekNum(weekNumForDateKey(toDateInputValue(today)) ?? 1);
     setScrollToTodayRequested(true);
   }, [weekNumForDateKey]);
+
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(hoursDate)) return;
+    const [yearPart, monthPart] = hoursDate.split('-').map(Number);
+    if (!Number.isFinite(yearPart) || !Number.isFinite(monthPart)) return;
+    setYear(yearPart);
+    setMonth(monthPart);
+    setRowFilters(new Set());
+    setScrollToDateKey(hoursDate);
+  }, [hoursDate, hoursAt]);
+
+  useEffect(() => {
+    if (!scrollToDateKey || loading) return;
+    if (scrollToDateKey < dateFrom || scrollToDateKey > dateTo) return;
+    if (rowFilters.size > 0) {
+      setRowFilters(new Set());
+      return;
+    }
+    const week = weekNumForDateKey(scrollToDateKey);
+    if (week != null && selectedWeekNum !== 0 && selectedWeekNum !== week) {
+      setSelectedWeekNum(week);
+      return;
+    }
+    const row = [...document.querySelectorAll<HTMLElement>(`[id="wh-row-${scrollToDateKey}"]`)]
+      .find((element) => element.getClientRects().length > 0);
+    if (!row) return;
+    window.requestAnimationFrame(() => {
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      row.classList.add('wh-row-focus');
+      window.setTimeout(() => row.classList.remove('wh-row-focus'), 2800);
+      setScrollToDateKey(null);
+    });
+  }, [
+    scrollToDateKey,
+    loading,
+    dateFrom,
+    dateTo,
+    rowFilters,
+    selectedWeekNum,
+    weekNumForDateKey,
+    filteredMergedDayRows,
+  ]);
 
   useEffect(() => {
     if (!scrollToTodayRequested || loading) return;
@@ -3003,6 +3050,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.approval-row-declined td {
           background: #fee2e2 !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-row-focus > td,
+        .wh-row-focus {
+          background-color: #ede9fe !important;
+          box-shadow: inset 0 0 0 2px #6d28d9;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.approval-row-declined:hover td {
