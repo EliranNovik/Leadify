@@ -4,17 +4,23 @@ import { toast } from 'react-hot-toast';
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
-  BanknotesIcon,
+  ChevronDownIcon,
   ClipboardDocumentListIcon,
-  ClockIcon,
-  ExclamationTriangleIcon,
-  InboxStackIcon,
+  FunnelIcon,
+  CurrencyDollarIcon,
+  FireIcon,
+  InboxArrowDownIcon,
+  WalletIcon,
   MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 import {
   GradientSummaryCard,
   REPORT_SUMMARY_GRADIENTS,
 } from '../components/reports/GradientSummaryCard';
+import LeadCostInsights from '../components/reports/LeadCostInsights';
+import ReportLoadingScreen from '../components/reports/ReportLoadingScreen';
+import DepartmentHourTotals from '../components/reports/DepartmentHourTotals';
+import EmployeeCostCarousel from '../components/reports/EmployeeCostCarousel';
 import {
   ReportSortableTh,
   compareNullableNumbers,
@@ -23,11 +29,16 @@ import {
 } from '../components/reports/ReportSortableTh';
 import {
   buildLeadManagementDetailPath,
-  collectCategoriesFromRows,
   fetchLeadsManagementReport,
+  peekLeadsManagementReport,
+  peekLeadsManagementSuperUser,
+  rememberLeadsManagementSuperUser,
+  subscribeLeadsManagementReport,
   formatAllocationCostNis,
   formatAllocationWorkedDuration,
+  leadMatchesEmployeeQuery,
   leadMatchesSearchQuery,
+  leadRowForDateRange,
   type LeadManagementLeadRow,
 } from '../lib/leadsManagementReport';
 import {
@@ -35,6 +46,19 @@ import {
   salaryAvatarGradientStyle,
 } from '../lib/employeeSalaries';
 import { supabase } from '../lib/supabase';
+import { getJerusalemTodayIsoDate } from '../lib/employeeLeadReporting';
+import {
+  agreementDepartmentOptions,
+  combinedGermanAustrian,
+  displayAgreementDepartment,
+} from '../lib/employeeDepartmentTotals';
+import { fetchAgreementScoreboardDepartments } from '../lib/scoreboardDepartments';
+import {
+  buildCategoryNameToDataMap,
+  canonicalizeScoreboardDepartment,
+  fetchCategoriesWithDepartments,
+  resolveCategoryAndDepartment,
+} from '../lib/resolveCategoryDepartment';
 import {
   confirmBudgetRequestReview,
   LeadBudgetRequestReviewModal,
@@ -142,26 +166,101 @@ function EmployeeStack({
           </span>
         ) : null}
       </div>
-      <p className="max-w-[14rem] truncate text-xs text-gray-500">
-        {employees.map((e) => e.employeeName).join(', ')}
+      <p className="flex max-w-[16rem] flex-wrap gap-x-2 gap-y-1 text-xs text-gray-500">
+        {employees.map((emp) => (
+          <span key={emp.employeeId} className="inline-flex items-center gap-1">
+            <span className="truncate">{emp.employeeName}</span>
+            {emp.missingSalary ? (
+              <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700">
+                No salary
+              </span>
+            ) : null}
+          </span>
+        ))}
       </p>
     </div>
   );
 }
 
+type BudgetBand = '' | 'under50' | 'mid' | 'near' | 'over' | 'nocap';
+
+type AgreementCatalog = {
+  targets: { id: number; name: string }[];
+  categories: any[];
+  nameMap: Map<string, any>;
+};
+
+function agreementDepartmentForLead(row: LeadManagementLeadRow, catalog: AgreementCatalog | null): string {
+  const combined = combinedGermanAustrian(catalog?.targets || []);
+  const lookup =
+    row.mainCategory && row.subcategory
+      ? `${row.mainCategory} > ${row.subcategory}`
+      : row.subcategory || row.mainCategory || row.category || '';
+  if (!catalog || !lookup) return combined;
+  const resolved = canonicalizeScoreboardDepartment(
+    resolveCategoryAndDepartment(lookup, null, null, catalog.categories, catalog.nameMap),
+    catalog.targets,
+  );
+  const name = displayAgreementDepartment(resolved.departmentName, catalog.targets);
+  if (!name || resolved.departmentName === 'Other') return combined;
+  return name;
+}
+
+function shiftIsoDate(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const date = new Date(y, (m || 1) - 1, (d || 1) + days);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function defaultLeadDateRange(): { from: string; to: string } {
+  const to = getJerusalemTodayIsoDate();
+  return { from: shiftIsoDate(to, -29), to };
+}
+
+type LeadDateMode = 'period' | 'all' | 'today';
+
+function dateButtonClass(active: boolean): string {
+  return active
+    ? 'inline-flex h-10 items-center rounded-[14px] bg-primary px-3.5 text-sm font-semibold text-white shadow-sm'
+    : 'inline-flex h-10 items-center rounded-[14px] bg-white px-3.5 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 transition-colors hover:bg-gray-50';
+}
+
+function matchesBudgetBand(row: LeadManagementLeadRow, band: BudgetBand): boolean {
+  if (!band) return true;
+  const hasCap = row.maxAllowedCostNis > 0;
+  if (band === 'nocap') return !hasCap;
+  if (band === 'over') return hasCap && row.exceedsCap;
+  if (!hasCap || row.exceedsCap) return false;
+  if (band === 'under50') return row.utilizationPercent < 50;
+  if (band === 'mid') return row.utilizationPercent >= 50 && row.utilizationPercent < 80;
+  return row.utilizationPercent >= 80;
+}
+
 const LeadsManagementReportPage: React.FC = () => {
   const navigate = useNavigate();
-  const [isSuperUser, setIsSuperUser] = useState(false);
-  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const knownSuperUser = peekLeadsManagementSuperUser();
+  const [isSuperUser, setIsSuperUser] = useState(knownSuperUser === true);
+  const [permissionsLoaded, setPermissionsLoaded] = useState(knownSuperUser != null);
   const [leadSearch, setLeadSearch] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState('');
-  const [category, setCategory] = useState('');
+  const [dateMode, setDateMode] = useState<LeadDateMode>('period');
+  const [dateToolsOpen, setDateToolsOpen] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState(() => defaultLeadDateRange().from);
+  const [rangeTo, setRangeTo] = useState(() => defaultLeadDateRange().to);
+  const [department, setDepartment] = useState('');
+  const [budgetBand, setBudgetBand] = useState<BudgetBand>('');
   const [overBudgetOnly, setOverBudgetOnly] = useState(false);
   const [pendingRequestsOnly, setPendingRequestsOnly] = useState(false);
+  const [missingBalanceOnly, setMissingBalanceOnly] = useState(false);
+  const [missingSalaryOnly, setMissingSalaryOnly] = useState(false);
   const [sortKey, setSortKey] = useState<'time' | 'cost' | 'max' | null>(null);
   const [sortDir, setSortDir] = useState<ReportSortDir>('desc');
-  const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState<LeadManagementLeadRow[]>([]);
+  const cachedRows = peekLeadsManagementReport();
+  const [loading, setLoading] = useState(cachedRows == null);
+  const [rows, setRows] = useState<LeadManagementLeadRow[]>(cachedRows ?? []);
   const [historyRow, setHistoryRow] = useState<LeadManagementLeadRow | null>(null);
   const [reasonPreview, setReasonPreview] = useState<{
     reason: string;
@@ -170,6 +269,7 @@ const LeadsManagementReportPage: React.FC = () => {
   } | null>(null);
   const [reviewRequest, setReviewRequest] = useState<LeadBudgetExtensionRequest | null>(null);
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [agreementCatalog, setAgreementCatalog] = useState<AgreementCatalog | null>(null);
   const [employeeRoleModal, setEmployeeRoleModal] = useState<{
     employee: LeadManagementLeadRow['employees'][number];
     lead: LeadManagementLeadRow;
@@ -213,6 +313,7 @@ const LeadsManagementReportPage: React.FC = () => {
           userData?.is_superuser === 'true' ||
           userData?.is_superuser === 1;
 
+        rememberLeadsManagementSuperUser(Boolean(isSuper));
         if (!cancelled) {
           setIsSuperUser(Boolean(isSuper));
           setPermissionsLoaded(true);
@@ -237,13 +338,18 @@ const LeadsManagementReportPage: React.FC = () => {
     };
   }, [navigate]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     if (!isSuperUser) return;
-    setLoading(true);
+    const cached = fresh ? null : peekLeadsManagementReport();
+    const cacheMissingDays = (cached || []).some((row) => row.daySlices == null);
+    if (cached) {
+      setRows(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     try {
-      const data = await fetchLeadsManagementReport({
-        employeeSearch: employeeSearch.trim() || undefined,
-      });
+      const data = await fetchLeadsManagementReport({ fresh: fresh || cacheMissingDays });
       setRows(data);
     } catch (error) {
       console.error(error);
@@ -252,12 +358,19 @@ const LeadsManagementReportPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [employeeSearch, isSuperUser]);
+  }, [isSuperUser]);
 
   useEffect(() => {
     if (!permissionsLoaded || !isSuperUser) return;
     void load();
   }, [load, permissionsLoaded, isSuperUser]);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !isSuperUser) return;
+    return subscribeLeadsManagementReport((next) => {
+      setRows(next);
+    });
+  }, [permissionsLoaded, isSuperUser]);
 
   const handleEmployeeClick = useCallback(
     async (
@@ -296,7 +409,7 @@ const LeadsManagementReportPage: React.FC = () => {
           approvedExtraCostNis: result.approvedExtraCostNis,
         });
         setReviewRequest(null);
-        await load();
+        await load(true);
       } catch (error) {
         console.error(error);
         toast.error(error instanceof Error ? error.message : 'Failed to review request');
@@ -307,14 +420,36 @@ const LeadsManagementReportPage: React.FC = () => {
     [reviewRequest, load],
   );
 
-  const categories = useMemo(() => collectCategoriesFromRows(rows), [rows]);
+  const departments = useMemo(() => {
+    const preferred = agreementDepartmentOptions(agreementCatalog?.targets || []);
+    const names = new Set(preferred);
+    for (const row of rows) names.add(agreementDepartmentForLead(row, agreementCatalog));
+    return [...names].sort((a, b) => {
+      const ai = preferred.indexOf(a);
+      const bi = preferred.indexOf(b);
+      return (ai < 0 ? 1000 : ai) - (bi < 0 ? 1000 : bi) || a.localeCompare(b);
+    });
+  }, [rows, agreementCatalog]);
+
+  const rangedRows = useMemo(() => {
+    const ranged: LeadManagementLeadRow[] = [];
+    for (const row of rows) {
+      const next = leadRowForDateRange(row, rangeFrom, rangeTo);
+      if (next) ranged.push(next);
+    }
+    return ranged;
+  }, [rows, rangeFrom, rangeTo]);
 
   const filteredRows = useMemo(() => {
-    const filtered = rows.filter((row) => {
-      if (category && (row.mainCategory || '') !== category) return false;
+    const filtered = rangedRows.filter((row) => {
+      if (department && agreementDepartmentForLead(row, agreementCatalog) !== department) return false;
+      if (!matchesBudgetBand(row, budgetBand)) return false;
       if (!leadMatchesSearchQuery(row, leadSearch)) return false;
+      if (!leadMatchesEmployeeQuery(row, employeeSearch)) return false;
       if (overBudgetOnly && !row.exceedsCap) return false;
       if (pendingRequestsOnly && row.pendingRequestCount <= 0) return false;
+      if (missingBalanceOnly && !row.missingBalance) return false;
+      if (missingSalaryOnly && !row.employees.some((emp) => emp.missingSalary)) return false;
       return true;
     });
 
@@ -325,7 +460,7 @@ const LeadsManagementReportPage: React.FC = () => {
       if (sortKey === 'cost') return compareNullableNumbers(a.costNis, b.costNis, sortDir);
       return compareNullableNumbers(a.maxAllowedCostNis, b.maxAllowedCostNis, sortDir);
     });
-  }, [rows, category, leadSearch, overBudgetOnly, pendingRequestsOnly, sortKey, sortDir]);
+  }, [rangedRows, agreementCatalog, department, budgetBand, leadSearch, employeeSearch, overBudgetOnly, pendingRequestsOnly, missingBalanceOnly, missingSalaryOnly, sortKey, sortDir]);
 
   const handleSort = useCallback((key: string) => {
     const next = toggleReportSort(sortKey, sortDir, key);
@@ -334,22 +469,81 @@ const LeadsManagementReportPage: React.FC = () => {
   }, [sortKey, sortDir]);
 
   const totals = useMemo(() => {
-    const scoped = rows.filter((row) => {
-      if (category && (row.mainCategory || '') !== category) return false;
+    const scoped = rangedRows.filter((row) => {
+      if (department && agreementDepartmentForLead(row, agreementCatalog) !== department) return false;
+      if (!matchesBudgetBand(row, budgetBand)) return false;
       if (!leadMatchesSearchQuery(row, leadSearch)) return false;
+      if (!leadMatchesEmployeeQuery(row, employeeSearch)) return false;
       return true;
     });
     const workedMs = filteredRows.reduce((sum, row) => sum + row.workedMs, 0);
     const costNis = Math.round(filteredRows.reduce((sum, row) => sum + row.costNis, 0) * 100) / 100;
     const overBudget = scoped.filter((row) => row.exceedsCap).length;
     const pendingRequests = scoped.reduce((sum, row) => sum + row.pendingRequestCount, 0);
-    return { leadCount: filteredRows.length, workedMs, costNis, overBudget, pendingRequests };
-  }, [filteredRows, rows, category, leadSearch]);
+    const missingBalance = scoped.filter((row) => row.missingBalance).length;
+    const missingSalaryIds = new Set<number>();
+    for (const row of scoped) {
+      for (const emp of row.employees) {
+        if (emp.missingSalary) missingSalaryIds.add(emp.employeeId);
+      }
+    }
+    return {
+      leadCount: filteredRows.length,
+      workedMs,
+      costNis,
+      overBudget,
+      pendingRequests,
+      missingBalance,
+      missingSalary: missingSalaryIds.size,
+    };
+  }, [filteredRows, rangedRows, agreementCatalog, department, budgetBand, leadSearch, employeeSearch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      fetchAgreementScoreboardDepartments(),
+      fetchCategoriesWithDepartments(supabase),
+    ])
+      .then(([targets, categories]) => {
+        if (cancelled) return;
+        setAgreementCatalog({
+          targets,
+          categories,
+          nameMap: buildCategoryNameToDataMap(categories),
+        });
+      })
+      .catch((error) => {
+        console.error('[LeadsManagement] scoreboard departments failed:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const departmentTotals = useMemo(() => {
+    const byName = new Map<string, { workedMs: number; costNis: number }>();
+    for (const row of filteredRows) {
+      const name = agreementDepartmentForLead(row, agreementCatalog);
+      const current = byName.get(name) || { workedMs: 0, costNis: 0 };
+      current.workedMs += row.workedMs;
+      current.costNis += row.costNis;
+      byName.set(name, current);
+    }
+    const order = agreementDepartmentOptions(agreementCatalog?.targets || []);
+    return [...byName.entries()]
+      .filter(([, value]) => value.workedMs > 0 || value.costNis > 0)
+      .sort((a, b) => {
+        const ai = order.indexOf(a[0]);
+        const bi = order.indexOf(b[0]);
+        return (ai < 0 ? 1000 : ai) - (bi < 0 ? 1000 : bi) || a[0].localeCompare(b[0]);
+      })
+      .map(([name, value]) => ({ name, workedMs: value.workedMs, costNis: value.costNis }));
+  }, [filteredRows, agreementCatalog]);
 
   if (!permissionsLoaded || !isSuperUser) {
     return (
       <div className="flex min-h-[calc(100dvh-3.5rem)] items-center justify-center bg-[#ececec]">
-        <span className="loading loading-spinner loading-lg text-primary" />
+        <ReportLoadingScreen title="Leads management" subtitle="Opening the report…" icon={ClipboardDocumentListIcon} />
       </div>
     );
   }
@@ -357,11 +551,11 @@ const LeadsManagementReportPage: React.FC = () => {
   return (
     <div className="min-h-[calc(100dvh-3.5rem)] bg-[#ececec]">
       <div className="w-full px-4 py-6 md:px-8 md:py-8">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-          <div>
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-4">
             <button
               type="button"
-              className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 hover:text-gray-800"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-500 hover:text-gray-800"
               onClick={() => navigate('/reports')}
             >
               <ArrowLeftIcon className="h-4 w-4" />
@@ -371,28 +565,135 @@ const LeadsManagementReportPage: React.FC = () => {
               <ClipboardDocumentListIcon className="h-7 w-7 text-primary" />
               Leads management
             </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              All leads with allocation data — time, cost, and budget utilization.
-            </p>
           </div>
-          <button
-            type="button"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 transition-colors hover:bg-gray-50"
-            onClick={() => navigate('/reports/employee-lead-allocations')}
-          >
-            <ClipboardDocumentListIcon className="h-5 w-5 text-primary" />
-            Lead allocations
-            <ArrowRightIcon className="h-4 w-4" />
-          </button>
+          <div className="flex flex-wrap items-end gap-3">
+            {(
+              [
+                ['Leads', String(totals.leadCount)],
+                ['Time', formatAllocationWorkedDuration(totals.workedMs)],
+                ['Cost', formatAllocationCostNis(totals.costNis)],
+              ] as const
+            ).map(([label, value]) => (
+              <div key={label}>
+                <p className="mb-1 px-1 text-xs font-semibold uppercase tracking-wider text-gray-500">{label}</p>
+                <div className="min-w-[7.5rem] rounded-2xl bg-white px-4 py-2.5 shadow-sm ring-1 ring-gray-100">
+                  <p className="text-lg font-bold tabular-nums text-gray-900">{value}</p>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="mb-1 inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 transition-colors hover:bg-gray-50"
+              onClick={() => navigate('/reports/employee-lead-allocations')}
+            >
+              <ClipboardDocumentListIcon className="h-5 w-5 text-primary" />
+              Hours allocation
+              <ArrowRightIcon className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="mb-5 grid grid-cols-1 items-end gap-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-gray-100 sm:grid-cols-3">
-          <label className="block min-w-0">
+        <div className="mb-4 flex flex-col gap-2">
+          <span className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Date</span>
+          <div className="flex items-end gap-2">
+            <div>
+              {dateMode === 'today' ? (
+                <input
+                  type="date"
+                  aria-label="Today"
+                  className="report-date-input input h-10 min-h-10 rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200"
+                  value={rangeFrom}
+                  max={getJerusalemTodayIsoDate()}
+                  onChange={(event) => {
+                    setRangeFrom(event.target.value);
+                    setRangeTo(event.target.value);
+                  }}
+                />
+              ) : dateMode === 'period' ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    aria-label="From"
+                    className="report-date-input input h-10 min-h-10 rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200"
+                    value={rangeFrom}
+                    max={rangeTo || undefined}
+                    onChange={(event) => setRangeFrom(event.target.value)}
+                  />
+                  <input
+                    type="date"
+                    aria-label="To"
+                    className="report-date-input input h-10 min-h-10 rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200"
+                    value={rangeTo}
+                    min={rangeFrom || undefined}
+                    onChange={(event) => setRangeTo(event.target.value)}
+                  />
+                </div>
+              ) : (
+                <div className="flex h-10 min-w-[11rem] items-center rounded-[14px] bg-white px-3 text-sm text-gray-600 ring-1 ring-gray-200">
+                  All reporting
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              aria-expanded={dateToolsOpen}
+              aria-label={dateToolsOpen ? 'Hide date filters' : 'Show date filters'}
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-gray-200 transition-colors ${
+                dateToolsOpen ? 'bg-primary text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+              onClick={() => setDateToolsOpen((open) => !open)}
+            >
+              <FunnelIcon className="h-5 w-5" aria-hidden />
+            </button>
+          </div>
+          {dateToolsOpen ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={dateButtonClass(dateMode === 'period')}
+                onClick={() => {
+                  const range = defaultLeadDateRange();
+                  setDateMode('period');
+                  setRangeFrom(range.from);
+                  setRangeTo(range.to);
+                }}
+              >
+                Period
+              </button>
+              <button
+                type="button"
+                className={dateButtonClass(dateMode === 'all')}
+                onClick={() => {
+                  setDateMode('all');
+                  setRangeFrom('');
+                  setRangeTo('');
+                }}
+              >
+                Show all
+              </button>
+              <button
+                type="button"
+                className={dateButtonClass(dateMode === 'today')}
+                onClick={() => {
+                  const today = getJerusalemTodayIsoDate();
+                  setDateMode('today');
+                  setRangeFrom(today);
+                  setRangeTo(today);
+                }}
+              >
+                Today
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mb-5 flex items-end gap-3">
+          <label className="block min-w-0 flex-1">
             <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
               Lead / name
             </span>
             <div className="flex h-10 min-h-10 w-full items-center gap-2 rounded-lg border border-base-content/20 bg-base-100 px-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-content/20">
-              <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+              <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-black" aria-hidden />
               <input
                 type="search"
                 className="h-full min-w-0 grow bg-transparent text-sm outline-none placeholder:text-gray-400"
@@ -402,63 +703,91 @@ const LeadsManagementReportPage: React.FC = () => {
               />
             </div>
           </label>
-          <label className="block min-w-0">
-            <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
-              Main category
-            </span>
-            <select
-              className="select select-bordered select-sm h-10 min-h-10 w-full"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            >
-              <option value="">All main categories</option>
-              {categories.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block min-w-0">
+          <label className="block min-w-0 flex-1">
             <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
               Employee
             </span>
             <div className="flex h-10 min-h-10 w-full items-center gap-2 rounded-lg border border-base-content/20 bg-base-100 px-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-base-content/20">
-              <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-gray-400" aria-hidden />
+              <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-black" aria-hidden />
               <input
                 type="search"
                 className="h-full min-w-0 grow bg-transparent text-sm outline-none placeholder:text-gray-400"
-                placeholder="Search employee…"
+                placeholder="Employee name…"
                 value={employeeSearch}
                 onChange={(e) => setEmployeeSearch(e.target.value)}
               />
             </div>
           </label>
+          <label className="block min-w-0 flex-1">
+            <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
+              Department
+            </span>
+            <span className="relative block">
+              <select
+                className="report-select select select-bordered select-sm h-10 min-h-10 w-full appearance-none bg-white pr-9"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+              >
+                <option value="">All departments</option>
+                {departments.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden />
+            </span>
+          </label>
+          <label className="block min-w-0 flex-1">
+            <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500">
+              Budget
+            </span>
+            <span className="relative block">
+            <select
+              className="report-select select select-bordered select-sm h-10 min-h-10 w-full appearance-none bg-white pr-9"
+              value={budgetBand}
+              onChange={(e) => setBudgetBand(e.target.value as BudgetBand)}
+            >
+              <option value="">Any budget</option>
+              <option value="over">Over the cap</option>
+              <option value="near">80–100% of the cap</option>
+              <option value="mid">50–80% of the cap</option>
+              <option value="under50">Under 50% of the cap</option>
+              <option value="nocap">No cap</option>
+            </select>
+            <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden />
+            </span>
+          </label>
+          {leadSearch || employeeSearch || rangeFrom !== defaultLeadDateRange().from || rangeTo !== defaultLeadDateRange().to || department || budgetBand || overBudgetOnly || pendingRequestsOnly || missingBalanceOnly || missingSalaryOnly ? (
+            <button
+                type="button"
+                className="mb-2 shrink-0 text-sm font-medium text-gray-500 hover:text-gray-800"
+                onClick={() => {
+                  const range = defaultLeadDateRange();
+                  setLeadSearch('');
+                  setEmployeeSearch('');
+                  setDateMode('period');
+                  setRangeFrom(range.from);
+                  setRangeTo(range.to);
+                  setDepartment('');
+                  setBudgetBand('');
+                  setOverBudgetOnly(false);
+                  setPendingRequestsOnly(false);
+                  setMissingBalanceOnly(false);
+                  setMissingSalaryOnly(false);
+                }}
+              >
+                Clear filters
+            </button>
+          ) : null}
         </div>
 
-        <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          <GradientSummaryCard
-            label="Leads"
-            value={totals.leadCount}
-            icon={ClipboardDocumentListIcon}
-            gradientClassName={REPORT_SUMMARY_GRADIENTS[4]}
-          />
-          <GradientSummaryCard
-            label="Time"
-            value={formatAllocationWorkedDuration(totals.workedMs)}
-            icon={ClockIcon}
-            gradientClassName={REPORT_SUMMARY_GRADIENTS[3]}
-          />
-          <GradientSummaryCard
-            label="Cost"
-            value={formatAllocationCostNis(totals.costNis)}
-            icon={BanknotesIcon}
-            gradientClassName={REPORT_SUMMARY_GRADIENTS[1]}
-          />
+        <div className="mb-5 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <GradientSummaryCard
             label={overBudgetOnly ? 'Over budget · on' : 'Over budget'}
             value={totals.overBudget}
-            icon={ExclamationTriangleIcon}
+            icon={FireIcon}
+            iconClassName="h-9 w-9"
             gradientClassName={REPORT_SUMMARY_GRADIENTS[2]}
             active={overBudgetOnly}
             onClick={() => setOverBudgetOnly((prev) => !prev)}
@@ -466,20 +795,52 @@ const LeadsManagementReportPage: React.FC = () => {
           <GradientSummaryCard
             label={pendingRequestsOnly ? 'Requests · on' : 'Requests'}
             value={totals.pendingRequests}
-            icon={InboxStackIcon}
+            icon={InboxArrowDownIcon}
+            iconClassName="h-9 w-9"
             gradientClassName={REPORT_SUMMARY_GRADIENTS[0]}
             active={pendingRequestsOnly}
             onClick={() => setPendingRequestsOnly((prev) => !prev)}
           />
+          <GradientSummaryCard
+            label={missingBalanceOnly ? 'No balance · on' : 'No balance'}
+            value={totals.missingBalance}
+            icon={WalletIcon}
+            iconClassName="h-9 w-9"
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[3]}
+            active={missingBalanceOnly}
+            onClick={() => setMissingBalanceOnly((prev) => !prev)}
+          />
+          <GradientSummaryCard
+            label={missingSalaryOnly ? 'No salary · on' : 'No salary'}
+            value={totals.missingSalary}
+            icon={CurrencyDollarIcon}
+            iconClassName="h-9 w-9"
+            gradientClassName={REPORT_SUMMARY_GRADIENTS[4]}
+            active={missingSalaryOnly}
+            onClick={() => setMissingSalaryOnly((prev) => !prev)}
+          />
         </div>
 
+        {loading ? (
+          <ReportLoadingScreen title="Loading leads" subtitle="Gathering costs and hours…" icon={ClipboardDocumentListIcon} />
+        ) : (
+          <>
+        {departmentTotals.length > 0 ? (
+          <section className="mb-5">
+            <h2 className="mb-2 text-sm font-semibold text-gray-900">Department totals</h2>
+            <DepartmentHourTotals totals={departmentTotals} carousel />
+          </section>
+        ) : null}
+
+        <EmployeeCostCarousel
+          rows={filteredRows}
+          onOpen={(employeeId) => navigate(`/reports/leads-management/employees/${employeeId}`)}
+        />
+
+        <LeadCostInsights rows={filteredRows} />
+
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
-          {loading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-sm text-gray-500">
-              <span className="loading loading-spinner loading-md text-primary" />
-              Loading…
-            </div>
-          ) : filteredRows.length === 0 ? (
+          {filteredRows.length === 0 ? (
             <div className="px-6 py-16 text-center text-sm text-gray-500">
               No leads with allocation data match these filters.
             </div>
@@ -531,6 +892,11 @@ const LeadsManagementReportPage: React.FC = () => {
                           <div className="min-w-[12rem]">
                             <p className="font-semibold text-gray-900">{row.clientName}</p>
                             <p className="text-xs text-gray-500">#{row.leadNumber}</p>
+                            {row.missingBalance ? (
+                              <span className="mt-1 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                No balance
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="text-sm text-gray-600">
@@ -617,7 +983,8 @@ const LeadsManagementReportPage: React.FC = () => {
             </div>
           )}
         </div>
-
+          </>
+        )}
 
       </div>
 

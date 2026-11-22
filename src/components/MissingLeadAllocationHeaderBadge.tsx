@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ClipboardDocumentListIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon } from '@heroicons/react/24/outline';
 import {
   canAccessLeadTimeReport,
   fetchCurrentEmployeeContext,
@@ -88,26 +88,16 @@ const MissingLeadAllocationHeaderBadge: React.FC<Props> = ({
           navigate(leadTimeReportPathForDate(latest));
         }}
         title={`${count} missing daily lead allocation${count === 1 ? '' : 's'} — open latest`}
+        aria-label={`${count} reports due`}
         className={[
-          'group inline-flex items-center gap-1.5 rounded-full',
+          'inline-flex items-center justify-center rounded-full',
           'border-0 bg-amber-500 text-white shadow-sm',
-          'px-2.5 py-1.5 md:px-3 md:py-1.5',
+          compact ? 'h-9 w-9' : 'h-10 w-10',
           'hover:bg-amber-600 transition-colors',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50',
         ].join(' ')}
       >
-        <ClipboardDocumentListIcon
-          className={compact ? 'h-5 w-5 shrink-0' : 'h-6 w-6 shrink-0'}
-          aria-hidden
-        />
-        <span
-          className={[
-            'hidden sm:inline font-semibold leading-tight',
-            compact ? 'text-[10px]' : 'text-[11px] md:text-xs',
-          ].join(' ')}
-        >
-          Reports due
-        </span>
+        <PencilSquareIcon className={compact ? 'h-5 w-5' : 'h-6 w-6'} aria-hidden />
       </button>
       <span
         className={[

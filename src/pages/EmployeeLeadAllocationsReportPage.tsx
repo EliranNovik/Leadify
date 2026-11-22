@@ -2,13 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import {
-  ArrowLeftIcon,
   ArrowRightIcon,
   BanknotesIcon,
   ChartBarIcon,
   ClipboardDocumentListIcon,
   ClockIcon,
   ExclamationTriangleIcon,
+  FunnelIcon,
   MagnifyingGlassIcon,
   UsersIcon,
   XMarkIcon,
@@ -18,6 +18,7 @@ import {
   REPORT_SUMMARY_GRADIENTS,
 } from '../components/reports/GradientSummaryCard';
 import { supabase } from '../lib/supabase';
+import { fetchClockedInEmployeeIds } from '../lib/employeeClockInStatus';
 import {
   ReportSortableTh,
   compareNullableNumbers,
@@ -33,15 +34,18 @@ import {
   fetchMissingLeadReportingBacklog,
   fetchAllocationReport,
   fetchDepartmentsForFilter,
+  fetchEffortAllocationReport,
   formatAllocationCostNis,
   formatAllocationPercent,
   formatAllocationWorkedDuration,
   formatLeadAllocationMissingDayLabel,
   getJerusalemTodayIsoDate,
+  isMissingEffortAllocationsTable,
   minHoursToMs,
   salaryToHourlyRateNis,
   workedMsAtHourlyRateToCostNis,
   type AllocationReportRow,
+  type EffortAllocationReportRow,
   type MissingLeadReportingBacklogRow,
 } from '../lib/employeeLeadReporting';
 import {
@@ -73,6 +77,72 @@ import {
 } from '../components/LeadBudgetRequestsHistoryModal';
 import LeadRemainingTimeBar from '../components/LeadRemainingTimeBar';
 import type { LeadBudgetExtensionRequest } from '../lib/leadBudgetExtensionRequests';
+import {
+  effortById,
+  isEffortArea,
+  WORK_AREAS,
+  type EffortAreaId,
+  type WorkAreaId,
+  type WorkEffort,
+} from '../lib/workAreaEfforts';
+import { fetchCustomWorkEfforts } from '../lib/customWorkEfforts';
+import AllocationAreaOverview from '../components/reports/AllocationAreaOverview';
+import HoursAllocationNav from '../components/reports/HoursAllocationNav';
+import DepartmentHourTotals from '../components/reports/DepartmentHourTotals';
+import HoursAllocationCharts from '../components/reports/HoursAllocationCharts';
+import ReportLoadingScreen from '../components/reports/ReportLoadingScreen';
+import HoursEmployeeCarousel from '../components/reports/HoursEmployeeCarousel';
+import { buildForDepartmentTotals, combinedGermanAustrian, displayAgreementDepartment, mergedEmployeeDepartmentName } from '../lib/employeeDepartmentTotals';
+import {
+  buildCategoryNameToDataMap,
+  canonicalizeScoreboardDepartment,
+  fetchCategoriesWithDepartments,
+  resolveCategoryAndDepartment,
+} from '../lib/resolveCategoryDepartment';
+import {
+  fetchAgreementScoreboardDepartments,
+  GENERAL_EFFORT_DEPARTMENT_LABEL,
+} from '../lib/scoreboardDepartments';
+
+function categoryParts(row: { category?: unknown; misc_category?: any } | null): { lookup: string } {
+  const categoryJoin = Array.isArray(row?.misc_category) ? row?.misc_category[0] : row?.misc_category;
+  const subcategory = categoryJoin?.name ? String(categoryJoin.name).trim() : '';
+  const mainRel = categoryJoin?.misc_maincategory;
+  const mainName = Array.isArray(mainRel) ? mainRel[0]?.name : mainRel?.name;
+  const main = mainName ? String(mainName).trim() : '';
+  const fallback = row?.category != null ? String(row.category).trim() : '';
+  const lookup = main && subcategory ? `${main} > ${subcategory}` : subcategory || main || fallback;
+  return { lookup };
+}
+
+function leadAgreementDepartment(
+  row: { category?: unknown; misc_category?: any } | null,
+  catalog: { targets: { id: number; name: string }[]; categories: any[]; nameMap: Map<string, any> },
+): string {
+  const combined = combinedGermanAustrian(catalog.targets);
+  const { lookup } = categoryParts(row);
+  if (!lookup) return combined;
+  const resolved = canonicalizeScoreboardDepartment(
+    resolveCategoryAndDepartment(lookup, null, null, catalog.categories, catalog.nameMap),
+    catalog.targets,
+  );
+  const name = displayAgreementDepartment(resolved.departmentName, catalog.targets);
+  if (!name || resolved.departmentName === 'Other') return combined;
+  return name;
+}
+
+async function fetchLeadRowsInChunks<T>(
+  ids: Array<string | number>,
+  load: (chunk: Array<string | number>) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let index = 0; index < ids.length; index += 80) {
+    const { data, error } = await load(ids.slice(index, index + 80));
+    if (error) throw new Error(error.message);
+    rows.push(...(data || []));
+  }
+  return rows;
+}
 
 function formatSubmittedAt(iso: string): string {
   return new Intl.DateTimeFormat(undefined, {
@@ -247,11 +317,13 @@ function EmployeeReportAvatar({
   employeeName,
   photoUrl,
   size = 'md',
+  clockedIn = false,
 }: {
   employeeId: number;
   employeeName: string;
   photoUrl: string | null;
   size?: 'md' | 'lg';
+  clockedIn?: boolean;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   const resolvedUrl = photoUrl?.trim() || '';
@@ -262,24 +334,30 @@ function EmployeeReportAvatar({
     setImageFailed(false);
   }, [resolvedUrl]);
 
-  if (showImage) {
-    return (
-      <img
-        src={resolvedUrl}
-        alt=""
-        className={`${dim} shrink-0 rounded-full object-cover shadow-md`}
-        onError={() => setImageFailed(true)}
-      />
-    );
-  }
-
   return (
-    <span
-      className={`flex ${dim} shrink-0 items-center justify-center rounded-full font-bold text-white shadow-md`}
-      style={salaryAvatarGradientStyle(employeeId, employeeName)}
-      aria-hidden
-    >
-      {getSalaryEmployeeInitials(employeeName)}
+    <span className={`relative inline-flex shrink-0 ${size === 'lg' ? 'h-16 w-16' : 'h-12 w-12'}`}>
+      {showImage ? (
+        <img
+          src={resolvedUrl}
+          alt=""
+          className={`${dim} rounded-full object-cover shadow-md`}
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <span
+          className={`flex ${dim} items-center justify-center rounded-full font-bold text-white shadow-md`}
+          style={salaryAvatarGradientStyle(employeeId, employeeName)}
+          aria-hidden
+        >
+          {getSalaryEmployeeInitials(employeeName)}
+        </span>
+      )}
+      {clockedIn ? (
+        <span
+          className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500"
+          title="Clocked in"
+        />
+      ) : null}
     </span>
   );
 }
@@ -352,11 +430,13 @@ function MissingReportingModal({
   open,
   employees,
   loading,
+  clockedInIds,
   onClose,
 }: {
   open: boolean;
   employees: MissingLeadReportingBacklogRow[];
   loading: boolean;
+  clockedInIds: Set<number>;
   onClose: () => void;
 }) {
   if (!open) return null;
@@ -410,6 +490,7 @@ function MissingReportingModal({
                           employeeName={employee.employeeName}
                           photoUrl={employee.photoUrl}
                           size="md"
+                          clockedIn={clockedInIds.has(employee.employeeId)}
                         />
                         <span className="font-medium text-gray-900">{employee.employeeName}</span>
                       </div>
@@ -475,12 +556,14 @@ function EmployeeAllocationHeader({
   totalCostNis,
   multiDay,
   embedded = false,
+  clockedIn = false,
   onSendOvertime,
 }: {
   group: EmployeeAllocationGroup;
   totalCostNis: number | null;
   multiDay: boolean;
   embedded?: boolean;
+  clockedIn?: boolean;
   onSendOvertime?: () => void;
 }) {
   const comparison = compareWorkedHoursToMin(group.totalWorkedMs, group.minHours);
@@ -525,6 +608,7 @@ function EmployeeAllocationHeader({
               employeeName={group.employeeName}
               photoUrl={group.employeePhotoUrl}
               size="lg"
+              clockedIn={clockedIn}
             />
             <div className="min-w-0 flex-1">
               <h2 className="text-xl font-bold tracking-tight text-gray-900">
@@ -708,6 +792,7 @@ type AllocationReportRowCardProps = {
   totalWorkedMs: number;
   salaryHourRateNis: number | null;
   budgetStatus: AllocationLeadBudgetStatus | null;
+  effortsLabel: string;
   onOpenBudgetHistory: (status: AllocationLeadBudgetStatus, row: AllocationReportRow) => void;
   onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
 };
@@ -717,6 +802,7 @@ function AllocationReportTableRow({
   totalWorkedMs,
   salaryHourRateNis,
   budgetStatus,
+  effortsLabel,
   onOpenBudgetHistory,
   onReviewRequest,
 }: AllocationReportRowCardProps) {
@@ -749,6 +835,15 @@ function AllocationReportTableRow({
             </span>
           ) : null}
         </div>
+      </td>
+      <td className="text-sm text-gray-700">
+        {effortsLabel ? (
+          <span className="block max-w-[16rem]" title={effortsLabel}>
+            {effortsLabel}
+          </span>
+        ) : (
+          <span className="text-gray-400">—</span>
+        )}
       </td>
       <td className="text-right">
         <span className="inline-flex min-w-[3rem] justify-center rounded-md bg-primary/8 px-2 py-0.5 text-sm font-semibold text-primary">
@@ -816,6 +911,8 @@ type EmployeeAllocationSectionProps = {
   onReviewRequest: (request: LeadBudgetExtensionRequest) => void;
   pendingOvertimeDates: Set<string>;
   onSendOvertime: (dateKey: string) => void;
+  subEffortNames: Map<number, string>;
+  clockedIn: boolean;
 };
 
 function EmployeeAllocationSection({
@@ -829,6 +926,8 @@ function EmployeeAllocationSection({
   onReviewRequest,
   pendingOvertimeDates,
   onSendOvertime,
+  subEffortNames,
+  clockedIn,
 }: EmployeeAllocationSectionProps) {
   const totalCostNis = sumEmployeeAllocationRowCostsNis(group);
   const showDayBreaks = multiDay && group.days.length > 1;
@@ -839,6 +938,7 @@ function EmployeeAllocationSection({
         group={group}
         totalCostNis={totalCostNis}
         multiDay={multiDay}
+        clockedIn={clockedIn}
         embedded
         onSendOvertime={
           group.days.length === 1 && pendingOvertimeDates.has(group.days[0].workDate)
@@ -853,6 +953,7 @@ function EmployeeAllocationSection({
             <tr className="border-b border-gray-100 text-xs uppercase tracking-wider text-gray-500">
               <th>Lead</th>
               <th>Client</th>
+              <th>Efforts</th>
               <th className="text-right">%</th>
               <ReportSortableTh
                 label="Time"
@@ -894,7 +995,7 @@ function EmployeeAllocationSection({
                 <React.Fragment key={day.workDate}>
                   {showDayBreaks ? (
                     <tr className="bg-gray-50/90">
-                      <td colSpan={9} className="!py-2.5">
+                      <td colSpan={10} className="!py-2.5">
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-semibold uppercase tracking-wider text-gray-500">
                           <span className="text-gray-800">
                             {formatAllocationGroupDateLabel(day.workDate)}
@@ -924,6 +1025,13 @@ function EmployeeAllocationSection({
                         totalWorkedMs={day.totalWorkedMs}
                         salaryHourRateNis={group.salaryHourRateNis}
                         budgetStatus={key ? budgetByLeadKey.get(key) ?? null : null}
+                        effortsLabel={
+                          row.is_other_work
+                            ? 'Other work'
+                            : row.subEffortIds
+                                .map((id) => subEffortNames.get(id) || `Sub effort #${id}`)
+                                .join(', ')
+                        }
                         onOpenBudgetHistory={onOpenBudgetHistory}
                         onReviewRequest={onReviewRequest}
                       />
@@ -939,21 +1047,201 @@ function EmployeeAllocationSection({
   );
 }
 
+function effortDisplay(effortId: string, extraEfforts: WorkEffort[]): { category: string; name: string } {
+  const catalog = effortById(effortId);
+  if (catalog) return { category: catalog.category, name: catalog.name };
+  const extra = extraEfforts.find((effort) => effort.id === effortId);
+  if (extra) return { category: extra.category, name: extra.name };
+  return { category: '—', name: effortId };
+}
+
+function EffortAreaSection({
+  area,
+  rows,
+  extraEfforts,
+  clockInMsByEmployeeDate,
+  salaryByEmployee,
+  tableMissing,
+  loading,
+  clockedInIds,
+}: {
+  area: EffortAreaId;
+  rows: EffortAllocationReportRow[];
+  extraEfforts: WorkEffort[];
+  clockInMsByEmployeeDate: Map<string, number>;
+  salaryByEmployee: Map<number, number>;
+  tableMissing: boolean;
+  loading: boolean;
+  clockedInIds: Set<number>;
+}) {
+  const label = WORK_AREAS.find((item) => item.id === area)?.label ?? area;
+  const [departmentNames, setDepartmentNames] = useState<Map<number, string>>(() => new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAgreementScoreboardDepartments()
+      .then((list) => {
+        if (cancelled) return;
+        setDepartmentNames(new Map(list.map((department) => [department.id, department.name])));
+      })
+      .catch((error) => {
+        console.error('[EmployeeLeadAllocationsReport] scoreboard departments failed:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const departmentLabel = (ids: number[]) => {
+    if (ids.length === 0) return GENERAL_EFFORT_DEPARTMENT_LABEL;
+    return ids.map((id) => departmentNames.get(id) || `Department #${id}`).join(', ');
+  };
+  const areaRows = rows
+    .filter((row) => row.area === area)
+    .slice()
+    .sort((a, b) => {
+      const byEmployee = a.employeeName.localeCompare(b.employeeName);
+      if (byEmployee !== 0) return byEmployee;
+      if (a.workDate !== b.workDate) return b.workDate.localeCompare(a.workDate);
+      const categoryA = effortDisplay(a.effortId, extraEfforts).category;
+      const categoryB = effortDisplay(b.effortId, extraEfforts).category;
+      const byCategory = categoryA.localeCompare(categoryB);
+      if (byCategory !== 0) return byCategory;
+      const byEffort = effortDisplay(a.effortId, extraEfforts).name.localeCompare(
+        effortDisplay(b.effortId, extraEfforts).name,
+      );
+      if (byEffort !== 0) return byEffort;
+      return departmentLabel(a.targetDepartmentIds).localeCompare(departmentLabel(b.targetDepartmentIds));
+    });
+
+  let totalMs = 0;
+  let totalCost = 0;
+  let hasCost = false;
+  for (const row of areaRows) {
+    const dayMs = clockInMsByEmployeeDate.get(allocationEmployeeDateKey(row.employeeId, row.workDate)) ?? 0;
+    const workedMs = allocationPercentToWorkedMs(dayMs, row.percent);
+    totalMs += workedMs;
+    const salary = salaryByEmployee.get(row.employeeId);
+    const rate = salary != null ? salaryToHourlyRateNis(salary) : null;
+    const cost = workedMsAtHourlyRateToCostNis(workedMs, rate);
+    if (cost != null) {
+      totalCost += cost;
+      hasCost = true;
+    }
+  }
+
+  return (
+    <section className="rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-100 px-5 py-4">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900">{label}</h2>
+          <p className="mt-0.5 text-sm text-gray-500">Time allocated to {label.toLowerCase()} efforts</p>
+        </div>
+        <div className="flex flex-wrap gap-4 text-sm text-gray-600">
+          <span>{formatAllocationWorkedDuration(totalMs)} allocated</span>
+          {hasCost ? <span>{formatAllocationCostNis(totalCost)}</span> : null}
+        </div>
+      </div>
+      {tableMissing ? (
+        <p className="px-5 py-8 text-sm text-gray-500">
+          Effort allocations are not in the database yet. Run sql/2026-11-18_employee_effort_allocations.sql,
+          then employees can save time against these efforts.
+        </p>
+      ) : loading ? (
+        <div className="flex items-center justify-center py-16">
+          <span className="loading loading-spinner loading-lg text-primary" />
+        </div>
+      ) : areaRows.length === 0 ? (
+        <p className="px-5 py-8 text-sm text-gray-500">No {label.toLowerCase()} time allocated for these filters.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="table w-full">
+            <thead>
+              <tr className="text-xs uppercase tracking-wide text-gray-400">
+                <th>Employee</th>
+                <th>Date</th>
+                <th>Category</th>
+                <th>Effort</th>
+                <th>Department</th>
+                <th className="text-right">Share</th>
+                <th className="text-right">Time</th>
+                <th className="text-right">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {areaRows.map((row) => {
+                const effort = effortDisplay(row.effortId, extraEfforts);
+                const dayMs =
+                  clockInMsByEmployeeDate.get(allocationEmployeeDateKey(row.employeeId, row.workDate)) ?? 0;
+                const workedMs = allocationPercentToWorkedMs(dayMs, row.percent);
+                const salary = salaryByEmployee.get(row.employeeId);
+                const cost = workedMsAtHourlyRateToCostNis(
+                  workedMs,
+                  salary != null ? salaryToHourlyRateNis(salary) : null,
+                );
+                return (
+                  <tr key={`${row.allocationId}-${row.effortId}`}>
+                    <td>
+                      <div className="flex items-center gap-2 font-medium text-gray-900">
+                        {clockedInIds.has(row.employeeId) ? (
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500"
+                            title="Clocked in"
+                          />
+                        ) : null}
+                        {row.employeeName}
+                      </div>
+                      {row.departmentName ? (
+                        <div className="text-xs text-gray-500">{row.departmentName}</div>
+                      ) : null}
+                    </td>
+                    <td className="whitespace-nowrap text-gray-600">
+                      {formatAllocationGroupDateLabel(row.workDate)}
+                    </td>
+                    <td className="text-gray-600">{effort?.category ?? '—'}</td>
+                    <td className="font-medium text-gray-900">{effort?.name ?? row.effortId}</td>
+                    <td className="text-gray-700">{departmentLabel(row.targetDepartmentIds)}</td>
+                    <td className="text-right tabular-nums">{formatAllocationPercent(row.percent)}%</td>
+                    <td className="text-right tabular-nums text-gray-700">
+                      {formatAllocationWorkedDuration(workedMs)}
+                    </td>
+                    <td className="text-right tabular-nums text-gray-700">
+                      {cost != null ? formatAllocationCostNis(cost) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 const EmployeeLeadAllocationsReportPage: React.FC = () => {
   const navigate = useNavigate();
   const [isSuperUser, setIsSuperUser] = useState(false);
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
-  const [dateMode, setDateMode] = useState<DateFilterMode>('day');
+  const [dateMode, setDateMode] = useState<DateFilterMode>('period');
+  const [dateToolsOpen, setDateToolsOpen] = useState(false);
   const [workDate, setWorkDate] = useState(() => getJerusalemTodayIsoDate());
   const [rangeFrom, setRangeFrom] = useState(() =>
-    shiftIsoDate(getJerusalemTodayIsoDate(), -6),
+    shiftIsoDate(getJerusalemTodayIsoDate(), -29),
   );
   const [rangeTo, setRangeTo] = useState(() => getJerusalemTodayIsoDate());
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [debouncedEmployeeSearch, setDebouncedEmployeeSearch] = useState('');
-  const [departmentId, setDepartmentId] = useState<string>('');
+  const [departmentName, setDepartmentName] = useState('');
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
+  const [scoreboardTargets, setScoreboardTargets] = useState<{ id: number; name: string }[]>([]);
+  const [leadForDepartment, setLeadForDepartment] = useState<Map<string, string>>(() => new Map());
+  const [leadForReady, setLeadForReady] = useState(false);
   const [rows, setRows] = useState<AllocationReportRow[]>([]);
+  const [effortRows, setEffortRows] = useState<EffortAllocationReportRow[]>([]);
+  const [customEfforts, setCustomEfforts] = useState<WorkEffort[]>([]);
+  const [subEffortNames, setSubEffortNames] = useState<Map<number, string>>(() => new Map());
+  const [effortTableMissing, setEffortTableMissing] = useState(false);
   const [clockInMsByEmployeeDate, setClockInMsByEmployeeDate] = useState<Map<string, number>>(
     () => new Map(),
   );
@@ -970,7 +1258,8 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     () => new Map(),
   );
   const [missingReportingModalOpen, setMissingReportingModalOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [clockedInIds, setClockedInIds] = useState<Set<number>>(() => new Set());
   const [refreshing, setRefreshing] = useState(false);
   const hasLoadedOnceRef = useRef(false);
   const loadRequestIdRef = useRef(0);
@@ -980,6 +1269,8 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     () => new Map(),
   );
   const [overBudgetOnly, setOverBudgetOnly] = useState(false);
+  const [leadQuery, setLeadQuery] = useState('');
+  const [noSalaryOnly, setNoSalaryOnly] = useState(false);
   const [sortKey, setSortKey] = useState<AllocationNumericSortKey | null>(null);
   const [sortDir, setSortDir] = useState<ReportSortDir>('desc');
   const [historyLead, setHistoryLead] = useState<{
@@ -1067,6 +1358,32 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
   }, [navigate]);
 
   useEffect(() => {
+    let cancelled = false;
+    const reload = () => {
+      void fetchClockedInEmployeeIds()
+        .then((ids) => {
+          if (!cancelled) setClockedInIds(ids);
+        })
+        .catch((error) => {
+          console.error('[EmployeeLeadAllocationsReport] clock-in status failed:', error);
+        });
+    };
+    reload();
+    const channel = supabase
+      .channel('employee-lead-allocations-clock')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'employee_clock_in' },
+        () => reload(),
+      )
+      .subscribe();
+    return () => {
+      cancelled = true;
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       setDebouncedEmployeeSearch(employeeSearch.trim());
     }, 350);
@@ -1079,6 +1396,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       .then(setDepartments)
       .catch((error) => {
         console.error('[EmployeeLeadAllocationsReport] departments failed:', error);
+      });
+    void fetchAgreementScoreboardDepartments()
+      .then(setScoreboardTargets)
+      .catch((error) => {
+        console.error('[EmployeeLeadAllocationsReport] scoreboard departments failed:', error);
       });
     void fetchActiveClockInLocations()
       .then(setWorkplaces)
@@ -1098,7 +1420,6 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       const data = await fetchAllocationReport({
         fromDate,
         toDate,
-        departmentId: departmentId ? Number(departmentId) : null,
         employeeSearch: debouncedEmployeeSearch,
       });
       if (requestId !== loadRequestIdRef.current) return;
@@ -1133,6 +1454,24 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       setAvgMonthlySalaryByEmployee(salaryMap);
       hasLoadedOnceRef.current = true;
 
+      try {
+        const effortData = await fetchEffortAllocationReport({
+          fromDate,
+          toDate,
+          employeeSearch: debouncedEmployeeSearch,
+        });
+        if (requestId !== loadRequestIdRef.current) return;
+        setEffortRows(effortData);
+        setEffortTableMissing(false);
+      } catch (effortError) {
+        if (requestId !== loadRequestIdRef.current) return;
+        setEffortRows([]);
+        setEffortTableMissing(isMissingEffortAllocationsTable(effortError));
+        if (!isMissingEffortAllocationsTable(effortError)) {
+          console.error('[EmployeeLeadAllocationsReport] effort allocations failed:', effortError);
+        }
+      }
+
       const budgetRequestId = ++budgetRequestIdRef.current;
       void fetchAllocationLeadBudgetStatuses(data)
         .then((statuses) => {
@@ -1163,7 +1502,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         setRefreshing(false);
       }
     }
-  }, [isSuperUser, resolvedDateRange, departmentId, debouncedEmployeeSearch]);
+  }, [isSuperUser, resolvedDateRange, debouncedEmployeeSearch]);
 
   const loadMissingReportingBacklog = useCallback(async () => {
     if (!isSuperUser) return;
@@ -1171,7 +1510,6 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     setMissingReportingLoading(true);
     try {
       const backlog = await fetchMissingLeadReportingBacklog({
-        departmentId: departmentId ? Number(departmentId) : null,
         employeeSearch: debouncedEmployeeSearch,
       });
       if (requestId !== backlogRequestIdRef.current) return;
@@ -1186,7 +1524,7 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
         setMissingReportingLoading(false);
       }
     }
-  }, [isSuperUser, departmentId, debouncedEmployeeSearch]);
+  }, [isSuperUser, debouncedEmployeeSearch]);
 
   const reloadBudgetStatuses = useCallback(async () => {
     if (rows.length === 0) {
@@ -1233,9 +1571,214 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
     void loadMissingReportingBacklog();
   }, [permissionsLoaded, isSuperUser, loadMissingReportingBacklog]);
 
+  const hasSalary = useCallback(
+    (employeeId: number) => {
+      const gross = avgMonthlySalaryByEmployee.get(employeeId);
+      return gross != null && gross > 0;
+    },
+    [avgMonthlySalaryByEmployee],
+  );
+
+  const departmentOptions = useMemo(() => {
+    const real = new Set(
+      departments.map((dept) => mergedEmployeeDepartmentName(dept.name, scoreboardTargets).toLowerCase()),
+    );
+    return buildForDepartmentTotals(
+      [],
+      departments.map((dept) => ({ name: mergedEmployeeDepartmentName(dept.name, scoreboardTargets) })),
+    )
+      .map((item) => item.name)
+      .filter((name) => real.has(name.toLowerCase()));
+  }, [departments, scoreboardTargets]);
+
+  const matchesDepartment = useCallback(
+    (rawName: string | null) =>
+      !departmentName || mergedEmployeeDepartmentName(rawName || '', scoreboardTargets) === departmentName,
+    [departmentName, scoreboardTargets],
+  );
+
+  const scopedHandlingRows = useMemo(() => {
+    const query = leadQuery.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (!matchesDepartment(row.department_name)) return false;
+      if (noSalaryOnly && hasSalary(row.employee_id)) return false;
+      if (!query) return true;
+      const haystack = `${row.client_name || ''} ${row.lead_number || ''} ${row.is_other_work ? 'other work' : ''}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [hasSalary, leadQuery, matchesDepartment, noSalaryOnly, rows]);
+
+  const scopedEffortRows = useMemo(() => {
+    return effortRows.filter((row) => {
+      if (!matchesDepartment(row.departmentName)) return false;
+      if (noSalaryOnly && hasSalary(row.employeeId)) return false;
+      return true;
+    });
+  }, [effortRows, hasSalary, matchesDepartment, noSalaryOnly]);
+
+  useEffect(() => {
+    if (!isSuperUser) return;
+    let cancelled = false;
+    setLeadForReady(false);
+    const newIds = Array.from(
+      new Set(rows.filter((row) => !row.is_other_work && row.new_lead_id).map((row) => row.new_lead_id as string)),
+    );
+    const legacyIds = Array.from(
+      new Set(rows.filter((row) => !row.is_other_work && row.legacy_lead_id != null).map((row) => row.legacy_lead_id as number)),
+    );
+    const categorySelect = 'id, category, misc_category!category_id ( id, name, misc_maincategory!parent_id ( id, name ) )';
+    const legacyCategorySelect =
+      'id, category, misc_category!leads_lead_category_id_fkey ( id, name, misc_maincategory!parent_id ( id, name ) )';
+    void (async () => {
+      const targets = scoreboardTargets.length > 0 ? scoreboardTargets : await fetchAgreementScoreboardDepartments();
+      const categories = await fetchCategoriesWithDepartments(supabase);
+      const catalog = { targets, categories, nameMap: buildCategoryNameToDataMap(categories) };
+      const [newLeads, legacyLeads] = await Promise.all([
+        newIds.length
+          ? fetchLeadRowsInChunks(newIds, (chunk) => supabase.from('leads').select(categorySelect).in('id', chunk as string[]))
+          : Promise.resolve([]),
+        legacyIds.length
+          ? fetchLeadRowsInChunks(legacyIds, (chunk) =>
+              supabase.from('leads_lead').select(legacyCategorySelect).in('id', chunk as number[]),
+            )
+          : Promise.resolve([]),
+      ]);
+      if (cancelled) return;
+      const next = new Map<string, string>();
+      for (const row of newLeads as Array<{ id: string }>) next.set(`new:${row.id}`, leadAgreementDepartment(row, catalog));
+      for (const row of legacyLeads as Array<{ id: number }>) next.set(`legacy:${row.id}`, leadAgreementDepartment(row, catalog));
+      setLeadForDepartment(next);
+      setLeadForReady(true);
+    })().catch((error) => {
+      console.error('[EmployeeLeadAllocationsReport] lead departments failed:', error);
+      if (!cancelled) setLeadForReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSuperUser, rows, scoreboardTargets]);
+
+  const allocationLines = useMemo(() => {
+    const lines: {
+      employeeId: number;
+      employeeName: string;
+      photoUrl: string | null;
+      departmentName: string | null;
+      forDepartments: string[];
+      workDate: string;
+      workedMs: number;
+      costNis: number | null;
+    }[] = [];
+    const handlingFor = (row: AllocationReportRow): string[] => {
+      if (row.is_other_work || !leadForReady) return [];
+      const key = row.new_lead_id
+        ? `new:${row.new_lead_id}`
+        : row.legacy_lead_id != null
+          ? `legacy:${row.legacy_lead_id}`
+          : '';
+      return [(key && leadForDepartment.get(key)) || combinedGermanAustrian(scoreboardTargets)];
+    };
+    for (const row of scopedHandlingRows) {
+      const dayMs = clockInMsByEmployeeDate.get(allocationEmployeeDateKey(row.employee_id, row.work_date)) ?? 0;
+      const workedMs = allocationPercentToWorkedMs(dayMs, row.percent);
+      const rate = salaryToHourlyRateNis(avgMonthlySalaryByEmployee.get(row.employee_id));
+      lines.push({
+        employeeId: row.employee_id,
+        employeeName: row.employee_name,
+        photoUrl: row.employee_photo_url,
+        departmentName: row.department_name,
+        forDepartments: handlingFor(row),
+        workDate: String(row.work_date || '').slice(0, 10),
+        workedMs,
+        costNis: workedMsAtHourlyRateToCostNis(workedMs, rate),
+      });
+    }
+    for (const row of scopedEffortRows) {
+      const dayMs = clockInMsByEmployeeDate.get(allocationEmployeeDateKey(row.employeeId, row.workDate)) ?? 0;
+      const workedMs = allocationPercentToWorkedMs(dayMs, row.percent);
+      const rate = salaryToHourlyRateNis(avgMonthlySalaryByEmployee.get(row.employeeId));
+      const names = row.targetDepartmentIds
+        .map((id) => departments.find((dept) => dept.id === id)?.name || '')
+        .map((name) => name.trim())
+        .filter(Boolean);
+      lines.push({
+        employeeId: row.employeeId,
+        employeeName: row.employeeName,
+        photoUrl: row.employeePhotoUrl,
+        departmentName: row.departmentName,
+        forDepartments: names.length > 0 ? names : [GENERAL_EFFORT_DEPARTMENT_LABEL],
+        workDate: row.workDate,
+        workedMs,
+        costNis: workedMsAtHourlyRateToCostNis(workedMs, rate),
+      });
+    }
+    return lines;
+  }, [
+    avgMonthlySalaryByEmployee,
+    clockInMsByEmployeeDate,
+    departments,
+    leadForDepartment,
+    leadForReady,
+    scopedEffortRows,
+    scopedHandlingRows,
+    scoreboardTargets,
+  ]);
+
+  const departmentTotals = useMemo(
+    () =>
+      buildForDepartmentTotals(
+        allocationLines.map((line) => ({
+          forDepartments: line.forDepartments.map((name) => mergedEmployeeDepartmentName(name, scoreboardTargets)),
+          workedMs: line.workedMs,
+          costNis: line.costNis,
+        })),
+        departments.map((dept) => ({
+          ...dept,
+          name: mergedEmployeeDepartmentName(dept.name, scoreboardTargets),
+        })),
+      ),
+    [allocationLines, departments, scoreboardTargets],
+  );
+
+  const employeeTotals = useMemo(() => {
+    const byEmployee = new Map<
+      number,
+      {
+        employeeId: number;
+        employeeName: string;
+        photoUrl: string | null;
+        departmentName: string | null;
+        workedMs: number;
+        costNis: number;
+        lastWorkDate: string | null;
+      }
+    >();
+    for (const line of allocationLines) {
+      const current = byEmployee.get(line.employeeId) || {
+        employeeId: line.employeeId,
+        employeeName: line.employeeName,
+        photoUrl: line.photoUrl,
+        departmentName: null,
+        workedMs: 0,
+        costNis: 0,
+        lastWorkDate: null,
+      };
+      if (!current.photoUrl && line.photoUrl) current.photoUrl = line.photoUrl;
+      const department = mergedEmployeeDepartmentName(line.departmentName || '', scoreboardTargets);
+      if (department && department !== 'No department') current.departmentName = department;
+      if (line.workDate && (!current.lastWorkDate || line.workDate > current.lastWorkDate)) {
+        current.lastWorkDate = line.workDate;
+      }
+      current.workedMs += line.workedMs;
+      current.costNis += line.costNis || 0;
+      byEmployee.set(line.employeeId, current);
+    }
+    return [...byEmployee.values()];
+  }, [allocationLines, scoreboardTargets]);
+
   const employeeGroups = useMemo(
-    () => groupRowsByEmployee(rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee),
-    [rows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee],
+    () => groupRowsByEmployee(scopedHandlingRows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee),
+    [scopedHandlingRows, clockInMsByEmployeeDate, avgMonthlySalaryByEmployee],
   );
 
   const pendingOvertimeByKey = useMemo(() => {
@@ -1354,6 +1897,11 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       .filter((group) => group.days.length > 0);
   }, [employeeGroups, overBudgetOnly, budgetByLeadKey]);
 
+  const visibleMissingReporting = useMemo(
+    () => missingReportingBacklog.filter((row) => matchesDepartment(row.departmentName)),
+    [matchesDepartment, missingReportingBacklog],
+  );
+
   const reportTotals = useMemo(() => {
     let totalWorkedMs = 0;
     let totalCostNis = 0;
@@ -1370,44 +1918,96 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
       }
     }
 
-    const overBudgetLeadCount = Array.from(budgetByLeadKey.values()).filter(
-      (status) => status.exceedsCap,
+    const visibleLeadKeys = new Set(
+      scopedHandlingRows
+        .map((row) => allocationLeadBudgetKey(row))
+        .filter((key): key is string => Boolean(key)),
+    );
+    const overBudgetLeadCount = Array.from(budgetByLeadKey.entries()).filter(
+      ([key, status]) => visibleLeadKeys.has(key) && status.exceedsCap,
     ).length;
 
     return {
       employeeCount: uniqueEmployees.size,
-      missingReportingCount: missingReportingBacklog.length,
+      missingReportingCount: visibleMissingReporting.length,
       totalWorkedMs,
       totalCostNis: hasAnyCost ? Math.round(totalCostNis * 100) / 100 : null,
       overBudgetLeadCount,
     };
-  }, [employeeGroups, missingReportingBacklog.length, budgetByLeadKey]);
+  }, [employeeGroups, visibleMissingReporting.length, budgetByLeadKey, scopedHandlingRows]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCustomWorkEfforts()
+      .then((list) => {
+        if (!cancelled) setCustomEfforts(list);
+      })
+      .catch((error) => {
+        console.error('[EmployeeLeadAllocationsReport] custom efforts failed:', error);
+        if (!cancelled) setCustomEfforts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ids = [...new Set(rows.flatMap((row) => row.subEffortIds ?? []))];
+    if (ids.length === 0) {
+      setSubEffortNames(new Map());
+      return;
+    }
+    let cancelled = false;
+    void supabase
+      .from('sub_efforts')
+      .select('id, name')
+      .in('id', ids)
+      .then(({ data, error }) => {
+        if (cancelled || error) return;
+        setSubEffortNames(
+          new Map(
+            (data || []).map((row) => [
+              Number(row.id),
+              String(row.name || '').trim() || `Sub effort #${row.id}`,
+            ]),
+          ),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
+
+  const dateQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set('range', dateMode);
+    if (dateMode === 'day') params.set('date', workDate);
+    if (dateMode === 'period') {
+      params.set('from', rangeFrom);
+      params.set('to', rangeTo);
+    }
+    return params.toString();
+  }, [dateMode, rangeFrom, rangeTo, workDate]);
 
   if (!permissionsLoaded || !isSuperUser) {
     return (
       <div className="flex min-h-[calc(100dvh-3.5rem)] items-center justify-center bg-[#ececec]">
-        <span className="loading loading-spinner loading-lg text-primary" />
+        <ReportLoadingScreen title="Hours allocation" subtitle="Opening the report…" icon={ClipboardDocumentListIcon} />
       </div>
     );
   }
 
   return (
     <div className="employee-lead-allocations-report-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec]">
-      <div className="flex min-w-0 w-full flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-8 md:pb-12 md:pt-4">
-        <div className="space-y-5">
-          <div className="flex w-full flex-wrap items-start justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-stretch">
+          <HoursAllocationNav dateQuery={dateQuery} />
+          <div className="hours-nav-page min-w-0 flex-1 space-y-5 px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-4 md:px-8 md:pb-12 md:pt-6">
+          <div className="flex w-full flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <ClipboardDocumentListIcon className="h-7 w-7" />
               </div>
-              <div className="min-w-0 text-left">
-                <h1 className="text-2xl font-bold tracking-tight text-gray-900">
-                  Employee lead allocations
-                </h1>
-                <p className="mt-0.5 text-sm text-gray-500">
-                  Daily time split per lead across all employees
-                </p>
-              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-900">Hours allocation</h1>
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <button
@@ -1419,40 +2019,80 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                 Leads management
                 <ArrowRightIcon className="h-4 w-4" />
               </button>
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                onClick={() => navigate('/reports')}
-              >
-                <ArrowLeftIcon className="h-4 w-4" />
-                Back
-              </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div className="block lg:col-span-1">
               <span className="mb-1.5 block text-sm font-medium text-gray-600">Date</span>
               <div className="flex flex-col gap-2">
+                <div className="flex items-end gap-2">
+                <div className="min-w-0 flex-1">
+                {dateMode === 'day' ? (
+                  <input
+                    type="date"
+                    className="input h-10 min-h-10 min-w-[11rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    value={workDate}
+                    max={getJerusalemTodayIsoDate()}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!next) return;
+                      setWorkDate(next);
+                      setDateMode('day');
+                    }}
+                  />
+                ) : dateMode === 'all' ? (
+                  <div className="flex h-10 min-w-[11rem] items-center rounded-[14px] bg-white px-3 text-sm text-gray-600 ring-1 ring-gray-200">
+                    All reporting
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="min-w-[9rem] flex-1">
+                      <input
+                        aria-label="From"
+                        type="date"
+                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                        value={rangeFrom}
+                        max={rangeTo || getJerusalemTodayIsoDate()}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (!next) return;
+                          setRangeFrom(next);
+                        }}
+                      />
+                    </label>
+                    <label className="min-w-[9rem] flex-1">
+                      <input
+                        aria-label="To"
+                        type="date"
+                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                        value={rangeTo}
+                        min={rangeFrom || undefined}
+                        max={getJerusalemTodayIsoDate()}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          if (!next) return;
+                          setRangeTo(next);
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+                </div>
+                <button
+                  type="button"
+                  aria-expanded={dateToolsOpen}
+                  aria-label={dateToolsOpen ? 'Hide date filters' : 'Show date filters'}
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm ring-1 ring-gray-200 transition-colors ${
+                    dateToolsOpen ? 'bg-primary text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                  }`}
+                  onClick={() => setDateToolsOpen((open) => !open)}
+                >
+                  <FunnelIcon className="h-5 w-5" aria-hidden />
+                </button>
+                </div>
+                {dateToolsOpen ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  {dateMode === 'day' ? (
-                    <input
-                      type="date"
-                      className="input h-10 min-h-10 min-w-[11rem] flex-1 rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                      value={workDate}
-                      max={getJerusalemTodayIsoDate()}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        if (!next) return;
-                        setWorkDate(next);
-                        setDateMode('day');
-                      }}
-                    />
-                  ) : dateMode === 'all' ? (
-                    <div className="flex h-10 min-w-[11rem] flex-1 items-center rounded-[14px] bg-white px-3 text-sm text-gray-600 ring-1 ring-gray-200">
-                      All reporting
-                    </div>
-                  ) : null}
                   <button
                     type="button"
                     className={dateFilterButtonClass(dateMode === 'period')}
@@ -1478,39 +2118,15 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                       Day
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    className={dateFilterButtonClass(noSalaryOnly)}
+                    aria-pressed={noSalaryOnly}
+                    onClick={() => setNoSalaryOnly((prev) => !prev)}
+                  >
+                    No salary
+                  </button>
                 </div>
-                {dateMode === 'period' ? (
-                  <div className="flex flex-wrap items-end gap-2">
-                    <label className="min-w-[9rem] flex-1">
-                      <span className="mb-1 block text-xs font-medium text-gray-500">From</span>
-                      <input
-                        type="date"
-                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                        value={rangeFrom}
-                        max={rangeTo || getJerusalemTodayIsoDate()}
-                        onChange={(e) => {
-                          const next = e.target.value;
-                          if (!next) return;
-                          setRangeFrom(next);
-                        }}
-                      />
-                    </label>
-                    <label className="min-w-[9rem] flex-1">
-                      <span className="mb-1 block text-xs font-medium text-gray-500">To</span>
-                      <input
-                        type="date"
-                        className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                        value={rangeTo}
-                        min={rangeFrom || undefined}
-                        max={getJerusalemTodayIsoDate()}
-                        onChange={(e) => {
-                          const next = e.target.value;
-                          if (!next) return;
-                          setRangeTo(next);
-                        }}
-                      />
-                    </label>
-                  </div>
                 ) : null}
               </div>
             </div>
@@ -1518,23 +2134,37 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-gray-600">Department</span>
               <select
-                className="select h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                value={departmentId}
-                onChange={(e) => setDepartmentId(e.target.value)}
+                className="select h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-200 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                value={departmentName}
+                onChange={(e) => setDepartmentName(e.target.value)}
               >
                 <option value="">All departments</option>
-                {departments.map((dept) => (
-                  <option key={dept.id} value={String(dept.id)}>
-                    {dept.name}
+                {departmentOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
                   </option>
                 ))}
               </select>
             </label>
 
             <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-gray-600">Lead</span>
+              <div className="flex min-h-[40px] items-center gap-2.5 rounded-[14px] bg-white px-3 ring-1 ring-gray-200 focus-within:ring-2 focus-within:ring-primary/15">
+                <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-black" />
+                <input
+                  type="search"
+                  className="grow bg-transparent text-sm outline-none placeholder:text-gray-400"
+                  placeholder="Client or lead #"
+                  value={leadQuery}
+                  onChange={(e) => setLeadQuery(e.target.value)}
+                />
+              </div>
+            </label>
+
+            <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-gray-600">Employee search</span>
-              <div className="flex min-h-[40px] items-center gap-2.5 rounded-[14px] bg-transparent ring-1 ring-gray-300/80 focus-within:ring-2 focus-within:ring-primary/15 px-3">
-                <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-gray-400" />
+              <div className="flex min-h-[40px] items-center gap-2.5 rounded-[14px] bg-white px-3 ring-1 ring-gray-200 focus-within:ring-2 focus-within:ring-primary/15">
+                <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-black" />
                 <input
                   type="search"
                   className="grow bg-transparent text-sm outline-none placeholder:text-gray-400"
@@ -1544,7 +2174,45 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
                 />
               </div>
             </label>
+
           </div>
+
+          {loading ? (
+            <ReportLoadingScreen title="Loading hours" subtitle="Gathering reported time…" icon={ClockIcon} />
+          ) : (
+          <>
+          <DepartmentHourTotals totals={departmentTotals} carousel />
+
+          <HoursEmployeeCarousel
+            employees={employeeTotals}
+            clockedInIds={clockedInIds}
+            to={(employeeId) => {
+              const params = new URLSearchParams();
+              params.set('range', dateMode);
+              if (dateMode === 'day') params.set('date', workDate);
+              if (dateMode === 'period') {
+                params.set('from', rangeFrom);
+                params.set('to', rangeTo);
+              }
+              return `/reports/hours-allocation/employees/${employeeId}?${params.toString()}`;
+            }}
+          />
+
+          <HoursAllocationCharts departments={departmentTotals} employees={employeeTotals} />
+
+          <AllocationAreaOverview
+            handlingRows={scopedHandlingRows}
+            effortRows={scopedEffortRows}
+            clockInMsByEmployeeDate={clockInMsByEmployeeDate}
+            salaryByEmployee={avgMonthlySalaryByEmployee}
+            customEfforts={customEfforts}
+            areaPath={(id) => `/reports/hours-allocation/${id}`}
+            hint={
+              leadQuery.trim()
+                ? 'Lead search narrows handling. The other areas follow date, department, employee, and the salary filter.'
+                : 'Open an area for the full hours table.'
+            }
+          />
 
           <ReportTotalsBar
             totals={reportTotals}
@@ -1555,63 +2223,15 @@ const EmployeeLeadAllocationsReportPage: React.FC = () => {
 
           <MissingReportingModal
             open={missingReportingModalOpen}
-            employees={missingReportingBacklog}
+            employees={visibleMissingReporting}
             loading={missingReportingLoading}
+            clockedInIds={clockedInIds}
             onClose={() => setMissingReportingModalOpen(false)}
           />
-
-          {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <span className="loading loading-spinner loading-lg text-primary" />
-            </div>
-          ) : rows.length === 0 ? (
-            <div className="rounded-2xl bg-white px-6 py-16 text-center text-sm text-gray-500 shadow-sm ring-1 ring-gray-100">
-              No allocations found for these filters.
-            </div>
-          ) : visibleEmployeeGroups.length === 0 ? (
-            <div className="rounded-2xl bg-white px-6 py-16 text-center text-sm text-gray-500 shadow-sm ring-1 ring-gray-100">
-              No over-budget leads for these filters.
-            </div>
-          ) : (
-            <div className={`space-y-5 transition-opacity ${refreshing ? 'opacity-60' : 'opacity-100'}`}>
-              {visibleEmployeeGroups.map((group) => (
-                <EmployeeAllocationSection
-                  key={group.employeeId}
-                  group={group}
-                  multiDay={multiDayView}
-                  budgetByLeadKey={budgetByLeadKey}
-                  sortKey={sortKey}
-                  sortDir={sortDir}
-                  onSort={handleSort}
-                  onOpenBudgetHistory={(status, row) =>
-                    setHistoryLead({
-                      label: `${row.client_name} · #${row.lead_number}`,
-                      status,
-                    })
-                  }
-                  onReviewRequest={setReviewRequest}
-                  pendingOvertimeDates={
-                    new Set(
-                      group.days
-                        .map((day) => day.workDate)
-                        .filter((dateKey) =>
-                          pendingOvertimeByKey.has(allocationEmployeeDateKey(group.employeeId, dateKey)),
-                        ),
-                    )
-                  }
-                  onSendOvertime={(dateKey) => {
-                    const pending = pendingOvertimeByKey.get(
-                      allocationEmployeeDateKey(group.employeeId, dateKey),
-                    );
-                    if (!pending) return;
-                    setOvertimeReason('');
-                    setOvertimeTarget(pending);
-                  }}
-                />
-              ))}
-            </div>
+          </>
           )}
-        </div>
+
+          </div>
       </div>
 
       <LeadAllocationOvertimeApprovalModal

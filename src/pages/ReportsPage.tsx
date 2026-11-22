@@ -8345,7 +8345,12 @@ const reports: ReportSection[] = [
     category: 'Employees',
     items: [
       { label: 'Employee Info', icon: UserGroupIcon, route: '/reports/employee-info' },
-      { label: 'Lead allocations', icon: ClipboardDocumentListIcon, route: '/reports/employee-lead-allocations', superuserOnly: true },
+      { label: 'Hours allocation', icon: ClipboardDocumentListIcon, route: '/reports/employee-lead-allocations', superuserOnly: true },
+      { label: 'Handling hours', icon: ClipboardDocumentListIcon, route: '/reports/hours-allocation/handling', superuserOnly: true },
+      { label: 'Marketing hours', icon: ClipboardDocumentListIcon, route: '/reports/hours-allocation/marketing', superuserOnly: true },
+      { label: 'Sales hours', icon: ClipboardDocumentListIcon, route: '/reports/hours-allocation/sales', superuserOnly: true },
+      { label: 'Finances hours', icon: ClipboardDocumentListIcon, route: '/reports/hours-allocation/finances', superuserOnly: true },
+      { label: 'Development hours', icon: ClipboardDocumentListIcon, route: '/reports/hours-allocation/development', superuserOnly: true },
       { label: 'Leads management', icon: ChartBarIcon, route: '/reports/leads-management', superuserOnly: true },
     ],
   },

@@ -55,6 +55,9 @@ export const LazyLeadsManagementReportPage = lazy(() =>
 export const LazyLeadManagementDetailPage = lazy(() =>
   import('../pages/LeadManagementDetailPage'),
 );
+export const LazyEmployeeLeadCostPage = lazy(() => import('../pages/EmployeeLeadCostPage'));
+export const LazyHoursAllocationAreaPage = lazy(() => import('../pages/HoursAllocationAreaPage'));
+export const LazyHoursAllocationEmployeePage = lazy(() => import('../pages/HoursAllocationEmployeePage'));
 export const LazySubcontractorFeesReportPage = lazy(() =>
   import('../pages/SubcontractorFeesReportPage'),
 );

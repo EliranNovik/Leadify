@@ -3,7 +3,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import {
   ClipboardDocumentListIcon,
-  ClockIcon,
   MapPinIcon,
 } from '@heroicons/react/24/outline';
 import LeadAllocationSliders, {
@@ -14,10 +13,13 @@ import AddLeadToAllocationModal from '../components/employeeLeadReporting/AddLea
 import LeadAllocationBudgetAssistModal from '../components/employeeLeadReporting/LeadAllocationBudgetAssistModal';
 import LeadAllocationSavedModal from '../components/employeeLeadReporting/LeadAllocationSavedModal';
 import LeadAllocationOvertimeApprovalModal from '../components/employeeLeadReporting/LeadAllocationOvertimeApprovalModal';
+import WorkEffortAllocator from '../components/employeeLeadReporting/WorkEffortAllocator';
+import AllocationAreaSidebar from '../components/employeeLeadReporting/AllocationAreaSidebar';
 import {
   addLeadToAllocationBuckets,
   allocationOverflowPercent,
   allocationRowFromCombinedLead,
+  allocationPercentToWorkedMs,
   buildAllocationDayWorkedMs,
   canAccessLeadTimeReport,
   dailyAllocationGrandTotal,
@@ -25,6 +27,7 @@ import {
   fetchCurrentEmployeeContext,
   fetchDailyActivity,
   fetchDailyAllocation,
+  fetchDailyEffortAllocations,
   fetchMissingLeadAllocationDates,
   filterIdentitiesByMinAllocationStage,
   enrichAllocationLeadDisplayMeta,
@@ -34,6 +37,7 @@ import {
   formatLeadAllocationMissingDayTabLabel,
   getJerusalemTodayIsoDate,
   isDailyAllocationValid,
+  isMissingEffortAllocationsTable,
   isLeadAllocationEligibleStage,
   isLeadAllocationHoursNote,
   leadActivityKey,
@@ -43,7 +47,9 @@ import {
   otherWorkPercentCap,
   rebalanceFlexAllocationBuckets,
   resolveLegacyLeadDisplayNumbers,
+  replaceDailyEffortAllocations,
   saveDailyAllocation,
+  scaleSharesTo100,
   setLeadAllocationPercentDraft,
   splitMissingAllocationDatesByWeek,
   setOtherWorkAllocationPercent,
@@ -51,6 +57,7 @@ import {
   syncAllocationTo100,
   workIntervalDurationMs,
   type AllocationItemInput,
+  type EmployeeDailyAllocation,
 } from '../lib/employeeLeadReporting';
 import {
   evaluateDailyLeadAllocationBudgets,
@@ -58,6 +65,23 @@ import {
   type LeadAllocationBudgetViolation,
 } from '../lib/leadAllocationBudget';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
+import {
+  effortInputsFromDrafts,
+  effortsForArea,
+  WORK_AREAS,
+  isEffortArea,
+  type EffortTimeDraft,
+  type WorkEffort,
+} from '../lib/workAreaEfforts';
+import { fetchCustomWorkEfforts } from '../lib/customWorkEfforts';
+import {
+  fetchDayMeetingsForEmployee,
+  fetchMeetingChoices,
+  saveMeetingChoice,
+  type DayMeeting,
+  type DayMeetingChoice,
+} from '../lib/dayMeetings';
+import DayMeetingsStrip from '../components/employeeLeadReporting/DayMeetingsStrip';
 import { fetchClockInRecordsInRange } from '../lib/workingHoursExport';
 import { replaceDayWithPendingManualSession } from '../lib/employeeClockInManual';
 import {
@@ -90,8 +114,10 @@ function activityToRow(
     lead_number?: string;
     stage_id?: string | null;
     active_sub_effort_title?: string | null;
+    category_id?: number | null;
     category_main?: string | null;
     category_sub?: string | null;
+    subEffortIds?: number[];
   },
 ): LeadAllocationRow {
   return {
@@ -114,8 +140,10 @@ function activityToRow(
     last_viewed_at: activity.last_viewed_at,
     stage_id: extras?.stage_id ?? null,
     active_sub_effort_title: extras?.active_sub_effort_title ?? null,
+    category_id: extras?.category_id ?? null,
     category_main: extras?.category_main ?? null,
     category_sub: extras?.category_sub ?? null,
+    subEffortIds: extras?.subEffortIds ?? [],
   };
 }
 
@@ -125,6 +153,7 @@ function allocationItemToRow(
     lead_number?: string;
     stage_id?: string | null;
     active_sub_effort_title?: string | null;
+    category_id?: number | null;
     category_main?: string | null;
     category_sub?: string | null;
   },
@@ -147,8 +176,10 @@ function allocationItemToRow(
     pinned: true,
     stage_id: extras?.stage_id ?? null,
     active_sub_effort_title: extras?.active_sub_effort_title ?? null,
+    category_id: extras?.category_id ?? null,
     category_main: extras?.category_main ?? null,
     category_sub: extras?.category_sub ?? null,
+    subEffortIds: item.subEffortIds ?? [],
   };
 }
 
@@ -156,7 +187,26 @@ function isoToTimeInput(iso: string | null | undefined): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const read = (type: string) => parts.find((part) => part.type === type)?.value ?? '00';
+  const hour = read('hour') === '24' ? '00' : read('hour');
+  return `${hour}:${read('minute')}`;
+}
+
+/** An open clock-in has no end time. On today, the end is now so From/To match the hours already counted. */
+function sessionEndIso(
+  row: { clock_in_time: string; clock_out_time: string | null },
+  workDate: string,
+  now: Date,
+): string {
+  if (row.clock_out_time) return row.clock_out_time;
+  if (workDate === getJerusalemTodayIsoDate(now)) return now.toISOString();
+  return row.clock_in_time;
 }
 
 const DEFAULT_BASE_HOURS_FROM = '09:00';
@@ -180,13 +230,18 @@ type HoursEditSnapshot = {
   locationId: number | '';
 };
 
-type AllocationEditSnapshot = LeadAllocationChangeState & HoursEditSnapshot;
+type AllocationEditSnapshot = LeadAllocationChangeState &
+  HoursEditSnapshot & {
+    effortDrafts: Record<string, EffortTimeDraft>;
+  };
 
 /** Prefill From/To from a pending allocation session, else the earliest in / latest out that day. */
 function deriveHoursFormDefaults(
   employeeRecords: Awaited<ReturnType<typeof fetchClockInRecordsInRange>>,
   selectableLocationIds: Set<number>,
   fallbackLocationId: number | '',
+  workDate: string,
+  now = new Date(),
 ): HoursEditSnapshot {
   const allocationSession = employeeRecords.find(
     (row) =>
@@ -201,7 +256,7 @@ function deriveHoursFormDefaults(
       '';
     return {
       fromTime: isoToTimeInput(allocationSession.clock_in_time),
-      toTime: isoToTimeInput(allocationSession.clock_out_time),
+      toTime: isoToTimeInput(sessionEndIso(allocationSession, workDate, now)),
       locationId:
         typeof loc === 'number' && selectableLocationIds.has(loc) ? loc : fallbackLocationId,
     };
@@ -217,7 +272,7 @@ function deriveHoursFormDefaults(
       const loc = row.clock_in_location_id ?? row.clock_out_location_id;
       if (typeof loc === 'number' && selectableLocationIds.has(loc)) locationId = loc;
     }
-    const out = row.clock_out_time || row.clock_in_time;
+    const out = sessionEndIso(row, workDate, now);
     if (!latestOut || out > latestOut) latestOut = out;
   }
 
@@ -264,6 +319,10 @@ const EmployeeLeadReportingPage: React.FC = () => {
   >(null);
   const [rows, setRows] = useState<LeadAllocationRow[]>([]);
   const [otherWorkPercent, setOtherWorkPercent] = useState(0);
+  const [effortDrafts, setEffortDrafts] = useState<Record<string, EffortTimeDraft>>({});
+  const [customEfforts, setCustomEfforts] = useState<WorkEffort[]>([]);
+  const [dayMeetings, setDayMeetings] = useState<DayMeeting[]>([]);
+  const [meetingChoices, setMeetingChoices] = useState<Record<number, DayMeetingChoice>>({});
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editSnapshot, setEditSnapshot] = useState<AllocationEditSnapshot | null>(null);
@@ -375,6 +434,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
       if (!ctx) {
         setRows([]);
         setOtherWorkPercent(0);
+        setEffortDrafts({});
         setLastSavedAt(null);
         setIsEditing(true);
         setEditSnapshot(null);
@@ -456,15 +516,18 @@ const EmployeeLeadReportingPage: React.FC = () => {
         employeeRecords,
         new Set(selectable.map((loc) => loc.id)),
         fallbackLocationId,
+        workDate,
       );
-      if (allocationSession || hoursDefaults.fromTime) {
+      if (allocationMs > 0 && (allocationSession || hoursDefaults.fromTime)) {
         setFromTime(hoursDefaults.fromTime);
         setToTime(hoursDefaults.toTime);
         setLocationId(hoursDefaults.locationId);
       } else {
-        setFromTime('');
-        setToTime('');
-        setLocationId(fallbackLocationId);
+        const start = DEFAULT_BASE_HOURS_FROM;
+        const end = timeInputPlusHours(start, ctx.minHours);
+        setFromTime(end ? start : '');
+        setToTime(end);
+        setLocationId(hoursDefaults.locationId || fallbackLocationId);
       }
 
       const savedByKey = new Map<string, AllocationItemInput>();
@@ -495,14 +558,16 @@ const EmployeeLeadReportingPage: React.FC = () => {
           client_name: act.client_name,
         });
         const meta = displayMeta.get(key);
+        const saved = savedByKey.get(key);
         const extras = {
           lead_number: meta?.lead_number || act.lead_number,
           stage_id: meta?.stageId ?? null,
           active_sub_effort_title: meta?.active_sub_effort_title ?? null,
+          category_id: meta?.category_id ?? null,
           category_main: meta?.category_main ?? null,
           category_sub: meta?.category_sub ?? null,
+          subEffortIds: saved?.subEffortIds ?? [],
         };
-        const saved = savedByKey.get(key);
         if (saved) {
           savedByKey.delete(key);
           return activityToRow(act, true, saved.percent, true, extras);
@@ -524,6 +589,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
             lead_number: meta?.lead_number || saved.lead_number,
             stage_id: meta?.stageId ?? null,
             active_sub_effort_title: meta?.active_sub_effort_title ?? null,
+            category_id: meta?.category_id ?? null,
             category_main: meta?.category_main ?? null,
             category_sub: meta?.category_sub ?? null,
           }),
@@ -545,6 +611,24 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setRows(finalState.rows);
       setOtherWorkPercent(finalState.otherWorkPercent);
       setLastSavedAt(allocation?.updated_at || allocation?.submitted_at || null);
+
+      let loadedEfforts: Awaited<ReturnType<typeof fetchDailyEffortAllocations>> = [];
+      if (allocation?.id) {
+        try {
+          loadedEfforts = await fetchDailyEffortAllocations(allocation.id);
+        } catch (effortError) {
+          if (!isMissingEffortAllocationsTable(effortError)) throw effortError;
+        }
+      }
+      if (requestId !== loadRequestIdRef.current) return;
+      setEffortDrafts(
+        Object.fromEntries(
+          loadedEfforts.map((item) => [
+            item.effortId,
+            { percent: item.percent, departmentIds: item.departmentIds ?? [], firms: item.firms ?? [], leads: item.leads ?? [] },
+          ]),
+        ),
+      );
       setIsEditing(!hasSavedAllocation);
       setEditSnapshot(null);
       void refreshMissingDates(ctx.employeeId, {
@@ -566,6 +650,116 @@ const EmployeeLeadReportingPage: React.FC = () => {
     if (!permissionsLoaded || !hasAccess) return;
     void loadData();
   }, [permissionsLoaded, hasAccess, loadData]);
+
+  useEffect(() => {
+    if (!permissionsLoaded || !hasAccess) return;
+    let cancelled = false;
+    void fetchCustomWorkEfforts()
+      .then((efforts) => {
+        if (cancelled) return;
+        setCustomEfforts((current) => {
+          const ids = new Set(efforts.map((effort) => effort.id));
+          return [...efforts, ...current.filter((effort) => !ids.has(effort.id))];
+        });
+      })
+      .catch((error) => {
+        console.error('[EmployeeLeadReportingPage] custom efforts failed:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [permissionsLoaded, hasAccess]);
+
+  useEffect(() => {
+    const employeeId = employeeContext?.employeeId;
+    if (!employeeId || !workDate) {
+      setDayMeetings([]);
+      setMeetingChoices({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all([
+      fetchDayMeetingsForEmployee({
+        employeeId,
+        employeeName: employeeContext.employeeName,
+        workDate,
+      }),
+      fetchMeetingChoices(employeeId, workDate).catch((error) => {
+        console.error('[EmployeeLeadReportingPage] meeting choices failed:', error);
+        return {} as Record<number, DayMeetingChoice>;
+      }),
+    ])
+      .then(([meetings, choices]) => {
+        if (cancelled) return;
+        setDayMeetings(meetings);
+        setMeetingChoices(choices);
+      })
+      .catch((error) => {
+        console.error('[EmployeeLeadReportingPage] day meetings failed:', error);
+        if (!cancelled) setDayMeetings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeContext, workDate]);
+
+  const meetingsByEffort = useMemo(() => {
+    const byEffort: Record<string, DayMeeting[]> = {};
+    for (const meeting of dayMeetings) {
+      const choice = meetingChoices[meeting.id];
+      if (!choice || choice.kind !== 'area') continue;
+      const effortId = `${choice.area}.meetings`;
+      (byEffort[effortId] ??= []).push(meeting);
+    }
+    return byEffort;
+  }, [dayMeetings, meetingChoices]);
+
+  const meetingMarkByKey = useMemo(() => {
+    const marks: Record<string, 'meeting' | 'no_show' | 'away'> = {};
+    for (const meeting of dayMeetings) {
+      if (!meeting.leadKey) continue;
+      const choice = meetingChoices[meeting.id];
+      const next =
+        !choice || choice.kind === 'area'
+          ? 'meeting'
+          : choice.reason === 'client_no_show'
+            ? 'no_show'
+            : 'away';
+      const current = marks[meeting.leadKey];
+      if (current === 'meeting' || next === 'meeting') marks[meeting.leadKey] = 'meeting';
+      else if (!current) marks[meeting.leadKey] = next;
+    }
+    return marks;
+  }, [dayMeetings, meetingChoices]);
+
+  const chooseMeeting = async (meetingId: number, choice: DayMeetingChoice | null) => {
+    const employeeId = employeeContext?.employeeId;
+    if (!employeeId) return;
+    const previous = meetingChoices[meetingId];
+    setMeetingChoices((current) => {
+      const next = { ...current };
+      if (choice) next[meetingId] = choice;
+      else delete next[meetingId];
+      return next;
+    });
+    try {
+      await saveMeetingChoice({ employeeId, workDate, meetingId, choice });
+    } catch (error) {
+      console.error('[EmployeeLeadReportingPage] save meeting choice failed:', error);
+      setMeetingChoices((current) => {
+        const next = { ...current };
+        if (previous) next[meetingId] = previous;
+        else delete next[meetingId];
+        return next;
+      });
+      const message = String((error as { message?: string })?.message || '');
+      toast.error(
+        /does not exist|schema cache/i.test(message)
+          ? 'Run sql/2026-11-18_employee_effort_allocations.sql in Supabase, then file the meeting again.'
+          : 'Could not save that meeting.',
+      );
+    }
+  };
 
   const minHours = employeeContext?.minHours ?? 8;
   const minMs = minHoursToMs(minHours);
@@ -606,17 +800,91 @@ const EmployeeLeadReportingPage: React.FC = () => {
   );
 
   const includedRows = useMemo(() => rows.filter((row) => row.included), [rows]);
-  const grandTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
+  const handlingSelected = true;
+  const effortItems = useMemo(
+    () => effortInputsFromDrafts(WORK_AREAS.map((area) => area.id), effortDrafts, customEfforts),
+    [customEfforts, effortDrafts],
+  );
+  const effortTotal = effortItems.reduce((sum, item) => sum + item.percent, 0);
+  const handlingTotal = dailyAllocationGrandTotal(includedRows, otherWorkPercent);
+  const shareByArea = useMemo(() => {
+    const totals: Record<string, { ms: number; percent: number }> = {
+      handling: {
+        ms: allocationPercentToWorkedMs(dayWorkedMs, handlingTotal),
+        percent: handlingTotal,
+      },
+    };
+    for (const area of WORK_AREAS) {
+      if (!isEffortArea(area.id)) continue;
+      const percent = [...effortsForArea(area.id), ...customEfforts.filter((effort) => effort.area === area.id)].reduce(
+        (sum, effort) => sum + Number(effortDrafts[effort.id]?.percent || 0),
+        0,
+      );
+      totals[area.id] = {
+        ms: allocationPercentToWorkedMs(dayWorkedMs, percent),
+        percent,
+      };
+    }
+    return totals;
+  }, [customEfforts, dayWorkedMs, effortDrafts, handlingTotal]);
+  const areaShareLabel = (areaId: string) => {
+    const share = shareByArea[areaId];
+    if (dayWorkedMs > 0) return formatAllocationWorkedDuration(share?.ms || 0);
+    return `${formatAllocationPercent(share?.percent || 0)}%`;
+  };
+  const grandTotal = handlingSelected ? handlingTotal + effortTotal : effortTotal;
+  const sidebarAreas = useMemo(
+    () => [
+      WORK_AREAS.find((area) => area.id === 'handling'),
+      ...WORK_AREAS.filter((area) => area.id !== 'handling'),
+    ].filter((area): area is (typeof WORK_AREAS)[number] => Boolean(area)),
+    [],
+  );
+  const [activeAreaId, setActiveAreaId] = useState('handling');
+
+  useEffect(() => {
+    const elements = sidebarAreas
+      .map((area) => document.getElementById(`allocation-${area.id}`))
+      .filter((element): element is HTMLElement => Boolean(element));
+    if (elements.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        const next = visible[0]?.target.id.replace('allocation-', '');
+        if (next) setActiveAreaId(next);
+      },
+      { rootMargin: '-12% 0px -55% 0px', threshold: [0.1, 0.25, 0.5] },
+    );
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [sidebarAreas, employeeContext, loading]);
   /*
    * Over 100% is blocked rather than rescaled: a day that adds up to 160% cannot be saved as what
    * the person meant, and quietly scaling it down submits numbers they never chose. Under 100% is
    * still balanced up on save, which takes nothing away from them.
+   * Handling on its own still uses the lead total, so a lead-only day reads the same as before.
    */
-  const overAllocatedBy = allocationOverflowPercent(includedRows, otherWorkPercent);
+  const overAllocatedBy =
+    handlingSelected && effortItems.length === 0
+      ? allocationOverflowPercent(includedRows, otherWorkPercent)
+      : Math.max(0, Math.round(grandTotal) - 100);
   const isOverAllocated = overAllocatedBy > 0;
+  const dayTotalLabel = formatAllocationPercent(grandTotal);
+  const allocationStatus = isAllocationLocked
+    ? null
+    : isOverAllocated
+      ? `This day is ${dayTotalLabel}%. Take off ${formatAllocationPercent(overAllocatedBy)}% to save.`
+      : Math.abs(grandTotal - 100) <= 0.01
+        ? 'This day is 100%. Ready to save.'
+        : grandTotal > 0.01
+          ? `This day is ${dayTotalLabel}%. Saving will fill it to 100%.`
+          : 'Nothing allocated yet.';
   // Save is allowed whenever something is allocated; save itself normalizes to 100% + 10/30 other-work cap.
-  const canSave =
-    includedRows.length > 0 || Number(otherWorkPercent) > 0;
+  const canSave = handlingSelected
+    ? includedRows.length > 0 || Number(otherWorkPercent) > 0 || effortItems.length > 0
+    : effortItems.length > 0;
   const existingLeadKeys = useMemo(() => new Set(rows.map((row) => row.key)), [rows]);
 
   const handleStartEdit = () => {
@@ -626,6 +894,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
       fromTime,
       toTime,
       locationId,
+      effortDrafts: { ...effortDrafts },
     });
     setIsEditing(true);
   };
@@ -637,6 +906,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
       setFromTime(editSnapshot.fromTime);
       setToTime(editSnapshot.toTime);
       setLocationId(editSnapshot.locationId);
+      setEffortDrafts(editSnapshot.effortDrafts);
     }
     setEditSnapshot(null);
     setIsEditing(false);
@@ -684,8 +954,10 @@ const EmployeeLeadReportingPage: React.FC = () => {
       if (display?.lead_number) newRow.lead_number = display.lead_number;
       if (display?.stageId) newRow.stage_id = display.stageId;
       newRow.active_sub_effort_title = display?.active_sub_effort_title ?? null;
+      newRow.category_id = display?.category_id ?? null;
       newRow.category_main = display?.category_main ?? null;
       newRow.category_sub = display?.category_sub ?? null;
+      newRow.subEffortIds = [];
     } catch (error) {
       console.warn('[EmployeeLeadReportingPage] enrich add-lead meta failed:', error);
     }
@@ -760,7 +1032,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const handleSave = async (options: { overtimeReason?: string } = {}) => {
     if (!employeeContext) return;
     if (!canSave) {
-      toast.error('Select at least one lead or set other work before saving.');
+      toast.error('Allocate time on a lead, other work, or an effort before saving.');
       return;
     }
     if (isOverAllocated) {
@@ -864,66 +1136,168 @@ const EmployeeLeadReportingPage: React.FC = () => {
       }
 
       const effectiveOtherMax = otherWorkPercentCap(effectiveWorkedMs, minHours);
-      const normalized = normalizeAllocationForSave(rows, otherWorkPercent, effectiveOtherMax);
-      setRows(normalized.rows);
-      setOtherWorkPercent(normalized.otherWorkPercent);
+      const handlingOnly = handlingSelected && effortItems.length === 0;
 
-      const normalizedIncluded = normalized.rows.filter((row) => row.included);
-      if (!isDailyAllocationValid(normalizedIncluded, normalized.otherWorkPercent, effectiveOtherMax)) {
-        toast.error(
-          `Could not balance to 100% with other work capped at ${effectiveOtherMax}%. Adjust leads and try again.`,
+      let saved: EmployeeDailyAllocation;
+      if (handlingOnly) {
+        const normalized = normalizeAllocationForSave(rows, otherWorkPercent, effectiveOtherMax);
+        setRows(normalized.rows);
+        setOtherWorkPercent(normalized.otherWorkPercent);
+
+        const normalizedIncluded = normalized.rows.filter((row) => row.included);
+        if (!isDailyAllocationValid(normalizedIncluded, normalized.otherWorkPercent, effectiveOtherMax)) {
+          toast.error(
+            `Could not balance to 100% with other work capped at ${effectiveOtherMax}%. Adjust leads and try again.`,
+          );
+          return;
+        }
+
+        const leadsForBudget = normalizedIncluded.map((row) => ({
+          key: row.key,
+          lead_type: row.lead_type,
+          new_lead_id: row.new_lead_id,
+          legacy_lead_id: row.legacy_lead_id,
+          lead_number: row.lead_number,
+          client_name: row.client_name,
+          percent: row.percent,
+        }));
+
+        const budget = await evaluateDailyLeadAllocationBudgets({
+          employeeId: employeeContext.employeeId,
+          workDate,
+          dayWorkedMs: effectiveWorkedMs,
+          leads: leadsForBudget,
+        });
+        setBudgetHints(budget.hints);
+
+        if (budget.violations.length > 0) {
+          setBudgetViolations(budget.violations);
+          setBudgetAssistOpen(true);
+          toast.error(
+            budget.violations.length === 1
+              ? `Lead #${budget.violations[0].lead_number} is over the employee cost budget.`
+              : `${budget.violations.length} leads are over the employee cost budget.`,
+          );
+          return;
+        }
+
+        const items: AllocationItemInput[] = normalizedIncluded.map((row) => ({
+          lead_type: row.lead_type,
+          new_lead_id: row.new_lead_id,
+          legacy_lead_id: row.legacy_lead_id,
+          lead_number: row.lead_number,
+          client_name: row.client_name,
+          percent: row.percent,
+          subEffortIds: row.subEffortIds ?? [],
+        }));
+
+        saved = await saveDailyAllocation({
+          employeeId: employeeContext.employeeId,
+          userId: employeeContext.userId,
+          workDate,
+          items,
+          otherWorkPercent: normalized.otherWorkPercent,
+        });
+        try {
+          await replaceDailyEffortAllocations(saved.id, []);
+        } catch (effortError) {
+          if (!isMissingEffortAllocationsTable(effortError)) throw effortError;
+        }
+        setEffortDrafts({});
+      } else {
+        const leadRows = handlingSelected ? rows.filter((row) => row.included) : [];
+        const otherShare = handlingSelected ? Number(otherWorkPercent) || 0 : 0;
+        const scaled = scaleSharesTo100([
+          ...leadRows.map((row) => row.percent),
+          otherShare,
+          ...effortItems.map((item) => item.percent),
+        ]);
+        const scaledOther = scaled[leadRows.length] ?? 0;
+        if (handlingSelected && scaledOther > effectiveOtherMax + 0.01) {
+          toast.error(
+            `Could not balance to 100% with other work capped at ${effectiveOtherMax}%. Adjust the split and try again.`,
+          );
+          return;
+        }
+        const scaledLeadPercents = scaled.slice(0, leadRows.length);
+        const scaledEffortPercents = scaled.slice(leadRows.length + 1);
+        const leadPercentByKey = new Map(
+          leadRows.map((row, index) => [row.key, scaledLeadPercents[index] ?? row.percent]),
         );
-        return;
+        const nextRows = handlingSelected
+          ? rows.map((row) =>
+              row.included ? { ...row, percent: leadPercentByKey.get(row.key) ?? row.percent } : row,
+            )
+          : rows.map((row) => ({ ...row, included: false, percent: 0, pinned: false }));
+        const nextEffortDrafts = { ...effortDrafts };
+        const savedEfforts = effortItems.map((item, index) => {
+          const percent = scaledEffortPercents[index] ?? item.percent;
+          nextEffortDrafts[item.effortId] = {
+            percent,
+            departmentIds: item.departmentIds ?? [],
+            firms: item.firms ?? [],
+            leads: item.leads ?? [],
+          };
+          return { ...item, percent };
+        });
+        setRows(nextRows);
+        setOtherWorkPercent(handlingSelected ? scaledOther : 0);
+        setEffortDrafts(nextEffortDrafts);
+
+        const items: AllocationItemInput[] = handlingSelected
+          ? leadRows.map((row) => ({
+              lead_type: row.lead_type,
+              new_lead_id: row.new_lead_id,
+              legacy_lead_id: row.legacy_lead_id,
+              lead_number: row.lead_number,
+              client_name: row.client_name,
+              percent: leadPercentByKey.get(row.key) ?? row.percent,
+              subEffortIds: row.subEffortIds ?? [],
+            }))
+          : [];
+
+        if (items.length > 0) {
+          const budget = await evaluateDailyLeadAllocationBudgets({
+            employeeId: employeeContext.employeeId,
+            workDate,
+            dayWorkedMs: effectiveWorkedMs,
+            leads: items.map((row) => ({
+              key: leadActivityKey({
+                lead_type: row.lead_type,
+                new_lead_id: row.new_lead_id,
+                legacy_lead_id: row.legacy_lead_id,
+                lead_number: row.lead_number,
+                client_name: row.client_name,
+              }),
+              ...row,
+            })),
+          });
+          setBudgetHints(budget.hints);
+          if (budget.violations.length > 0) {
+            setBudgetViolations(budget.violations);
+            setBudgetAssistOpen(true);
+            toast.error(
+              budget.violations.length === 1
+                ? `Lead #${budget.violations[0].lead_number} is over the employee cost budget.`
+                : `${budget.violations.length} leads are over the employee cost budget.`,
+            );
+            return;
+          }
+        }
+
+        saved = await saveDailyAllocation({
+          employeeId: employeeContext.employeeId,
+          userId: employeeContext.userId,
+          workDate,
+          items,
+          otherWorkPercent: handlingSelected ? scaledOther : 0,
+          effortItems: savedEfforts,
+          maxOtherWorkPercent: effectiveOtherMax,
+        });
       }
-
-      const leadsForBudget = normalizedIncluded.map((row) => ({
-        key: row.key,
-        lead_type: row.lead_type,
-        new_lead_id: row.new_lead_id,
-        legacy_lead_id: row.legacy_lead_id,
-        lead_number: row.lead_number,
-        client_name: row.client_name,
-        percent: row.percent,
-      }));
-
-      const budget = await evaluateDailyLeadAllocationBudgets({
-        employeeId: employeeContext.employeeId,
-        workDate,
-        dayWorkedMs: effectiveWorkedMs,
-        leads: leadsForBudget,
-      });
-      setBudgetHints(budget.hints);
-
-      if (budget.violations.length > 0) {
-        setBudgetViolations(budget.violations);
-        setBudgetAssistOpen(true);
-        toast.error(
-          budget.violations.length === 1
-            ? `Lead #${budget.violations[0].lead_number} is over the employee cost budget.`
-            : `${budget.violations.length} leads are over the employee cost budget.`,
-        );
-        return;
-      }
-
-      const items: AllocationItemInput[] = normalizedIncluded.map((row) => ({
-        lead_type: row.lead_type,
-        new_lead_id: row.new_lead_id,
-        legacy_lead_id: row.legacy_lead_id,
-        lead_number: row.lead_number,
-        client_name: row.client_name,
-        percent: row.percent,
-      }));
-
-      const saved = await saveDailyAllocation({
-        employeeId: employeeContext.employeeId,
-        userId: employeeContext.userId,
-        workDate,
-        items,
-        otherWorkPercent: normalized.otherWorkPercent,
-      });
 
       setLastSavedAt(saved.updated_at || saved.submitted_at);
-      setOtherWorkPercent(saved.other_work_percent);
+      if (handlingOnly) setOtherWorkPercent(saved.other_work_percent);
       setIsEditing(false);
       setEditSnapshot(null);
       setBudgetViolations([]);
@@ -1006,6 +1380,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
       setRows(resetState.rows);
       setOtherWorkPercent(resetState.otherWorkPercent);
+      setEffortDrafts({});
       setLastSavedAt(null);
       setIsEditing(true);
       setEditSnapshot(null);
@@ -1073,19 +1448,112 @@ const EmployeeLeadReportingPage: React.FC = () => {
     );
   }
 
+  const saveActions = () => (
+    <div className="flex w-full flex-col gap-2 rounded-[18px] bg-white p-3 shadow-sm">
+      <p
+        className={`text-xs leading-snug ${
+          isOverAllocated && !isAllocationLocked ? 'font-semibold text-rose-600' : 'text-gray-500'
+        }`}
+      >
+        {isAllocationLocked && lastSavedAt
+          ? `Saved ${new Intl.DateTimeFormat(undefined, {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+            }).format(new Date(lastSavedAt))}`
+          : allocationStatus}
+      </p>
+      <button
+        type="button"
+        className="btn btn-primary btn-sm h-9 min-h-9 w-full rounded-xl"
+        disabled={
+          isAllocationLocked ? saving : !canSave || isOverAllocated || saving || checkingBudget
+        }
+        title={
+          isOverAllocated && !isAllocationLocked
+            ? `Take off ${formatAllocationPercent(overAllocatedBy)}% to save`
+            : undefined
+        }
+        onClick={() => {
+          if (isAllocationLocked) {
+            handleStartEdit();
+            return;
+          }
+          void handleSave();
+        }}
+      >
+        {saving || checkingBudget ? (
+          <span className="loading loading-spinner loading-sm" />
+        ) : isAllocationLocked ? (
+          'Edit'
+        ) : (
+          'Save allocation'
+        )}
+      </button>
+      {isEditingSavedAllocation ? (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm h-9 min-h-9 w-full rounded-xl"
+          disabled={saving}
+          onClick={handleCancelEdit}
+        >
+          Cancel
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm h-9 min-h-9 w-full rounded-xl"
+        disabled={saving || checkingBudget}
+        onClick={() => {
+          void handleResetAllocation();
+        }}
+      >
+        Reset
+      </button>
+    </div>
+  );
+
   return (
     <div className="lead-allocation-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec]">
-      <div className="flex min-w-0 w-full flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-6 md:pb-12 md:pt-4">
-        <div className="space-y-5">
-          <div className="mx-auto w-full max-w-6xl space-y-5">
+      <div className="flex min-w-0 w-full items-start gap-5 px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-6 md:pb-12 md:pt-4">
+        <aside className="sticky top-[4.75rem] hidden w-56 shrink-0 flex-col gap-3 md:flex">
+        <p className="px-1 text-base font-medium leading-snug text-gray-700">
+          Welcome, {employeeContext.employeeName}
+        </p>
+        <AllocationAreaSidebar
+          className="flex flex-col"
+          activeId={activeAreaId}
+          overAllocated={isOverAllocated && !isAllocationLocked}
+          dayTotal={
+            dayWorkedMs > 0
+              ? formatAllocationWorkedDuration(allocationPercentToWorkedMs(dayWorkedMs, grandTotal))
+              : `${formatAllocationPercent(grandTotal)}%`
+          }
+          items={sidebarAreas.map((area) => ({
+            id: area.id,
+            label: area.label,
+            total: areaShareLabel(area.id),
+            hasTime: (shareByArea[area.id]?.percent || 0) > 0,
+          }))}
+          onSelect={(areaId) => {
+            setActiveAreaId(areaId);
+            document.getElementById(`allocation-${areaId}`)?.scrollIntoView({
+              behavior: 'smooth',
+              block: 'start',
+            });
+          }}
+        />
+        {saveActions()}
+        </aside>
+        <div className="min-w-0 flex-1 space-y-5">
+          <div className="w-full space-y-5">
           <div className="min-w-0">
-            <p className="mb-1.5 text-lg font-medium text-gray-700">
+            <p className="mb-1.5 text-lg font-medium text-gray-700 md:hidden">
               Welcome, {employeeContext.employeeName}
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="flex items-center gap-2.5 text-2xl font-bold text-gray-900">
                 <ClipboardDocumentListIcon className="h-7 w-7 shrink-0 text-primary" aria-hidden />
-                Daily lead allocation
+                Daily time allocation
               </h1>
               <label className="inline-flex items-center gap-2">
                 <span className="sr-only">Work date</span>
@@ -1101,11 +1569,11 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
               {missingDates.length > 0 ? (
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-700">
-                    Missing
-                    <span className="rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold tabular-nums text-white">
-                      {missingDates.length}
-                    </span>
+                  <span
+                    className="inline-flex items-center rounded-full bg-red-500 px-2 py-0.5 text-[10px] font-bold tabular-nums text-white"
+                    aria-label={`${missingDates.length} missing days`}
+                  >
+                    {missingDates.length}
                   </span>
 
                   <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-full bg-gray-200/80 p-1">
@@ -1160,25 +1628,50 @@ const EmployeeLeadReportingPage: React.FC = () => {
             </div>
           </div>
 
-          {showHoursForm ? (
-            <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
-              {manualIntervalMs > 0 ? (
-                <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                    <ClockIcon className="h-5 w-5" />
-                    {formatAllocationWorkedDuration(manualIntervalMs)}
-                  </span>
-                </div>
-              ) : null}
+          <nav
+            className="sticky top-0 z-30 -mx-1 flex gap-2 overflow-x-auto bg-[#ececec]/95 py-2 backdrop-blur md:hidden"
+            aria-label="Allocation areas"
+          >
+            {sidebarAreas.map((area) => (
+              <button
+                key={area.id}
+                type="button"
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-gray-200 hover:bg-gray-50"
+                onClick={() => {
+                  setActiveAreaId(area.id);
+                  document.getElementById(`allocation-${area.id}`)?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'start',
+                  });
+                }}
+              >
+                {area.label}
+                <span className="text-xs font-semibold tabular-nums text-emerald-700">
+                  {areaShareLabel(area.id)}
+                </span>
+              </button>
+            ))}
+          </nav>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="md:hidden">{saveActions()}</div>
+
+          <DayMeetingsStrip
+            meetings={dayMeetings}
+            choices={meetingChoices}
+            onChoose={(meetingId, choice) => {
+              void chooseMeeting(meetingId, choice);
+            }}
+          />
+
+          {showHoursForm ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {/* Base hours fills From and To, so it belongs beside From rather than off in a corner. */}
                 <div className="flex items-end gap-2">
                   <label className="block min-w-0 flex-1">
                     <span className="mb-1.5 block text-sm font-medium text-gray-600">From</span>
                     <input
                       type="time"
-                      className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                      className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
                       value={fromTime}
                       disabled={isAllocationLocked}
                       onChange={(e) => setFromTime(e.target.value)}
@@ -1186,7 +1679,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
                   </label>
                   <button
                     type="button"
-                    className="btn btn-ghost h-10 min-h-10 shrink-0 whitespace-nowrap rounded-[14px] border-0 px-3 text-xs font-semibold text-primary ring-1 ring-gray-300/80 hover:bg-primary/5"
+                    className="btn btn-ghost h-10 min-h-10 shrink-0 whitespace-nowrap rounded-[14px] border-0 bg-white px-3 text-xs font-semibold text-primary ring-1 ring-gray-300/80 hover:bg-primary/5"
                     disabled={isAllocationLocked}
                     title={`Fill From/To with your ${minHours}h base day`}
                     onClick={() => {
@@ -1208,7 +1701,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
                   <span className="mb-1.5 block text-sm font-medium text-gray-600">To</span>
                   <input
                     type="time"
-                    className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
                     value={toTime}
                     disabled={isAllocationLocked}
                     onChange={(e) => setToTime(e.target.value)}
@@ -1220,7 +1713,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
                     Worked in
                   </span>
                   <select
-                    className="select h-10 min-h-10 w-full rounded-[14px] border-0 bg-transparent px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    className="select h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
                     value={locationId === '' ? '' : String(locationId)}
                     disabled={isAllocationLocked}
                     onChange={(e) => {
@@ -1238,7 +1731,6 @@ const EmployeeLeadReportingPage: React.FC = () => {
                   </select>
                 </label>
               </div>
-            </div>
           ) : null}
 
           {storedOvertime && !storedOvertime.approved && overtimeRequestStatus === 'pending' ? (
@@ -1264,6 +1756,14 @@ const EmployeeLeadReportingPage: React.FC = () => {
           ) : null}
           </div>
 
+          <section id="allocation-handling" className="w-full scroll-mt-16">
+            <div className="mb-3 flex items-center gap-3">
+              <h2 className="text-lg font-bold text-gray-900">Handling</h2>
+              <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-sm font-semibold tabular-nums text-gray-500">
+                {areaShareLabel('handling')}
+              </span>
+            </div>
+            <div className="overflow-hidden rounded-[18px] bg-white shadow-sm">
           <LeadAllocationSliders
             rows={rows}
             otherWorkPercent={otherWorkPercent}
@@ -1271,6 +1771,13 @@ const EmployeeLeadReportingPage: React.FC = () => {
             onAddLead={() => setAddLeadModalOpen(true)}
             readOnly={isAllocationLocked}
             dayWorkedMs={dayWorkedMs}
+            dayTotalPercent={grandTotal}
+            meetingMarkByKey={meetingMarkByKey}
+            onSubEffortsChange={(key, ids) => {
+              setRows((current) =>
+                current.map((row) => (row.key === key ? { ...row, subEffortIds: ids } : row)),
+              );
+            }}
             otherWorkMaxPercent={otherWorkMax}
             budgetHintsByKey={Object.fromEntries(budgetHints.map((h) => [h.key, h]))}
             onApplyLeadMaxBudget={(leadKey, maxAllowedPercent) => {
@@ -1284,6 +1791,31 @@ const EmployeeLeadReportingPage: React.FC = () => {
               setOtherWorkPercent(result.otherWorkPercent);
               toast.success('Slider set to max available for this lead.');
               void refreshBudgetHints(result.rows, dayWorkedMs);
+            }}
+          />
+            </div>
+          </section>
+
+          <WorkEffortAllocator
+            drafts={effortDrafts}
+            customEfforts={customEfforts}
+            onEffortCreated={(effort) => setCustomEfforts((current) => [...current, effort])}
+            readOnly={isAllocationLocked}
+            dayWorkedMs={dayWorkedMs}
+            dayTotalPercent={grandTotal}
+            meetingsByEffort={meetingsByEffort}
+            onDraftChange={(effortId, patch) => {
+              if (isAllocationLocked) return;
+              setEffortDrafts((current) => ({
+                ...current,
+                [effortId]: {
+                  percent: current[effortId]?.percent ?? 0,
+                  departmentIds: current[effortId]?.departmentIds ?? [],
+                  firms: current[effortId]?.firms ?? [],
+                  leads: current[effortId]?.leads ?? [],
+                  ...patch,
+                },
+              }));
             }}
           />
 
@@ -1333,7 +1865,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
             onApplyMaxAllowed={handleApplyMaxBudget}
           />
 
-          {rows.length === 0 && (
+          {handlingSelected && rows.length === 0 && (
             <div className="text-center">
               <Link
                 to="/clients"
@@ -1343,81 +1875,6 @@ const EmployeeLeadReportingPage: React.FC = () => {
               </Link>
             </div>
           )}
-
-          <div className="sticky bottom-[max(0.75rem,env(safe-area-inset-bottom,0px))] z-20 mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 rounded-[18px] bg-white/95 px-5 py-4 shadow-lg ring-1 ring-black/5 backdrop-blur supports-[backdrop-filter]:bg-white/80">
-            <div className="text-sm text-gray-500">
-              {lastSavedAt
-                ? `Last saved: ${new Intl.DateTimeFormat(undefined, {
-                    dateStyle: 'medium',
-                    timeStyle: 'short',
-                  }).format(new Date(lastSavedAt))}`
-                : 'Not saved yet for this date'}
-              <span className="ml-2 text-gray-400">
-                · Other {formatAllocationPercent(otherWorkPercent)}%
-                {includedRows.length > 0 ? ` · ${includedRows.length} lead(s)` : ''}
-                · {formatAllocationPercent(grandTotal)}% current
-                {!isOverAllocated && Math.abs(grandTotal - 100) > 0.01
-                  ? ' · save balances to 100%'
-                  : ''}
-              </span>
-              {isOverAllocated && (
-                <span className="ml-2 font-semibold text-rose-600">
-                  · {formatAllocationPercent(overAllocatedBy)}% over the 100% maximum
-                </span>
-              )}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {isEditingSavedAllocation && (
-                <button
-                  type="button"
-                  className="btn btn-ghost rounded-full px-6 shadow-sm"
-                  disabled={saving}
-                  onClick={handleCancelEdit}
-                >
-                  Cancel
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-ghost rounded-full px-6 shadow-sm"
-                disabled={saving || checkingBudget}
-                onClick={() => {
-                  void handleResetAllocation();
-                }}
-              >
-                Reset
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary rounded-full px-6 shadow-sm"
-                disabled={
-                  isAllocationLocked
-                    ? saving
-                    : !canSave || isOverAllocated || saving || checkingBudget
-                }
-                title={
-                  isOverAllocated && !isAllocationLocked
-                    ? `Allocate at most 100% — you are ${formatAllocationPercent(overAllocatedBy)}% over`
-                    : undefined
-                }
-                onClick={() => {
-                  if (isAllocationLocked) {
-                    handleStartEdit();
-                    return;
-                  }
-                  void handleSave();
-                }}
-              >
-                {saving || checkingBudget ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : isAllocationLocked ? (
-                  'Edit'
-                ) : (
-                  'Save allocation'
-                )}
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

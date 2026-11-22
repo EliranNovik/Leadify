@@ -208,6 +208,46 @@ export function firmIsExactMatch(
   );
 }
 
+function firmRowFromRecord(row: {
+  id: unknown;
+  name?: unknown;
+  legal_name?: unknown;
+  profile_image_url?: unknown;
+}): ExternalFirmRow {
+  return {
+    id: String(row.id),
+    name: String(row.name || ''),
+    legalName: String(row.legal_name || ''),
+    profileImageUrl: String(row.profile_image_url || ''),
+  };
+}
+
+/** Name search for the effort-allocation picker. Matches the trading name and the registered name. */
+export async function searchExternalFirms(query: string, limit = 12): Promise<ExternalFirmRow[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const pattern = `%${escapeLikePattern(q).replace(/[,()]/g, ' ')}%`;
+  const { data, error } = await supabase
+    .from('firms')
+    .select('id, name, legal_name, profile_image_url')
+    .or(`name.ilike.${pattern},legal_name.ilike.${pattern}`)
+    .order('name')
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((row) => firmRowFromRecord(row));
+}
+
+export async function fetchExternalFirmsByIds(ids: string[]): Promise<ExternalFirmRow[]> {
+  const unique = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+  if (unique.length === 0) return [];
+  const { data, error } = await supabase
+    .from('firms')
+    .select('id, name, legal_name, profile_image_url')
+    .in('id', unique);
+  if (error) throw error;
+  return (data || []).map((row) => firmRowFromRecord(row));
+}
+
 /** Shortest name worth creating a firm for; one character is almost always a slip. */
 const MIN_FIRM_NAME_LENGTH = 2;
 

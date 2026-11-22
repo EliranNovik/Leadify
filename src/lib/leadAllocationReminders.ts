@@ -9,7 +9,6 @@ import {
   listExpectedLeadAllocationWorkDates,
   LEAD_ALLOCATION_REPORTING_START_DATE,
   LEAD_ALLOCATION_SAVED_EVENT,
-  minHoursToMs,
   normalizeLeadTimeReportingExcludedDates,
   type CurrentEmployeeContext,
 } from './employeeLeadReporting';
@@ -196,19 +195,12 @@ export function jerusalemMinutesSinceMidnight(now = new Date()): number {
   return hour * 60 + minute;
 }
 
-function isWithinSlotWindow(nowMs: number, slotStartMs: number, windowMinutes: number): boolean {
-  return nowMs >= slotStartMs && nowMs < slotStartMs + windowMinutes * 60 * 1000;
-}
-
 /**
  * Due reminder time slots for this moment.
- * Clocked in (today’s session) → 1h and 15m before (clock-in + base hours).
- * Otherwise → 16:00 and 17:00 Asia/Jerusalem.
+ * Always 16:00 and 17:00 Asia/Jerusalem. Clock-in does not change the schedule.
  *
  * @param requireExpectedWorkday — when true (today's toast reminders), skip if today is
  *   not a required reporting day (weekday mask / excluded / sick / vacation).
- *   when false (past-days modal), still use the clock/fixed clocks so backlog can surface
- *   even if today itself is exempt.
  */
 export function resolveDueLeadAllocationReminderSlots(params: {
   now?: Date;
@@ -240,28 +232,10 @@ export function resolveDueLeadAllocationReminderSlots(params: {
     }
   }
 
-  const clockInMs =
-    params.isClockedIn && params.clockInTimeIso
-      ? new Date(params.clockInTimeIso).getTime()
-      : NaN;
-  const clockInIsToday =
-    Number.isFinite(clockInMs) &&
-    getJerusalemTodayIsoDate(new Date(clockInMs)) === params.dateKey;
-
-  if (clockInIsToday) {
-    const baseEndMs = clockInMs + minHoursToMs(params.minHours);
-    const oneHourBefore = baseEndMs - 60 * 60 * 1000;
-    const fifteenBefore = baseEndMs - 15 * 60 * 1000;
-    const nowMs = now.getTime();
-
-    if (isWithinSlotWindow(nowMs, oneHourBefore, windowMinutes) && !fired.has('clocked_1h')) {
-      due.push('clocked_1h');
-    }
-    if (isWithinSlotWindow(nowMs, fifteenBefore, windowMinutes) && !fired.has('clocked_15m')) {
-      due.push('clocked_15m');
-    }
-    return due;
-  }
+  // Same 16:00 and 17:00 windows whether or not the employee is clocked in.
+  void params.isClockedIn;
+  void params.clockInTimeIso;
+  void params.minHours;
 
   const minutes = jerusalemMinutesSinceMidnight(now);
   const fixed16 = 16 * 60;

@@ -1,4 +1,12 @@
 import { supabase } from './supabase';
+import {
+  effortById,
+  type EffortAllocationInput,
+  type EffortAreaId,
+  type EffortFirmLink,
+  type EffortLeadLink,
+} from './workAreaEfforts';
+import { fetchExternalFirmsByIds } from './externalFirms';
 import type { RecentLead } from './recentSearchStorage';
 import type { CombinedLead } from './legacyLeadsApi';
 import { filterCountedClockInRecords } from './employeeClockInApproval';
@@ -54,6 +62,8 @@ export type AllocationItemInput = {
   lead_number: string;
   client_name: string;
   percent: number;
+  /** Sub-effort templates chosen for this lead on this day. */
+  subEffortIds?: number[];
 };
 
 export type EmployeeDailyAllocation = {
@@ -85,6 +95,8 @@ export type AllocationReportRow = {
   lead_number: string;
   client_name: string;
   percent: number;
+  /** Sub-efforts chosen on a Handling lead for this day. Empty for other work. */
+  subEffortIds: number[];
 };
 
 export type CurrentEmployeeContext = {
@@ -620,8 +632,10 @@ export type ManualLeadAllocationRow = {
   included: boolean;
   stage_id?: string | null;
   active_sub_effort_title?: string | null;
+  category_id?: number | null;
   category_main?: string | null;
   category_sub?: string | null;
+  subEffortIds?: number[];
 };
 
 export function allocationRowFromCombinedLead(lead: CombinedLead): ManualLeadAllocationRow | null {
@@ -822,13 +836,16 @@ export async function fetchLeadStagesByIdentity(
 }
 
 export type LeadCategoryDisplay = {
+  id: number | null;
   main: string | null;
   sub: string | null;
 };
 
 function parseCategoryJoin(row: {
+  category_id?: unknown;
   misc_category?:
     | {
+        id?: unknown;
         name?: unknown;
         misc_maincategory?:
           | { name?: unknown }
@@ -836,6 +853,7 @@ function parseCategoryJoin(row: {
           | null;
       }
     | Array<{
+        id?: unknown;
         name?: unknown;
         misc_maincategory?:
           | { name?: unknown }
@@ -849,7 +867,15 @@ function parseCategoryJoin(row: {
   const mainRel = cat?.misc_maincategory;
   const mainObj = Array.isArray(mainRel) ? mainRel[0] : mainRel;
   const main = typeof mainObj?.name === 'string' ? mainObj.name.trim() : '';
+  const joinedId = Number(cat?.id);
+  const rawId = Number(row.category_id);
+  const id = Number.isFinite(joinedId) && joinedId > 0
+    ? joinedId
+    : Number.isFinite(rawId) && rawId > 0
+      ? rawId
+      : null;
   return {
+    id,
     main: main || null,
     sub: sub || null,
   };
@@ -1005,6 +1031,7 @@ export type AllocationLeadDisplayMeta = {
   stageId: string | null;
   lead_number: string;
   active_sub_effort_title: string | null;
+  category_id: number | null;
   category_main: string | null;
   category_sub: string | null;
 };
@@ -1055,12 +1082,24 @@ export async function enrichAllocationLeadDisplayMeta(
       stageId: stageNum != null ? String(stageNum) : null,
       lead_number: leadNumber || String(row.legacy_lead_id || row.new_lead_id || ''),
       active_sub_effort_title: lookupKey ? subEffortTitles.get(lookupKey) ?? null : null,
+      category_id: category?.id ?? null,
       category_main: category?.main ?? null,
       category_sub: category?.sub ?? null,
     });
   }
 
   return metaByKey;
+}
+
+function parseSubEffortIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+}
+
+function isMissingSubEffortIdsColumn(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = String((error as { message?: string } | null)?.message || '');
+  return code === '42703' || code === 'PGRST204' || /sub_effort_ids/i.test(message);
 }
 
 export async function fetchDailyAllocation(
@@ -1079,16 +1118,32 @@ export async function fetchDailyAllocation(
 
   const { data: items, error: itemsError } = await supabase
     .from('employee_daily_lead_allocation_items')
-    .select('lead_type, new_lead_id, legacy_lead_id, lead_number, client_name, percent')
+    .select('lead_type, new_lead_id, legacy_lead_id, lead_number, client_name, percent, sub_effort_ids')
     .eq('allocation_id', header.id)
     .order('percent', { ascending: false });
 
-  if (itemsError) throw itemsError;
+  const loaded = itemsError && isMissingSubEffortIdsColumn(itemsError)
+    ? await supabase
+        .from('employee_daily_lead_allocation_items')
+        .select('lead_type, new_lead_id, legacy_lead_id, lead_number, client_name, percent')
+        .eq('allocation_id', header.id)
+        .order('percent', { ascending: false })
+    : { data: items, error: itemsError };
+
+  if (loaded.error) throw loaded.error;
 
   return {
     ...(header as Omit<EmployeeDailyAllocation, 'items'>),
     other_work_percent: Number(header.other_work_percent ?? 0),
-    items: (items as AllocationItemInput[]) ?? [],
+    items: (loaded.data || []).map((row) => ({
+      lead_type: row.lead_type === 'legacy' ? 'legacy' : 'new',
+      new_lead_id: row.new_lead_id ? String(row.new_lead_id) : null,
+      legacy_lead_id: row.legacy_lead_id != null ? Number(row.legacy_lead_id) : null,
+      lead_number: String(row.lead_number || ''),
+      client_name: String(row.client_name || ''),
+      percent: Number(row.percent) || 0,
+      subEffortIds: parseSubEffortIds((row as { sub_effort_ids?: unknown }).sub_effort_ids),
+    })),
   };
 }
 
@@ -1299,8 +1354,10 @@ export type LeadAllocationRowState = {
   last_viewed_at?: string;
   stage_id?: string | null;
   active_sub_effort_title?: string | null;
+  category_id?: number | null;
   category_main?: string | null;
   category_sub?: string | null;
+  subEffortIds?: number[];
 };
 
 export type LeadAllocationBucketsState = {
@@ -1860,6 +1917,43 @@ export function isDailyAllocationValid(
   return leadItems.every((item) => Number(item.percent) > 0);
 }
 
+/** Leads, other work, and area efforts together fill the day. */
+export function isCombinedAllocationValid(
+  leadItems: { percent: number }[],
+  otherWorkPercent: number,
+  effortItems: { percent: number; effortId: string }[],
+  maxOtherWorkPercent: number = 100,
+): boolean {
+  const other = Number(otherWorkPercent || 0);
+  const cappedMax = Math.max(0, Math.min(100, Number(maxOtherWorkPercent) || 100));
+  if (other > cappedMax + PERCENT_TOLERANCE) return false;
+  if (leadItems.some((item) => !(Number(item.percent) > 0))) return false;
+  if (effortItems.length === 0) return false;
+  if (effortItems.some((item) => !(Number(item.percent) > 0) || !effortById(item.effortId))) {
+    return false;
+  }
+  const grand =
+    allocationPercentTotal(leadItems) + other + allocationPercentTotal(effortItems);
+  return Math.abs(grand - 100) <= PERCENT_TOLERANCE;
+}
+
+/** Grow a short day up to 100% without changing the mix. The largest share absorbs rounding. */
+export function scaleSharesTo100(values: number[]): number[] {
+  const safe = values.map((value) => Math.max(0, Number(value) || 0));
+  const sum = safe.reduce((total, value) => total + value, 0);
+  if (sum <= 0) return safe.map(() => 0);
+  const scaled = safe.map((value) => Math.round((value / sum) * 10000) / 100);
+  const drift = Math.round((100 - scaled.reduce((total, value) => total + value, 0)) * 100) / 100;
+  if (drift !== 0) {
+    let index = 0;
+    scaled.forEach((value, i) => {
+      if (value > scaled[index]) index = i;
+    });
+    scaled[index] = Math.round((scaled[index] + drift) * 100) / 100;
+  }
+  return scaled;
+}
+
 export async function saveDailyAllocation(params: {
   employeeId: number;
   userId: string;
@@ -1867,9 +1961,27 @@ export async function saveDailyAllocation(params: {
   items: AllocationItemInput[];
   otherWorkPercent?: number;
   notes?: string | null;
+  /**
+   * When set, these effort shares are saved with the day and count toward 100%.
+   * Omit it to leave Handling saves on the lead-only check.
+   */
+  effortItems?: EffortAllocationInput[];
+  maxOtherWorkPercent?: number;
 }): Promise<EmployeeDailyAllocation> {
   const otherWorkPercent = Number(params.otherWorkPercent ?? 0);
-  if (!isDailyAllocationValid(params.items, otherWorkPercent)) {
+  const effortItems = params.effortItems;
+  if (effortItems) {
+    if (
+      !isCombinedAllocationValid(
+        params.items,
+        otherWorkPercent,
+        effortItems,
+        params.maxOtherWorkPercent ?? 100,
+      )
+    ) {
+      throw new Error('Leads, other work, and efforts must total 100%.');
+    }
+  } else if (!isDailyAllocationValid(params.items, otherWorkPercent, params.maxOtherWorkPercent ?? 100)) {
     throw new Error('Leads and other work must total 100%.');
   }
 
@@ -1930,6 +2042,7 @@ export async function saveDailyAllocation(params: {
     lead_number: item.lead_number,
     client_name: item.client_name,
     percent: Number(item.percent.toFixed(2)),
+    sub_effort_ids: item.subEffortIds ?? [],
   }));
 
   if (rows.length > 0) {
@@ -1937,7 +2050,33 @@ export async function saveDailyAllocation(params: {
       .from('employee_daily_lead_allocation_items')
       .insert(rows);
 
-    if (itemsError) throw itemsError;
+    if (itemsError && isMissingSubEffortIdsColumn(itemsError)) {
+      const hasChoices = rows.some((row) => row.sub_effort_ids.length > 0);
+      if (hasChoices) {
+        throw new Error(
+          'Sub efforts are not saved yet. Run sql/2026-11-18_employee_effort_allocations.sql in Supabase, then save again.',
+        );
+      }
+      const { error: retryError } = await supabase.from('employee_daily_lead_allocation_items').insert(
+        rows.map(({ sub_effort_ids: _ignored, ...row }) => row),
+      );
+      if (retryError) throw retryError;
+    } else if (itemsError) {
+      throw itemsError;
+    }
+  }
+
+  if (effortItems && allocationId) {
+    try {
+      await replaceDailyEffortAllocations(allocationId, effortItems);
+    } catch (effortError) {
+      if (isMissingEffortAllocationsTable(effortError)) {
+        throw new Error(
+          'Effort allocations are not set up yet. Run sql/2026-11-18_employee_effort_allocations.sql in Supabase, then save again.',
+        );
+      }
+      throw effortError;
+    }
   }
 
   const saved = await fetchDailyAllocation(params.employeeId, params.workDate);
@@ -1945,6 +2084,297 @@ export async function saveDailyAllocation(params: {
     throw new Error('Failed to load saved allocation.');
   }
   return saved;
+}
+
+export function isMissingEffortAllocationsTable(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = String((error as { message?: string } | null)?.message || '');
+  return code === '42P01' || code === '42703' || code === 'PGRST204' || code === 'PGRST205' || /does not exist|schema cache|department_id|department_ids|firm_ids|lead_links/i.test(message);
+}
+
+function isMissingEffortLinkColumns(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = String((error as { message?: string } | null)?.message || '');
+  return code === '42703' || code === 'PGRST204' || /firm_ids|lead_links|department_ids/i.test(message);
+}
+
+function parseEffortLeadLinks(value: unknown): EffortLeadLink[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((row) => {
+    if (!row || typeof row !== 'object') return [];
+    const record = row as Record<string, unknown>;
+    const key = String(record.key || '');
+    const leadType = record.lead_type === 'legacy' || record.lead_type === 'new' ? record.lead_type : null;
+    if (!key || !leadType) return [];
+    const legacyRaw = record.legacy_lead_id;
+    const legacyLeadId =
+      legacyRaw != null && Number.isFinite(Number(legacyRaw)) ? Number(legacyRaw) : null;
+    return [{
+      key,
+      leadType,
+      newLeadId: record.new_lead_id ? String(record.new_lead_id) : null,
+      legacyLeadId,
+      leadNumber: String(record.lead_number || ''),
+      clientName: String(record.client_name || ''),
+    }];
+  });
+}
+
+function parseDepartmentIds(row: { department_id?: unknown; department_ids?: unknown }): number[] {
+  if (Array.isArray(row.department_ids)) {
+    const ids = [...new Set(row.department_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id)))];
+    if (ids.length > 0) return ids;
+  }
+  if (row.department_id != null && Number.isFinite(Number(row.department_id))) {
+    return [Number(row.department_id)];
+  }
+  return [];
+}
+
+function effortLeadLinksPayload(leads: EffortLeadLink[]) {
+  return leads.map((lead) => ({
+    key: lead.key,
+    lead_type: lead.leadType,
+    new_lead_id: lead.newLeadId,
+    legacy_lead_id: lead.legacyLeadId,
+    lead_number: lead.leadNumber,
+    client_name: lead.clientName,
+  }));
+}
+
+export async function fetchDailyEffortAllocations(
+  allocationId: number,
+): Promise<EffortAllocationInput[]> {
+  const withLinks = await supabase
+    .from('employee_daily_effort_allocation_items')
+    .select('area, effort_id, percent, department_id, department_ids, firm_ids, lead_links')
+    .eq('allocation_id', allocationId);
+
+  let rows = withLinks.data;
+  let error = withLinks.error;
+  let linksAvailable = true;
+  if (error && isMissingEffortLinkColumns(error)) {
+    linksAvailable = false;
+    const fallback = await supabase
+      .from('employee_daily_effort_allocation_items')
+      .select('area, effort_id, percent, department_id')
+      .eq('allocation_id', allocationId);
+    rows = fallback.data;
+    error = fallback.error;
+  }
+  if (error) throw error;
+
+  const firmIds = linksAvailable
+    ? [...new Set((rows || []).flatMap((row) => (Array.isArray(row.firm_ids) ? row.firm_ids.map(String) : [])))]
+    : [];
+  const firmsById = new Map<string, EffortFirmLink>();
+  if (firmIds.length > 0) {
+    const firms = await fetchExternalFirmsByIds(firmIds);
+    for (const firm of firms) {
+      firmsById.set(firm.id, {
+        id: firm.id,
+        name: firm.name,
+        imageUrl: firm.profileImageUrl || null,
+      });
+    }
+  }
+
+  return (rows || []).flatMap((row) => {
+    const effortId = String(row.effort_id || '');
+    const catalogEffort = effortById(effortId);
+    const areaRaw = String(row.area || catalogEffort?.area || '');
+    const area: EffortAreaId | null =
+      areaRaw === 'marketing' || areaRaw === 'sales' || areaRaw === 'finances' || areaRaw === 'development'
+        ? areaRaw
+        : null;
+    const percent = Number(row.percent || 0);
+    if (!area || !effortId || !(percent > 0)) return [];
+    const departmentRaw = row.department_id;
+    const departmentIds = linksAvailable
+      ? parseDepartmentIds(row)
+      : departmentRaw != null && Number.isFinite(Number(departmentRaw))
+        ? [Number(departmentRaw)]
+        : [];
+    const storedFirmIds = linksAvailable && Array.isArray(row.firm_ids) ? row.firm_ids.map(String) : [];
+    const firms = storedFirmIds.flatMap((id) => {
+      const firm = firmsById.get(id);
+      return firm ? [firm] : [{ id, name: 'Firm', imageUrl: null }];
+    });
+    const leads = linksAvailable ? parseEffortLeadLinks(row.lead_links) : [];
+    return [{ area, effortId, percent, departmentIds, firms, leads }];
+  });
+}
+
+export async function replaceDailyEffortAllocations(
+  allocationId: number,
+  items: EffortAllocationInput[],
+): Promise<void> {
+  const { error: deleteError } = await supabase
+    .from('employee_daily_effort_allocation_items')
+    .delete()
+    .eq('allocation_id', allocationId);
+
+  if (deleteError) throw deleteError;
+  if (items.length === 0) return;
+
+  const baseRows = items.map((item) => ({
+    allocation_id: allocationId,
+    area: item.area,
+    effort_id: item.effortId,
+    percent: Number(item.percent.toFixed(2)),
+    department_id: item.departmentIds[0] ?? null,
+  }));
+  const linkedRows = items.map((item, index) => ({
+    ...baseRows[index],
+    firm_ids: (item.firms ?? []).map((firm) => firm.id),
+    lead_links: effortLeadLinksPayload(item.leads ?? []),
+    department_ids: item.departmentIds ?? [],
+  }));
+
+  const { error: insertError } = await supabase
+    .from('employee_daily_effort_allocation_items')
+    .insert(linkedRows);
+
+  if (!insertError) return;
+  const hasLinks = items.some(
+    (item) =>
+      (item.firms?.length ?? 0) > 0 ||
+      (item.leads?.length ?? 0) > 0 ||
+      (item.departmentIds?.length ?? 0) > 1,
+  );
+  if (isMissingEffortLinkColumns(insertError) && !hasLinks) {
+    const { error: retryError } = await supabase
+      .from('employee_daily_effort_allocation_items')
+      .insert(baseRows);
+    if (retryError) throw retryError;
+    return;
+  }
+  throw insertError;
+}
+
+export type EffortAllocationReportRow = {
+  allocationId: number;
+  employeeId: number;
+  employeeName: string;
+  employeePhotoUrl: string | null;
+  departmentId: number | null;
+  departmentName: string | null;
+  workDate: string;
+  area: EffortAreaId;
+  effortId: string;
+  percent: number;
+  /** Departments this effort time is for. Empty is General. */
+  targetDepartmentIds: number[];
+};
+
+export async function fetchEffortAllocationReport(params: {
+  fromDate?: string | null;
+  toDate?: string | null;
+  departmentId?: number | null;
+  employeeSearch?: string;
+}): Promise<EffortAllocationReportRow[]> {
+  const PAGE = 1000;
+  const raw: any[] = [];
+  let selectDepartmentIds = true;
+
+  for (let from = 0; ; from += PAGE) {
+    let query = supabase
+      .from('employee_daily_effort_allocation_items')
+      .select(
+        `
+        area,
+        effort_id,
+        percent,
+        ${selectDepartmentIds ? 'department_id,\n        department_ids,' : 'department_id,'}
+        employee_daily_lead_allocations!inner (
+          id,
+          employee_id,
+          work_date,
+          tenants_employee!employee_id (
+            id,
+            display_name,
+            photo_url,
+            photo,
+            department_id,
+            tenant_departement!department_id (
+              id,
+              name
+            )
+          )
+        )
+      `,
+      )
+      .order('id', { ascending: false })
+      .range(from, from + PAGE - 1);
+
+    if (params.fromDate) {
+      query = query.gte('employee_daily_lead_allocations.work_date', params.fromDate);
+    }
+    if (params.toDate) {
+      query = query.lte('employee_daily_lead_allocations.work_date', params.toDate);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      if (selectDepartmentIds && isMissingEffortLinkColumns(error)) {
+        selectDepartmentIds = false;
+        from -= PAGE;
+        continue;
+      }
+      throw error;
+    }
+    const batch = data || [];
+    raw.push(...batch);
+    if (batch.length < PAGE) break;
+  }
+
+  const search = params.employeeSearch?.trim().toLowerCase() || '';
+  const departmentId = params.departmentId ?? null;
+  const rows: EffortAllocationReportRow[] = [];
+
+  for (const item of raw) {
+    const effortId = String(item.effort_id || '');
+    const effort = effortById(effortId);
+    const areaRaw = String(item.area || effort?.area || '');
+    if (
+      areaRaw !== 'marketing' &&
+      areaRaw !== 'sales' &&
+      areaRaw !== 'finances' &&
+      areaRaw !== 'development'
+    ) {
+      continue;
+    }
+    const alloc = Array.isArray(item.employee_daily_lead_allocations)
+      ? item.employee_daily_lead_allocations[0]
+      : item.employee_daily_lead_allocations;
+    const emp = Array.isArray(alloc?.tenants_employee)
+      ? alloc.tenants_employee[0]
+      : alloc?.tenants_employee;
+    if (!alloc || !emp) continue;
+
+    const dept = Array.isArray(emp.tenant_departement)
+      ? emp.tenant_departement[0]
+      : emp.tenant_departement;
+    const employeeName = String(emp.display_name || '').trim() || `Employee ${emp.id}`;
+    if (search && !employeeName.toLowerCase().includes(search)) continue;
+    if (departmentId != null && Number(emp.department_id) !== departmentId) continue;
+
+    rows.push({
+      allocationId: Number(alloc.id),
+      employeeId: Number(emp.id),
+      employeeName,
+      employeePhotoUrl: emp.photo_url || emp.photo || null,
+      departmentId: emp.department_id != null ? Number(emp.department_id) : null,
+      departmentName: dept?.name ? String(dept.name) : null,
+      workDate: String(alloc.work_date || '').slice(0, 10),
+      area: areaRaw,
+      effortId,
+      percent: Number(item.percent || 0),
+      targetDepartmentIds: parseDepartmentIds(item),
+    });
+  }
+
+  return rows;
 }
 
 /** Delete the day's allocation so it returns to the unsaved / null default state. */
@@ -1971,6 +2401,7 @@ export async function fetchAllocationReport(params: {
 }): Promise<AllocationReportRow[]> {
   const PAGE = 1000;
   const allocations: any[] = [];
+  let includeSubEfforts = true;
 
   for (let from = 0; ; from += PAGE) {
     let allocationQuery = supabase
@@ -2001,7 +2432,7 @@ export async function fetchAllocationReport(params: {
         legacy_lead_id,
         lead_number,
         client_name,
-        percent
+        percent${includeSubEfforts ? ',\n        sub_effort_ids' : ''}
       )
     `,
       )
@@ -2016,7 +2447,14 @@ export async function fetchAllocationReport(params: {
     }
 
     const { data, error } = await allocationQuery;
-    if (error) throw error;
+    if (error) {
+      if (includeSubEfforts && isMissingSubEffortIdsColumn(error)) {
+        includeSubEfforts = false;
+        from -= PAGE;
+        continue;
+      }
+      throw error;
+    }
     const batch = data || [];
     allocations.push(...batch);
     if (batch.length < PAGE) break;
@@ -2073,6 +2511,7 @@ export async function fetchAllocationReport(params: {
         lead_number: '—',
         client_name: 'Other work',
         percent: otherWorkPercent,
+        subEffortIds: [],
       });
     }
 
@@ -2095,6 +2534,7 @@ export async function fetchAllocationReport(params: {
         lead_number: item.lead_number,
         client_name: item.client_name,
         percent: Number(item.percent),
+        subEffortIds: parseSubEffortIds(item.sub_effort_ids),
       });
     }
   }
@@ -2263,6 +2703,26 @@ export function allocationPercentToWorkedMs(totalWorkedMs: number, percent: numb
   const safeTotal = Math.max(0, totalWorkedMs);
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
   return Math.round((safeTotal * safePercent) / 100);
+}
+
+/** Snap a share to the nearest minute of the day, inside the allowed range. */
+export function snapAllocationPercent(
+  percent: number,
+  dayWorkedMs: number,
+  minPercent = 0,
+  maxPercent = 100,
+): number {
+  const min = Math.max(0, Math.min(100, Number(minPercent) || 0));
+  const max = Math.max(min, Math.min(100, Number.isFinite(maxPercent) ? maxPercent : 100));
+  const raw = Number(percent);
+  const bounded = Math.max(min, Math.min(max, Number.isFinite(raw) ? raw : min));
+  const totalMinutes = Math.round(Math.max(0, dayWorkedMs) / 60_000);
+  if (totalMinutes <= 1) return Math.round(bounded * 10) / 10;
+  const minMinutes = Math.ceil((min / 100) * totalMinutes - 1e-9);
+  const maxMinutes = Math.floor((max / 100) * totalMinutes + 1e-9);
+  const snapped = Math.round((bounded / 100) * totalMinutes);
+  const minutes = Math.max(minMinutes, Math.min(maxMinutes, snapped));
+  return (minutes / totalMinutes) * 100;
 }
 
 export function normalizeEmployeeHourRate(value: unknown): number | null {

@@ -170,6 +170,18 @@ export const stableHueForSalaryAvatar = (employeeId: number | null, label: strin
   return h % 360;
 };
 
+/** Soft washed-out gradient. Same employee always gets the same colours. */
+export const washedEmployeeCardStyle = (
+  employeeId: number,
+  label: string,
+): { background: string } => {
+  const hue = stableHueForSalaryAvatar(employeeId, label);
+  const hue2 = (hue + 36) % 360;
+  return {
+    background: `linear-gradient(135deg, hsl(${hue} 48% 94%), hsl(${hue2} 42% 90%))`,
+  };
+};
+
 export const salaryAvatarGradientStyle = (
   employeeId: number,
   label: string,

@@ -432,6 +432,11 @@ const LeadManagementDetailPage: React.FC = () => {
                     #{detail.lead.leadNumber}
                     {detail.lead.category ? ` · ${detail.lead.category}` : ''}
                   </p>
+                  {detail.lead.missingBalance ? (
+                    <span className="mt-2 inline-flex rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">
+                      No balance · Handler Nominated or later
+                    </span>
+                  ) : null}
                   {clientRoute ? (
                     <Link
                       to={clientRoute}
@@ -546,6 +551,11 @@ const LeadManagementDetailPage: React.FC = () => {
                                   photoUrl={emp.photoUrl}
                                 />
                                 <span className="font-medium text-gray-900">{emp.employeeName}</span>
+                                {emp.missingSalary ? (
+                                  <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                                    No salary
+                                  </span>
+                                ) : null}
                               </div>
                             </td>
                             <td>
@@ -632,6 +642,11 @@ const LeadManagementDetailPage: React.FC = () => {
                                   photoUrl={emp.photoUrl}
                                 />
                                 <span className="font-medium text-gray-900">{emp.employeeName}</span>
+                                {emp.missingSalary ? (
+                                  <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                                    No salary
+                                  </span>
+                                ) : null}
                               </div>
                             </td>
                             <td className="text-sm text-gray-500">{emp.departmentName || '—'}</td>

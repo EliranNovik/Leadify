@@ -583,6 +583,21 @@ html,
   display: none;
 }
 
+@keyframes hours-nav-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hours-nav-page {
+  animation: hours-nav-in 220ms ease-out;
+}
+
 /* Clients page: hide main scroll track while keeping scroll behavior */
 .app-main-scroll.scrollbar-hide {
   -ms-overflow-style: none;
@@ -3055,6 +3070,22 @@ html .doc-viewer-glass textarea {
 html .doc-viewer-glass input:not([type='checkbox']):not([type='radio'])::placeholder,
 html .doc-viewer-glass textarea::placeholder {
   color: rgba(255, 255, 255, 0.45) !important;
+}
+
+/* DaisyUI paints the select arrow as a background image. Chrome copies that image
+   into the native option list, so the menu turns transparent over the page. */
+.report-date-input {
+  width: 11.5rem;
+  max-width: 11.5rem;
+  flex: 0 0 auto;
+}
+
+.report-select,
+.report-select option {
+  background-image: none;
+  background-color: #ffffff;
+  color: #111827;
+  color-scheme: light;
 }
 
 /* Mobile sheets: no hairline under the title or above the footer buttons. */

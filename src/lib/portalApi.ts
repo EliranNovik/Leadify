@@ -195,6 +195,13 @@ export type PortalTeamContact = {
   mobile?: string | null;
 };
 
+export type PortalHandlingRolePerson = {
+  role: string;
+  name: string | null;
+  name_he?: string | null;
+  photo_url?: string | null;
+};
+
 export async function portalGetCaseSummary() {
   const { data, error } = await supabase.rpc('portal_get_case_summary', {
     p_token: tokenOrThrow(),
@@ -219,6 +226,8 @@ export async function portalGetCaseSummary() {
     department_manager_department?: string | null;
     main_category_name?: string | null;
     category: string | null;
+    active_handler_type?: number | null;
+    handling_roles?: PortalHandlingRolePerson[] | null;
   } | null;
 }
 

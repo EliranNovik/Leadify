@@ -204,6 +204,114 @@
   },
   "stages": {
     "title": "Case Status",
+    "handling": {
+      "youAreHere": "You are here: {{stageName}}",
+      "now": "Now",
+      "done": "Done",
+      "later": "Later",
+      "yourContact": "This is who you talk to",
+      "alsoWorking": "Also on this step",
+      "shortPreparing": "Application",
+      "shortWaiting": "Waiting",
+      "shortFinishing": "Citizenship",
+      "preparingTitle": "Preparing your application",
+      "preparingBody": "We gather what the application needs, prepare the file, and submit it to the authorities.",
+      "waitingTitle": "Waiting with the authorities",
+      "waitingBody": "The authorities have your file. We watch the case and tell you when something changes or they ask for more.",
+      "finishingTitle": "Finishing your citizenship",
+      "finishingBody": "We handle any extra documents they request and stay with you until citizenship is granted.",
+      "contactPreparing": "This is who to talk to while we prepare your application.",
+      "contactWaiting": "This is who to talk to while your file is with the authorities.",
+      "contactFinishing": "This is who to talk to while we finish your citizenship.",
+      "openStageAria": "Read what happens during {{stageName}}",
+      "detailEyebrow": "What happens in this stage",
+      "detail": {
+        "1": {
+          "intro": "This is the work we do before your citizenship application is filed.",
+          "steps": [
+            {
+              "title": "Collect your documents",
+              "body": "We ask for the records the application needs and gather them into your file. Birth records, family records, and anything else the authorities require are collected here.",
+              "role": "document_procurement_coordinator"
+            },
+            {
+              "title": "Scan and organize the file",
+              "body": "Every document is scanned and kept in order, so the file is complete and nothing is missing when we are ready to file.",
+              "role": "digital_case_coordinator"
+            },
+            {
+              "title": "Notarize and authenticate",
+              "body": "Documents that must be notarized or authenticated are prepared and certified before they can be submitted.",
+              "role": "certification_coordinator"
+            },
+            {
+              "title": "Prepare the application",
+              "body": "The submissions team reviews the file and puts the citizenship application together.",
+              "role": "submission_manager"
+            },
+            {
+              "title": "Submit it",
+              "body": "Your handler files the application with the authorities. This is also the person you can talk to while the application is being prepared.",
+              "role": "handler"
+            }
+          ]
+        },
+        "2": {
+          "intro": "After the application is filed, the case waits with the authorities. This stage is follow-up, not new paperwork.",
+          "steps": [
+            {
+              "title": "The authorities review your file",
+              "body": "Your application sits with the authorities while they examine it. This wait is often long, and that is a normal part of the process.",
+              "role": ""
+            },
+            {
+              "title": "We watch the case",
+              "body": "Your case monitoring coordinator follows the file and checks for any letter, request, or movement from the authorities.",
+              "role": "client_support"
+            },
+            {
+              "title": "We tell you what changes",
+              "body": "If the authorities write, ask for something, or move the case forward, we tell you. You do not have to chase them yourself.",
+              "role": "client_support"
+            }
+          ]
+        },
+        "3": {
+          "intro": "When the authorities ask for more, or the case is ready to finish, this stage completes the file and takes it through to citizenship.",
+          "steps": [
+            {
+              "title": "Complete any extra documents",
+              "body": "We gather and finish anything else the authorities ask for, and we coordinate that work with you.",
+              "role": "retainer_handler"
+            },
+            {
+              "title": "Speak with the authorities",
+              "body": "We deal directly with the Austrian or German authorities on your case and answer what they need.",
+              "role": "authorities_coordinator"
+            },
+            {
+              "title": "Stay with you until citizenship",
+              "body": "Your completion coordinator stays with you through the last steps until citizenship is granted.",
+              "role": "retainer_handler"
+            }
+          ]
+        }
+      },
+      "jobs": {
+        "submission": "Oversees how your application is prepared",
+        "digital": "Scans and files your documents",
+        "documents": "Collects your documents",
+        "certification": "Arranges notarization",
+        "authorities": "Speaks with the authorities"
+      },
+      "roleShort": {
+        "submission": "Prepares your application",
+        "digital": "Keeps your file in order",
+        "documents": "Collects your documents",
+        "certification": "Arranges notarization",
+        "authorities": "Speaks with the authorities"
+      }
+    },
     "subtitleCurrentStage": "Current stage: {{stageName}}",
     "subtitleAllComplete": "All stages are complete.",
     "emptyNoCaseType": "Case stages will appear here once your case type is set on your file.",

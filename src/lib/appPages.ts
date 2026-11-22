@@ -95,7 +95,17 @@ export const APP_PAGES: AppPage[] = [
     keywords: ['human resources', 'attendance', 'clock in', 'working hours'],
   },
   { path: '/reports/employee-info', label: 'Employee Info', group: 'People' },
-  { path: '/reports/employee-lead-allocations', label: 'Employee Lead Allocations', group: 'People' },
+  {
+    path: '/reports/employee-lead-allocations',
+    label: 'Hours allocation',
+    group: 'People',
+    keywords: ['lead allocations', 'marketing', 'sales', 'finances', 'development', 'handling'],
+  },
+  { path: '/reports/hours-allocation/handling', label: 'Handling hours', group: 'People' },
+  { path: '/reports/hours-allocation/marketing', label: 'Marketing hours', group: 'People' },
+  { path: '/reports/hours-allocation/sales', label: 'Sales hours', group: 'People' },
+  { path: '/reports/hours-allocation/finances', label: 'Finances hours', group: 'People' },
+  { path: '/reports/hours-allocation/development', label: 'Development hours', group: 'People' },
   {
     path: '/reports/employee-unavailabilities',
     label: 'Employee Unavailabilities',

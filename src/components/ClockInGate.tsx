@@ -163,7 +163,10 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
     );
   })();
 
-  return createPortal(
+  return (
+    <>
+    <LeadAllocationReminderMonitor />
+    {createPortal(
     <div
       className="login-page fixed inset-0 z-[200] flex flex-col overflow-hidden min-h-[100dvh] min-h-[100svh]"
       role="dialog"
@@ -254,7 +257,8 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
 
       {signOutModal}
     </div>,
-    document.body,
+    document.body)}
+    </>
   );
 };
 

@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import PortalSubEffortsTimeline from './PortalSubEffortsTimeline';
+import PortalHandlingJourney from './PortalHandlingJourney';
+import { buildPortalHandlingBoard } from './portalHandlingBoard';
 import { getPortalTabHeaderCoverImage, PortalLoading, PortalTabFrame } from '../components/portalTheme';
 import { usePortalTabData } from '../context/PortalTabDataContext';
 import { findCurrentPortalSubEffort } from '../../../lib/portalSubEfforts';
@@ -12,6 +14,10 @@ const PortalStagesTab: React.FC = () => {
   const rows = data?.subEfforts ?? [];
   const folders = data?.subEffortFolders ?? [];
   const active = useMemo(() => findCurrentPortalSubEffort(rows), [rows]);
+  const handling = useMemo(
+    () => buildPortalHandlingBoard(data?.summary, i18n.language),
+    [data?.summary, i18n.language],
+  );
   const activeStageName = translatePortalDynamicLabel(
     i18n.language,
     active?.sub_effort_name,
@@ -24,11 +30,22 @@ const PortalStagesTab: React.FC = () => {
       : t('stages.emptyNoStagesLinked');
 
   // The hero says where the case stands and nothing else; what to do here is plain from the page.
-  const subtitle = activeStageName
+  const handlingStageName = handling
+    ? t(
+        handling.activeStageId === 1
+          ? 'stages.handling.preparingTitle'
+          : handling.activeStageId === 2
+            ? 'stages.handling.waitingTitle'
+            : 'stages.handling.finishingTitle',
+      )
+    : '';
+  const subtitle = handling
+    ? t('stages.handling.youAreHere', { stageName: handlingStageName })
+    : activeStageName
     ? t('stages.subtitleCurrentStage', { stageName: activeStageName })
     : rows.length > 0 && rows.every((row) => row.active === false)
-      ? t('stages.subtitleAllComplete')
-      : undefined;
+    ? t('stages.subtitleAllComplete')
+    : undefined;
 
   if (initialLoading && !data) return <PortalLoading />;
 
@@ -38,7 +55,10 @@ const PortalStagesTab: React.FC = () => {
       subtitle={subtitle}
       headerCoverImage={getPortalTabHeaderCoverImage('stages')}
     >
-      <PortalSubEffortsTimeline rows={rows} folders={folders} emptyMessage={emptyMessage} />
+      {handling ? <PortalHandlingJourney board={handling} /> : null}
+      <div className={`mx-auto w-full max-w-4xl ${handling ? 'mt-8' : ''}`}>
+        <PortalSubEffortsTimeline rows={rows} folders={folders} emptyMessage={emptyMessage} />
+      </div>
     </PortalTabFrame>
   );
 };

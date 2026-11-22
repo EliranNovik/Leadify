@@ -22,6 +22,7 @@ import {
 import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import { getRoleDisplayName } from '../lib/employeeRoles';
+import AllocatedHoursTab from '../components/profile/AllocatedHoursTab';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 import PersonalTab from '../components/profile/PersonalTab';
 import MyDocumentsTab from '../components/profile/MyDocumentsTab';
@@ -56,11 +57,12 @@ const MyProfilePage: React.FC = () => {
     const [uploading, setUploading] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [profile, setProfile] = useState<EmployeeProfile | null>(null);
-    const profileTabs = ['About', 'Personal', 'Working Hours', 'Contribution', 'Documents', 'Email Signature'];
+    const profileTabs = ['About', 'Personal', 'Working Hours', 'Allocated hours', 'Contribution', 'Documents', 'Email Signature'];
     const tabFromUrl = (() => {
       const raw = String(searchParams.get('tab') || '').trim().toLowerCase().replace(/[_]+/g, '-');
       if (!raw) return 'About';
       if (raw === 'working-hours' || raw === 'working hours' || raw === 'hours') return 'Working Hours';
+      if (raw === 'allocated-hours' || raw === 'allocated hours' || raw === 'allocation') return 'Allocated hours';
       if (raw === 'email-signature' || raw === 'signature') return 'Email Signature';
       const match = profileTabs.find((tab) => tab.toLowerCase() === raw || tab.toLowerCase().replace(/\s+/g, '-') === raw);
       return match || 'About';
@@ -512,7 +514,7 @@ const MyProfilePage: React.FC = () => {
             <div
               ref={contentRef}
               className={`flex-1 w-full py-5 md:py-6 px-4 md:px-8 ${
-                activeTab === 'Working Hours' || activeTab === 'Personal' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
+                activeTab === 'Working Hours' || activeTab === 'Allocated hours' || activeTab === 'Personal' || activeTab === 'Documents' || activeTab === 'Contribution' || activeTab === 'Email Signature' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
                 {activeTab === 'About' && (
@@ -653,6 +655,9 @@ const MyProfilePage: React.FC = () => {
                       headerActionsSlot={tabActionsSlot}
                     />
                 )}
+                {activeTab === 'Allocated hours' && profile?.id && (
+                    <AllocatedHoursTab employeeId={profile.id} />
+                )}
                 {activeTab === 'Personal' && profile?.id && (
                     <PersonalTab employeeId={profile.id} />
                 )}
@@ -674,7 +679,7 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
-                {activeTab !== 'About' && activeTab !== 'Personal' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && activeTab !== 'Email Signature' && (
+                {activeTab !== 'About' && activeTab !== 'Personal' && activeTab !== 'Working Hours' && activeTab !== 'Allocated hours' && activeTab !== 'Documents' && activeTab !== 'Contribution' && activeTab !== 'Email Signature' && (
                     <div className="rounded-[18px] bg-white py-20 text-center text-gray-400 shadow-sm">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>

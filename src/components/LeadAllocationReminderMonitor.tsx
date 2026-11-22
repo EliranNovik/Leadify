@@ -1,24 +1,18 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { ClipboardDocumentListIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import LeadAllocationReminderModal from './LeadAllocationReminderModal';
 import { useExternalUser } from '../hooks/useExternalUser';
 import { getJerusalemTodayIsoDate } from '../lib/employeeLeadReporting';
 import {
-  getJerusalemHour,
   hasFiredLeadAllocationReminderSlot,
   LEAD_ALLOCATION_REMINDER_POLL_MS,
   LEAD_ALLOCATION_SAVED_EVENT,
   leadAllocationReminderCopy,
   leadTimeReportPathForDate,
   loadLeadAllocationReminderSnapshot,
-  markLeadAllocationReminderModalDismissed,
-  markLeadAllocationReminderModalShownForHour,
   markLeadAllocationReminderSlotFired,
-  pastMissingLeadAllocationDates,
   resolveDueLeadAllocationReminderSlots,
-  shouldOpenLeadAllocationBacklogModal,
   type LeadAllocationReminderSlot,
   type LeadAllocationReminderSnapshot,
 } from '../lib/leadAllocationReminders';
@@ -86,30 +80,23 @@ function showLeadAllocationTodayReminderToast(params: {
 }
 
 /**
- * Two separate surfaces:
- * - Toast reminders → today’s report only (and only if today is a required workday).
- * - Popup modal → yesterday + earlier missing days (backlog).
+ * Toast reminder for today’s report, only when lead-time reporting is turned on
+ * for that employee. Clock-in does not decide who sees it or when it fires.
+ * The past-days backlog modal is paused.
  *
- * Both respect employee opt-in, weekday schedule, per-employee excluded dates,
- * and approved sick/vacation. Fired state lives in localStorage.
+ * Weekday schedule, excluded dates, and approved sick/vacation still apply.
+ * Fired state lives in localStorage.
  */
 const LeadAllocationReminderMonitor: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
   const [snapshot, setSnapshot] = useState<LeadAllocationReminderSnapshot | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
   const onReportPage = location.pathname.startsWith('/lead-time-report');
-
-  const pastMissingDates = useMemo(
-    () => snapshot?.pastMissingDates ?? pastMissingLeadAllocationDates(snapshot?.missingDates || []),
-    [snapshot?.missingDates, snapshot?.pastMissingDates],
-  );
 
   const refresh = useCallback(async () => {
     if (isExternalUser || isLoadingExternal) {
       setSnapshot(null);
-      setModalOpen(false);
       return null;
     }
     try {
@@ -123,21 +110,8 @@ const LeadAllocationReminderMonitor: React.FC = () => {
   }, [isExternalUser, isLoadingExternal]);
 
   const goToTodayReport = useCallback(() => {
-    setModalOpen(false);
     navigate(leadTimeReportPathForDate(getJerusalemTodayIsoDate()));
   }, [navigate]);
-
-  const goToPastReport = useCallback(
-    (missingPastDates: string[]) => {
-      const latest =
-        missingPastDates.length > 0
-          ? missingPastDates[missingPastDates.length - 1]
-          : getJerusalemTodayIsoDate();
-      setModalOpen(false);
-      navigate(leadTimeReportPathForDate(latest));
-    },
-    [navigate],
-  );
 
   const evaluateReminders = useCallback(
     (snap: LeadAllocationReminderSnapshot) => {
@@ -150,15 +124,14 @@ const LeadAllocationReminderMonitor: React.FC = () => {
 
       const slotBase = {
         dateKey,
-        isClockedIn: snap.isClockedIn,
-        clockInTimeIso: snap.clockInTimeIso,
+        isClockedIn: false,
+        clockInTimeIso: null,
         minHours: snap.ctx.minHours,
         weekdays: snap.ctx.leadTimeReportingWeekdays,
         excludedDates: snap.effectiveExcludedDates,
       };
 
-      // --- Toast: current day only ---
-      // Requires today to be a required reporting day (weekdays + excluded + sick/vacation).
+      // Toast for today only, and only when today is a required reporting day.
       if (snap.todayMissing) {
         const dueToday = resolveDueLeadAllocationReminderSlots({
           ...slotBase,
@@ -174,35 +147,9 @@ const LeadAllocationReminderMonitor: React.FC = () => {
         }
       }
 
-      // --- Modal: past days only (yesterday and earlier) ---
-      // Uses the same clock windows, but does not require today to be a workday
-      // (employee may be on vacation today and still owe prior days).
-      const pastMissing = snap.pastMissingDates;
-      if (pastMissing.length === 0 || modalOpen) return;
-
-      const dueForBacklog = resolveDueLeadAllocationReminderSlots({
-        ...slotBase,
-        // Modal uses modalHoursShown, not toast firedSlots — allow opening in the
-        // same hour window even if today's toast already fired.
-        firedSlots: [],
-        requireExpectedWorkday: false,
-      });
-
-      if (
-        !shouldOpenLeadAllocationBacklogModal({
-          employeeId: snap.ctx.employeeId,
-          missingDates: snap.missingDates,
-          dueSlots: dueForBacklog,
-        })
-      ) {
-        return;
-      }
-
-      const hour = getJerusalemHour();
-      markLeadAllocationReminderModalShownForHour(snap.ctx.employeeId, hour, dateKey);
-      window.setTimeout(() => setModalOpen(true), 900);
+      // Past-days backlog modal is paused. The toast above is the only reminder.
     },
-    [goToTodayReport, modalOpen, onReportPage],
+    [goToTodayReport, onReportPage],
   );
 
   useEffect(() => {
@@ -225,10 +172,7 @@ const LeadAllocationReminderMonitor: React.FC = () => {
     }, LEAD_ALLOCATION_REMINDER_POLL_MS);
 
     const onSaved = () => {
-      void refresh().then((snap) => {
-        const past = snap?.pastMissingDates ?? [];
-        if (past.length === 0) setModalOpen(false);
-      });
+      void refresh();
     };
     const onVisible = () => {
       if (document.visibilityState === 'visible') void run();
@@ -245,26 +189,10 @@ const LeadAllocationReminderMonitor: React.FC = () => {
     };
   }, [isExternalUser, isLoadingExternal, refresh, evaluateReminders]);
 
-  useEffect(() => {
-    if (onReportPage) setModalOpen(false);
-  }, [onReportPage]);
-
   if (isExternalUser || isLoadingExternal || !snapshot) return null;
 
-  return (
-    <LeadAllocationReminderModal
-      isOpen={modalOpen && pastMissingDates.length > 0}
-      missingDates={pastMissingDates}
-      onClose={() => {
-        markLeadAllocationReminderModalDismissed(snapshot.ctx.employeeId);
-        setModalOpen(false);
-      }}
-      onGoToReport={() => {
-        markLeadAllocationReminderModalDismissed(snapshot.ctx.employeeId);
-        goToPastReport(pastMissingDates);
-      }}
-    />
-  );
+  // Past-days backlog modal is paused.
+  return null;
 };
 
 export default LeadAllocationReminderMonitor;

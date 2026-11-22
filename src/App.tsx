@@ -80,6 +80,9 @@ import {
   LazyEmployeeLeadAllocationsReportPage,
   LazyLeadsManagementReportPage,
   LazyLeadManagementDetailPage,
+  LazyEmployeeLeadCostPage,
+  LazyHoursAllocationAreaPage,
+  LazyHoursAllocationEmployeePage,
   LazySubcontractorFeesReportPage,
   LazyEmployeeLeadReportingPage,
   LazyEmployeePerformancePage,
@@ -224,6 +227,10 @@ const AppContentInner: React.FC = () => {
   const isClientsPage = useMemo(() => location.pathname.startsWith('/clients'), [location.pathname]);
   // The documents drive runs its own full-width shell, so the app sidebar steps aside.
   const isDrivePage = useMemo(() => location.pathname.startsWith('/drive'), [location.pathname]);
+  const isLeadTimeReportPage = useMemo(
+    () => location.pathname === '/lead-time-report' || location.pathname.startsWith('/lead-time-report/'),
+    [location.pathname],
+  );
   // Pages that should use a grey app background (incl. behind the sidebar) instead of white
   const useGreyAppBackground = isDashboardPage || isClientsPage || isDrivePage;
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
@@ -266,6 +273,7 @@ const AppContentInner: React.FC = () => {
       !isHandlerManagementPage &&
       !isFullBleedEditorPage &&
       !isDrivePage &&
+      !isLeadTimeReportPage &&
       !(isExternalUser && !isLoadingExternal),
     [
       isAdminPage,
@@ -276,6 +284,7 @@ const AppContentInner: React.FC = () => {
       isHandlerManagementPage,
       isFullBleedEditorPage,
       isDrivePage,
+      isLeadTimeReportPage,
       isExternalUser,
       isLoadingExternal,
     ],
@@ -1088,7 +1097,7 @@ const AppContentInner: React.FC = () => {
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div
                 className={
-                  isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage
+                  isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage || isLeadTimeReportPage
                     ? 'hidden'
                     : undefined
                 }
@@ -1304,7 +1313,11 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/employee-salaries" element={<RouteSuspense><LazyEmployeeSalariesReport /></RouteSuspense>} />
                     <Route path="/reports/employee-info" element={<RouteSuspense><LazyEmployeeInfoReport /></RouteSuspense>} />
                     <Route path="/reports/employee-lead-allocations" element={<RouteSuspense><LazyEmployeeLeadAllocationsReportPage /></RouteSuspense>} />
+                    <Route path="/reports/hours-allocation/employees/:employeeId" element={<RouteSuspense><LazyHoursAllocationEmployeePage /></RouteSuspense>} />
+                    <Route path="/reports/hours-allocation/:area/employees/:employeeId" element={<RouteSuspense><LazyHoursAllocationAreaPage /></RouteSuspense>} />
+                    <Route path="/reports/hours-allocation/:area" element={<RouteSuspense><LazyHoursAllocationAreaPage /></RouteSuspense>} />
                     <Route path="/reports/leads-management" element={<RouteSuspense><LazyLeadsManagementReportPage /></RouteSuspense>} />
+                    <Route path="/reports/leads-management/employees/:employeeId" element={<RouteSuspense><LazyEmployeeLeadCostPage /></RouteSuspense>} />
                     <Route path="/reports/leads-management/:leadKey" element={<RouteSuspense><LazyLeadManagementDetailPage /></RouteSuspense>} />
                     <Route path="/reports/subcontractor-fees" element={<RouteSuspense><LazySubcontractorFeesReportPage /></RouteSuspense>} />
                     <Route path="/reports/leads-report" element={<RouteSuspense><LazyLeadsReportPage /></RouteSuspense>} />

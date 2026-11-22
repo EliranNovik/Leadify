@@ -2,17 +2,12 @@ import React, { useEffect, useMemo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
-  ArrowPathIcon,
-  CheckCircleIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  ClockIcon,
   DocumentIcon,
   ArrowDownTrayIcon,
   FolderIcon,
   FolderOpenIcon,
-  QuestionMarkCircleIcon,
-  XMarkIcon,
 } from '@heroicons/react/24/outline';
 import {
   CheckCircleIcon as CheckCircleSolidIcon,
@@ -46,7 +41,6 @@ import {
 function buildPortalDocColumns(t: TFunction): DriveTableColumn[] {
   return [
     { id: 'type', label: t('stages.timeline.columns.type'), className: 'hidden w-[11rem] sm:table-cell' },
-    { id: 'date', label: t('stages.timeline.columns.added'), className: 'hidden w-[9rem] md:table-cell' },
   ];
 }
 
@@ -262,98 +256,40 @@ function StageProgressIcon({ progress }: { progress: PortalSubEffortProgress }) 
 
 function StageProgressBadge({ progress }: { progress: PortalSubEffortProgress }) {
   const { t } = useTranslation();
-  if (progress === 'completed') {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-1.5 text-sm font-semibold leading-none text-emerald-700 ring-1 ring-emerald-200/70"
-        title={t('common.status.done')}
-        aria-label={t('common.status.done')}
-      >
-        <CheckCircleIcon className="h-4 w-4 shrink-0" aria-hidden />
-        {t('common.status.done')}
-      </span>
-    );
-  }
-  if (progress === 'in_progress') {
-    return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold leading-none text-blue-700 ring-1 ring-blue-200/70"
-        title={t('common.status.inProcess')}
-        aria-label={t('common.status.inProcess')}
-      >
-        <ArrowPathIcon className="h-4 w-4 shrink-0" aria-hidden />
-        {t('common.status.inProcess')}
-      </span>
-    );
-  }
-  return (
-    <span
-      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-sm font-semibold leading-none text-slate-500 ring-1 ring-slate-200/80"
-      title={t('common.status.pending')}
-      aria-label={t('common.status.pending')}
-    >
-      <ClockIcon className="h-4 w-4 shrink-0" aria-hidden />
-      {t('common.status.pending')}
-    </span>
-  );
-}
-
-/** The state of a stage in the workflow list: the mark on its own, with nothing drawn around it. */
-function StageProgressGlyph({ progress }: { progress: PortalSubEffortProgress }) {
-  const { t } = useTranslation();
-  const { Icon, tone, label } =
+  const label =
     progress === 'completed'
-      ? { Icon: CheckCircleIcon, tone: 'text-emerald-600', label: t('common.status.done') }
+      ? t('common.status.done')
       : progress === 'in_progress'
-        ? { Icon: ArrowPathIcon, tone: 'text-blue-600', label: t('common.status.inProcess') }
-        : { Icon: ClockIcon, tone: 'text-slate-400', label: t('common.status.pending') };
-
-  return (
-    <span className={`shrink-0 ${tone}`} title={label} aria-label={label}>
-      <Icon className="h-5 w-5" aria-hidden />
-    </span>
-  );
-}
-
-function StageStepNumber({ step, progress }: { step: number; progress: PortalSubEffortProgress }) {
-  const badgeClass =
+        ? t('common.status.inProcess')
+        : t('common.status.pending');
+  const tone =
     progress === 'completed'
-      ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/80'
+      ? 'bg-emerald-50 text-emerald-700'
       : progress === 'in_progress'
-        ? 'bg-blue-600 text-white shadow-[0_0_0_3px_rgba(37,99,235,0.12)]'
-        // A stage not yet reached counts for little, so its number is barely there.
-        : 'bg-slate-50 text-slate-400 ring-1 ring-slate-100';
+        ? 'bg-blue-100 text-blue-800'
+        : 'bg-slate-100 text-slate-500';
 
   return (
     <span
-      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold tabular-nums ${badgeClass}`}
-      aria-hidden
+      className={`ms-auto inline-flex shrink-0 items-center rounded-lg px-3 py-1.5 text-sm font-semibold leading-none ${tone}`}
+      title={label}
+      aria-label={label}
     >
-      {step}
+      {label}
     </span>
   );
 }
 
 function PortalStageTimelineItem({
   row,
-  stepNumber,
-  isSelected,
-  isLast,
   progress,
   onSelect,
-  onOpenDescription,
 }: {
   row: PortalSubEffortRow;
-  stepNumber: number;
-  isSelected: boolean;
-  isLast: boolean;
   progress: PortalSubEffortProgress;
   onSelect: () => void;
-  onOpenDescription: () => void;
 }) {
-  const { t, i18n } = useTranslation();
-  const isPending = progress === 'pending' && !isSelected;
-  const hasDescription = !!row.sub_effort_description?.trim();
+  const { i18n } = useTranslation();
   const stageTitle = translatePortalDynamicLabel(
     i18n.language,
     row.sub_effort_name,
@@ -363,90 +299,45 @@ function PortalStageTimelineItem({
     .map((item) => translatePortalDynamicLabel(i18n.language, item.name, item.name_he))
     .filter(Boolean)
     .join(' · ');
+  const isPending = progress === 'pending';
 
   return (
-    <div className={isLast ? '' : 'pb-1'}>
-      <div className="relative flex items-start gap-2.5">
-        <div className="mt-0.5 shrink-0">
-          <StageStepNumber step={stepNumber} progress={progress} />
-        </div>
-        <div className="flex flex-col items-center pt-1">
+    <div className="relative ps-[4.25rem]">
+      <div className="absolute start-0 top-0 z-[2]">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-xl ring-4 ring-white">
           <StageProgressIcon progress={progress} />
-          {!isLast ? (
-            <div
-              className={[
-                'mt-2 min-h-[20px] w-px flex-1',
-                progress === 'completed'
-                  ? 'bg-gradient-to-b from-emerald-300 to-slate-200'
-                  : 'bg-gradient-to-b from-slate-200 to-transparent',
-              ].join(' ')}
-              aria-hidden
-            />
-          ) : null}
         </div>
-        <div className="group mb-1 flex min-w-0 flex-1 items-start gap-1">
-          <button
-            type="button"
-            onClick={onSelect}
-            className={[
-              'min-w-0 flex-1 rounded-2xl text-start transition-all duration-200',
-              isSelected
-                ? "relative border border-blue-100 bg-blue-50/70 px-3 py-2.5 shadow-sm before:absolute before:start-0 before:top-2.5 before:bottom-2.5 before:w-1 before:rounded-full before:bg-blue-600 before:content-['']"
+      </div>
+      <button
+        type="button"
+        onClick={onSelect}
+        className="group w-full cursor-pointer text-start"
+      >
+        <div className="min-w-0">
+          <div
+            className={`rounded-2xl border p-4 shadow-md transition-all duration-300 group-hover:scale-[1.01] group-hover:shadow-lg sm:p-5 ${
+              progress === 'in_progress'
+                ? 'border-blue-200 bg-blue-50'
                 : isPending
-                  ? 'px-3 py-2.5 opacity-80 hover:bg-gray-50/80'
-                  : 'px-3 py-2.5 hover:bg-gray-50/80',
-            ].join(' ')}
+                  ? 'border-slate-100 bg-slate-50 opacity-75 shadow-none'
+                  : 'border-base-200 bg-white'
+            }`}
           >
-            <div className="flex min-w-0 items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p
-                  className={[
-                    'line-clamp-2 break-words font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]',
-                    isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
-                  ].join(' ')}
-                  title={stageTitle}
-                >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="break-words text-base font-semibold leading-snug text-gray-900 [overflow-wrap:anywhere]">
                   {stageTitle}
                 </p>
                 {subCategoryLabel ? (
-                  <p
-                    className={`mt-1 line-clamp-2 text-xs leading-snug ${
-                      isPending ? 'text-gray-400' : 'text-gray-500'
-                    }`}
-                    title={subCategoryLabel}
-                  >
-                    {subCategoryLabel}
-                  </p>
+                  <p className="mt-1 line-clamp-2 text-sm leading-snug text-gray-500">{subCategoryLabel}</p>
                 ) : null}
-                <StageUpdaterMeta
-                  name={row.updated_by}
-                  photoUrl={row.updated_by_photo_url}
-                  compact
-                />
               </div>
-              <StageProgressGlyph progress={progress} />
+              <StageProgressBadge progress={progress} />
             </div>
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenDescription();
-            }}
-            className={`btn btn-ghost btn-xs btn-square mt-1.5 h-8 w-8 shrink-0 rounded-full ${
-              hasDescription ? 'text-primary hover:bg-blue-50' : 'text-gray-300'
-            }`}
-            title={hasDescription ? t('stages.timeline.whatIsThisStage') : t('stages.timeline.noDescriptionAvailable')}
-            aria-label={
-              hasDescription
-                ? t('stages.timeline.aboutStageAria', { stageName: stageTitle })
-                : t('stages.timeline.noDescriptionForStageAria', { stageName: stageTitle })
-            }
-          >
-            <QuestionMarkCircleIcon className="h-5 w-5" />
-          </button>
+            <StageUpdaterMeta name={row.updated_by} photoUrl={row.updated_by_photo_url} />
+          </div>
         </div>
-      </div>
+      </button>
     </div>
   );
 }
@@ -456,14 +347,12 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
   const portalDocColumns = useMemo(() => buildPortalDocColumns(t), [t]);
   const currentStageId = useMemo(() => findCurrentPortalSubEffortId(rows), [rows]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [urlsLoading, setUrlsLoading] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
-  const [descriptionRow, setDescriptionRow] = useState<PortalSubEffortRow | null>(null);
   /** Resting on a file's icon shows the file itself, so it can be told from the one beside it. */
   const { peekProps, peekNode } = useFileHoverPeek();
 
@@ -498,11 +387,11 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
   const handleSelectRow = (id: number) => {
     setSelectedId(id);
     setActiveFolderId(null);
-    setMobileDetailOpen(true);
   };
 
-  const handleMobileBack = () => {
-    setMobileDetailOpen(false);
+  const closeDetail = () => {
+    setSelectedId(null);
+    setActiveFolderId(null);
   };
 
   const paths = useMemo(() => (selected ? guessStoragePaths(selected.document_url) : []), [selected]);
@@ -560,19 +449,15 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
     [visibleDocs, t],
   );
 
-  // Pick active (or first) stage only on first load / when the selected row disappears.
-  // Do not snap back to "current" on every rows refresh — that blocked browsing other stages.
+  // Notes and documents stay closed until a step is opened. Drop a selection that no longer exists.
   useEffect(() => {
     if (!rows.length) {
       setSelectedId(null);
       setActiveFolderId(null);
       return;
     }
-    setSelectedId((prev) => {
-      if (prev != null && rows.some((row) => row.id === prev)) return prev;
-      return currentStageId ?? rows[0]?.id ?? null;
-    });
-  }, [rows, currentStageId]);
+    setSelectedId((prev) => (prev != null && rows.some((row) => row.id === prev) ? prev : null));
+  }, [rows]);
 
   useEffect(() => {
     if (activeFolderId && !stageFolders.some((folder) => folder.id === activeFolderId)) {
@@ -608,98 +493,62 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
 
   const selectedProgress = selected ? getPortalSubEffortProgress(selected, currentStageId) : 'pending';
 
+  const selectedTitle = selected
+    ? translatePortalDynamicLabel(i18n.language, selected.sub_effort_name, selected.sub_effort_name_he)
+    : '';
+  const selectedDescription = selected
+    ? translatePortalDynamicDescription(
+        i18n.language,
+        selected.sub_effort_description,
+        selected.sub_effort_description_he,
+      )
+    : '';
+
   return (
-    // Stage names are long, so the workflow keeps a wide column of its own as the screen grows.
-    <div className="grid min-h-[320px] grid-cols-1 gap-4 md:grid-cols-[minmax(320px,400px)_1fr] lg:grid-cols-[minmax(380px,460px)_1fr] xl:grid-cols-[minmax(440px,520px)_1fr]">
-      <div
-        className={`rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:p-5 ${
-          mobileDetailOpen ? 'hidden md:block' : ''
-        }`}
-      >
-        <div className="mb-3 px-0.5">
-          <span className="text-base font-semibold text-gray-800 md:text-lg">{t('stages.timeline.workflowTitle')}</span>
-          {/* The stage the case is on is marked in the list itself, so it is not named again here. */}
-          {currentStageId == null && rows.every((row) => row.active === false) ? (
-            <p className="mt-0.5 text-xs text-emerald-700 md:text-sm">{t('stages.timeline.allStagesComplete')}</p>
-          ) : null}
-        </div>
-        <div>
-          {rows.map((row, index) => (
+    <div>
+      <div className={selected ? 'hidden' : 'w-full'}>
+      <div className="mb-4 px-0.5 text-center">
+        <span className="text-base font-semibold text-gray-800 md:text-lg">{t('stages.timeline.workflowTitle')}</span>
+        {currentStageId == null && rows.every((row) => row.active === false) ? (
+          <p className="mt-0.5 text-xs text-emerald-700 md:text-sm">{t('stages.timeline.allStagesComplete')}</p>
+        ) : null}
+      </div>
+      <div className="relative w-full">
+        <div className="absolute bottom-0 start-[22px] top-0 w-0.5 bg-base-300" aria-hidden />
+        <div className="space-y-8 md:space-y-10">
+          {rows.map((row) => (
             <PortalStageTimelineItem
               key={row.id}
               row={row}
-              stepNumber={index + 1}
-              isSelected={selected?.id === row.id}
-              isLast={index === rows.length - 1}
               progress={getPortalSubEffortProgress(row, currentStageId)}
               onSelect={() => handleSelectRow(row.id)}
-              onOpenDescription={() => setDescriptionRow(row)}
             />
           ))}
         </div>
       </div>
+      </div>
 
       {selected && (
-        <div className={`min-h-0 space-y-4 ${mobileDetailOpen ? '' : 'hidden md:block'}`}>
-          <button
-            type="button"
-            onClick={handleMobileBack}
-            className="mb-1 inline-flex items-center gap-1.5 text-sm font-semibold text-primary md:hidden"
-          >
-            <ChevronLeftIcon className="h-4 w-4" />
-            {t('stages.timeline.backToStages')}
-          </button>
-
-          <div className="rounded-[18px] bg-white px-5 py-4 shadow-sm">
+        <div className="w-full">
+            <button
+              type="button"
+              onClick={closeDetail}
+              className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-primary"
+            >
+              <ChevronLeftIcon className="h-4 w-4 rtl:rotate-180" />
+              {t('stages.timeline.backToStages')}
+            </button>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-start gap-2">
-                  <h2
-                    className="min-w-0 max-w-full text-2xl font-bold leading-tight tracking-tight text-gray-900 line-clamp-2 break-words [overflow-wrap:anywhere] md:text-[28px]"
-                    title={translatePortalDynamicLabel(
-                      i18n.language,
-                      selected.sub_effort_name,
-                      selected.sub_effort_name_he,
-                    )}
-                  >
-                    {translatePortalDynamicLabel(
-                      i18n.language,
-                      selected.sub_effort_name,
-                      selected.sub_effort_name_he,
-                    )}
-                  </h2>
-                  <button
-                    type="button"
-                    onClick={() => setDescriptionRow(selected)}
-                    className="btn btn-ghost btn-xs btn-square h-9 w-9 shrink-0 rounded-full text-primary hover:bg-blue-50"
-                    title={t('stages.timeline.whatIsThisStage')}
-                    aria-label={t('stages.timeline.aboutStageAria', {
-                      stageName: translatePortalDynamicLabel(
-                        i18n.language,
-                        selected.sub_effort_name,
-                        selected.sub_effort_name_he,
-                      ),
-                    })}
-                  >
-                    <QuestionMarkCircleIcon className="h-5 w-5" />
-                  </button>
-                </div>
-                {(selected.sub_category_efforts?.length ?? 0) > 0 ? (
-                  <p className="mt-1.5 text-sm leading-relaxed text-gray-500">
-                    {selected
-                      .sub_category_efforts!.map((item) =>
-                        translatePortalDynamicLabel(i18n.language, item.name, item.name_he),
-                      )
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </p>
-                ) : null}
+              <div className="min-w-0">
+                <h3 className="break-words text-2xl font-bold text-gray-900 [overflow-wrap:anywhere] md:text-[28px]">{selectedTitle}</h3>
               </div>
               <StageProgressBadge progress={selectedProgress} />
             </div>
-          </div>
+            {selectedDescription ? (
+              <p className="mt-3 text-sm leading-relaxed text-gray-600 whitespace-pre-wrap">{selectedDescription}</p>
+            ) : null}
 
-          <div>
+          <div className="mt-5">
             <div className="mb-2 px-0.5">
               <span className="text-sm font-semibold text-gray-700">{t('stages.timeline.notesTitle')}</span>
             </div>
@@ -782,13 +631,6 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
                       ),
                       cells: {
                         type: <span className="text-sm text-gray-500">{t('common.folder')}</span>,
-                        date: (
-                          <span className="whitespace-nowrap text-sm tabular-nums text-gray-500">
-                            {folder.created_at
-                              ? new Date(folder.created_at).toLocaleDateString(i18n.language)
-                              : '—'}
-                          </span>
-                        ),
                       },
                       onClick: () => setActiveFolderId(folder.id),
                       actions: (
@@ -838,7 +680,6 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
                             {formatFileTypeLabel(doc, t)}
                           </span>
                         ),
-                        date: <span className="text-sm text-gray-400">—</span>,
                       },
                       actions: (
                         <RowKebabMenu
@@ -901,56 +742,6 @@ const PortalSubEffortsTimeline: React.FC<Props> = ({ rows, folders = [], emptyMe
         initialIndex={previewInitialIndex}
       />
 
-      {descriptionRow ? (
-        <div className="modal modal-open z-[300]">
-          <div className="modal-box max-w-lg">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="text-lg font-bold text-gray-900">
-                  {translatePortalDynamicLabel(
-                    i18n.language,
-                    descriptionRow.sub_effort_name,
-                    descriptionRow.sub_effort_name_he,
-                  )}
-                </h3>
-                <p className="mt-1 text-xs text-gray-500">{t('stages.timeline.aboutStage')}</p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm btn-square"
-                onClick={() => setDescriptionRow(null)}
-                aria-label={t('common.close')}
-              >
-                <XMarkIcon className="h-5 w-5" />
-              </button>
-            </div>
-            <div
-              className="mt-4 rounded-xl bg-gray-50 px-4 py-3 text-sm leading-relaxed text-gray-700 whitespace-pre-wrap"
-              dir={i18n.language.toLowerCase().startsWith('he') ? 'rtl' : 'ltr'}
-            >
-              {descriptionRow.sub_effort_description?.trim() ||
-              descriptionRow.sub_effort_description_he?.trim()
-                ? translatePortalDynamicDescription(
-                    i18n.language,
-                    descriptionRow.sub_effort_description,
-                    descriptionRow.sub_effort_description_he,
-                  )
-                : t('stages.timeline.descriptionModalEmpty')}
-            </div>
-            <div className="modal-action mt-4">
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => setDescriptionRow(null)}>
-                {t('common.close')}
-              </button>
-            </div>
-          </div>
-          <button
-            type="button"
-            className="modal-backdrop"
-            aria-label={t('stages.timeline.closeDescriptionAria')}
-            onClick={() => setDescriptionRow(null)}
-          />
-        </div>
-      ) : null}
     </div>
   );
 };

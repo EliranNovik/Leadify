@@ -251,9 +251,9 @@ export const CRM_APP_MAP: CrmAppPlace[] = [
   },
   {
     id: 'lead-allocations',
-    title: 'Lead allocations',
+    title: 'Hours allocation',
     path: '/reports/employee-lead-allocations',
-    how: 'Reports → Employees → Lead allocations',
+    how: 'Reports → Employees → Hours allocation',
     section: 'Reports',
     keywords: ['who has which leads', 'allocation report'],
   },
