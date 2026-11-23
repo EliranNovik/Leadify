@@ -782,9 +782,10 @@ body:has(main.clients-detail-scroll) .navbar {
     overflow: hidden;
   }
 
-  /* Public POA is this fixed shell, with no inner .app-main-scroll.
+  /* Public POA and the payment page are this fixed shell, with no inner .app-main-scroll.
      Let the page itself scroll, or a phone cannot move past the first screen. */
-  html:not(.login-page-active):not(.entry-kiosk-active) #root > div.poa-page {
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div.poa-page,
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div.payment-page {
     height: 100% !important;
     max-height: 100% !important;
     overflow-x: hidden !important;

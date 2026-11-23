@@ -41,44 +41,44 @@ const PaymentSummaryCard: React.FC<Props> = ({
 
   if (isGradient) {
     return (
-      <div className="flex w-full max-w-md flex-col gap-6 text-left">
+      <div className="flex w-full max-w-md flex-col gap-4 text-left lg:gap-6">
         <div className="w-full">
           {exchangeLoading && !exchangeInfo ? (
             <div className="h-11 w-40 rounded-lg animate-pulse bg-white/25" />
           ) : (
             <>
-              <p className="text-[2.5rem] xl:text-[2.75rem] font-bold text-white leading-none tracking-tight">
+              <p className="text-[2rem] font-bold leading-none tracking-tight text-white lg:text-[2.5rem] xl:text-[2.75rem]">
                 {primaryNis}
               </p>
               {secondaryForeign && (
                 <p className="text-sm mt-2 font-normal text-white/70">{secondaryForeign}</p>
               )}
-              <p className="text-lg font-semibold text-white/55 mt-3">{summary.service}</p>
+              <p className="mt-2.5 text-base font-semibold text-white/80 lg:mt-3 lg:text-lg">{summary.service}</p>
             </>
           )}
         </div>
 
         {summary.topic !== '--' && (
-          <p className="text-base text-white/80 leading-relaxed max-w-sm">{summary.topic}</p>
+          <p className="max-w-sm text-sm leading-snug text-white/90 lg:text-base lg:leading-relaxed">{summary.topic}</p>
         )}
 
-        <div className="w-full max-w-xs rounded-2xl border-0 bg-white/10 px-4 py-3.5 shadow-none backdrop-blur-[6px] space-y-2.5 text-sm">
-          <div className="flex justify-between text-gray-300">
+        <div className="w-full max-w-xs space-y-2 rounded-2xl border-0 bg-white/10 px-4 py-3 text-sm shadow-none backdrop-blur-[6px] lg:space-y-2.5 lg:py-3.5">
+          <div className="flex justify-between text-white/80">
             <span>Subtotal</span>
             <span>{formatMoneyAmount(summary.subtotal, summary.currencySymbol)}</span>
           </div>
-          <div className="flex justify-between text-gray-300">
+          <div className="flex justify-between text-white/80">
             <span>VAT (18%)</span>
             <span>{formatMoneyAmount(summary.vat, summary.currencySymbol)}</span>
           </div>
-          <div className="flex justify-between pt-3 border-t border-white/20 text-base font-semibold text-white">
+          <div className="flex justify-between border-t border-white/20 pt-2.5 text-base font-semibold text-white lg:pt-3">
             <span>Total due today</span>
             <span>{primaryNis}</span>
           </div>
         </div>
 
         {isForeign && exchangeInfo && (
-          <div className="text-[11px] leading-relaxed text-white/60 space-y-0.5 max-w-xs">
+          <div className="text-[11px] leading-relaxed text-white/75 space-y-0.5 max-w-xs">
             <p>
               1 {exchangeInfo.isoCode} = ₪
               {exchangeInfo.rateToIls.toLocaleString(undefined, {

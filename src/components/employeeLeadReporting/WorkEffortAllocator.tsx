@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ChevronDownIcon, MinusIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, MinusIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   allocationPercentToWorkedMs,
@@ -375,13 +375,14 @@ const WorkEffortAllocator: React.FC<Props> = ({
                 </select>
                 <button
                   type="button"
-                  className="text-sm font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
                   onClick={() => {
                     setAddingArea(area.id);
                     setNewEffortName('');
                   }}
                 >
-                  Add effort
+                  <PlusIcon className="h-4 w-4" aria-hidden />
+                  New effort
                 </button>
               </div>
             ) : null}

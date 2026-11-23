@@ -121,7 +121,7 @@ const PortalPublicShell: React.FC<Props> = ({
       darkSurface={opts.darkSurface}
       containerClassName={
         opts.className ??
-        'fixed bottom-10 end-6 z-40 print-hide flex flex-col items-end gap-2'
+        'fixed bottom-10 end-2 z-40 print-hide flex flex-col items-end gap-2 md:end-6'
       }
     />
   );
@@ -138,7 +138,7 @@ const PortalPublicShell: React.FC<Props> = ({
           {contactButtons({
             darkSurface: false,
             className:
-              'absolute bottom-[max(1.5rem,env(safe-area-inset-bottom,0px))] end-6 z-40 print-hide flex flex-col items-end gap-2 lg:hidden',
+              'absolute bottom-[max(1.5rem,env(safe-area-inset-bottom,0px))] end-2 z-40 print-hide flex flex-col items-end gap-2 lg:hidden',
           })}
         </div>
 

@@ -81,7 +81,12 @@ export function mergedEmployeeDepartmentName(rawName: string, targets: { name: s
       'Commercial & Civil'
     );
   }
-  const match = targets.find((dept) => dept.name.trim().toLowerCase() === stripped.toLowerCase());
+  const compact = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const strippedKey = compact(stripped);
+  const match = targets.find((dept) => {
+    const name = dept.name.trim();
+    return name.toLowerCase() === stripped.toLowerCase() || compact(name) === strippedKey;
+  });
   return match?.name || stripped;
 }
 

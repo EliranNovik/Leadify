@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
-import { ClockIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { FaWhatsapp } from 'react-icons/fa';
+import { ChatBubbleLeftRightIcon, ClockIcon, EnvelopeIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import RMQMessagesPage from './RMQMessagesPage';
 import ReportLoadingScreen from '../components/reports/ReportLoadingScreen';
 import { fetchClockedInEmployeeIds } from '../lib/employeeClockInStatus';
 import {
   agreementDepartmentOptions,
   combinedGermanAustrian,
   displayAgreementDepartment,
-  forDepartmentFilterOptions,
+  mergedEmployeeDepartmentName,
 } from '../lib/employeeDepartmentTotals';
 import {
   allocationEmployeeDateKey,
@@ -25,6 +27,8 @@ import {
   salaryToHourlyRateNis,
   workedMsAtHourlyRateToCostNis,
 } from '../lib/employeeLeadReporting';
+import { prefetchEmployeePhotos, resolveEmployeePhotoUrl, toEmployeeAvatarSrc } from '../lib/employeePhotoUrl';
+import { getEmployeeRoleDisplayName } from '../lib/employeeRoles';
 import { fetchAverageGrossSalaryLastMonths, getSalaryEmployeeInitials, salaryAvatarGradientStyle, washedEmployeeCardStyle } from '../lib/employeeSalaries';
 import { peekLeadsManagementSuperUser, rememberLeadsManagementSuperUser } from '../lib/leadsManagementReport';
 import {
@@ -205,7 +209,17 @@ function HoursAllocationEmployeePage() {
   const [query, setQuery] = useState('');
   const [agreementCatalog, setAgreementCatalog] = useState<AgreementCatalog | null>(null);
   const [lines, setLines] = useState<HoursLine[]>([]);
-  const [profile, setProfile] = useState<{ name: string; photoUrl: string | null; departmentName: string | null } | null>(null);
+  const [profile, setProfile] = useState<{
+    name: string;
+    photoUrl: string | null;
+    departmentName: string | null;
+    roleName: string | null;
+    isAdmin: boolean;
+    email: string | null;
+    whatsappNumber: string | null;
+    chatUserId: string | null;
+  } | null>(null);
+  const [rmqOpen, setRmqOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [clockedIn, setClockedIn] = useState(false);
   const loadRequestRef = useRef(0);
@@ -279,6 +293,48 @@ function HoursAllocationEmployeePage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return;
+    setRmqOpen(false);
+    let cancelled = false;
+    void Promise.all([
+      supabase
+        .from('tenants_employee')
+        .select('id, display_name, photo_url, bonuses_role, mobile, employee_mobile, tenant_departement!department_id(name)')
+        .eq('id', employeeId)
+        .maybeSingle(),
+      supabase.from('users').select('id, email, is_superuser').eq('employee_id', employeeId).limit(5),
+    ]).then(([employeeResult, userResult]) => {
+      if (cancelled || employeeResult.error || !employeeResult.data) return;
+      const data = employeeResult.data;
+      const deptRaw = data.tenant_departement as { name?: string | null } | { name?: string | null }[] | null;
+      const dept = Array.isArray(deptRaw) ? deptRaw[0] : deptRaw;
+      const photoUrl = resolveEmployeePhotoUrl(data.photo_url);
+      const roleName = getEmployeeRoleDisplayName(data.bonuses_role);
+      const users = userResult.data || [];
+      const contact = users.find((row) => String(row.email || '').trim()) || users[0];
+      const isAdmin = users.some((row) => {
+        const flag = row.is_superuser as boolean | string | number | null;
+        return flag === true || flag === 'true' || flag === 1;
+      });
+      const whatsappNumber = String(data.employee_mobile || data.mobile || '').trim() || null;
+      if (photoUrl) prefetchEmployeePhotos([photoUrl], 96);
+      setProfile((current) => ({
+        name: String(data.display_name || '').trim() || current?.name || `Employee #${employeeId}`,
+        photoUrl: photoUrl || current?.photoUrl || null,
+        departmentName: String(dept?.name || '').trim() || current?.departmentName || null,
+        roleName: roleName || current?.roleName || null,
+        isAdmin,
+        email: String(contact?.email || '').trim() || current?.email || null,
+        whatsappNumber: whatsappNumber || current?.whatsappNumber || null,
+        chatUserId: contact?.id ? String(contact.id) : current?.chatUserId || null,
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,23 +414,36 @@ function HoursAllocationEmployeePage() {
           { department: agreementCatalog ? leadAgreementDepartment(row, agreementCatalog) : null, category: categoryParts(row).label },
         ]),
       );
-      const departmentLabel = (id: number) =>
-        agreementCatalog?.allDepartments.find((item) => item.id === id)?.name || `Department #${id}`;
+      const departmentLabel = (id: number) => {
+        const raw = agreementCatalog?.allDepartments.find((item) => item.id === id)?.name || '';
+        if (!raw) return `Department #${id}`;
+        return mergedEmployeeDepartmentName(raw, agreementCatalog?.targets || []);
+      };
 
-      if (mineHandling[0]) {
-        setProfile({
-          name: mineHandling[0].employee_name,
-          photoUrl: mineHandling[0].employee_photo_url,
-          departmentName: mineHandling[0].department_name,
-        });
-      } else if (mineEffort[0]) {
-        setProfile({
-          name: mineEffort[0].employeeName,
-          photoUrl: mineEffort[0].employeePhotoUrl,
-          departmentName: mineEffort[0].departmentName,
-        });
-      } else {
-        setProfile(null);
+      const fromRows = mineHandling[0]
+        ? {
+            name: mineHandling[0].employee_name,
+            photoUrl: resolveEmployeePhotoUrl(mineHandling[0].employee_photo_url),
+            departmentName: mineHandling[0].department_name,
+          }
+        : mineEffort[0]
+          ? {
+              name: mineEffort[0].employeeName,
+              photoUrl: resolveEmployeePhotoUrl(mineEffort[0].employeePhotoUrl),
+              departmentName: mineEffort[0].departmentName,
+            }
+          : null;
+      if (fromRows) {
+        setProfile((current) => ({
+          name: fromRows.name || current?.name || `Employee #${employeeId}`,
+          photoUrl: current?.photoUrl || fromRows.photoUrl || null,
+          departmentName: fromRows.departmentName || current?.departmentName || null,
+          roleName: current?.roleName || null,
+          isAdmin: current?.isAdmin === true,
+          email: current?.email || null,
+          whatsappNumber: current?.whatsappNumber || null,
+          chatUserId: current?.chatUserId || null,
+        }));
       }
       const next: HoursLine[] = [
         ...mineHandling.map((row) => {
@@ -446,10 +515,27 @@ function HoursAllocationEmployeePage() {
     void load();
   }, [isSuperUser, load, permissionsLoaded]);
 
-  const forDepartmentOptions = useMemo(
-    () => forDepartmentFilterOptions(agreementCatalog?.allDepartments || []),
-    [agreementCatalog],
-  );
+  const forDepartmentOptions = useMemo(() => {
+    const targets = agreementCatalog?.targets || [];
+    const names: string[] = [];
+    const push = (name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed || trimmed === 'No department') return;
+      if (names.some((item) => item.toLowerCase() === trimmed.toLowerCase())) return;
+      names.push(trimmed);
+    };
+    for (const name of agreementDepartmentOptions(targets)) push(name);
+    for (const dept of agreementCatalog?.allDepartments || []) {
+      push(mergedEmployeeDepartmentName(dept.name, targets));
+    }
+    const generalIndex = names.findIndex((name) => name.toLowerCase() === 'general');
+    if (generalIndex >= 0) {
+      names.push(names.splice(generalIndex, 1)[0]);
+    } else {
+      names.push('General');
+    }
+    return names;
+  }, [agreementCatalog]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -486,6 +572,7 @@ function HoursAllocationEmployeePage() {
   const totalMs = filtered.reduce((sum, line) => sum + line.workedMs, 0);
   const totalCost = filtered.reduce((sum, line) => sum + (line.costNis || 0), 0);
   const displayName = profile?.name || 'Employee hours';
+  const avatarSrc = toEmployeeAvatarSrc(profile?.photoUrl, 96);
 
   if (!permissionsLoaded || !isSuperUser) {
     return (
@@ -510,23 +597,89 @@ function HoursAllocationEmployeePage() {
           <div>
             <div className="flex items-center gap-3">
               <span className="relative h-20 w-20 shrink-0">
-                {profile?.photoUrl ? (
-                  <img src={profile.photoUrl} alt="" className="h-20 w-20 rounded-full object-cover" />
-                ) : (
+                {avatarSrc ? (
+                  <img
+                    src={avatarSrc}
+                    alt=""
+                    width={80}
+                    height={80}
+                    decoding="async"
+                    fetchPriority="high"
+                    className="h-20 w-20 rounded-full object-cover"
+                  />
+                ) : profile ? (
                   <span
                     className="flex h-20 w-20 items-center justify-center rounded-full text-xl font-bold text-white"
                     style={salaryAvatarGradientStyle(employeeId, displayName)}
                   >
                     {getSalaryEmployeeInitials(displayName)}
                   </span>
+                ) : (
+                  <span className="block h-20 w-20 rounded-full bg-white/50" />
                 )}
                 {clockedIn ? (
                   <span className="absolute -right-0.5 -top-0.5 h-5 w-5 rounded-full border-2 border-white bg-emerald-500" title="Clocked in" />
                 ) : null}
               </span>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">{displayName}</h1>
-                <p className="mt-0.5 text-sm text-gray-500">{profile?.departmentName || 'All areas'}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="text-2xl font-bold text-gray-900">{displayName}</h1>
+                  {profile?.isAdmin ? (
+                    <span className="rounded-full bg-gray-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white">
+                      Admin
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  {[profile?.departmentName, profile?.roleName].filter(Boolean).join(' | ') || 'All areas'}
+                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1 text-black">
+                  {(() => {
+                    const whatsappDigits = (profile?.whatsappNumber || '').replace(/\D/g, '');
+                    const email = profile?.email?.trim() || '';
+                    const chatUserId = profile?.chatUserId || '';
+                    const iconBtn = 'group inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-sm font-medium text-gray-500 transition hover:bg-white hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:shadow-none';
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          className={iconBtn}
+                          title={whatsappDigits ? 'WhatsApp' : 'No WhatsApp number'}
+                          aria-label="WhatsApp"
+                          disabled={!whatsappDigits}
+                          onClick={() => window.open(`https://wa.me/${whatsappDigits}`, '_blank', 'noopener,noreferrer')}
+                        >
+                          <FaWhatsapp className="h-6 w-6 text-black transition group-hover:text-[#25D366] group-disabled:group-hover:text-black" aria-hidden />
+                          WhatsApp
+                        </button>
+                        <span className="text-gray-300" aria-hidden>|</span>
+                        <button
+                          type="button"
+                          className={iconBtn}
+                          title={chatUserId ? 'RMQ message' : 'No RMQ account linked'}
+                          aria-label="RMQ message"
+                          disabled={!chatUserId}
+                          onClick={() => setRmqOpen(true)}
+                        >
+                          <ChatBubbleLeftRightIcon className="h-6 w-6 text-black transition group-hover:text-[#4829CC] group-disabled:group-hover:text-black" aria-hidden />
+                          RMQ
+                        </button>
+                        <span className="text-gray-300" aria-hidden>|</span>
+                        <button
+                          type="button"
+                          className={iconBtn}
+                          title={email ? `Email ${email}` : 'No email'}
+                          aria-label="Email"
+                          disabled={!email}
+                          onClick={() => window.open(`mailto:${email}`, '_blank')}
+                        >
+                          <EnvelopeIcon className="h-6 w-6 text-black transition group-hover:text-[#0078D4] group-disabled:group-hover:text-black" aria-hidden />
+                          Email
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
           </div>
@@ -682,6 +835,11 @@ function HoursAllocationEmployeePage() {
         )}
         </div>
       </div>
+      <RMQMessagesPage
+        isOpen={rmqOpen}
+        initialUserId={profile?.chatUserId || undefined}
+        onClose={() => setRmqOpen(false)}
+      />
     </div>
   );
 }

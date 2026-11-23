@@ -18,6 +18,7 @@ import {
   REPORT_SUMMARY_GRADIENTS,
 } from '../components/reports/GradientSummaryCard';
 import LeadCostInsights from '../components/reports/LeadCostInsights';
+import LeadsManagementIcon from '../components/reports/LeadsManagementIcon';
 import ReportLoadingScreen from '../components/reports/ReportLoadingScreen';
 import DepartmentHourTotals from '../components/reports/DepartmentHourTotals';
 import EmployeeCostCarousel from '../components/reports/EmployeeCostCarousel';
@@ -543,7 +544,7 @@ const LeadsManagementReportPage: React.FC = () => {
   if (!permissionsLoaded || !isSuperUser) {
     return (
       <div className="flex min-h-[calc(100dvh-3.5rem)] items-center justify-center bg-[#ececec]">
-        <ReportLoadingScreen title="Leads management" subtitle="Opening the report…" icon={ClipboardDocumentListIcon} />
+        <ReportLoadingScreen title="Leads management" subtitle="Opening the report…" icon={LeadsManagementIcon} />
       </div>
     );
   }
@@ -561,8 +562,10 @@ const LeadsManagementReportPage: React.FC = () => {
               <ArrowLeftIcon className="h-4 w-4" />
               Reports
             </button>
-            <h1 className="flex items-center gap-2 text-2xl font-bold text-gray-900">
-              <ClipboardDocumentListIcon className="h-7 w-7 text-primary" />
+            <h1 className="flex items-center gap-3 text-2xl font-bold text-gray-900">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <LeadsManagementIcon className="h-7 w-7" />
+              </span>
               Leads management
             </h1>
           </div>
@@ -822,7 +825,7 @@ const LeadsManagementReportPage: React.FC = () => {
         </div>
 
         {loading ? (
-          <ReportLoadingScreen title="Loading leads" subtitle="Gathering costs and hours…" icon={ClipboardDocumentListIcon} />
+          <ReportLoadingScreen title="Loading leads" subtitle="Gathering costs and hours…" icon={LeadsManagementIcon} />
         ) : (
           <>
         {departmentTotals.length > 0 ? (

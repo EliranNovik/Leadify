@@ -24,7 +24,6 @@ import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
 import { FaApple, FaGoogle } from 'react-icons/fa';
 import {
-  ArrowDownIcon,
   CheckCircleIcon,
   CreditCardIcon,
   ExclamationCircleIcon,
@@ -79,12 +78,12 @@ function CheckoutSummaryLogo({ className = '' }: { className?: string }) {
 function CheckoutSummaryHeading({ summary }: { summary?: PaymentSummaryData | null }) {
   if (!summary) return null;
   return (
-    <p className="text-base text-white/90 mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-left">
-      <span className="text-[17px] font-semibold text-white/55">Case #{summary.caseNumber}</span>
-      <span className="text-white/40" aria-hidden>
+    <p className="text-base text-white/90 mb-4 lg:mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-left">
+      <span className="text-[17px] font-semibold text-white/80">Case #{summary.caseNumber}</span>
+      <span className="text-white/60" aria-hidden>
         ·
       </span>
-      <span className="text-[17px] font-semibold text-white/55">{summary.clientName}</span>
+      <span className="text-[17px] font-semibold text-white/80">{summary.clientName}</span>
     </p>
   );
 }
@@ -92,7 +91,7 @@ function CheckoutSummaryHeading({ summary }: { summary?: PaymentSummaryData | nu
 function CheckoutSecureNote({ className = '' }: { className?: string }) {
   return (
     <p
-      className={`flex w-full items-start gap-2 text-left text-[11px] leading-relaxed text-white/50 ${className}`.trim()}
+      className={`flex w-full items-start gap-2 text-left text-[11px] leading-relaxed text-white/75 ${className}`.trim()}
     >
       <ShieldCheckIcon
         className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300/90"
@@ -750,7 +749,7 @@ const PaymentPage: React.FC<{
 
   if (!paymentLink && pageError) {
     return (
-      <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
+      <div className="payment-page min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 max-w-md w-full text-center">
             <ExclamationCircleIcon className="w-14 h-14 text-amber-500 mx-auto mb-4" />
@@ -758,14 +757,14 @@ const PaymentPage: React.FC<{
             <p className="text-gray-600 mb-6">{pageError}</p>
           </div>
         </div>
-        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" />
+        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" mobileNeedHelp />
       </div>
     );
   }
 
   if (!paymentLink) {
     return (
-      <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
+      <div className="payment-page min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 max-w-md w-full text-center">
             <ExclamationCircleIcon className="w-14 h-14 text-amber-500 mx-auto mb-4" />
@@ -775,13 +774,13 @@ const PaymentPage: React.FC<{
             </p>
           </div>
         </div>
-        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" />
+        <PortalFooter tone="gray" logoSrc="/DPL-LOGO1.png" mobileNeedHelp />
       </div>
     );
   }
 
   return (
-    <div className={kioskMode ? 'kiosk-payment-root bg-white' : 'bg-white lg:bg-gray-100'}>
+    <div className={kioskMode ? 'kiosk-payment-root bg-white' : 'payment-page bg-white lg:bg-gray-100'}>
       {/* Desktop: summary + payment fill the viewport; footer sits below. */}
       <div
         className={`flex flex-col lg:flex-row overflow-x-hidden ${
@@ -837,7 +836,7 @@ const PaymentPage: React.FC<{
         }`}
       >
         <div
-          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-1.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-16"
+          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-1.5 overflow-hidden rounded-3xl text-white px-4 pt-5 pb-4"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
@@ -852,8 +851,8 @@ const PaymentPage: React.FC<{
               Pay now
             </button>
           ) : null}
-          <div className="relative z-[1] flex flex-col items-center px-5 pt-8 pb-8">
-            <div className="w-full max-w-md text-left pt-12">
+          <div className="relative z-[1] flex flex-col items-center px-1 pt-1 pb-1">
+            <div className="w-full max-w-md text-left pt-14">
             <CheckoutSummaryHeading summary={summaryData} />
             {summaryData && (
               <PaymentSummaryCard
@@ -863,22 +862,11 @@ const PaymentPage: React.FC<{
                 variant="gradient"
               />
             )}
-            <CheckoutCardImage />
             {isAlreadyPaid ? <PaymentDoneStamp paidAt={paidAt} /> : null}
-            <CheckoutSecureNote className="mt-6" />
-            <CheckoutPaymentMethodIcons className="mt-3" />
+            <CheckoutSecureNote className="mt-4" />
+            <CheckoutPaymentMethodIcons className="mt-3.5" />
             </div>
           </div>
-          {!isAlreadyPaid ? (
-            <button
-              type="button"
-              onClick={startCheckout}
-              aria-label="Continue to payment form"
-              className="absolute bottom-3.5 left-3.5 z-20 inline-flex h-11 w-11 items-center justify-center rounded-full bg-white/15 text-white/90 shadow-none backdrop-blur-sm transition hover:bg-white/25 active:scale-[0.96] animate-pulse"
-            >
-              <ArrowDownIcon className="h-5 w-5" strokeWidth={2.5} aria-hidden />
-            </button>
-          ) : null}
         </div>
 
         <div
@@ -928,10 +916,15 @@ const PaymentPage: React.FC<{
         tone="gray"
         logoSrc="/DPL-LOGO1.png"
         compact={kioskMode}
+        mobileNeedHelp={!kioskMode}
         className={kioskMode ? 'shrink-0 !mt-10' : 'max-lg:!mt-10 lg:!mt-0'}
       />
 
-      {!kioskMode ? <PublicPageContactButtons /> : null}
+      {!kioskMode ? (
+        <div className="hidden md:block">
+          <PublicPageContactButtons />
+        </div>
+      ) : null}
       {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}
     </div>
   );

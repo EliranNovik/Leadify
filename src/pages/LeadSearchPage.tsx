@@ -5937,7 +5937,7 @@ const LeadSearchPage: React.FC = () => {
           {pinResultTools && results.length > 0 ? (
             <div
               ref={pinToolsRootRef}
-              className="flex max-w-[min(calc(100vw-1.5rem),28rem)] items-center gap-2 rounded-full border border-white/50 bg-white/90 px-2 py-1.5 shadow-lg backdrop-blur-md dark:border-base-content/10 dark:bg-base-100/90"
+              className="hidden max-w-[min(calc(100vw-1.5rem),28rem)] items-center gap-2 rounded-full border border-gray-200 bg-gray-100 px-2 py-1.5 shadow-lg dark:border-base-content/10 dark:bg-base-200 md:flex"
             >
               {renderResultsSearch('lead-search-results-q-pin', 'w-[9.5rem] sm:w-44 md:w-52', true)}
               {renderSortSelect('lead-search-sort-pin', true)}
@@ -5947,8 +5947,8 @@ const LeadSearchPage: React.FC = () => {
         {/* Mobile */}
         <div className="md:hidden flex flex-col items-end gap-2 pointer-events-auto">
           {quickBarOpen && (
-            <div className="flex w-[min(calc(100vw-1.5rem),17.5rem)] flex-col items-stretch gap-2">
-              <div className="rounded-2xl border border-base-200/20 bg-base-100/15 px-3.5 py-3 shadow-md backdrop-blur-[2px] dark:border-base-content/5 dark:bg-base-300/15">
+            <div className="flex w-[min(calc(100vw-1rem),28rem)] flex-col items-stretch gap-2">
+              <div className="rounded-2xl border border-gray-200 bg-gray-100 px-3.5 py-3 shadow-md dark:border-base-content/10 dark:bg-base-200">
                 <div className="mb-2.5 flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-base-content/55">Date range</p>
                   <button
@@ -5962,6 +5962,14 @@ const LeadSearchPage: React.FC = () => {
                   </button>
                 </div>
                 <div className="flex flex-col gap-3">
+                  {results.length > 0 ? (
+                    <div className="flex items-center gap-2">
+                      {renderResultsSearch('lead-search-results-q-mobile', 'min-w-0 flex-1 basis-0', true)}
+                      <div className="w-[7.75rem] shrink-0 [&_select]:w-full">
+                        {renderSortSelect('lead-search-sort-mobile', true)}
+                      </div>
+                    </div>
+                  ) : null}
                   <label className="flex flex-col gap-1">
                     <span className="text-sm font-medium text-base-content/70">From</span>
                     <input
@@ -5984,7 +5992,7 @@ const LeadSearchPage: React.FC = () => {
                   </label>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 rounded-2xl border border-base-200/20 bg-base-100/15 px-3 py-2.5 shadow-md backdrop-blur-[2px] dark:border-base-content/5 dark:bg-base-300/15">
+              <div className="flex items-center justify-end gap-2 rounded-2xl border border-gray-200 bg-gray-100 px-3 py-2.5 shadow-md dark:border-base-content/10 dark:bg-base-200">
                 <button
                   type="button"
                   className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
@@ -6026,33 +6034,38 @@ const LeadSearchPage: React.FC = () => {
                     <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
                   )}
                 </button>
-                <div className="mx-0.5 h-9 w-px shrink-0 bg-base-300/60" aria-hidden />
-                <button
-                  type="button"
-                  className={`btn btn-circle btn-sm min-h-[44px] min-w-[44px] h-11 w-11 border-0 transition-all duration-300 ${
-                    viewMode === 'cards'
-                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-                      : 'btn-ghost'
-                  }`}
-                  onClick={() => setViewMode('cards')}
-                  title="Cards view"
-                  aria-pressed={viewMode === 'cards'}
+                <div
+                  className="inline-flex h-11 shrink-0 items-center rounded-full bg-white p-1 shadow-sm ring-1 ring-gray-200"
+                  role="group"
+                  aria-label="Result view"
                 >
-                  <Squares2X2Icon className="h-5 w-5" />
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn-circle btn-sm min-h-[44px] min-w-[44px] h-11 w-11 border-0 transition-all duration-300 ${
-                    viewMode === 'table'
-                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-                      : 'btn-ghost'
-                  }`}
-                  onClick={() => setViewMode('table')}
-                  title="Table view"
-                  aria-pressed={viewMode === 'table'}
-                >
-                  <TableCellsIcon className="h-5 w-5" />
-                </button>
+                  <button
+                    type="button"
+                    className={`flex h-9 w-10 items-center justify-center rounded-full transition-colors ${
+                      viewMode === 'cards'
+                        ? (isAltTheme ? 'bg-[#505d57] text-white' : 'bg-primary text-primary-content')
+                        : 'text-gray-500'
+                    }`}
+                    onClick={() => setViewMode('cards')}
+                    title="Cards view"
+                    aria-pressed={viewMode === 'cards'}
+                  >
+                    <Squares2X2Icon className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex h-9 w-10 items-center justify-center rounded-full transition-colors ${
+                      viewMode === 'table'
+                        ? (isAltTheme ? 'bg-[#505d57] text-white' : 'bg-primary text-primary-content')
+                        : 'text-gray-500'
+                    }`}
+                    onClick={() => setViewMode('table')}
+                    title="Table view"
+                    aria-pressed={viewMode === 'table'}
+                  >
+                    <TableCellsIcon className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -6082,7 +6095,7 @@ const LeadSearchPage: React.FC = () => {
         {/* Desktop */}
         <div className="hidden md:flex flex-col items-end gap-2 pointer-events-auto">
           {quickBarOpen ? (
-            <div className="flex items-center gap-3 rounded-3xl border border-base-200/20 dark:border-base-content/5 bg-base-100/15 dark:bg-base-300/15 backdrop-blur-[2px] shadow-md px-4 py-3">
+            <div className="flex items-center gap-3 rounded-3xl border border-gray-200 bg-gray-100 px-4 py-3 shadow-md dark:border-base-content/10 dark:bg-base-200">
               <input
                 type="date"
                 className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
@@ -6828,11 +6841,13 @@ const LeadSearchPage: React.FC = () => {
                 </div>
                 <div
                   className={`flex min-w-0 flex-wrap items-center justify-end gap-2 ${
-                    pinResultTools ? 'invisible pointer-events-none' : ''
+                    pinResultTools ? 'md:invisible md:pointer-events-none' : ''
                   }`}
                 >
-                  {renderResultsSearch('lead-search-results-q', 'w-44 sm:w-56 md:w-64')}
-                  {renderSortSelect('lead-search-sort')}
+                  <div className="hidden md:contents">
+                    {renderResultsSearch('lead-search-results-q', 'w-44 sm:w-56 md:w-64')}
+                    {renderSortSelect('lead-search-sort')}
+                  </div>
                   <button
                     type="button"
                     className="btn btn-sm btn-ghost gap-1.5 text-violet-700 hover:bg-violet-50"

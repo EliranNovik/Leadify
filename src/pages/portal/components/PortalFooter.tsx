@@ -1,6 +1,7 @@
 import React from 'react';
 import { FaFacebook, FaLinkedin, FaYoutube } from 'react-icons/fa';
 import { useTranslation } from 'react-i18next';
+import PublicPageContactButtons from '../../../components/public/PublicPageContactButtons';
 // Side-effect import so public pages that reuse this footer still get the portal catalog.
 import '../i18n/portalI18n';
 
@@ -30,7 +31,9 @@ const PortalFooter: React.FC<{
   tone?: 'navy' | 'gray';
   /** Override firm logo path (e.g. payment page). */
   logoSrc?: string;
-}> = ({ className = '', compact = false, tone = 'navy', logoSrc = '/DPLOGO1.png' }) => {
+  /** Phone-only “Need help?” control, shown in the footer instead of the floating badge. */
+  mobileNeedHelp?: boolean;
+}> = ({ className = '', compact = false, tone = 'navy', logoSrc = '/DPLOGO1.png', mobileNeedHelp = false }) => {
   const { t } = useTranslation();
   const isGray = tone === 'gray';
   return (
@@ -48,7 +51,9 @@ const PortalFooter: React.FC<{
         className={`mx-auto max-w-5xl px-4 md:px-8 ${
           compact
             ? 'pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-6 md:py-8'
-            : 'pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] pt-8 md:py-20'
+            : mobileNeedHelp
+              ? 'pb-[calc(1.5rem+env(safe-area-inset-bottom,0px))] pt-8 md:py-20'
+              : 'pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))] pt-8 md:py-20'
         }`}
       >
         {/* Stacked on a phone, so each part of the footer is given room to stand apart. */}
@@ -88,6 +93,15 @@ const PortalFooter: React.FC<{
             </div>
           </div>
         </div>
+
+        {mobileNeedHelp ? (
+          <div className="mt-6 flex justify-center md:hidden">
+            <PublicPageContactButtons
+              labeled
+              containerClassName="relative flex flex-col items-center gap-2"
+            />
+          </div>
+        ) : null}
 
         <div
           className={`${isGray ? 'border-t border-gray-200' : 'border-t border-blue-900'} ${

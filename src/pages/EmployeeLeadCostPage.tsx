@@ -24,6 +24,7 @@ import {
   getSalaryEmployeeInitials,
   salaryAvatarGradientStyle,
 } from '../lib/employeeSalaries';
+import { fetchClockedInEmployeeIds } from '../lib/employeeClockInStatus';
 import { supabase } from '../lib/supabase';
 
 function BudgetBar({
@@ -84,6 +85,20 @@ const EmployeeLeadCostPage: React.FC = () => {
   const [category, setCategory] = useState('');
   const [subcategory, setSubcategory] = useState('');
   const [budgetFilter, setBudgetFilter] = useState<'all' | 'over' | 'within' | 'nocap'>('all');
+  const [clockedIn, setClockedIn] = useState(false);
+
+  useEffect(() => {
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return;
+    let cancelled = false;
+    void fetchClockedInEmployeeIds()
+      .then((ids) => {
+        if (!cancelled) setClockedIn(ids.has(employeeId));
+      })
+      .catch((error) => console.error('[EmployeeLeadCost] clock-in status failed:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [employeeId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -351,16 +366,21 @@ const EmployeeLeadCostPage: React.FC = () => {
                   <tr className="border-b border-gray-100">
                     <th colSpan={2} className="text-left">
                       <div className="flex min-w-[16rem] items-center gap-3 py-1">
-                        {profile?.photoUrl ? (
-                          <img src={profile.photoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
-                        ) : (
-                          <span
-                            className="flex h-12 w-12 items-center justify-center rounded-full text-base font-bold text-white"
-                            style={salaryAvatarGradientStyle(employeeId, profile?.employeeName || 'Employee')}
-                          >
-                            {getSalaryEmployeeInitials(profile?.employeeName || 'Employee')}
-                          </span>
-                        )}
+                        <span className="relative h-12 w-12 shrink-0">
+                          {profile?.photoUrl ? (
+                            <img src={profile.photoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
+                          ) : (
+                            <span
+                              className="flex h-12 w-12 items-center justify-center rounded-full text-base font-bold text-white"
+                              style={salaryAvatarGradientStyle(employeeId, profile?.employeeName || 'Employee')}
+                            >
+                              {getSalaryEmployeeInitials(profile?.employeeName || 'Employee')}
+                            </span>
+                          )}
+                          {clockedIn ? (
+                            <span className="absolute -right-0.5 -top-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-emerald-500" title="Clocked in" />
+                          ) : null}
+                        </span>
                         <div className="min-w-0">
                           <p className="truncate text-lg font-bold normal-case tracking-normal text-gray-900">
                             {profile?.employeeName || `Employee #${employeeIdParam}`}

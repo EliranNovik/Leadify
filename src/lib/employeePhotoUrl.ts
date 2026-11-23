@@ -60,25 +60,26 @@ export function toEmployeeAvatarSrc(
   if (!trimmed) return null;
   if (trimmed.startsWith('data:image/')) return trimmed;
 
-  try {
-    const objectMarker = '/storage/v1/object/';
-    const idx = trimmed.indexOf(objectMarker);
-    if (idx !== -1) {
-      const base = trimmed.slice(0, idx);
-      const rest = trimmed.slice(idx + objectMarker.length); // public/... or sign/...
-      if (rest.startsWith('public/')) {
-        const transformed = new URL(`${base}/storage/v1/render/image/${rest}`);
-        transformed.searchParams.set('width', String(sizePx));
-        transformed.searchParams.set('height', String(sizePx));
-        transformed.searchParams.set('resize', 'cover');
-        transformed.searchParams.set('quality', '65');
-        return transformed.toString();
-      }
-    }
-  } catch {
-    /* use original */
-  }
-  return trimmed;
+  const publicObject = '/storage/v1/object/public/';
+  const publicRender = '/storage/v1/render/image/public/';
+  const marker = trimmed.includes(publicObject)
+    ? publicObject
+    : trimmed.includes(publicRender)
+      ? publicRender
+      : '';
+  if (!marker) return trimmed;
+
+  const origin = trimmed.slice(0, trimmed.indexOf(marker));
+  const path = trimmed.slice(trimmed.indexOf(marker) + marker.length).split(/[?#]/)[0];
+  if (!origin || !path) return trimmed;
+
+  const params = new URLSearchParams({
+    width: String(sizePx),
+    height: String(sizePx),
+    resize: 'cover',
+    quality: '45',
+  });
+  return `${origin}${publicRender}${path}?${params.toString()}`;
 }
 
 const prefetchedAvatarSrcs = new Set<string>();
