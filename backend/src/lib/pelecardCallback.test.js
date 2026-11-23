@@ -79,6 +79,37 @@ test('keeps RCVD intermediate even when Pelecard displays the transaction', () =
   );
 });
 
+test('does not treat ShvaResult 000 as approval when Pelecard returned a rejection code', () => {
+  for (const code of ['598', '301', '303', '004']) {
+    assert.equal(
+      pelecardService.isSuccessfulStatus(code, { StatusCode: code, ShvaResult: '000' }),
+      false,
+      code,
+    );
+  }
+});
+
+test('keeps ShvaResult 000 as approval only when Pelecard sent no status code', () => {
+  assert.equal(pelecardService.isSuccessfulStatus('', { ShvaResult: '000' }), true);
+  assert.equal(pelecardService.isSuccessfulStatus('000', { StatusCode: '000', ShvaResult: '004' }), true);
+});
+
+test('records the Pelecard status code ahead of a misleading ShvaResult', () => {
+  assert.equal(
+    pelecardService.resolveRecordedStatusCode(
+      { ShvaResult: '000' },
+      '598',
+      '',
+    ),
+    '598',
+  );
+  assert.equal(
+    pelecardService.resolveRecordedStatusCode({ StatusCode: '598', ShvaResult: '000' }, '000', ''),
+    '598',
+  );
+  assert.equal(pelecardService.resolveRecordedStatusCode({ ShvaResult: '000' }, '', ''), '000');
+});
+
 test('recognizes documented final Open Finance statuses as successful', () => {
   for (const status of ['ACCC', 'ACSC', 'ACSP', 'ACTC', 'ACWC', 'ACFC']) {
     assert.equal(isSuccessfulOpenFinanceStatus({ BankTransferStatus: status }), true);

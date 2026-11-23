@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { ClockIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import ClockInOvertimeApprovalBox from '../profile/ClockInOvertimeApprovalBox';
 
@@ -34,23 +35,23 @@ export default function LeadAllocationOvertimeApprovalModal({
   onClose,
   employeeName = null,
 }: LeadAllocationOvertimeApprovalModalProps) {
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
 
   const who = employeeName?.trim();
   const intro = who
     ? `${who}'s ${clockInTime}–${clockOutTime} is past the ${baseHours}h day. Write the reason and send it to Michael.`
     : `${clockInTime}–${clockOutTime} is past your ${baseHours}h day. Write the reason and send it to Michael.`;
 
-  return (
-    <div className="modal modal-open z-[120]">
-      <div className="modal-box flex max-h-[85vh] max-w-lg flex-col overflow-hidden p-0">
-        <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-6 py-4">
+  return createPortal(
+    <div className="modal modal-open z-[400]">
+      <div className="modal-box flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden p-0">
+        <div className="flex items-start justify-between gap-4 px-6 py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <ClockIcon className="h-6 w-6 shrink-0 text-amber-600" />
               <h3 className="text-lg font-bold text-gray-900">Overtime approval</h3>
             </div>
-            <p className="mt-1 text-sm text-gray-500">{intro}</p>
+            <p className="mt-1 whitespace-nowrap text-sm text-gray-500">{intro}</p>
           </div>
           <button
             type="button"
@@ -77,12 +78,8 @@ export default function LeadAllocationOvertimeApprovalModal({
           />
         </div>
       </div>
-      <button
-        type="button"
-        className="modal-backdrop bg-black/40"
-        aria-label="Close"
-        onClick={onClose}
-      />
-    </div>
+      <button type="button" className="modal-backdrop" aria-label="Close" onClick={onClose} />
+    </div>,
+    document.body,
   );
 }

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   allocateDepartmentPayrollBudget,
+  foldMergedScoreboardPayroll,
   countWorkingDays,
   departmentRevenueTarget,
   DEPARTMENT_PAYROLL_BUDGETS,
@@ -132,6 +133,22 @@ test('a spanning department with no live payroll splits evenly rather than losin
     assert.equal(allocated.get(20), 121315);
     assert.equal(allocated.get(4), 121315);
   }
+});
+
+test('merged scoreboard columns take over the payroll of the columns they replace', () => {
+  const allocated = allocateDepartmentPayrollBudget(new Map([[20, 90000], [4, 30000]]));
+  const folded = foldMergedScoreboardPayroll(allocated, 12500);
+  assert.equal(folded.has(20), false);
+  assert.equal(folded.get(4), 242630);
+  assert.equal(folded.get(2), 217323 + 12500);
+  assert.equal(folded.get(5), 76997);
+  assert.equal(folded.get(7), 33157);
+});
+
+test('an empty Other payroll leaves Austria and Germany on its own budget', () => {
+  const folded = foldMergedScoreboardPayroll(allocateDepartmentPayrollBudget(new Map()), 0);
+  assert.equal(folded.get(2), 217323);
+  assert.equal(folded.get(4), 242630);
 });
 
 test('departments outside the budget get no target', () => {

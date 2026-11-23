@@ -41,12 +41,15 @@ import {
   departmentScoreboardExpected,
   fetchDashboardDepartmentCostTargets,
   fetchDashboardOtherColumnCostTarget,
-  otherScoreboardExpected,
 } from '../lib/dashboardDepartmentCostTargets';
 import {
   allocateDepartmentPayrollBudget,
+  AUSTRIA_GERMANY_DEPT_ID,
+  COMMERCIAL_CIVIL_DEPT_ID,
   departmentRevenueTarget,
+  foldMergedScoreboardPayroll,
   GOAL_BAR_REVENUE_TARGET_RATIO,
+  IMMIGRATION_TO_ISRAEL_DEPT_ID,
   monthlyTargetScale,
   payrollShareBand,
   REVENUE_TARGET_RATIOS,
@@ -171,8 +174,65 @@ function getDashboardTeamAvailabilityCacheTtlMs(): number {
   return getMobileAwareCacheTtlMs(5 * 60 * 1000, 90_000);
 }
 
-/** Virtual column for leads/payments outside the main scoreboard departments. */
-const SCOREBOARD_OTHER_COLUMN = 'Other';
+function isCommercialCivilScoreboardColumn(dept: { id?: number; name?: string }): boolean {
+  if (Number(dept.id) === COMMERCIAL_CIVIL_DEPT_ID) return true;
+  const name = String(dept.name || '');
+  if (/commercial\s*-\s*sales/i.test(name)) return true;
+  if (/commercial/i.test(name) && /civil/i.test(name)) return true;
+  if (/^commercial$/i.test(name.trim())) return true;
+  return false;
+}
+
+function isCommercialOrCivilLead(
+  departmentId: number | null | undefined,
+  mainCategoryName?: string | null,
+): boolean {
+  if (Number(departmentId) === COMMERCIAL_CIVIL_DEPT_ID) return true;
+  const name = String(mainCategoryName || '');
+  return /\bcommercial\b/i.test(name) || /\bcivil\b/i.test(name);
+}
+
+/** Commercial & Civil counts as Immigration to Israel. Other counts as Austria and Germany. */
+function mergedScoreboardDepartmentId(
+  departmentId: number | null | undefined,
+  departmentIds: number[],
+  mainCategoryId?: number | null,
+  mainCategoryName?: string | null,
+): number | null {
+  if (
+    isCommercialOrCivilLead(departmentId, mainCategoryName) &&
+    departmentIds.includes(IMMIGRATION_TO_ISRAEL_DEPT_ID)
+  ) {
+    return IMMIGRATION_TO_ISRAEL_DEPT_ID;
+  }
+  if (
+    shouldUseScoreboardOtherColumn({
+      departmentId,
+      departmentIds,
+      mainCategoryId,
+      mainCategoryName,
+    })
+  ) {
+    return departmentIds.includes(AUSTRIA_GERMANY_DEPT_ID) ? AUSTRIA_GERMANY_DEPT_ID : null;
+  }
+  const id = Number(departmentId);
+  return Number.isFinite(id) ? id : null;
+}
+
+function applyMergedScoreboardPayroll(
+  departmentTargets: any[],
+  liveTotals: Map<number, number>,
+  otherCostBase: number,
+) {
+  const payroll = foldMergedScoreboardPayroll(
+    allocateDepartmentPayrollBudget(liveTotals),
+    otherCostBase,
+  );
+  return applyDashboardCostTargetsToDepartments(
+    departmentTargets.filter((dept) => !isCommercialCivilScoreboardColumn(dept)),
+    payroll,
+  );
+}
 
 function getScoreboardPeriodColumnName(
   deptIndex: number,
@@ -181,7 +241,6 @@ function getScoreboardPeriodColumnName(
   if (deptIndex >= 1 && deptIndex <= departmentTargets.length) {
     return String(departmentTargets[deptIndex - 1]?.name || '');
   }
-  if (deptIndex === departmentTargets.length + 1) return SCOREBOARD_OTHER_COLUMN;
   return null;
 }
 
@@ -192,7 +251,6 @@ function getScoreboardMonthColumnName(
   if (deptIndex >= 0 && deptIndex < departmentTargets.length) {
     return String(departmentTargets[deptIndex]?.name || '');
   }
-  if (deptIndex === departmentTargets.length) return SCOREBOARD_OTHER_COLUMN;
   return null;
 }
 
@@ -448,17 +506,15 @@ function getScoreboardPeriodDeptIndex(
   mainCategoryId?: number | null,
   mainCategoryName?: string | null,
 ): number {
-  if (
-    shouldUseScoreboardOtherColumn({
-      departmentId,
-      departmentIds,
-      mainCategoryId,
-      mainCategoryName,
-    })
-  ) {
-    return departmentIds.length + 1;
-  }
-  return departmentIds.indexOf(Number(departmentId)) + 1;
+  const mapped = mergedScoreboardDepartmentId(
+    departmentId,
+    departmentIds,
+    mainCategoryId,
+    mainCategoryName,
+  );
+  if (mapped == null) return 0;
+  const index = departmentIds.indexOf(mapped);
+  return index >= 0 ? index + 1 : 0;
 }
 
 /** Month row index (no General column). */
@@ -468,20 +524,18 @@ function getScoreboardMonthDeptIndex(
   mainCategoryId?: number | null,
   mainCategoryName?: string | null,
 ): number {
-  if (
-    shouldUseScoreboardOtherColumn({
-      departmentId,
-      departmentIds,
-      mainCategoryId,
-      mainCategoryName,
-    })
-  ) {
-    return departmentIds.length;
-  }
-  return departmentIds.indexOf(Number(departmentId));
+  const mapped = mergedScoreboardDepartmentId(
+    departmentId,
+    departmentIds,
+    mainCategoryId,
+    mainCategoryName,
+  );
+  if (mapped == null) return 0;
+  const index = departmentIds.indexOf(mapped);
+  return index >= 0 ? index : 0;
 }
 
-function buildScoreboardPeriodRows(departmentTargets: any[], otherExpected = 0): DashboardScoreboardRow[] {
+function buildScoreboardPeriodRows(departmentTargets: any[]): DashboardScoreboardRow[] {
   return [
     createEmptyScoreboardRow(),
     ...departmentTargets.map((dept) => ({
@@ -490,12 +544,11 @@ function buildScoreboardPeriodRows(departmentTargets: any[], otherExpected = 0):
       expected: departmentScoreboardExpected(dept),
       expenseExcluded: 0,
     })),
-    { count: 0, amount: 0, expected: otherExpected, expenseExcluded: 0 },
     createEmptyScoreboardRow(),
   ];
 }
 
-function buildScoreboardMonthRows(departmentTargets: any[], otherExpected = 0): DashboardScoreboardRow[] {
+function buildScoreboardMonthRows(departmentTargets: any[]): DashboardScoreboardRow[] {
   return [
     ...departmentTargets.map((dept) => ({
       count: 0,
@@ -503,17 +556,14 @@ function buildScoreboardMonthRows(departmentTargets: any[], otherExpected = 0): 
       expected: departmentScoreboardExpected(dept),
       expenseExcluded: 0,
     })),
-    { count: 0, amount: 0, expected: otherExpected, expenseExcluded: 0 },
     createEmptyScoreboardRow(),
   ];
 }
 
 function getScoreboardTotalIndexes(departmentCount: number) {
   return {
-    otherIndexToday: departmentCount + 1,
-    totalIndexToday: departmentCount + 2,
-    otherIndexMonth: departmentCount,
-    totalIndexMonth: departmentCount + 1,
+    totalIndexToday: departmentCount + 1,
+    totalIndexMonth: departmentCount,
   };
 }
 
@@ -3331,7 +3381,7 @@ const Dashboard: React.FC = () => {
     costByDeptName: Record<string, number>;
     selectedMonthName: string;
   }> => {
-    const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v3-cat-canon`;
+    const periodKey = `${selectedYear}-${selectedMonth}-cost-hs-mfp-v4-merge-depts`;
     if (
       departmentsCategoriesCache &&
       departmentsCategoriesCache.periodKey === periodKey &&
@@ -3370,15 +3420,8 @@ const Dashboard: React.FC = () => {
       if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) departmentMap.set(dept.id, dept);
     });
 
-    let departmentTargets = Array.from(departmentMap.values());
-    departmentTargets = departmentTargets.filter((dept: any) => {
-      if (dept.id === 20) return true;
-      if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
-      if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
-      return true;
-    });
-    departmentTargets = departmentTargets.map((dept: any) =>
-      dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept
+    let departmentTargets = Array.from(departmentMap.values()).filter(
+      (dept: any) => !isCommercialCivilScoreboardColumn(dept),
     );
     departmentTargets.sort((a: any, b: any) => a.id - b.id);
     const departmentIds = departmentTargets.map((d: any) => d.id);
@@ -3391,12 +3434,13 @@ const Dashboard: React.FC = () => {
         fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
         fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
       ]);
-      departmentTargets = applyDashboardCostTargetsToDepartments(
-        departmentTargets,
-        allocateDepartmentPayrollBudget(costResult.totals),
-      );
       otherCostBase = Math.max(0, Number(otherCost) || 0);
-      otherExpected = otherScoreboardExpected(otherCostBase);
+      departmentTargets = applyMergedScoreboardPayroll(
+        departmentTargets,
+        costResult.totals,
+        otherCostBase,
+      );
+      otherExpected = 0;
     } catch (costErr) {
       console.error('[Dashboard] department cost targets failed:', costErr);
       departmentTargets = departmentTargets.map((dept: any) => ({
@@ -3414,12 +3458,6 @@ const Dashboard: React.FC = () => {
       const name = String(dept.name || '');
       costByDeptName[name] = departmentScoreboardCostBase(dept);
     });
-    /*
-     * Other is a bucket for departments the firm sets no revenue goal for, so it carries no payroll
-     * budget and gets no target. Its live payroll is deliberately not used here: a target built from
-     * it would be the only one on the board not traceable to the firm's budget.
-     */
-    costByDeptName[SCOREBOARD_OTHER_COLUMN] = 0;
 
     const result = {
       departmentTargets,
@@ -3490,14 +3528,10 @@ const Dashboard: React.FC = () => {
           if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) departmentMap.set(dept.id, dept);
         });
 
-        let deptTargets = Array.from(departmentMap.values());
-        deptTargets = deptTargets.filter(dept => {
-          if (dept.id === 20) return true;
-          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
-          if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
-          return true;
-        });
-        departmentTargets = deptTargets.map(dept => (dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept));
+        let deptTargets = Array.from(departmentMap.values()).filter(
+          (dept) => !isCommercialCivilScoreboardColumn(dept),
+        );
+        departmentTargets = deptTargets;
         departmentTargets.sort((a, b) => a.id - b.id);
         departmentIds = departmentTargets.map(dept => dept.id);
 
@@ -3515,11 +3549,12 @@ const Dashboard: React.FC = () => {
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(
+          departmentTargets = applyMergedScoreboardPayroll(
             departmentTargets,
-            allocateDepartmentPayrollBudget(costResult.totals),
+            costResult.totals,
+            Math.max(0, Number(otherCost) || 0),
           );
-          otherExpected = otherScoreboardExpected(otherCost);
+          otherExpected = 0;
         } catch (costErr) {
           console.error('[Dashboard Agreement Signed] department cost targets failed:', costErr);
           departmentTargets = departmentTargets.map((dept: any) => ({
@@ -3535,8 +3570,7 @@ const Dashboard: React.FC = () => {
       departmentTargets.forEach((dept, index) => {
       });
 
-      // Set department names for UI display (main departments + Other bucket)
-      const names = [...departmentTargets.map(dept => dept.name), SCOREBOARD_OTHER_COLUMN];
+      const names = departmentTargets.map(dept => dept.name);
       setDepartmentNames(names);
       const costMap: Record<string, number> =
         shared?.costByDeptName ??
@@ -3545,7 +3579,6 @@ const Dashboard: React.FC = () => {
           departmentTargets.forEach((dept: any) => {
             m[String(dept.name || '')] = departmentScoreboardCostBase(dept);
           });
-          m[SCOREBOARD_OTHER_COLUMN] = shared?.otherCostBase ?? 0;
           return m;
         })();
       setScoreboardCostByDeptName(costMap);
@@ -3557,12 +3590,12 @@ const Dashboard: React.FC = () => {
       })();
       // Initialize data structure dynamically based on actual departments
       const newAgreementData = {
-        Today: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        Yesterday: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        Week: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        "Last 30d": buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets, otherExpected),
+        Today: buildScoreboardPeriodRows(departmentTargets),
+        Yesterday: buildScoreboardPeriodRows(departmentTargets),
+        Week: buildScoreboardPeriodRows(departmentTargets),
+        "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets),
+        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
       const agreementDealsStore = new Map<string, DashboardScoreboardDeal[]>();
       const pushAgreementPeriodDeal = (
@@ -3997,7 +4030,7 @@ const Dashboard: React.FC = () => {
       // Calculate totals for each time period
       const numDepartments = departmentTargets.length;
       const { totalIndexToday, totalIndexMonth } = getScoreboardTotalIndexes(numDepartments);
-      // Today totals (sum of departments + Other, excluding General and Total)
+      // Today totals (sum of the department columns, excluding General and Total)
       const todayTotalCount = newAgreementData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
       const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newAgreementData.Today[totalIndexToday] = {
@@ -4280,14 +4313,10 @@ const Dashboard: React.FC = () => {
           .order('id');
         if (departmentsError) throw departmentsError;
 
-        let deptTargets = (allDepartments || []).filter((dept: any) => {
-          if (dept.id === 20) return true;
-          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
-          const hasDept20 = (allDepartments || []).some((d: any) => d.id === 20);
-          if (hasDept20 && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
-          return true;
-        });
-        departmentTargets = deptTargets.map((dept: any) => (dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept));
+        let deptTargets = (allDepartments || []).filter(
+          (dept: any) => !isCommercialCivilScoreboardColumn(dept),
+        );
+        departmentTargets = deptTargets;
         departmentIds = departmentTargets.map((d: any) => d.id);
 
         try {
@@ -4304,11 +4333,12 @@ const Dashboard: React.FC = () => {
             fetchDashboardDepartmentCostTargets(scoreboardRefs, { salesDeptIdsToExclude }),
             fetchDashboardOtherColumnCostTarget(scoreboardRefs, { salesDeptIdsToExclude }),
           ]);
-          departmentTargets = applyDashboardCostTargetsToDepartments(
+          departmentTargets = applyMergedScoreboardPayroll(
             departmentTargets,
-            allocateDepartmentPayrollBudget(costResult.totals),
+            costResult.totals,
+            Math.max(0, Number(otherCost) || 0),
           );
-          otherExpected = otherScoreboardExpected(otherCost);
+          otherExpected = 0;
         } catch (costErr) {
           console.error('[Dashboard Sent to finance] department cost targets failed:', costErr);
           departmentTargets = departmentTargets.map((dept: any) => ({
@@ -4359,12 +4389,12 @@ const Dashboard: React.FC = () => {
 
       // Initialize the data structure
       const newData = {
-        Today: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        Yesterday: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        Week: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        "Last 30d": buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets, otherExpected),
-        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets, otherExpected),
+        Today: buildScoreboardPeriodRows(departmentTargets),
+        Yesterday: buildScoreboardPeriodRows(departmentTargets),
+        Week: buildScoreboardPeriodRows(departmentTargets),
+        "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [SCOREBOARD_LAST_3M]: buildScoreboardPeriodRows(departmentTargets),
+        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
       const dealsStore = new Map<string, DashboardScoreboardDeal[]>();
       const pushPeriodDeal = (
@@ -5707,9 +5737,9 @@ const Dashboard: React.FC = () => {
      * The Total column's target: its departments' targets added up, rather than the firm's whole
      * payroll over the ratio.
      *
-     * The two differ, and the sum is the honest one. General and Other carry no payroll budget, so
-     * they contribute revenue to the Total but no target; holding the Total to the firm's full
-     * payroll would ask it for a number none of its columns has been asked for.
+     * The two differ, and the sum is the honest one. General carries no payroll budget, so it
+     * contributes revenue to the Total but no target. Other's payroll sits on Austria and Germany,
+     * and Commercial & Civil's payroll sits on Immigration to Israel.
      */
     const getRatioTargetTotal = (ratio: number, periodKey: string) =>
       categories.reduce((sum, cat) => sum + getDeptRatioTarget(cat, ratio, periodKey), 0);
@@ -5719,8 +5749,8 @@ const Dashboard: React.FC = () => {
      * revenue target derived from it. The bar therefore reads as the payroll-to-revenue ratio
      * itself; the 30 / 35 / 40% revenue targets stay in the rows below.
      *
-     * The Total adds its departments' budgets up, leaving out General and Other, which carry no
-     * budget — matching how the target rows total.
+     * The Total adds its departments' budgets up, leaving out General, which carries no budget.
+     * That matches how the target rows total.
      */
     const getPeriodPayrollBase = (deptName: string, periodKey: string) => {
       const monthly =

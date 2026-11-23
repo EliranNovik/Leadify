@@ -336,6 +336,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
 
   const [fromTime, setFromTime] = useState('');
   const [toTime, setToTime] = useState('');
+  const [hoursAdjusted, setHoursAdjusted] = useState(false);
   const [locationId, setLocationId] = useState<number | ''>('');
   /** The day's stored overtime session, including whether Michael already approved it. */
   const [storedOvertime, setStoredOvertime] = useState<StoredOvertimeApproval | null>(null);
@@ -529,6 +530,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         setToTime(end);
         setLocationId(hoursDefaults.locationId || fallbackLocationId);
       }
+      setHoursAdjusted(false);
 
       const savedByKey = new Map<string, AllocationItemInput>();
       for (const item of eligibleSavedItems) {
@@ -769,8 +771,9 @@ const EmployeeLeadReportingPage: React.FC = () => {
   const showHoursForm = recordedDayWorkedMs < minMs || isEditingSavedAllocation;
 
   const manualIntervalMs = workIntervalDurationMs(workDate, fromTime, toTime);
+  const writingHours = showHoursForm || hoursAdjusted;
   const dayWorkedMs =
-    showHoursForm && manualIntervalMs > 0 ? manualIntervalMs : recordedDayWorkedMs;
+    writingHours && manualIntervalMs > 0 ? manualIntervalMs : recordedDayWorkedMs;
 
   const otherWorkMax = otherWorkPercentCap(dayWorkedMs, minHours);
   const rowsRef = useRef(rows);
@@ -1029,6 +1032,12 @@ const EmployeeLeadReportingPage: React.FC = () => {
       ? storedOvertime
       : null;
 
+  const commitWorkHours = (nextFrom: string, nextTo: string) => {
+    setHoursAdjusted(true);
+    setFromTime(nextFrom);
+    setToTime(nextTo);
+  };
+
   const handleSave = async (options: { overtimeReason?: string } = {}) => {
     if (!employeeContext) return;
     if (!canSave) {
@@ -1042,7 +1051,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
       return;
     }
 
-    if (showHoursForm) {
+    if (writingHours) {
       if (!fromTime || !toTime) {
         toast.error('Enter from and to times for your work day.');
         return;
@@ -1062,7 +1071,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
     try {
       let effectiveWorkedMs = dayWorkedMs;
 
-      if (showHoursForm && fromTime && toTime && locationId) {
+      if (writingHours && fromTime && toTime && locationId) {
         const needsApproval = clockSessionExceedsOvertimeBase(fromTime, toTime, minHours);
         const reason = options.overtimeReason?.trim() || '';
 
@@ -1133,6 +1142,7 @@ const EmployeeLeadReportingPage: React.FC = () => {
         }
         setOvertimePrompt(null);
         setOvertimeReason('');
+        setHoursAdjusted(false);
       }
 
       const effectiveOtherMax = otherWorkPercentCap(effectiveWorkedMs, minHours);
@@ -1663,51 +1673,29 @@ const EmployeeLeadReportingPage: React.FC = () => {
             }}
           />
 
-          {showHoursForm ? (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {/* Base hours fills From and To, so it belongs beside From rather than off in a corner. */}
-                <div className="flex items-end gap-2">
-                  <label className="block min-w-0 flex-1">
-                    <span className="mb-1.5 block text-sm font-medium text-gray-600">From</span>
-                    <input
-                      type="time"
-                      className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
-                      value={fromTime}
-                      disabled={isAllocationLocked}
-                      onChange={(e) => setFromTime(e.target.value)}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="btn btn-ghost h-10 min-h-10 shrink-0 whitespace-nowrap rounded-[14px] border-0 bg-white px-3 text-xs font-semibold text-primary ring-1 ring-gray-300/80 hover:bg-primary/5"
+          <div className="flex flex-wrap items-end gap-3">
+                {/* Each time box keeps its own width. A shared shrinking row was collapsing From until it disappeared. */}
+                <label className="block w-[9.75rem] shrink-0">
+                  <span className="mb-1.5 block text-sm font-medium text-gray-600">From</span>
+                  <input
+                    type="time"
+                    className="input h-10 min-h-10 w-full min-w-[9.75rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    value={fromTime}
                     disabled={isAllocationLocked}
-                    title={`Fill From/To with your ${minHours}h base day`}
-                    onClick={() => {
-                      const start = fromTime || DEFAULT_BASE_HOURS_FROM;
-                      const end = timeInputPlusHours(start, minHours);
-                      if (!end) {
-                        toast.error('Could not fill base hours.');
-                        return;
-                      }
-                      setFromTime(start);
-                      setToTime(end);
-                      toast.success(`Filled ${minHours}h base hours (${start}–${end}).`);
-                    }}
-                  >
-                    Base hours
-                  </button>
-                </div>
-                <label className="block">
+                    onChange={(e) => commitWorkHours(e.target.value, toTime)}
+                  />
+                </label>
+                <label className="block w-[9.75rem] shrink-0">
                   <span className="mb-1.5 block text-sm font-medium text-gray-600">To</span>
                   <input
                     type="time"
-                    className="input h-10 min-h-10 w-full rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
+                    className="input h-10 min-h-10 w-full min-w-[9.75rem] rounded-[14px] border-0 bg-white px-3 ring-1 ring-gray-300/80 focus:outline-none focus:ring-2 focus:ring-primary/15"
                     value={toTime}
                     disabled={isAllocationLocked}
-                    onChange={(e) => setToTime(e.target.value)}
+                    onChange={(e) => commitWorkHours(fromTime, e.target.value)}
                   />
                 </label>
-                <label className="block">
+                <label className="block w-full min-w-[12rem] max-w-xs shrink-0 sm:w-56">
                   <span className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-gray-600">
                     <MapPinIcon className="h-4 w-4" />
                     Worked in
@@ -1730,8 +1718,25 @@ const EmployeeLeadReportingPage: React.FC = () => {
                     ))}
                   </select>
                 </label>
+                <button
+                  type="button"
+                  className="btn btn-ghost h-10 min-h-10 shrink-0 whitespace-nowrap rounded-[14px] border-0 bg-white px-3 text-xs font-semibold text-primary ring-1 ring-gray-300/80 hover:bg-primary/5"
+                  disabled={isAllocationLocked}
+                  title={`Fill From/To with your ${minHours}h base day`}
+                  onClick={() => {
+                    const start = fromTime || DEFAULT_BASE_HOURS_FROM;
+                    const end = timeInputPlusHours(start, minHours);
+                    if (!end) {
+                      toast.error('Could not fill base hours.');
+                      return;
+                    }
+                    commitWorkHours(start, end);
+                    toast.success(`Filled ${minHours}h base hours (${start}–${end}).`);
+                  }}
+                >
+                  Base hours
+                </button>
               </div>
-          ) : null}
 
           {storedOvertime && !storedOvertime.approved && overtimeRequestStatus === 'pending' ? (
             <div className="rounded-[18px] bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-sm">

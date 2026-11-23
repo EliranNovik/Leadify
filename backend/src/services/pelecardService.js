@@ -670,21 +670,31 @@ async function checkGoodParamX(paramX, profile = 'production', { shvaSuccessOnly
   };
 }
 
+/**
+ * Code we store and judge. A Pelecard StatusCode wins over ShvaResult.
+ * ShvaResult 000 must not hide a 598/301/303 sitting on the outer response.
+ */
+function resolveRecordedStatusCode(resultData, outerStatusCode, fallback) {
+  const statusCode = String(resultData?.StatusCode || resultData?.statusCode || '').trim();
+  const outer = String(outerStatusCode || '').trim();
+  const shva = String(resultData?.ShvaResult || resultData?.shvaResult || '').trim();
+  return statusCode || outer || shva || String(fallback || '').trim();
+}
+
 function isSuccessfulStatus(statusCode, resultData) {
   const code = String(statusCode ?? resultData?.StatusCode ?? resultData?.statusCode ?? '').trim();
-
-  // Explicit Pelecard approval
-  if (code === '000') return true;
-
-  // Open Finance uses its bank-transfer lifecycle status even when Pelecard's
-  // outer/Shva code remains 665. Only documented final success states qualify.
-  if (isSuccessfulOpenFinanceStatus(resultData)) return true;
-
-  // Digital transfer / wallet rows often expose ShvaResult instead of StatusCode
   const shva = String(resultData?.ShvaResult ?? resultData?.shvaResult ?? '').trim();
-  if (shva === '000') return true;
 
-  // Any other non-empty status code is not a successful charge
+  // 000 is the only card approval. A different StatusCode is a rejection even when ShvaResult is 000.
+  if (code === '000') return true;
+  if (code && code !== '665') return false;
+
+  // Open Finance keeps 665 on the card field. The bank status is the approval.
+  if (isSuccessfulOpenFinanceStatus(resultData) && (!code || code === '665')) return true;
+
+  // Wallet rows often have ShvaResult and no StatusCode. Shva 000 is an approval only in that case.
+  if (!code && shva === '000') return true;
+
   if (code) return false;
 
   if (resultData?.Status === 'Success' || resultData?.Result === 'Success') return true;
@@ -704,6 +714,7 @@ module.exports = {
   getTransaction,
   checkGoodParamX,
   isSuccessfulStatus,
+  resolveRecordedStatusCode,
   extractPaymentUrl,
   resolvePelecardCssUrl,
   buildBuiltinPelecardCssUrl,

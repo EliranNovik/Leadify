@@ -61,6 +61,9 @@ export const LazyHoursAllocationEmployeePage = lazy(() => import('../pages/Hours
 export const LazySubcontractorFeesReportPage = lazy(() =>
   import('../pages/SubcontractorFeesReportPage'),
 );
+export const LazyPaymentAttemptsReportPage = lazy(() =>
+  import('../pages/PaymentAttemptsReportPage'),
+);
 export const LazyLeadsReportPage = lazy(() => import('../pages/LeadsReportPage'));
 export const LazyTagsManagerPage = lazy(() => import('../pages/TagsManagerPage'));
 export const LazyExternalUserAccessLogsPage = lazy(() => import('../pages/ExternalUserAccessLogsPage'));

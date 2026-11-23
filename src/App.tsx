@@ -84,6 +84,7 @@ import {
   LazyHoursAllocationAreaPage,
   LazyHoursAllocationEmployeePage,
   LazySubcontractorFeesReportPage,
+  LazyPaymentAttemptsReportPage,
   LazyEmployeeLeadReportingPage,
   LazyEmployeePerformancePage,
   LazyEmployeeSalariesReport,
@@ -1320,6 +1321,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/leads-management/employees/:employeeId" element={<RouteSuspense><LazyEmployeeLeadCostPage /></RouteSuspense>} />
                     <Route path="/reports/leads-management/:leadKey" element={<RouteSuspense><LazyLeadManagementDetailPage /></RouteSuspense>} />
                     <Route path="/reports/subcontractor-fees" element={<RouteSuspense><LazySubcontractorFeesReportPage /></RouteSuspense>} />
+                    <Route path="/reports/payment-attempts" element={<RouteSuspense><LazyPaymentAttemptsReportPage /></RouteSuspense>} />
                     <Route path="/reports/leads-report" element={<RouteSuspense><LazyLeadsReportPage /></RouteSuspense>} />
                     <Route path="/reports/tags-manager" element={<RouteSuspense><LazyTagsManagerPage /></RouteSuspense>} />
                     <Route path="/reports/external-firms" element={<RouteSuspense><LazyExternalFirmsReportPage /></RouteSuspense>} />

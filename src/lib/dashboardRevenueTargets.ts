@@ -34,9 +34,9 @@ export type DepartmentPayrollBudget = {
  * reproduces them, which is why they live here: editing this list is how the dashboard gets
  * re-targeted when the payroll budget changes.
  *
- * Commercial and Israel Immigration is one department to the firm but two columns on the
- * scoreboard, so its budget covers both ids and is divided between them by
- * `allocateDepartmentPayrollBudget`.
+ * Commercial and Israel Immigration is one department to the firm. The scoreboard shows it as
+ * Immigration to Israel, so `foldMergedScoreboardPayroll` adds Commercial & Civil's share of this
+ * budget onto that column. The same fold adds the Other bucket's payroll onto Austria and Germany.
  */
 export const DEPARTMENT_PAYROLL_BUDGETS: DepartmentPayrollBudget[] = [
   { label: 'Commercial and Israel Immigration', deptIds: [20, 4], monthlyPayrollNis: 242630 },
@@ -144,6 +144,37 @@ export function allocateDepartmentPayrollBudget(
   }
 
   return budgetByDeptId;
+}
+
+/** Scoreboard columns that absorb another column's payroll. */
+export const AUSTRIA_GERMANY_DEPT_ID = 2;
+export const IMMIGRATION_TO_ISRAEL_DEPT_ID = 4;
+export const COMMERCIAL_CIVIL_DEPT_ID = 20;
+
+/**
+ * Move payroll onto the columns the scoreboard actually shows.
+ *
+ * Commercial & Civil is no longer its own column, so its share is added to Immigration to Israel
+ * and the two still sum to that department's budget. Other is no longer a column either, so the
+ * payroll of the departments that used to sit there is added to Austria and Germany.
+ */
+export function foldMergedScoreboardPayroll(
+  payrollByDept: Map<number, number>,
+  otherPayrollNis = 0,
+): Map<number, number> {
+  const next = new Map(payrollByDept);
+  const commercial = Math.max(0, Number(next.get(COMMERCIAL_CIVIL_DEPT_ID)) || 0);
+  const israel = Math.max(0, Number(next.get(IMMIGRATION_TO_ISRAEL_DEPT_ID)) || 0);
+  if (commercial > 0 || next.has(COMMERCIAL_CIVIL_DEPT_ID)) {
+    next.set(IMMIGRATION_TO_ISRAEL_DEPT_ID, round2(israel + commercial));
+    next.delete(COMMERCIAL_CIVIL_DEPT_ID);
+  }
+  const other = Math.max(0, Number(otherPayrollNis) || 0);
+  if (other > 0) {
+    const austria = Math.max(0, Number(next.get(AUSTRIA_GERMANY_DEPT_ID)) || 0);
+    next.set(AUSTRIA_GERMANY_DEPT_ID, round2(austria + other));
+  }
+  return next;
 }
 
 /**

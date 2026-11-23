@@ -443,15 +443,11 @@ async function verifyPelecardTransaction(transactionId, callbackData, profile = 
       const tx = await pelecardService.getTransaction(String(transactionId), profile);
       verifyPayload.pelecard = tx.raw;
       resultData = tx.result || {};
-      resolvedStatusCode = String(
-        resultData.StatusCode ||
-          resultData.statusCode ||
-          resultData.ShvaResult ||
-          resultData.shvaResult ||
-          tx.outerStatusCode ||
-          resolvedStatusCode ||
-          '',
-      ).trim();
+      resolvedStatusCode = pelecardService.resolveRecordedStatusCode(
+        resultData,
+        tx.outerStatusCode,
+        resolvedStatusCode,
+      );
     } catch (verifyErr) {
       console.error('[Pelecard] GetTransaction failed:', verifyErr.message || verifyErr);
     }
@@ -521,7 +517,19 @@ async function persistChargeAttributionMismatch(payment, callbackData, verifyRes
 }
 
 async function persistPaymentSuccess(payment, secureToken, callbackData, verifyResult, options = {}) {
-  const { resolvedStatusCode, verifyPayload } = verifyResult;
+  const { resolvedStatusCode, verifyPayload, resultData } = verifyResult;
+  const approvalData = resultData || callbackData;
+  if (
+    !options.allowUnapprovedCode &&
+    !pelecardService.isSuccessfulStatus(resolvedStatusCode, approvalData)
+  ) {
+    console.error('[Pelecard] REFUSED to mark paid — Pelecard code is not an approval', {
+      paymentId: secureToken,
+      statusCode: resolvedStatusCode || null,
+      shvaResult: approvalData?.ShvaResult ?? approvalData?.shvaResult ?? null,
+    });
+    return { ok: false, error: 'not_approved' };
+  }
   const transactionId =
     extractPelecardMeta(callbackData).transactionId || getStoredTransactionId(payment);
   const previousRaw =
@@ -530,9 +538,8 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
       : {};
 
   /*
-   * Last gate before anything is recorded as collected. Every route to "paid" lands here, so this is
-   * the only place the check has to exist to cover callbacks, status polls, the scheduler and
-   * manual reconciles alike.
+   * Amount gate before anything is recorded as collected. The approval-code gate above already ran.
+   * Both cover callbacks, status polls, the scheduler and manual reconciles.
    */
   const match = pelecardChargeBelongsToPayment(
     callbackData,
@@ -979,8 +986,8 @@ async function tryReconcilePaymentLink(payment, options = {}) {
         verified: true,
         resolvedStatusCode: verifyResult.resolvedStatusCode || (forcePaid ? '000' : verifyResult.resolvedStatusCode),
       },
-      // forcePaid is an operator looking at the terminal, so it also overrules the amount check.
-      { allowAmountMismatch: forcePaid },
+      // forcePaid is an operator looking at the terminal, so it also overrules the amount and code checks.
+      { allowAmountMismatch: forcePaid, allowUnapprovedCode: forcePaid },
     );
     return fetchPaymentByToken(full.secure_token);
   }

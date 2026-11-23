@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { CheckCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 type LeadAllocationSavedModalProps = {
@@ -12,12 +13,12 @@ const LeadAllocationSavedModal: React.FC<LeadAllocationSavedModalProps> = ({
   employeeName,
   onClose,
 }) => {
-  if (!open) return null;
+  if (!open || typeof document === 'undefined') return null;
 
   const name = employeeName?.trim() || 'there';
 
-  return (
-    <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4">
       <div
         role="dialog"
         aria-modal="true"
@@ -58,7 +59,8 @@ const LeadAllocationSavedModal: React.FC<LeadAllocationSavedModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

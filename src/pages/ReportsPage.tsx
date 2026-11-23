@@ -22,6 +22,7 @@ import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters } from '../hooks/usePersistedState';
+import { useAdminRole } from '../hooks/useAdminRole';
 
 // Add a helper for currency symbol
 const getCurrencySymbol = (currency?: string) => {
@@ -8194,6 +8195,8 @@ type ReportItem = {
   shellTitle?: React.FC;
   /** Visible only when users.is_superuser is true */
   superuserOnly?: boolean;
+  /** Visible only to admins (role admin, staff, or superuser). */
+  adminOnly?: boolean;
 };
 
 type ReportSection = {
@@ -8301,6 +8304,7 @@ const reports: ReportSection[] = [
     items: [
       // { label: 'Profitability', icon: CurrencyDollarIcon, component: ProfitabilityReport },
       { label: 'Finance Management', icon: CurrencyDollarIcon, route: '/reports/finance-management' },
+      { label: 'Payment attempts', icon: BanknotesIcon, route: '/reports/payment-attempts', adminOnly: true },
       { label: 'Collection', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection' },
       { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/finance-management?tab=collection-due' },
       { label: 'Subcontractor fees', icon: BuildingOfficeIcon, route: '/reports/subcontractor-fees', superuserOnly: true },
@@ -8362,6 +8366,7 @@ export default function ReportsPage() {
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
+  const { isAdmin } = useAdminRole();
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean>(false);
   const [permissionsLoaded, setPermissionsLoaded] = useState<boolean>(false);
@@ -8463,6 +8468,7 @@ export default function ReportsPage() {
     if (!matched) return;
 
     if (matched.superuserOnly && !isSuperUser) return;
+    if (matched.adminOnly && !isAdmin) return;
 
     if (matched.route) {
       navigate(matched.route, { replace: true });
@@ -8471,7 +8477,7 @@ export default function ReportsPage() {
     if (!matched.component) return;
 
     setSelectedReport((prev) => (prev?.label === matched.label ? prev : matched));
-  }, [location.search, navigate, permissionsLoaded, isSuperUser]);
+  }, [location.search, navigate, permissionsLoaded, isSuperUser, isAdmin]);
 
   // Filter reports based on search query, superuser status, and collection access
   const filteredReports = useMemo(() => {
@@ -8489,7 +8495,9 @@ export default function ReportsPage() {
           return true;
         })
         .map((section) => {
-          const itemsWithoutSuperuserReports = section.items.filter((item) => !item.superuserOnly);
+          const itemsWithoutSuperuserReports = section.items.filter(
+            (item) => !item.superuserOnly && (!item.adminOnly || isAdmin),
+          );
 
           // Filter out M&M Contribution profitability from Contribution category if not superuser
           if (section.category === 'Contribution') {
@@ -8540,7 +8548,7 @@ export default function ReportsPage() {
         };
       })
       .filter((section) => section.items.length > 0);
-  }, [searchQuery, isSuperUser, hasCollectionAccess]);
+  }, [searchQuery, isSuperUser, hasCollectionAccess, isAdmin]);
 
   const greyExportReport = isGoogleSheetConversionExportReport(selectedReport?.label);
   const greyShellReport =

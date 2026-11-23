@@ -97,31 +97,39 @@ const ClockInOvertimeApprovalBox: React.FC<ClockInOvertimeApprovalBoxProps> = ({
   };
 
   return (
-    <div className="rounded-xl bg-red-50 px-3 py-3 space-y-3 text-sm text-red-950">
+    <div
+      className={`space-y-3 rounded-xl px-3 py-3 text-sm ${
+        onSend ? 'bg-gray-100 text-gray-700' : 'bg-red-50 text-red-950'
+      }`}
+    >
       <p className="flex items-center gap-2">
-        <span className="badge border-0 bg-red-600 px-2.5 font-semibold text-white">{durationLabel}</span>
+        <span className="badge border-0 bg-red-600 px-2.5 font-semibold text-white">
+          {durationLabel}
+        </span>
         <span>Over your {baseHours}h day</span>
       </p>
       {onSend ? (
-        <>
+        <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.06]">
           <textarea
-            className="textarea textarea-bordered w-full min-h-[88px] bg-white text-base-content"
+            className="min-h-[96px] w-full resize-none border-0 bg-transparent px-4 py-3 text-sm text-gray-800 outline-none placeholder:text-gray-400 focus:ring-0"
             value={reason}
             maxLength={500}
             onChange={(e) => onReasonChange?.(e.target.value)}
-            placeholder="Reason for the extra hours"
+            placeholder="Why were the extra hours needed?"
             disabled={disabled || sending}
           />
-          <button
-            type="button"
-            className="btn btn-sm btn-success gap-2 rounded-full px-4 text-white"
-            onClick={onSend}
-            disabled={disabled || sending || !reason.trim()}
-          >
-            {sending ? <span className="loading loading-spinner loading-xs" /> : <FaWhatsapp className="h-5 w-5" />}
-            Send to Michael
-          </button>
-        </>
+          <div className="flex items-center justify-end px-3 pb-3">
+            <button
+              type="button"
+              className="btn btn-sm btn-primary rounded-full px-4 text-white"
+              onClick={onSend}
+              disabled={disabled || sending || !reason.trim()}
+            >
+              {sending ? <span className="loading loading-spinner loading-xs" /> : null}
+              Submit request
+            </button>
+          </div>
+        </div>
       ) : (
         <>
       {whatsAppUrl ? (

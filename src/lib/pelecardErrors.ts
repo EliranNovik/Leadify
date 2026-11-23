@@ -97,12 +97,24 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
 
   if (code === '303') {
     return {
-      title: 'Internet payment not enabled',
+      title: 'Payment was not confirmed',
       explanation:
-        'The payment terminal is not configured to process this card-not-present (internet/e-commerce) transaction. The checkout reached Pelecard, but the acquirer declined it because the terminal lacks permission for this transaction class.',
+        'Pelecard says this payment was not completed because our site did not answer. This is not an approved charge.',
       actions: [
-        'Try again later or with a different card.',
-        'Contact our office — Pelecard or the acquiring bank may need to enable internet/CNP transactions on the terminal.',
+        'Open the same payment link and try again.',
+        'Do not treat this as money received.',
+      ],
+    };
+  }
+
+  if (code === '598') {
+    return {
+      title: 'Payment details were rejected',
+      explanation:
+        'Pelecard rejected this request because a required value was missing or wrong. The card company did not approve a charge.',
+      actions: [
+        'Open the same payment link and try again.',
+        'If it keeps failing, the checkout request needs to be checked with Pelecard.',
       ],
     };
   }
