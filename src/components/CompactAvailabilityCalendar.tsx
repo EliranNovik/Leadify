@@ -1502,7 +1502,9 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       toast.success(
         editingUnavailability
           ? 'Unavailability updated successfully'
-          : 'Request saved — waiting for management approval',
+          : newUnavailableTime.unavailabilityType === 'sick_days'
+            ? 'Sick day saved'
+            : 'Request saved — waiting for management approval',
       );
       setShowAddModal(false);
       setEditingUnavailability(null);
@@ -1723,7 +1725,11 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         }
       }
 
-      toast.success('Request saved — waiting for management approval');
+      toast.success(
+        newUnavailableRange.unavailabilityType === 'sick_days'
+          ? 'Sick day saved'
+          : 'Request saved — waiting for management approval',
+      );
       setShowAddRangeModal(false);
       setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
       setRangeMeetings(new Map());

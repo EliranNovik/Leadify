@@ -16,6 +16,7 @@ import {
   durationVsMinHoursTone,
   formatWorkingHoursDateLabel,
   formatWorkingHoursWeekday,
+  toDateInputValue,
 } from '../../lib/employeeClockInFormat';
 import {
   clockInApprovalRowClass,
@@ -153,6 +154,10 @@ type WorkingHoursMobileListProps = {
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
   onAddOvertime: (dateKey: string) => void;
+  onMarkUnavailable?: (dateKey: string, type: 'sick_days' | 'vacation') => void;
+  officialHolidayActionFor?: (dateKey: string) => 'mark' | 'remove' | null;
+  markingOfficialHolidayDate?: string | null;
+  onToggleOfficialHoliday?: (dateKey: string) => void;
   /** Days whose hours are auto-filled and so have no stored row to edit. */
   isAutoFilledDay: (dateKey: string) => boolean;
   onViewDocument: (doc: {
@@ -178,12 +183,20 @@ function MobileDateLabel({
   muted?: boolean;
   accent?: string;
 }) {
+  const isToday = dateKey === toDateInputValue(new Date());
   return (
-    <span className={`flex flex-col items-start leading-snug text-base ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
-      <span className="font-semibold" style={accent ? { color: accent } : undefined}>
-        {formatWorkingHoursWeekday(dateKey)}
+    <span className="flex items-center gap-2">
+      {isToday ? (
+        <span className="inline-flex shrink-0 items-center rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">
+          Today
+        </span>
+      ) : null}
+      <span className={`flex flex-col items-start leading-snug text-base ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
+        <span className="font-semibold" style={accent ? { color: accent } : undefined}>
+          {formatWorkingHoursWeekday(dateKey)}
+        </span>
+        <span className="font-medium">{formatWorkingHoursDateLabel(dateKey)}</span>
       </span>
-      <span className="font-medium">{formatWorkingHoursDateLabel(dateKey)}</span>
     </span>
   );
 }
@@ -257,6 +270,10 @@ function MobileDayActions({
   onDeleteClockIn,
   onAddClockIn,
   onAddOvertime,
+  onMarkUnavailable,
+  officialHolidayAction = null,
+  markingOfficialHoliday = false,
+  onToggleOfficialHoliday,
 }: {
   dateKey: string;
   unavailabilities: EmployeeUnavailabilityDayRow[];
@@ -272,15 +289,30 @@ function MobileDayActions({
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
   onAddOvertime: (dateKey: string) => void;
+  onMarkUnavailable?: (dateKey: string, type: 'sick_days' | 'vacation') => void;
+  officialHolidayAction?: 'mark' | 'remove' | null;
+  markingOfficialHoliday?: boolean;
+  onToggleOfficialHoliday?: (dateKey: string) => void;
 }) {
-  if (readOnly || (!hasClock && unavailabilities.length === 0)) return null;
+  if ((readOnly || (!hasClock && unavailabilities.length === 0)) && !officialHolidayAction) return null;
 
   const isDeletingClock = deletingClockInDay === dateKey;
   const multipleUnavail = unavailabilities.length > 1;
 
   return (
     <div className="flex flex-wrap gap-1 pt-2 border-t border-base-200/80 -mx-1">
-      {unavailabilities.map((unavail) => {
+      {officialHolidayAction && onToggleOfficialHoliday && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
+          disabled={loading || markingOfficialHoliday}
+          onClick={() => onToggleOfficialHoliday(dateKey)}
+        >
+          <CalendarDaysIcon className="w-4 h-4" />
+          {officialHolidayAction === 'remove' ? 'Remove official holiday' : 'Mark as official holiday'}
+        </button>
+      )}
+      {!readOnly && unavailabilities.map((unavail) => {
         const rowKey = `${unavail.id}-${unavail.date}`;
         const typeLabel = unavailabilityTypeLabel(unavail.unavailability_type);
         const suffix = multipleUnavail ? ` (${typeLabel})` : '';
@@ -312,7 +344,7 @@ function MobileDayActions({
           </React.Fragment>
         );
       })}
-      {hasClock && autoFilledClock && (
+      {!readOnly && hasClock && autoFilledClock && (
         <button
           type="button"
           className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
@@ -323,7 +355,7 @@ function MobileDayActions({
           Add clock-in
         </button>
       )}
-      {hasClock && !autoFilledClock && (
+      {!readOnly && hasClock && !autoFilledClock && (
         <>
           <button
             type="button"
@@ -349,6 +381,29 @@ function MobileDayActions({
           </button>
         </>
       )}
+      {!readOnly && onMarkUnavailable && !unavailabilities.some((row) => row.unavailability_type === 'sick_days') && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
+          disabled={loading}
+          onClick={() => onMarkUnavailable(dateKey, 'sick_days')}
+        >
+          <CalendarDaysIcon className="w-4 h-4" />
+          Mark as sick
+        </button>
+      )}
+      {!readOnly && onMarkUnavailable && !unavailabilities.some((row) => row.unavailability_type === 'vacation') && (
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
+          disabled={loading}
+          onClick={() => onMarkUnavailable(dateKey, 'vacation')}
+        >
+          <CalendarDaysIcon className="w-4 h-4" />
+          Mark as vacation
+        </button>
+      )}
+      {!readOnly && (hasClock || unavailabilities.length > 0) && (
       <button
         type="button"
         className="btn btn-sm btn-ghost gap-1.5 h-9 min-h-9 px-2 text-base-content/80"
@@ -358,6 +413,7 @@ function MobileDayActions({
         <PlusIcon className="w-4 h-4" />
         Add overtime
       </button>
+      )}
     </div>
   );
 }
@@ -388,6 +444,10 @@ export default function WorkingHoursMobileList({
   onDeleteClockIn,
   onAddClockIn,
   onAddOvertime,
+  onMarkUnavailable,
+  officialHolidayActionFor,
+  markingOfficialHolidayDate = null,
+  onToggleOfficialHoliday,
   isAutoFilledDay,
   onViewDocument,
 }: WorkingHoursMobileListProps) {
@@ -443,6 +503,7 @@ export default function WorkingHoursMobileList({
           !isMonthSubmitted;
         const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
         const readOnly = isRowLocked(row.dateKey);
+        const isActiveDay = row.dateKey === toDateInputValue(new Date());
 
         if (isPlaceholder) {
           const isHoliday = row.isHolidayPlaceholder;
@@ -475,6 +536,7 @@ export default function WorkingHoursMobileList({
                 ].filter(Boolean).join(' ')}
                 onClick={isBulkSelectable ? () => onToggleBulkSelect(row.dateKey) : undefined}
                 role={isBulkSelectable ? 'button' : undefined}
+                style={isActiveDay ? { borderBottom: '3px solid #e11d48' } : undefined}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1.5 min-w-0">
@@ -518,6 +580,19 @@ export default function WorkingHoursMobileList({
                     </button>
                   </div>
                 )}
+                {!bulkSelectMode && officialHolidayActionFor?.(row.dateKey) && onToggleOfficialHoliday && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline gap-1.5 w-full"
+                    disabled={markingOfficialHolidayDate === row.dateKey}
+                    onClick={() => onToggleOfficialHoliday(row.dateKey)}
+                  >
+                    <CalendarDaysIcon className="w-4 h-4" />
+                    {officialHolidayActionFor(row.dateKey) === 'remove'
+                      ? 'Remove official holiday'
+                      : 'Mark as official holiday'}
+                  </button>
+                )}
               </div>
             </React.Fragment>
           );
@@ -539,11 +614,19 @@ export default function WorkingHoursMobileList({
             <div
               id={`wh-row-${row.dateKey}`}
               className={`rounded-2xl border border-base-200/80 bg-white p-3.5 space-y-3 ${clockInApprovalRowClass(approvalStatus)}`}
-              style={{ borderLeftWidth: 3, borderLeftColor: accent }}
+              style={{
+                borderLeftWidth: 3,
+                borderLeftColor: accent,
+                borderBottomWidth: isActiveDay ? 3 : undefined,
+                borderBottomColor: isActiveDay ? '#e11d48' : undefined,
+              }}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="space-y-1.5 min-w-0">
                   <MobileDateLabel dateKey={row.dateKey} accent={accent} />
+                  {row.holidayNames?.[0] ? (
+                    <span className="text-xs font-semibold text-violet-700">{row.holidayNames[0]}</span>
+                  ) : null}
                   <div className="flex flex-wrap items-center gap-1.5">
                     {collectDayApprovalStatuses({
                       hasClock,
@@ -701,7 +784,11 @@ export default function WorkingHoursMobileList({
                 onDeleteClockIn={onDeleteClockIn}
                 onAddClockIn={onAddClockIn}
                 onAddOvertime={onAddOvertime}
+                onMarkUnavailable={onMarkUnavailable}
                 autoFilledClock={autoFilledClock}
+                officialHolidayAction={officialHolidayActionFor?.(row.dateKey) ?? null}
+                markingOfficialHoliday={markingOfficialHolidayDate === row.dateKey}
+                onToggleOfficialHoliday={onToggleOfficialHoliday}
               />
             </div>
           </React.Fragment>

@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { replaceOfficialHolidays } from './companyOfficialHolidays';
 import {
   DEFAULT_DAILY_MIN_HOURS,
+  buildHolidayMapForRange,
   calculateEmployeeExtraHours,
+  dayHasPremium150Holiday,
+  getHolidayEveNamesForDate,
 } from './employeeExtraHours';
+import { withAutoFilledClockInRecords } from './autoFilledWorkingHours';
+import { buildWorkingHoursMonthCoverage } from './workingHoursMonthCoverage';
 import type { ClockInExportRecord } from './workingHoursExport';
 
 const MS_PER_HOUR = 3_600_000;
@@ -251,4 +257,95 @@ test('missing hours are offset against overtime value, 150% first', () => {
   assert.equal(hours(result.extraHours150Ms), 1.3333);
   assert.equal(hours(result.extraHours125Ms), 2);
   assert.equal(hours(result.deficitHoursMs), 0);
+});
+
+test('27 October 2026 election day is a holiday and does not take the day before off', () => {
+  const holidayMap = buildHolidayMapForRange('2026-10-26', '2026-10-27');
+  assert.deepEqual(holidayMap.get('2026-10-27'), ['Election Day']);
+  assert.equal(dayHasPremium150Holiday('2026-10-27', holidayMap), true);
+  assert.deepEqual(getHolidayEveNamesForDate('2026-10-26', holidayMap), []);
+  assert.equal(dayHasPremium150Holiday('2026-10-26', holidayMap), false);
+
+  const empty = calculateEmployeeExtraHours([], 8, holidayMap, '2026-10-26', '2026-10-27', [], NOW);
+  assert.equal(empty.baseHoursMs / MS_PER_HOUR, 8);
+  assert.equal(empty.deficitHoursMs / MS_PER_HOUR, 8);
+
+  const workedElectionDay = calculateEmployeeExtraHours(
+    [
+      {
+        clock_in_time: '2026-10-27T09:00:00+02:00',
+        clock_out_time: '2026-10-27T17:00:00+02:00',
+        notes: null,
+        manually: false,
+      },
+    ],
+    8,
+    holidayMap,
+    '2026-10-27',
+    '2026-10-27',
+    [],
+    Date.parse('2026-10-28T12:00:00+02:00'),
+  );
+  assert.equal(workedElectionDay.baseHoursMs, 0);
+  assert.equal(workedElectionDay.deficitHoursMs, 0);
+  assert.equal(workedElectionDay.extraHours150Ms / MS_PER_HOUR, 8);
+});
+
+test('an HR official holiday drops automatic hours, keeps real hours as holiday work, and is not missing', () => {
+  replaceOfficialHolidays([['2026-11-02', 'Official holiday']]);
+  try {
+    const holidayMap = buildHolidayMapForRange('2026-11-01', '2026-11-02');
+    const now = Date.parse('2026-11-03T12:00:00+02:00');
+    assert.deepEqual(holidayMap.get('2026-11-02'), ['Official holiday']);
+    assert.equal(getHolidayEveNamesForDate('2026-11-01', holidayMap).includes('Official holiday'), false);
+    assert.equal(dayHasPremium150Holiday('2026-11-01', holidayMap), false);
+
+    const empty = calculateEmployeeExtraHours([], 8, holidayMap, '2026-11-02', '2026-11-02', [], now);
+    assert.equal(empty.baseHoursMs, 0);
+    assert.equal(empty.deficitHoursMs, 0);
+    assert.equal(empty.extraHours150Ms, 0);
+
+    const realShift: ClockInExportRecord = {
+      employee_id: 7,
+      clock_in_time: '2026-11-02T09:00:00+02:00',
+      clock_out_time: '2026-11-02T17:00:00+02:00',
+      notes: null,
+      manually: false,
+    };
+    const worked = calculateEmployeeExtraHours([realShift], 8, holidayMap, '2026-11-02', '2026-11-02', [], now);
+    assert.equal(worked.baseHoursMs, 0);
+    assert.equal(worked.deficitHoursMs, 0);
+    assert.equal(worked.extraHours150Ms / MS_PER_HOUR, 8);
+
+    const kept = withAutoFilledClockInRecords({
+      employeeId: 7,
+      minHours: 8,
+      dateFrom: '2026-11-02',
+      dateTo: '2026-11-02',
+      holidayMap,
+      existingRecords: [realShift],
+      asOfDate: '2026-11-03',
+    });
+    assert.equal(kept.length, 1);
+    assert.notEqual(kept[0].auto_filled, true);
+
+    const autoOnly = withAutoFilledClockInRecords({
+      employeeId: 7,
+      minHours: 8,
+      dateFrom: '2026-11-02',
+      dateTo: '2026-11-02',
+      holidayMap,
+      existingRecords: [],
+      asOfDate: '2026-11-03',
+    });
+    assert.equal(autoOnly.length, 0);
+
+    const coverage = buildWorkingHoursMonthCoverage(2026, 11, [realShift], [], { asOfDate: '2026-11-03' });
+    const day = coverage.days.find((entry) => entry.dateKey === '2026-11-02');
+    assert.equal(day?.status, 'holiday_off');
+    assert.ok(day?.holidayNames.includes('Official holiday'));
+    assert.equal(coverage.missingCount, coverage.days.filter((entry) => entry.dateKey !== '2026-11-02' && (entry.status === 'missing' || entry.status === 'holiday')).length);
+  } finally {
+    replaceOfficialHolidays([]);
+  }
 });

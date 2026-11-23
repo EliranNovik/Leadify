@@ -29,6 +29,18 @@ const RELEVANT_CATEGORIES = new Set([
   'modern',
 ]);
 
+/**
+ * Civil days off that do not begin the evening before.
+ * 27 October 2026 was Election Day in Israel.
+ */
+export const ISRAELI_CIVIL_DAYS_OFF: ReadonlyArray<{ date: string; name: string }> = [
+  { date: '2026-10-27', name: 'Election Day' },
+];
+
+export function civilDayOffNames(dateKey: string): string[] {
+  return ISRAELI_CIVIL_DAYS_OFF.filter((day) => day.date === dateKey).map((day) => day.name);
+}
+
 const yearCache = new Map<number, YearHolidays>();
 const loadingYears = new Map<number, Promise<YearHolidays>>();
 

@@ -2,7 +2,13 @@ import { filterCountedClockInRecords } from './employeeClockInApproval';
 import { eachDayInRange, isIsraeliWorkdayIso } from './employeeClockInFormat';
 import { formatDurationMs } from './employeeClockInOvertime';
 import { normalizeEmployeeMinHours } from './employeeLeadReporting';
-import { getPremiumHolidaysForYearMap, preloadHolidayYears } from './israeliJewishHolidays';
+import { officialHolidayNames, preloadOfficialHolidays } from './companyOfficialHolidays';
+import {
+  civilDayOffNames,
+  getPremiumHolidaysForYearMap,
+  ISRAELI_CIVIL_DAYS_OFF,
+  preloadHolidayYears,
+} from './israeliJewishHolidays';
 import type {
   EmployeeUnavailabilityEntry,
   UnavailabilityDayEffectInput,
@@ -130,7 +136,15 @@ export function getHolidayEveNamesForDate(
   dateKey: string,
   holidayMap: Map<string, string[]>,
 ): string[] {
-  return getQualifyingHolidayNamesForDate(addDaysToDateKey(dateKey, 1), holidayMap);
+  const nextKey = addDaysToDateKey(dateKey, 1);
+  const names = getQualifyingHolidayNamesForDate(nextKey, holidayMap);
+  const withoutEve = new Set([
+    ...civilDayOffNames(nextKey),
+    ...officialHolidayNames(nextKey),
+  ]);
+  if (withoutEve.size === 0) return names;
+  // Election Day and HR official holidays do not start the evening before.
+  return names.filter((name) => !withoutEve.has(name));
 }
 
 /**
@@ -465,7 +479,7 @@ export async function preloadHolidayMapsForRange(from: string, to: string): Prom
   const [toY] = to.split('-').map(Number);
   if (Number.isFinite(fromY)) years.add(fromY);
   if (Number.isFinite(toY)) years.add(toY);
-  await preloadHolidayYears([...years]);
+  await Promise.all([preloadHolidayYears([...years]), preloadOfficialHolidays()]);
 }
 
 /**
@@ -484,8 +498,18 @@ export function buildHolidayMapForRange(from: string, to: string): Map<string, s
     const yearMap = getPremiumHolidaysForYearMap(year);
     for (const [date, names] of yearMap) {
       if (date < from || date > to) continue;
-      mergedHolidayMap.set(date, names);
+      mergedHolidayMap.set(date, [...names]);
     }
+  }
+  const addName = (date: string, name: string) => {
+    if (date < from || date > to) return;
+    const existing = mergedHolidayMap.get(date) ?? [];
+    if (!existing.includes(name)) mergedHolidayMap.set(date, [...existing, name]);
+  };
+
+  for (const day of ISRAELI_CIVIL_DAYS_OFF) addName(day.date, day.name);
+  for (const date of eachDayInRange(from, to)) {
+    for (const name of officialHolidayNames(date)) addName(date, name);
   }
   return mergedHolidayMap;
 }

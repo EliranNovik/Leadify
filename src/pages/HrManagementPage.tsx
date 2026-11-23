@@ -88,6 +88,7 @@ import {
   type ClockInExportRecord,
 } from '../lib/workingHoursExport';
 import { withAutoFilledClockInRecordsByEmployee } from '../lib/autoFilledWorkingHours';
+import { fetchAutoFillExclusionsInRange } from '../lib/employeeAutoFillExclusions';
 import { fetchEmployeeProfileById } from '../lib/fetchEmployeeProfile';
 import HrApprovalsPanel from '../components/hr/HrApprovalsPanel';
 import HrEmployeeAboutEditModal from '../components/hr/HrEmployeeAboutEditModal';
@@ -586,11 +587,12 @@ export default function HrManagementPage() {
     setHoursBoardLoading(true);
     try {
       const { from: fromDate, to: toDate } = monthRange(hoursYear, hoursMonth);
-      const [activeEmployees, submissions, clockRecords, unavailabilities] = await Promise.all([
+      const [activeEmployees, submissions, clockRecords, unavailabilities, autoFillExclusions] = await Promise.all([
         fetchActiveStaffEmployeesWithDepartment(),
         fetchWorkingHoursSubmissionsForMonth(hoursYear, hoursMonth),
         fetchClockInRecordsInRangeForReport(fromDate, toDate),
         fetchAllUnavailabilitiesInRange(fromDate, toDate),
+        fetchAutoFillExclusionsInRange(fromDate, toDate),
         preloadHolidayMapsForRange(fromDate, toDate),
       ]);
 
@@ -614,6 +616,7 @@ export default function HrManagementPage() {
             {
               minHours: emp.minHours,
               unavailabilities: unavailByEmployee.get(Number(emp.id)) ?? [],
+              excludedDates: autoFillExclusions.get(Number(emp.id)),
             },
           ]),
         ),
@@ -994,9 +997,10 @@ export default function HrManagementPage() {
     setHoursExporting(true);
     try {
       const { from: fromDate, to: toDate } = monthRange(hoursYear, hoursMonth);
-      const [clockRecords, allUnavailabilities] = await Promise.all([
+      const [clockRecords, allUnavailabilities, autoFillExclusions] = await Promise.all([
         fetchClockInRecordsInRangeForReport(fromDate, toDate),
         fetchAllUnavailabilitiesInRange(fromDate, toDate),
+        fetchAutoFillExclusionsInRange(fromDate, toDate),
         preloadHolidayMapsForRange(fromDate, toDate),
       ]);
 
@@ -1017,6 +1021,7 @@ export default function HrManagementPage() {
             {
               minHours: emp.minHours,
               unavailabilities: unavailByEmployee.get(emp.employeeId) ?? [],
+              excludedDates: autoFillExclusions.get(emp.employeeId),
             },
           ]),
         ),
@@ -1787,6 +1792,7 @@ export default function HrManagementPage() {
                 initialMonth={fileInitialMonth}
                 embedded
                 showOvertimePremiumSplit
+                allowOfficialHolidays
               />
             )}
             {fileTab === 'documents' && (

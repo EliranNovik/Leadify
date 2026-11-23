@@ -24,6 +24,7 @@ function fill(overrides: {
   existingRecords?: ClockInExportRecord[];
   unavailabilities?: UnavailabilityDayEffectInput[];
   holidayMap?: Map<string, string[]>;
+  excludedDates?: Set<string>;
   asOfDate?: string;
 }) {
   return buildAutoFilledClockInRecords({
@@ -34,6 +35,7 @@ function fill(overrides: {
     holidayMap: overrides.holidayMap ?? NO_HOLIDAYS,
     existingRecords: overrides.existingRecords ?? [],
     unavailabilities: overrides.unavailabilities,
+    excludedDates: overrides.excludedDates,
     asOfDate: overrides.asOfDate ?? '2026-12-31',
   });
 }
@@ -57,6 +59,15 @@ function unavailability(
     end_time: endTime,
   };
 }
+
+test('a deleted automatic day stays empty', () => {
+  const records = fill({
+    dateFrom: '2026-10-01',
+    dateTo: '2026-10-01',
+    excludedDates: new Set(['2026-10-01']),
+  });
+  assert.equal(records.length, 0);
+});
 
 test('fills min_hours from 09:00 on a regular workday', () => {
   const records = fill({ dateFrom: '2026-10-01', dateTo: '2026-10-01' });
@@ -115,6 +126,15 @@ test('the 09:00 start follows the end of summer time', () => {
   assert.deepEqual(
     { in: records[0].clock_in_time, out: records[0].clock_out_time },
     { in: '2026-10-25T09:00:00+02:00', out: '2026-10-25T17:00:00+02:00' },
+  );
+});
+
+test('election day is left empty and the day before is still filled', () => {
+  const holidayMap = new Map<string, string[]>([['2026-10-27', ['Election Day']]]);
+  const records = fill({ dateFrom: '2026-10-26', dateTo: '2026-10-27', holidayMap });
+  assert.deepEqual(
+    records.map((record) => record.clock_in_time.slice(0, 10)),
+    ['2026-10-26'],
   );
 });
 

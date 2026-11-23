@@ -72,7 +72,8 @@ export function approvalFieldsForUnavailabilityType(
 ):
   | ReturnType<typeof pendingUnavailabilityApprovalFields>
   | ReturnType<typeof approvedUnavailabilityApprovalFields> {
-  if (type === 'general') {
+  // Sick days are accepted immediately. Vacation still waits for management.
+  if (type === 'general' || type === 'sick_days') {
     return approvedUnavailabilityApprovalFields(approverAuthUserId);
   }
   return pendingUnavailabilityApprovalFields();
@@ -81,7 +82,7 @@ export function approvalFieldsForUnavailabilityType(
 export function normalizeUnavailabilityApprovalFields<T extends UnavailabilityApprovalFields>(
   entry: T,
 ): T & { approved: boolean; declined: boolean } {
-  if (isGeneralUnavailability(entry)) {
+  if (isGeneralUnavailability(entry) || (entry.unavailability_type === 'sick_days' && entry.declined !== true)) {
     return {
       ...entry,
       approved: true,
@@ -100,7 +101,7 @@ export function getUnavailabilityApprovalStatus(
 ): UnavailabilityApprovalStatus {
   if (isGeneralUnavailability(entry)) return 'approved';
   if (entry.declined === true) return 'declined';
-  if (entry.approved === true) return 'approved';
+  if (entry.unavailability_type === 'sick_days' || entry.approved === true) return 'approved';
   return 'pending';
 }
 
@@ -380,6 +381,38 @@ function cloneEntryFieldsForInsert(
     end_time: entry.end_time,
     ...approval,
   };
+}
+
+/** One full sick or vacation day. Automatic base hours are not filled on that date. */
+export async function createFullDayUnavailability(input: {
+  employeeId: number;
+  date: string;
+  type: 'sick_days' | 'vacation';
+  reason: string;
+  documentFile?: File | null;
+}): Promise<void> {
+  await assertDateEditableForEmployee(input.employeeId, input.date);
+
+  let documentUrl: string | null = null;
+  if (input.type === 'sick_days' && input.documentFile) {
+    documentUrl = await uploadUnavailabilityDocument(input.employeeId, input.documentFile);
+  }
+
+  const { error } = await supabase.from('employee_unavailability_reasons').insert({
+    employee_id: input.employeeId,
+    unavailability_type: input.type,
+    start_date: input.date,
+    end_date: null,
+    start_time: null,
+    end_time: null,
+    sick_days_reason: input.type === 'sick_days' ? input.reason : null,
+    vacation_reason: input.type === 'vacation' ? input.reason : null,
+    general_reason: null,
+    ...(documentUrl ? { document_url: documentUrl } : {}),
+    ...approvalFieldsForUnavailabilityType(input.type),
+  });
+
+  if (error) throw error;
 }
 
 export async function uploadUnavailabilityDocument(

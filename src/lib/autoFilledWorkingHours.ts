@@ -76,6 +76,8 @@ export type AutoFillOptions = {
   holidayMap: Map<string, string[]>;
   existingRecords: ClockInExportRecord[];
   unavailabilities?: UnavailabilityDayEffectInput[];
+  /** Days the employee removed, which must not be filled again. */
+  excludedDates?: ReadonlySet<string>;
   /** Days after this are left empty. Defaults to today. */
   asOfDate?: string;
 };
@@ -83,9 +85,10 @@ export type AutoFillOptions = {
 /**
  * Synthetic clock-in rows covering regular workdays the employee has no entry for.
  *
- * Fills min_hours from 09:00 on Sun–Thu, skipping the nine statutory holidays and
- * their eves, sick and vacation days, any day that already has a clock-in of its own,
- * and anything past today. Timed general absences shorten the day.
+ * Fills min_hours from 09:00 on Sun–Thu, skipping statutory holidays and
+ * their eves, civil days off such as Election Day, sick and vacation days, any day
+ * that already has a clock-in of its own, and anything past today. Timed general
+ * absences shorten the day.
  */
 export function buildAutoFilledClockInRecords(options: AutoFillOptions): ClockInExportRecord[] {
   const { dateFrom, dateTo, holidayMap, existingRecords } = options;
@@ -113,6 +116,7 @@ export function buildAutoFilledClockInRecords(options: AutoFillOptions): ClockIn
 
   for (let dateKey = from; dateKey <= to; dateKey = nextDateKey(dateKey)) {
     if (daysWithRecords.has(dateKey)) continue;
+    if (options.excludedDates?.has(dateKey)) continue;
     if (!isDeficitTrackingWorkday(dateKey, holidayMap)) continue;
 
     const absence = absenceByDate.get(dateKey);
@@ -170,6 +174,7 @@ export function withAutoFilledClockInRecords(options: AutoFillOptions): ClockInE
 export type AutoFillEmployeeContext = {
   minHours: number;
   unavailabilities?: UnavailabilityDayEffectInput[];
+  excludedDates?: ReadonlySet<string>;
 };
 
 /**
@@ -205,6 +210,7 @@ export function withAutoFilledClockInRecordsByEmployee(options: {
         holidayMap: options.holidayMap,
         existingRecords: byEmployee.get(employeeId) ?? [],
         unavailabilities: context.unavailabilities,
+        excludedDates: context.excludedDates,
         asOfDate: options.asOfDate,
       }),
     );

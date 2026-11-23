@@ -3,14 +3,29 @@ import { CheckIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   monthRange,
-  sumClockDurations,
   filterClockInRecordsToLocalMonth,
+  toDateInputValue,
 } from '../../lib/employeeClockInFormat';
 import { buildWorkingHoursMonthCoverage } from '../../lib/workingHoursMonthCoverage';
 import {
   fetchEmployeeClockInRecords,
+  sumCountedClockDurationsMs,
   type ClockInExportRecord,
 } from '../../lib/workingHoursExport';
+import { supabase } from '../../lib/supabase';
+import { normalizeEmployeeMinHours } from '../../lib/employeeLeadReporting';
+import {
+  buildHolidayMapForRange,
+  generalAbsenceOverlapMs,
+  preloadHolidayMapsForRange,
+} from '../../lib/employeeExtraHours';
+import {
+  isAutoFilledClockInRecord,
+  isAutoFilledOnlyDay,
+  withAutoFilledClockInRecords,
+} from '../../lib/autoFilledWorkingHours';
+import { fetchAutoFillExcludedDates } from '../../lib/employeeAutoFillExclusions';
+import { buildGeneralAbsenceWindowsByDate } from '../../lib/employeeUnavailabilities';
 import {
   countClockInApprovalBlockersInMonth,
   clockInApprovalSubmitBlockMessage,
@@ -37,18 +52,114 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-function countMissingDaysForMonth(
-  targetYear: number,
-  targetMonth: number,
-  records: ClockInExportRecord[],
-  unavailabilities: Awaited<ReturnType<typeof fetchEmployeeUnavailabilitiesInRange>>,
+function formatWorkedDuration(totalMs: number): string {
+  const safeMs = Math.max(0, totalMs);
+  const hours = Math.floor(safeMs / 3_600_000);
+  const minutes = Math.floor((safeMs % 3_600_000) / 60_000);
+  return `${hours}h ${minutes}m`;
+}
+
+type MonthUnavailabilities = Awaited<ReturnType<typeof fetchEmployeeUnavailabilitiesInRange>>;
+
+/**
+ * Same hours the Worked card shows: stored clock-ins plus automatic base hours,
+ * with holidays, deleted automatic days, and timed general absences already applied.
+ */
+function workedMsMatchingHoursCard(
+  filled: ClockInExportRecord[],
+  unavailabilities: MonthUnavailabilities,
+  from: string,
+  to: string,
 ): number {
-  return buildWorkingHoursMonthCoverage(
-    targetYear,
-    targetMonth,
-    filterCountedClockInRecords(records.map(normalizeClockInApprovalFields)),
-    filterCountedUnavailability(unavailabilities),
-  ).missingCount;
+  const windows = buildGeneralAbsenceWindowsByDate(unavailabilities, from, to);
+  const byDay = new Map<string, ClockInExportRecord[]>();
+  for (const record of filled) {
+    const dateKey = toDateInputValue(new Date(record.clock_in_time));
+    const bucket = byDay.get(dateKey);
+    if (bucket) bucket.push(record);
+    else byDay.set(dateKey, [record]);
+  }
+
+  const nowMs = Date.now();
+  let totalMs = 0;
+  for (const [dateKey, dayRecords] of byDay) {
+    const counted = filterCountedClockInRecords(dayRecords);
+    let workedMs = sumCountedClockDurationsMs(counted);
+    if (!isAutoFilledOnlyDay(dayRecords)) {
+      let absenceMs = 0;
+      for (const record of counted) {
+        const inMs = Date.parse(record.clock_in_time);
+        if (!Number.isFinite(inMs)) continue;
+        const outMs = record.clock_out_time ? Date.parse(record.clock_out_time) : nowMs;
+        if (!Number.isFinite(outMs) || outMs <= inMs) continue;
+        absenceMs += generalAbsenceOverlapMs(inMs, outMs, dateKey, windows);
+      }
+      workedMs = Math.max(0, workedMs - absenceMs);
+    }
+    totalMs += workedMs;
+  }
+  return totalMs;
+}
+
+async function loadMonthHoursSnapshot(
+  employeeId: number,
+  year: number,
+  month: number,
+): Promise<{
+  records: ClockInExportRecord[];
+  unavailabilities: MonthUnavailabilities;
+  periodTotal: string;
+  autoAddedBaseHours: string;
+  autoAddedBaseMs: number;
+  autoAddedDayCount: number;
+  missingDays: number;
+}> {
+  const range = monthRange(year, month);
+  const [monthRecordsRaw, monthUnavail, employeeRow, excludedDates] = await Promise.all([
+    fetchEmployeeClockInRecords(employeeId, range.from, range.to),
+    fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
+    supabase.from('tenants_employee').select('min_hours').eq('id', employeeId).maybeSingle(),
+    fetchAutoFillExcludedDates(employeeId),
+    preloadHolidayMapsForRange(range.from, range.to),
+  ]);
+  if (employeeRow.error) throw employeeRow.error;
+
+  const records = filterClockInRecordsToLocalMonth(monthRecordsRaw, year, month).map((row) =>
+    normalizeClockInApprovalFields(row),
+  );
+  const filled = withAutoFilledClockInRecords({
+    employeeId,
+    minHours: normalizeEmployeeMinHours(employeeRow.data?.min_hours),
+    dateFrom: range.from,
+    dateTo: range.to,
+    holidayMap: buildHolidayMapForRange(range.from, range.to),
+    existingRecords: records,
+    unavailabilities: monthUnavail,
+    excludedDates,
+  });
+
+  const autoAddedRecords = filled.filter(isAutoFilledClockInRecord);
+  const autoAddedBaseMs = sumCountedClockDurationsMs(autoAddedRecords);
+  const autoAddedDayCount = new Set(
+    autoAddedRecords.map((record) => toDateInputValue(new Date(record.clock_in_time))),
+  ).size;
+
+  return {
+    records,
+    unavailabilities: monthUnavail,
+    periodTotal: formatWorkedDuration(
+      workedMsMatchingHoursCard(filled, monthUnavail, range.from, range.to),
+    ),
+    autoAddedBaseHours: formatWorkedDuration(autoAddedBaseMs),
+    autoAddedBaseMs,
+    autoAddedDayCount,
+    missingDays: buildWorkingHoursMonthCoverage(
+      year,
+      month,
+      filterCountedClockInRecords(filled),
+      filterCountedUnavailability(monthUnavail),
+    ).missingCount,
+  };
 }
 
 function combinedApprovalBlockers(
@@ -97,6 +208,9 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [existingSubmission, setExistingSubmission] = useState<EmployeeWorkingHoursSubmission | null>(null);
   const [periodTotal, setPeriodTotal] = useState('—');
+  const [autoAddedBaseHours, setAutoAddedBaseHours] = useState('—');
+  const [autoAddedBaseMs, setAutoAddedBaseMs] = useState(0);
+  const [autoAddedDayCount, setAutoAddedDayCount] = useState(0);
   const [missingDays, setMissingDays] = useState(0);
   const [unavailabilityDays, setUnavailabilityDays] = useState(0);
   const [approvalBlockers, setApprovalBlockers] = useState({ pendingCount: 0, declinedCount: 0 });
@@ -112,20 +226,22 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
     setLoadingPreview(true);
     try {
       const range = monthRange(submitYear, submitMonth);
-      const [existing, monthRecordsRaw, monthUnavail] = await Promise.all([
+      const [existing, snapshot] = await Promise.all([
         fetchWorkingHoursSubmission(employeeId, submitYear, submitMonth),
-        fetchEmployeeClockInRecords(employeeId, range.from, range.to),
-        fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
+        loadMonthHoursSnapshot(employeeId, submitYear, submitMonth),
       ]);
       setExistingSubmission(existing);
-      const monthRecords = filterClockInRecordsToLocalMonth(monthRecordsRaw, submitYear, submitMonth);
-      const normalizedRecords = monthRecords.map((row) => normalizeClockInApprovalFields(row));
-      setApprovalBlockers(combinedApprovalBlockers(normalizedRecords, monthUnavail, submitYear, submitMonth));
-      setPeriodTotal(sumClockDurations(filterCountedClockInRecords(normalizedRecords)));
-      setMissingDays(countMissingDaysForMonth(submitYear, submitMonth, monthRecords, monthUnavail));
+      setApprovalBlockers(
+        combinedApprovalBlockers(snapshot.records, snapshot.unavailabilities, submitYear, submitMonth),
+      );
+      setPeriodTotal(snapshot.periodTotal);
+      setAutoAddedBaseHours(snapshot.autoAddedBaseHours);
+      setAutoAddedBaseMs(snapshot.autoAddedBaseMs);
+      setAutoAddedDayCount(snapshot.autoAddedDayCount);
+      setMissingDays(snapshot.missingDays);
       setUnavailabilityDays(
         expandUnavailabilitiesToDailyRows(
-          filterCountedUnavailability(monthUnavail),
+          filterCountedUnavailability(snapshot.unavailabilities),
           range.from,
           range.to,
         ).length,
@@ -134,6 +250,9 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
       console.error('SubmitWorkingHoursModal preview:', err);
       setExistingSubmission(null);
       setPeriodTotal('—');
+      setAutoAddedBaseHours('—');
+      setAutoAddedBaseMs(0);
+      setAutoAddedDayCount(0);
       setMissingDays(0);
       setUnavailabilityDays(0);
       setApprovalBlockers({ pendingCount: 0, declinedCount: 0 });
@@ -159,14 +278,13 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
 
     setSubmitting(true);
     try {
-      const range = monthRange(submitYear, submitMonth);
-      const [monthRecordsRaw, monthUnavail] = await Promise.all([
-        fetchEmployeeClockInRecords(employeeId, range.from, range.to),
-        fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
-      ]);
-      const monthRecords = filterClockInRecordsToLocalMonth(monthRecordsRaw, submitYear, submitMonth);
-      const normalizedRecords = monthRecords.map((row) => normalizeClockInApprovalFields(row));
-      const blockers = combinedApprovalBlockers(normalizedRecords, monthUnavail, submitYear, submitMonth);
+      const snapshot = await loadMonthHoursSnapshot(employeeId, submitYear, submitMonth);
+      const blockers = combinedApprovalBlockers(
+        snapshot.records,
+        snapshot.unavailabilities,
+        submitYear,
+        submitMonth,
+      );
       if (blockers.pendingCount > 0 || blockers.declinedCount > 0) {
         const message = clockInApprovalSubmitBlockMessage(blockers);
         toast.error(message ?? 'Cannot submit while entries need approval.');
@@ -177,8 +295,8 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
         userId,
         year: submitYear,
         month: submitMonth,
-        periodTotal: sumClockDurations(filterCountedClockInRecords(normalizedRecords)),
-        missingDays: countMissingDaysForMonth(submitYear, submitMonth, monthRecords, monthUnavail),
+        periodTotal: snapshot.periodTotal,
+        missingDays: snapshot.missingDays,
       });
       toast.success(`Working hours for ${monthLabel} ${submitYear} submitted.`);
       onSubmitted(submission);
@@ -209,6 +327,8 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
       onClose={onClose}
       title="Submit working hours"
       closeOnOverlayClick={!submitting}
+      headerClassName="md:!border-b-0"
+      footerClassName="md:!border-t-0"
       footer={
         <div className="flex w-full flex-row items-center gap-2 md:justify-end md:gap-3">
           <button
@@ -243,10 +363,6 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
       }
     >
       <div className="space-y-4">
-        <p className="text-sm text-gray-600">
-          Choose the month and year to submit. You can only submit once per month.
-        </p>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="form-control w-full">
             <YearWheelPicker
@@ -294,6 +410,10 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
                 <span className="font-semibold text-gray-900">{periodTotal}</span>
               </p>
               <p>
+                <span className="text-gray-600">Auto-added base hours:</span>{' '}
+                <span className="font-semibold text-gray-900">{autoAddedBaseHours}</span>
+              </p>
+              <p>
                 <span className="text-gray-600">Unavailability days:</span>{' '}
                 <span className="font-semibold text-gray-900">{unavailabilityDays}</span>
               </p>
@@ -304,6 +424,16 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
                 </span>
               </p>
             </div>
+            {autoAddedBaseMs > 0 && (
+              <div className="rounded-xl bg-sky-50 border border-sky-200 px-4 py-3 text-sm text-sky-950">
+                <p className="font-medium">Please review before submitting</p>
+                <p className="mt-1 text-sky-900">
+                  {autoAddedBaseHours} of base hours were applied automatically across {autoAddedDayCount}{' '}
+                  day{autoAddedDayCount === 1 ? '' : 's'}. Please verify that you were present and working
+                  on each of these days, and that no sick leave or other unavailability applies.
+                </p>
+              </div>
+            )}
             {missingDays > 0 && (
               <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
                 <p className="font-medium">Note</p>

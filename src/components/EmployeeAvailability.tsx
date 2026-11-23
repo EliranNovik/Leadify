@@ -451,7 +451,11 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      toast.success('Request saved — waiting for management approval');
+      toast.success(
+        newUnavailableTime.unavailabilityType === 'sick_days'
+          ? 'Sick day saved'
+          : 'Request saved — waiting for management approval',
+      );
       setShowAddModal(false);
       setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
       fetchUnavailableTimes(); // Refresh the list
@@ -737,7 +741,11 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      toast.success('Request saved — waiting for management approval');
+      toast.success(
+        newUnavailableRange.unavailabilityType === 'sick_days'
+          ? 'Sick day saved'
+          : 'Request saved — waiting for management approval',
+      );
       setShowAddRangeModal(false);
       setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
       fetchUnavailableTimes(); // Refresh the list

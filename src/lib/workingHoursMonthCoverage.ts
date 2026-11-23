@@ -4,7 +4,8 @@ import {
   monthRange,
   toDateInputValue,
 } from './employeeClockInFormat';
-import { getHolidaysForYearMap } from './israeliJewishHolidays';
+import { officialHolidayNames } from './companyOfficialHolidays';
+import { civilDayOffNames, getHolidaysForYearMap } from './israeliJewishHolidays';
 import { buildHolidayMapForRange, dayHasPremium150Holiday } from './employeeExtraHours';
 import { expandUnavailabilitiesToDailyRows } from './employeeUnavailabilities';
 import type { EmployeeUnavailabilityEntry } from './employeeUnavailabilities';
@@ -80,6 +81,9 @@ export function buildWorkingHoursMonthCoverage(
 
   for (const day of eachDayInRange(from, to)) {
     const holidayNames = [...(holidayMap.get(day) ?? [])];
+    for (const name of [...civilDayOffNames(day), ...officialHolidayNames(day)]) {
+      if (!holidayNames.includes(name)) holidayNames.push(name);
+    }
     let status: WorkingHoursDayCoverageStatus;
 
     if (!isIsraeliWorkdayIso(day)) {

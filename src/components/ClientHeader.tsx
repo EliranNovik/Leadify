@@ -1165,7 +1165,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [mobileHandlingSlot, setMobileHandlingSlot] = useState<HTMLDivElement | null>(null);
     const [mobileStageMenuOpen, setMobileStageMenuOpen] = useState(false);
     const [mobileClientDetailsOpen, setMobileClientDetailsOpen] = useState(false);
-    const [metaBadgesOpen, setMetaBadgesOpen] = useState(false);
     const [mobileBalanceOpen, setMobileBalanceOpen] = useState(false);
     useLayoutEffect(() => {
         const node = mobileHandlingSlotRef.current;
@@ -3607,17 +3606,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <GlobeAltIcon className={languageIcon} aria-hidden />
                     <span className="truncate">{displayLanguageChip}</span>
                 </button>
-                <button
-                    type="button"
-                    className={badgeBtn}
-                    aria-expanded={metaBadgesOpen}
-                    onClick={() => setMetaBadgesOpen((open) => !open)}
-                >
-                    {metaBadgesOpen ? 'Less' : 'More'}
-                    <ChevronRightIcon className="h-4 w-4 shrink-0" aria-hidden />
-                </button>
-                {metaBadgesOpen ? (
-                    <>
                 <span className={badge}>
                     <LinkIcon className={sourceIcon} aria-hidden />
                     <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
@@ -3658,8 +3646,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {displayTopicChip}
                     </span>
                 </button>
-                    </>
-                ) : null}
             </>
         );
     };

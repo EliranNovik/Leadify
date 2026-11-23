@@ -51,6 +51,12 @@ import {
 } from '../../lib/employeeClockInFormat';
 import { normalizeEmployeeMinHours } from '../../lib/employeeLeadReporting';
 import {
+  getOfficialHolidayDates,
+  markCompanyOfficialHoliday,
+  preloadOfficialHolidays,
+  removeCompanyOfficialHoliday,
+} from '../../lib/companyOfficialHolidays';
+import {
   preloadHolidayYears,
 } from '../../lib/israeliJewishHolidays';
 import {
@@ -65,6 +71,10 @@ import {
   withAutoFilledClockInRecords,
 } from '../../lib/autoFilledWorkingHours';
 import { deleteClockInSessions } from '../../lib/employeeClockInManual';
+import {
+  excludeAutoFilledDay,
+  fetchAutoFillExcludedDates,
+} from '../../lib/employeeAutoFillExclusions';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
   documentNameFromUrl,
@@ -97,6 +107,7 @@ import BulkManualClockInModal from './BulkManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
 import ClockInDayNotesModal from './ClockInDayNotesModal';
 import SubmitWorkingHoursModal from './SubmitWorkingHoursModal';
+import MarkUnavailableDayModal from './MarkUnavailableDayModal';
 import WorkingHoursMobileList from './WorkingHoursMobileList';
 import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import YearWheelPicker from '../YearWheelPicker';
@@ -173,6 +184,11 @@ interface WorkingHoursTabProps {
    * whether their month is covered, not what it will pay out at.
    */
   showOvertimePremiumSplit?: boolean;
+  /**
+   * HR Working Hours tab only. The row menu can mark the day as an official holiday
+   * for every employee.
+   */
+  allowOfficialHolidays?: boolean;
   /**
    * Optional host node for the month picker / Submit month / Calendar row. My Profile passes the
    * right-hand end of its tab bar so those controls sit on the tab line; without it they render
@@ -343,12 +359,20 @@ function WorkingHoursDateLabel({
   dateKey: string;
   muted?: boolean;
 }) {
+  const isToday = dateKey === toDateInputValue(new Date());
   return (
-    <span className={`flex flex-col items-start leading-snug ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
-      <span className="wh-weekday font-semibold" style={{ color: 'var(--wh-week-accent)' }}>
-        {formatWorkingHoursWeekday(dateKey)}
+    <span className="flex items-center gap-2">
+      {isToday ? (
+        <span className="inline-flex shrink-0 items-center rounded-full bg-rose-600 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-white">
+          Today
+        </span>
+      ) : null}
+      <span className={`flex flex-col items-start leading-snug ${muted ? 'text-gray-400' : 'text-gray-800'}`}>
+        <span className="wh-weekday font-semibold" style={{ color: 'var(--wh-week-accent)' }}>
+          {formatWorkingHoursWeekday(dateKey)}
+        </span>
+        <span>{formatWorkingHoursDateLabel(dateKey)}</span>
       </span>
-      <span>{formatWorkingHoursDateLabel(dateKey)}</span>
     </span>
   );
 }
@@ -505,6 +529,7 @@ function buildFullMonthTableRows(
       rows.push({
         ...existing,
         isWeekend: isWeekendDay || existing.isWeekend,
+        holidayNames: day.holidayNames?.length ? day.holidayNames : existing.holidayNames,
       });
     } else if (day.status === 'weekend') {
       rows.push({
@@ -737,10 +762,17 @@ type WorkingHoursRowActionsMenuProps = {
   onDeleteClockIn: (dateKey: string) => void;
   onAddClockIn: (dateKey: string) => void;
   onAddOvertime: (dateKey: string) => void;
+  onMarkUnavailable?: (dateKey: string, type: 'sick_days' | 'vacation') => void;
+  /** Show Delete even when the day has no stored clock-in, such as an empty HR row. */
+  forceDeleteRow?: boolean;
+  /** HR only. Marks or clears a company-wide official holiday for this day. */
+  officialHolidayAction?: 'mark' | 'remove' | null;
+  markingOfficialHoliday?: boolean;
+  onToggleOfficialHoliday?: (dateKey: string) => void;
 };
 
-const WORKING_HOURS_ACTIONS_MENU_EST_HEIGHT_PX = 120;
-const WORKING_HOURS_ACTIONS_MENU_WIDTH_PX = 192;
+const WORKING_HOURS_ACTIONS_MENU_EST_HEIGHT_PX = 160;
+const WORKING_HOURS_ACTIONS_MENU_WIDTH_PX = 240;
 
 function WorkingHoursRowActionsMenu({
   dateKey,
@@ -757,6 +789,11 @@ function WorkingHoursRowActionsMenu({
   onDeleteClockIn,
   onAddClockIn,
   onAddOvertime,
+  onMarkUnavailable,
+  forceDeleteRow = false,
+  officialHolidayAction = null,
+  markingOfficialHoliday = false,
+  onToggleOfficialHoliday,
 }: WorkingHoursRowActionsMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
@@ -767,9 +804,10 @@ function WorkingHoursRowActionsMenu({
   const isDeletingAnyUnavail = unavailabilities.some(
     (u) => deletingRowKey === `${u.id}-${u.date}`,
   );
-  const isBusy = loading || isDeletingClock || isDeletingAnyUnavail;
+  const isBusy = loading || isDeletingClock || isDeletingAnyUnavail || markingOfficialHoliday;
   const hasUnavail = unavailabilities.length > 0;
-  const showMenu = hasUnavail || hasClock;
+  const hasRowActions = hasUnavail || hasClock;
+  const showMenu = hasRowActions || officialHolidayAction != null;
 
   const updatePosition = useCallback(() => {
     const btn = triggerRef.current;
@@ -824,7 +862,7 @@ function WorkingHoursRowActionsMenu({
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
 
-  if (!showMenu || readOnly) {
+  if (!showMenu || (readOnly && officialHolidayAction == null)) {
     return <span className="text-gray-400">—</span>;
   }
 
@@ -843,7 +881,24 @@ function WorkingHoursRowActionsMenu({
       className="menu rounded-xl border border-base-200 bg-white p-1.5 shadow-lg"
       onClick={(e) => e.stopPropagation()}
     >
-      {unavailabilities.map((unavail) => {
+      {officialHolidayAction && onToggleOfficialHoliday && (
+        <li role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="gap-2 text-sm"
+            disabled={isBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeAnd(() => onToggleOfficialHoliday(dateKey));
+            }}
+          >
+            <CalendarDaysIcon className="w-4 h-4" />
+            {officialHolidayAction === 'remove' ? 'Remove official holiday' : 'Mark as official holiday'}
+          </button>
+        </li>
+      )}
+      {!readOnly && unavailabilities.map((unavail) => {
         const rowKey = `${unavail.id}-${unavail.date}`;
         const typeLabel = unavailabilityTypeLabel(unavail.unavailability_type);
         const suffix = multipleUnavail ? ` (${typeLabel})` : hasClock ? ' unavailability' : '';
@@ -882,29 +937,12 @@ function WorkingHoursRowActionsMenu({
           </React.Fragment>
         );
       })}
-      {hasUnavail && hasClock && (
+      {!readOnly && hasUnavail && hasClock && (
         <li aria-hidden className="my-0.5">
           <div className="border-t border-base-200" />
         </li>
       )}
-      {hasClock && autoFilledClock && (
-        <li role="none">
-          <button
-            type="button"
-            role="menuitem"
-            className="gap-2 text-sm"
-            disabled={isBusy}
-            onClick={(e) => {
-              e.stopPropagation();
-              closeAnd(() => onEditClockIn(dateKey));
-            }}
-          >
-            <PencilSquareIcon className="w-4 h-4" />
-            Edit auto-added hours
-          </button>
-        </li>
-      )}
-      {hasClock && !autoFilledClock && (
+      {!readOnly && hasClock && (
         <>
           <li role="none">
             <button
@@ -918,7 +956,7 @@ function WorkingHoursRowActionsMenu({
               }}
             >
               <PencilSquareIcon className="w-4 h-4" />
-              Edit{hasUnavail ? ' clock-in' : ''}
+              {autoFilledClock ? 'Edit auto-added hours' : `Edit${hasUnavail ? ' clock-in' : ''}`}
             </button>
           </li>
           <li role="none">
@@ -933,29 +971,84 @@ function WorkingHoursRowActionsMenu({
               }}
             >
               <TrashIcon className="w-4 h-4" />
-              Delete{hasUnavail ? ' clock-in' : ''}
+              Delete row
             </button>
           </li>
         </>
       )}
-      <li aria-hidden className="my-0.5">
-        <div className="border-t border-base-200" />
-      </li>
-      <li role="none">
-        <button
-          type="button"
-          role="menuitem"
-          className="gap-2 text-sm"
-          disabled={isBusy}
-          onClick={(e) => {
-            e.stopPropagation();
-            closeAnd(() => onAddOvertime(dateKey));
-          }}
-        >
-          <PlusIcon className="w-4 h-4" />
-          Add overtime
-        </button>
-      </li>
+      {!readOnly && !hasClock && forceDeleteRow && (
+        <li role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="gap-2 text-sm text-error"
+            disabled={isBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeAnd(() => onDeleteClockIn(dateKey));
+            }}
+          >
+            <TrashIcon className="w-4 h-4" />
+            Delete row
+          </button>
+        </li>
+      )}
+      {!readOnly && onMarkUnavailable && !unavailabilities.some((row) => row.unavailability_type === 'sick_days') && (
+        <li role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="gap-2 text-sm"
+            disabled={isBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeAnd(() => onMarkUnavailable(dateKey, 'sick_days'));
+            }}
+          >
+            <CalendarDaysIcon className="w-4 h-4" />
+            Mark as sick
+          </button>
+        </li>
+      )}
+      {!readOnly && onMarkUnavailable && !unavailabilities.some((row) => row.unavailability_type === 'vacation') && (
+        <li role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="gap-2 text-sm"
+            disabled={isBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              closeAnd(() => onMarkUnavailable(dateKey, 'vacation'));
+            }}
+          >
+            <CalendarDaysIcon className="w-4 h-4" />
+            Mark as vacation
+          </button>
+        </li>
+      )}
+      {!readOnly && hasRowActions && (
+        <>
+          <li aria-hidden className="my-0.5">
+            <div className="border-t border-base-200" />
+          </li>
+          <li role="none">
+            <button
+              type="button"
+              role="menuitem"
+              className="gap-2 text-sm"
+              disabled={isBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                closeAnd(() => onAddOvertime(dateKey));
+              }}
+            >
+              <PlusIcon className="w-4 h-4" />
+              Add overtime
+            </button>
+          </li>
+        </>
+      )}
     </ul>
   );
 
@@ -1021,6 +1114,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   initialMonth,
   embedded = false,
   showOvertimePremiumSplit = false,
+  allowOfficialHolidays = false,
   headerActionsSlot = null,
 }) => {
   const { user } = useAuthContext();
@@ -1052,6 +1146,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   const dateFrom = periodRange.from;
   const dateTo = periodRange.to;
   const [records, setRecords] = useState<ClockInRow[]>([]);
+  const [excludedAutoFillDates, setExcludedAutoFillDates] = useState<Set<string>>(() => new Set());
   const [unavailabilities, setUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
   const [employeeMinHours, setEmployeeMinHours] = useState(8);
   const [loading, setLoading] = useState(true);
@@ -1089,12 +1184,18 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     bucketName?: string;
   } | null>(null);
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
+  const [officialHolidayDates, setOfficialHolidayDates] = useState<Set<string>>(() => new Set());
+  const [markingOfficialHolidayDate, setMarkingOfficialHolidayDate] = useState<string | null>(null);
   const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
   const [scrollToTodayRequested, setScrollToTodayRequested] = useState(false);
   const [scrollToDateKey, setScrollToDateKey] = useState<string | null>(null);
   const [selectedWeekNum, setSelectedWeekNum] = useState(1);
   const [manualClockInInitialDateKey, setManualClockInInitialDateKey] = useState<string | null>(null);
   const [pendingCalendarDateKey, setPendingCalendarDateKey] = useState<string | null>(null);
+  const [markLeave, setMarkLeave] = useState<{
+    dateKey: string;
+    type: 'sick_days' | 'vacation';
+  } | null>(null);
 
   useEffect(() => {
     const closeDropdownsOnOutsideClick = (event: PointerEvent) => {
@@ -1112,8 +1213,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
   useEffect(() => {
     let cancelled = false;
     const years = [...new Set([year, calendarViewYear, year - 1, year + 1])];
-    void preloadHolidayYears(years).then(() => {
-      if (!cancelled) setHolidayMapVersion((v) => v + 1);
+    void Promise.all([preloadHolidayYears(years), preloadOfficialHolidays()]).then(() => {
+      if (!cancelled) {
+        setOfficialHolidayDates(getOfficialHolidayDates());
+        setHolidayMapVersion((v) => v + 1);
+      }
     });
     return () => {
       cancelled = true;
@@ -1167,6 +1271,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     if (!employeeId) {
       setRecords([]);
       setUnavailabilities([]);
+      setExcludedAutoFillDates(new Set());
       setLoading(false);
       return;
     }
@@ -1229,9 +1334,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         }
       }
 
-      const [resolvedClockResult, unavailRows] = await Promise.all([
+      const [resolvedClockResult, unavailRows, excludedDates] = await Promise.all([
         Promise.resolve(clockResult),
         fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
+        fetchAutoFillExcludedDates(employeeId),
       ]);
 
       if (resolvedClockResult.error) throw resolvedClockResult.error;
@@ -1244,10 +1350,12 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       );
       setRecords(normalizedRows);
       setUnavailabilities(unavailRows);
+      setExcludedAutoFillDates(excludedDates);
     } catch (err) {
       console.error('WorkingHoursTab fetch:', err);
       setRecords([]);
       setUnavailabilities([]);
+      setExcludedAutoFillDates(new Set());
     } finally {
       setLoading(false);
       hasLoadedOnceRef.current = true;
@@ -1309,9 +1417,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         holidayMap: buildHolidayMapForRange(dateFrom, dateTo),
         existingRecords: records,
         unavailabilities,
+        excludedDates: excludedAutoFillDates,
       }) as ClockInRow[],
     // holidayMapVersion: the holiday map fills in asynchronously after the first render.
-    [employeeId, employeeMinHours, dateFrom, dateTo, records, unavailabilities, holidayMapVersion],
+    [employeeId, employeeMinHours, dateFrom, dateTo, records, unavailabilities, excludedAutoFillDates, holidayMapVersion],
   );
 
   const dailyRows = useMemo(() => aggregateClockInRecordsByDay(filledRecords), [filledRecords]);
@@ -1779,6 +1888,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           holidayMap: buildHolidayMapForRange(viewRange.from, viewRange.to),
           existingRecords: calendarMonthRecords,
           unavailabilities: calendarMonthUnavailabilities,
+          excludedDates: excludedAutoFillDates,
         });
 
     const byDate = new Map<string, number>();
@@ -1796,6 +1906,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     calendarMonthUnavailabilities,
     employeeId,
     employeeMinHours,
+    excludedAutoFillDates,
     holidayMapVersion,
   ]);
 
@@ -1873,6 +1984,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
     setCalendarViewMonth(m);
     setPendingCalendarDateKey(dateKey);
     setCalendarModalOpen(true);
+  }, [isMonthSubmitted, monthLockedMessage]);
+
+  const handleMarkUnavailable = useCallback((dateKey: string, type: 'sick_days' | 'vacation') => {
+    if (isMonthSubmitted) {
+      toast.error(monthLockedMessage);
+      return;
+    }
+    setMarkLeave({ dateKey, type });
   }, [isMonthSubmitted, monthLockedMessage]);
 
   const selectablePlaceholderRows = useMemo(
@@ -2045,27 +2164,73 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
       return;
     }
 
+    const autoFilled = isAutoFilledDay(dateKey);
     const daySessions = editableRecordsForDay(dateKey);
-    if (daySessions.length === 0) return;
+    if (!employeeId) return;
 
     const label = formatWorkingHoursDateLabel(dateKey);
     const confirmed = window.confirm(
-      daySessions.length === 1
-        ? `Delete clock-in entry for ${label}?`
-        : `Delete all ${daySessions.length} clock-in entries for ${label}?`,
+      autoFilled
+        ? `Delete the automatic base hours for ${label}? They will not be added back.`
+        : daySessions.length === 0
+          ? `Delete ${label}? Automatic base hours will not be added for this day.`
+          : `Delete this row for ${label}?`,
     );
     if (!confirmed) return;
 
     setDeletingClockInDay(dateKey);
     try {
-      await deleteClockInSessions(daySessions.map((s) => s.id));
-      toast.success('Clock-in entries removed');
+      if (daySessions.length > 0) {
+        await deleteClockInSessions(daySessions.map((s) => s.id));
+      }
+      await excludeAutoFilledDay(employeeId, dateKey);
+      setExcludedAutoFillDates((current) => {
+        const next = new Set(current);
+        next.add(dateKey);
+        return next;
+      });
+      toast.success('Row removed');
       await fetchRecords();
     } catch (err) {
       console.error('WorkingHoursTab delete clock-in:', err);
-      toast.error(err instanceof Error ? err.message : 'Failed to remove clock-in entries');
+      toast.error(err instanceof Error ? err.message : 'Failed to remove this row');
     } finally {
       setDeletingClockInDay(null);
+    }
+  };
+
+  const officialHolidayActionFor = (dateKey: string): 'mark' | 'remove' | null => {
+    if (!allowOfficialHolidays || !isIsraeliWorkdayIso(dateKey)) return null;
+    return officialHolidayDates.has(dateKey) ? 'remove' : 'mark';
+  };
+
+  const handleToggleOfficialHoliday = async (dateKey: string) => {
+    const removing = officialHolidayDates.has(dateKey);
+    const label = formatWorkingHoursDateLabel(dateKey);
+    const confirmed = window.confirm(
+      removing
+        ? `Remove ${label} as an official holiday for every employee?`
+        : `Mark ${label} as an official holiday for every employee? Automatic base hours on this day will be removed. Hours someone actually clocked stay and count as holiday work.`,
+    );
+    if (!confirmed) return;
+
+    setMarkingOfficialHolidayDate(dateKey);
+    try {
+      if (removing) await removeCompanyOfficialHoliday(dateKey);
+      else await markCompanyOfficialHoliday(dateKey);
+      setOfficialHolidayDates(getOfficialHolidayDates());
+      setHolidayMapVersion((version) => version + 1);
+      toast.success(removing ? 'Official holiday removed' : 'Marked as an official holiday');
+    } catch (err) {
+      console.error('WorkingHoursTab official holiday:', err);
+      const message = err instanceof Error ? err.message : 'Failed to update the official holiday';
+      toast.error(
+        /company_official_holidays|schema cache|does not exist/i.test(message)
+          ? 'Official holidays are not set up yet. Run the new SQL in Supabase, then try again.'
+          : message,
+      );
+    } finally {
+      setMarkingOfficialHolidayDate(null);
     }
   };
 
@@ -2563,6 +2728,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           }}
           onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
           onAddClockIn={handlePlaceholderAddClockIn}
+          onMarkUnavailable={handleMarkUnavailable}
+          officialHolidayActionFor={officialHolidayActionFor}
+          markingOfficialHolidayDate={markingOfficialHolidayDate}
+          onToggleOfficialHoliday={(dateKey) => void handleToggleOfficialHoliday(dateKey)}
           onAddOvertime={(dateKey) => {
             if (isRowLockedForSubmission(dateKey)) {
               toast.error(monthLockedMessage);
@@ -2669,6 +2838,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           rowClass,
                           placeholderInteractive && !bulkSelectMode ? 'wh-placeholder-interactive' : '',
                           isBulkSelected ? 'wh-bulk-selected pipeline-flat-row-selected' : '',
+                          row.dateKey === toDateInputValue(new Date()) ? 'wh-active-day' : '',
                         ].filter(Boolean).join(' ')}
                         onClick={
                           isBulkSelectable
@@ -2722,8 +2892,31 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                           )}
                         </td>
                         <td className="relative px-2 py-3.5 border-b border-gray-100 whitespace-nowrap align-middle">
-                          {placeholderInteractive && !bulkSelectMode ? (
+                          {(placeholderInteractive || officialHolidayActionFor(row.dateKey)) && !bulkSelectMode ? (
                             <div className="wh-placeholder-row-actions flex flex-row flex-nowrap items-center justify-end gap-1.5 lg:absolute lg:right-2 lg:top-1/2 lg:z-10 lg:-translate-y-1/2">
+                              {officialHolidayActionFor(row.dateKey) && (
+                                <WorkingHoursRowActionsMenu
+                                  dateKey={row.dateKey}
+                                  unavailabilities={[]}
+                                  hasClock={false}
+                                  loading={loading}
+                                  deletingRowKey={deletingRowKey}
+                                  deletingClockInDay={deletingClockInDay}
+                                  officialHolidayAction={officialHolidayActionFor(row.dateKey)}
+                                  markingOfficialHoliday={markingOfficialHolidayDate === row.dateKey}
+                                  onEditUnavailability={() => undefined}
+                                  onDeleteUnavailability={() => undefined}
+                                  onEditClockIn={() => undefined}
+                                  onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
+                                  onAddClockIn={() => undefined}
+                                  onAddOvertime={() => undefined}
+                                  onMarkUnavailable={handleMarkUnavailable}
+                                  forceDeleteRow
+                                  onToggleOfficialHoliday={(dateKey) => void handleToggleOfficialHoliday(dateKey)}
+                                />
+                              )}
+                              {placeholderInteractive && (
+                                <>
                               <button
                                 type="button"
                                 className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
@@ -2742,6 +2935,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                                 <PlusIcon className="w-3.5 h-3.5 shrink-0" />
                                 <span className="hidden lg:inline">Add clock-in</span>
                               </button>
+                                </>
+                              )}
                             </div>
                           ) : (
                             <span className="text-gray-400 text-xs">—</span>
@@ -2769,7 +2964,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                     <tr
                       key={row.dateKey}
                       id={`wh-row-${row.dateKey}`}
-                      className={`pipeline-flat-row wh-data-row [&>td]:border-b [&>td]:border-gray-100 ${clockInApprovalRowClass(approvalStatus)}`}
+                      className={`pipeline-flat-row wh-data-row [&>td]:border-b [&>td]:border-gray-100 ${clockInApprovalRowClass(approvalStatus)}${row.dateKey === toDateInputValue(new Date()) ? ' wh-active-day' : ''}`}
                     >
                       {bulkSelectMode && <td className="w-10 px-2" aria-hidden />}
                       <td
@@ -2777,7 +2972,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                         style={workingHoursDateCellStyle(weekMeta?.weekNum)}
                       >
                         <div className="relative z-10 flex flex-col items-start gap-1.5 min-w-0">
-                          <WorkingHoursDateLabel dateKey={row.dateKey} />
+                            <WorkingHoursDateLabel dateKey={row.dateKey} />
+                            {row.holidayNames?.[0] ? (
+                              <span className="text-xs font-semibold text-violet-700">{row.holidayNames[0]}</span>
+                            ) : null}
                         </div>
                       </td>
                       <td className={WH_DATA_CELL}>
@@ -2950,6 +3148,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                               }}
                               onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
                               onAddClockIn={handlePlaceholderAddClockIn}
+                              officialHolidayAction={officialHolidayActionFor(row.dateKey)}
+                              markingOfficialHoliday={markingOfficialHolidayDate === row.dateKey}
+                              onToggleOfficialHoliday={(dateKey) => void handleToggleOfficialHoliday(dateKey)}
                               onAddOvertime={(dateKey) => {
                                 if (isRowLockedForSubmission(dateKey)) {
                                   toast.error(monthLockedMessage);
@@ -2958,6 +3159,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
                                 setAddOvertimeInitialDateKey(dateKey);
                                 setAddOvertimeOpen(true);
                               }}
+                              onMarkUnavailable={handleMarkUnavailable}
                             />
                           </div>
                         </div>
@@ -2988,14 +3190,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         }
 
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-select { width: 2.5rem; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-date { width: 8%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-date { width: 13%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-status { width: 11%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-unavailability { width: 15%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-in { width: 16%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-clock-out { width: 16%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-total { width: 7%; }
         .my-profile-hours-shell table.my-profile-hours-table col.wh-col-notes { width: 11%; }
-        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-document { width: 16%; }
+        .my-profile-hours-shell table.my-profile-hours-table col.wh-col-document { width: 11%; }
 
         .my-profile-hours-shell table.my-profile-hours-table thead,
         .my-profile-hours-shell table.my-profile-hours-table thead tr,
@@ -3138,6 +3340,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           vertical-align: top !important;
           position: relative;
           padding-left: 0.85rem !important;
+          overflow: visible !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody td:first-child {
@@ -3152,6 +3355,10 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
           bottom: 0;
           width: 3px;
           background: var(--wh-week-accent, #94a3b8);
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-active-day > td {
+          border-bottom: 2px solid #e11d48 !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr:first-child td:first-child::before {
@@ -3319,6 +3526,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({
         row={editingRow}
         employeeId={employeeId}
         onClose={() => setEditingRow(null)}
+        onSaved={() => void fetchRecords()}
+      />
+
+      <MarkUnavailableDayModal
+        isOpen={markLeave != null}
+        employeeId={employeeId}
+        dateKey={markLeave?.dateKey ?? null}
+        type={markLeave?.type ?? null}
+        onClose={() => setMarkLeave(null)}
         onSaved={() => void fetchRecords()}
       />
 
