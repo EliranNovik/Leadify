@@ -189,12 +189,16 @@ type Props = {
   meetings: PortalMeetingRow[];
   sessionContactId?: number | null;
   onMeetingsChange?: () => void;
+  navAction?: string | null;
+  onNavActionHandled?: () => void;
 };
 
 const PortalMeetingsTab: React.FC<Props> = ({
   meetings,
   sessionContactId = null,
   onMeetingsChange,
+  navAction = null,
+  onNavActionHandled,
 }) => {
   const { t } = useTranslation();
   const [bookingToken, setBookingToken] = useState<string | null>(null);
@@ -204,6 +208,9 @@ const PortalMeetingsTab: React.FC<Props> = ({
     fallbackKey: 'meetings.bookingAccessUnavailable' | 'meetings.bookingAccessLoadFailed';
   } | null>(null);
   const [bookingFlowActive, setBookingFlowActive] = useState(false);
+  const [openBookingSignal, setOpenBookingSignal] = useState(0);
+  const [closeBookingSignal, setCloseBookingSignal] = useState(0);
+  const [pastOpen, setPastOpen] = useState(false);
 
   useEffect(() => {
     setBookingAccessLoading(true);
@@ -255,30 +262,58 @@ const PortalMeetingsTab: React.FC<Props> = ({
   }, [meetings]);
 
   const bookingAccessErrorText = bookingAccessError
-    ? bookingAccessError.message || t(bookingAccessError.fallbackKey)
+    ? !bookingAccessError.message ||
+      bookingAccessError.message ===
+        'Self-scheduling is not enabled for your case. Please contact our office.'
+      ? t(bookingAccessError.fallbackKey)
+      : bookingAccessError.message
     : null;
 
   const renderMeetingCard = (m: PortalMeetingRow, muted = false) => (
     <PortalMeetingCard key={String(m.id)} meeting={m} muted={muted} />
   );
 
-  const pastMeetingsSection =
-    past.length > 0 ? (
-      <section className="mt-10 space-y-5">
-        <details className="group">
-          <summary className="inline-flex w-fit cursor-pointer list-none items-center gap-2.5 rounded-full bg-white px-4 py-2 shadow-[0_2px_10px_rgba(15,23,42,0.06)] transition-shadow hover:shadow-[0_4px_14px_rgba(15,23,42,0.1)] [&::-webkit-details-marker]:hidden">
-            <PortalSectionLabel>{t('meetings.sections.past')}</PortalSectionLabel>
-            <span className="text-sm font-medium text-base-content/45">{past.length}</span>
-            <ChevronDownIcon className="h-4 w-4 text-base-content/45 transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="pt-3">
+  useEffect(() => {
+    if (!navAction || bookingAccessLoading) return;
+    if (navAction === 'create') {
+      setOpenBookingSignal((n) => n + 1);
+    }
+    if (navAction === 'past') {
+      setCloseBookingSignal((n) => n + 1);
+      setPastOpen(true);
+      window.setTimeout(() => {
+        document.getElementById('portal-past-meetings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 60);
+    }
+    onNavActionHandled?.();
+  }, [bookingAccessLoading, navAction, onNavActionHandled]);
+
+  const pastMeetingsSection = (
+    <section id="portal-past-meetings" className="mt-10 space-y-5">
+      <details
+        className="group"
+        open={pastOpen}
+        onToggle={(event) => setPastOpen((event.currentTarget as HTMLDetailsElement).open)}
+      >
+        <summary className="inline-flex w-fit cursor-pointer list-none items-center gap-2.5 rounded-full bg-white px-4 py-2 shadow-[0_2px_10px_rgba(15,23,42,0.06)] transition-shadow hover:shadow-[0_4px_14px_rgba(15,23,42,0.1)] [&::-webkit-details-marker]:hidden">
+          <PortalSectionLabel>{t('meetings.sections.past')}</PortalSectionLabel>
+          <span className="text-sm font-medium text-base-content/45">{past.length}</span>
+          <ChevronDownIcon className="h-4 w-4 text-base-content/45 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="pt-3">
+          {past.length > 0 ? (
             <HorizontalCardCarousel>
               {past.map((m) => renderMeetingCard(m, true))}
             </HorizontalCardCarousel>
-          </div>
-        </details>
-      </section>
-    ) : null;
+          ) : (
+            <PortalCard>
+              <p className="text-sm text-base-content/45">{t('meetings.emptyPast')}</p>
+            </PortalCard>
+          )}
+        </div>
+      </details>
+    </section>
+  );
 
   if (bookingAccessLoading) {
     return (
@@ -302,6 +337,8 @@ const PortalMeetingsTab: React.FC<Props> = ({
           defaultContactId={sessionContactId}
           onBooked={onMeetingsChange}
           onBookingFlowChange={setBookingFlowActive}
+          openBookingSignal={openBookingSignal}
+          closeBookingSignal={closeBookingSignal}
         />
         {!bookingFlowActive ? pastMeetingsSection : null}
       </>
@@ -318,10 +355,7 @@ const PortalMeetingsTab: React.FC<Props> = ({
         <PortalSectionLabel>{t('meetings.sections.upcoming')}</PortalSectionLabel>
         {upcoming.length === 0 ? (
           <PortalCard>
-            <p className="text-sm text-base-content/45">
-              {t('meetings.emptyUpcoming')}
-              {bookingAccessErrorText ? ` ${bookingAccessErrorText}` : ''}
-            </p>
+            <p className="text-sm text-base-content/45">{t('meetings.emptyUpcoming')}</p>
           </PortalCard>
         ) : (
           <HorizontalCardCarousel>

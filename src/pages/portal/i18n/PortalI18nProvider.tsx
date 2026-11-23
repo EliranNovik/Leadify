@@ -30,7 +30,7 @@ function PortalDocumentDirSync({ children }: { children: ReactNode }) {
   }, [dir, locale]);
 
   return (
-    <div dir={dir} lang={locale} className="min-h-[100dvh]">
+    <div dir={dir} lang={locale} className="portal-page-shell min-h-[100dvh]">
       {children}
     </div>
   );

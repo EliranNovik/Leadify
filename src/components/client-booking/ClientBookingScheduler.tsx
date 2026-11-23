@@ -200,6 +200,10 @@ export type ClientBookingSchedulerProps = {
   onLeadRefLoaded?: (leadRef: string | null) => void;
   /** True while the date/time/confirm (or done) flow is open — not the browse/CTA state */
   onBookingFlowChange?: (inFlow: boolean) => void;
+  /** Increment to open the date/time flow from outside, such as the header menu. */
+  openBookingSignal?: number;
+  /** Increment to leave the booking flow and return to the meeting lists. */
+  closeBookingSignal?: number;
 };
 
 const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
@@ -211,6 +215,8 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   onBooked,
   onLeadRefLoaded,
   onBookingFlowChange,
+  openBookingSignal = 0,
+  closeBookingSignal = 0,
 }) => {
   const embedded = variant === 'embedded';
   const usePublicExperience = variant === 'public';
@@ -256,6 +262,20 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     mq.addEventListener('change', sync);
     return () => mq.removeEventListener('change', sync);
   }, []);
+
+  useEffect(() => {
+    if (!openBookingSignal) return;
+    setStep('date');
+    setSelectedDate(null);
+    setSelectedTime(null);
+    setBookingOpen(true);
+  }, [openBookingSignal]);
+
+  useEffect(() => {
+    if (!closeBookingSignal) return;
+    setBookingOpen(false);
+    setStep('date');
+  }, [closeBookingSignal]);
 
   /** Browse = CTA + meeting lists; anything else is the focused booking flow */
   const browsingMeetings = !bookingOpen && step === 'date';

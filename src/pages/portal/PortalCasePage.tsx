@@ -44,6 +44,7 @@ const PortalCaseContent: React.FC<{
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<PortalTabId>('summary');
+  const [navAction, setNavAction] = useState<{ tab: PortalTabId; action: string } | null>(null);
   const { data, initialLoading, refresh } = usePortalTabData();
   const contactProfileImageUrl = contact?.portal_profile_image_path
     ? data?.contactProfileSignedUrls?.[contact.portal_profile_image_path] ?? null
@@ -96,6 +97,8 @@ const PortalCaseContent: React.FC<{
               payments={data.finances.payments ?? []}
               proformas={data.finances.proformas ?? []}
               isLegacy={data.finances.is_legacy}
+              navAction={navAction?.tab === 'finance' ? navAction.action : null}
+              onNavActionHandled={() => setNavAction(null)}
             />
           ) : (
             <PortalLoading />
@@ -107,6 +110,8 @@ const PortalCaseContent: React.FC<{
             <PortalContactsTab
               onSessionRefresh={() => void refreshSession()}
               sessionContactId={contact?.id}
+              navAction={navAction?.tab === 'contacts' ? navAction.action : null}
+              onNavActionHandled={() => setNavAction(null)}
             />
           );
         case 'meetings':
@@ -115,6 +120,8 @@ const PortalCaseContent: React.FC<{
               meetings={data.meetings.meetings ?? []}
               sessionContactId={contact?.id ?? null}
               onMeetingsChange={() => void refresh('meetings')}
+              navAction={navAction?.tab === 'meetings' ? navAction.action : null}
+              onNavActionHandled={() => setNavAction(null)}
             />
           ) : (
             <PortalLoading />
@@ -123,7 +130,7 @@ const PortalCaseContent: React.FC<{
           return null;
       }
     },
-    [contact, data, goToMeetingsTab, initialLoading, refresh, refreshSession],
+    [contact, data, goToMeetingsTab, initialLoading, navAction, refresh, refreshSession],
   );
 
   const tabTurn = useMemo(
@@ -140,7 +147,14 @@ const PortalCaseContent: React.FC<{
       onSettings={() => setActiveTab('contacts')}
       navTabs={navTabs}
       activeNavTab={activeTab}
-      onNavTabChange={(tabId) => setActiveTab(tabId as PortalTabId)}
+      onNavTabChange={(tabId) => {
+        setNavAction(null);
+        setActiveTab(tabId as PortalTabId);
+      }}
+      onNavAction={(tabId, actionId) => {
+        setActiveTab(tabId as PortalTabId);
+        setNavAction({ tab: tabId as PortalTabId, action: actionId });
+      }}
     >
       {tabTurn}
     </PortalLayout>

@@ -60,6 +60,15 @@ export type PortalPaymentRow = {
   payper_invoice_number?: string | null;
   has_proforma?: boolean;
   order?: string | number | null;
+  /** Files a handler attached as the tax invoice for this payment row. */
+  tax_invoice_documents?: PortalTaxInvoiceDocument[];
+};
+
+export type PortalTaxInvoiceDocument = {
+  id: number;
+  file_name: string;
+  mime_type?: string | null;
+  storage_path: string;
 };
 
 export type PortalDocumentClassification = {
@@ -278,6 +287,25 @@ export async function portalGetDocuments() {
   } | null;
 }
 
+const PORTAL_TAX_INVOICE_BUCKET = 'payment-plan-tax-invoice-documents';
+
+/** Signed links for tax invoice files that belong to this portal case. */
+export async function portalGetTaxInvoiceDocumentUrls(
+  storagePaths: string[],
+): Promise<Record<string, string>> {
+  const sessionToken = tokenOrThrow();
+  const { data, error } = await supabase.functions.invoke('portal-documents', {
+    body: {
+      session_token: sessionToken,
+      storage_paths: storagePaths,
+      bucket: PORTAL_TAX_INVOICE_BUCKET,
+    },
+  });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error || 'Failed to get tax invoice URLs');
+  return (data.urls ?? {}) as Record<string, string>;
+}
+
 export async function portalGetDocumentSignedUrls(storagePaths: string[]): Promise<Record<string, string>> {
   const sessionToken = tokenOrThrow();
   const { data, error } = await supabase.functions.invoke('portal-documents', {
@@ -286,6 +314,32 @@ export async function portalGetDocumentSignedUrls(storagePaths: string[]): Promi
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.error || 'Failed to get document URLs');
   return (data.urls ?? {}) as Record<string, string>;
+}
+
+export type PortalNeededDocument = {
+  id: string;
+  name: string;
+  status: string;
+};
+
+/** Documents the office still needs from this client. Empty until the SQL function is installed. */
+export async function portalGetClientNeededDocuments(): Promise<PortalNeededDocument[]> {
+  const { data, error } = await supabase.rpc('portal_get_client_needed_documents', {
+    p_token: tokenOrThrow(),
+  });
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') return [];
+    throw error;
+  }
+  if (!data || data.ok === false) return [];
+  const rows = (data.documents || []) as Array<{ id?: string; name?: string; status?: string }>;
+  return rows
+    .map((row) => ({
+      id: String(row.id ?? ''),
+      name: String(row.name ?? '').trim(),
+      status: String(row.status ?? ''),
+    }))
+    .filter((row) => row.id && row.name);
 }
 
 export async function portalGetLeadCaseDocumentTypes(): Promise<PortalLeadCaseDocumentType[]> {
@@ -561,6 +615,20 @@ export async function portalGetContactContracts(
     throw new Error((data && data.error) || 'Failed to load contracts');
   }
   return (data.contracts || []) as PortalContactContractRow[];
+}
+
+export async function portalCreateContact(fields: Record<string, unknown>) {
+  const { data, error } = await supabase.rpc('portal_create_contact', {
+    p_token: tokenOrThrow(),
+    p_fields: fields,
+  });
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') {
+      throw new Error('Run sql/2026-11-23_portal_create_contact.sql to enable new contacts.');
+    }
+    throw error;
+  }
+  return data as { ok: boolean; error?: string; id?: number };
 }
 
 export async function portalUpdateContact(contactId: number, fields: Record<string, unknown>) {

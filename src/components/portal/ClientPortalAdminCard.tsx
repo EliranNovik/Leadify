@@ -1,15 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  ArrowTopRightOnSquareIcon,
   ClipboardDocumentIcon,
   LinkIcon,
   KeyIcon,
   PaperAirplaneIcon,
-  UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { buildPortalUrl } from '../../lib/portalApi';
-import { portalStaffGetStatus, portalStaffSetPassword } from '../../lib/portalStaffApi';
+import { portalStaffEnter, portalStaffGetStatus, portalStaffSetPassword } from '../../lib/portalStaffApi';
 import { getMailboxLoginUrl } from '../../lib/mailboxApi';
 import {
   loadPortalSendContacts,
@@ -103,6 +103,7 @@ const ClientPortalAdminCard: React.FC<Props> = ({
   const [passwordFieldOpen, setPasswordFieldOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [entering, setEntering] = useState(false);
 
   const [sendCodeOpen, setSendCodeOpen] = useState(false);
   const [sendCodeStep, setSendCodeStep] = useState<'language' | 'contacts'>('language');
@@ -167,6 +168,31 @@ const ClientPortalAdminCard: React.FC<Props> = ({
   const displayPassword = password.trim() || storedPassword || '';
 
   const portalUrl = leadRef ? buildPortalUrl(leadRef) : '';
+
+  const handleEnterPortal = async () => {
+    if (!portalUrl) return;
+    if (!supabaseSessionReady) {
+      toast.error('Still connecting — wait a moment and try again');
+      return;
+    }
+    const popup = window.open('about:blank', '_blank');
+    setEntering(true);
+    try {
+      const result = await portalStaffEnter(rpcLeadId, portalLeadType, leadNumber || portalLeadRef);
+      const ref = result.lead_ref || leadRef || portalLeadRef;
+      const url = `${buildPortalUrl(ref)}/case?staff_session=${encodeURIComponent(result.session_token)}`;
+      if (popup) {
+        popup.location.href = url;
+      } else {
+        window.open(url, '_blank');
+      }
+    } catch (e) {
+      popup?.close();
+      toast.error(e instanceof Error ? e.message : 'Could not open the client portal');
+    } finally {
+      setEntering(false);
+    }
+  };
 
   const handleSave = async () => {
     const trimmedPwd = password.trim();
@@ -516,11 +542,26 @@ const ClientPortalAdminCard: React.FC<Props> = ({
         open={open}
         onClose={close}
         title={portalTitle}
+        headerRight={
+          loading ? null : (
+            <label className="flex items-center gap-2 cursor-pointer pt-1">
+              <span className="text-sm text-base-content whitespace-nowrap">Portal enabled</span>
+              <input
+                type="checkbox"
+                className="toggle toggle-primary toggle-sm"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+              />
+            </label>
+          )
+        }
         mobileFullHeight
         desktopLayout="drawer-right"
         zIndex={PORTAL_DRAWER_Z}
-        sheetClassName="md:max-w-md"
-        contentClassName="px-4 py-4 md:px-6 md:py-5"
+        sheetClassName="md:max-w-md !bg-gray-100"
+        headerClassName="!bg-gray-100 md:!border-b-0"
+        footerClassName="!bg-gray-100 md:!border-t-0 md:!bg-gray-100"
+        contentClassName="bg-gray-100 px-4 py-4 md:px-5 md:py-5"
         footer={
           loading ? undefined : (
             <MeetingFormDrawerFooter>
@@ -553,122 +594,140 @@ const ClientPortalAdminCard: React.FC<Props> = ({
             <span className="loading loading-spinner loading-md" />
           </div>
         ) : (
-          <div className="space-y-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                className="toggle toggle-primary toggle-sm"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-              />
-              <span className="text-sm text-base-content">Portal enabled</span>
-            </label>
-
+          <div className="space-y-3">
             {!enabled && hasPassword && (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
                 Portal is disabled — clients cannot sign in until you turn it back on.
               </p>
             )}
 
-            <div className="flex flex-col gap-3">
-              <div>
-                <label className="text-xs font-medium text-base-content/55 uppercase tracking-wide">
-                  Password
-                </label>
-                {hasPassword && displayPassword ? (
-                  <div className="flex items-center gap-1 rounded-lg border border-base-200 bg-base-200/50 px-2 py-1.5 w-full mt-1">
-                    <code className="text-sm font-mono text-base-content flex-1 truncate">
-                      {displayPassword}
-                    </code>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-xs btn-square shrink-0"
-                      onClick={copyPassword}
-                      title="Copy password"
-                    >
-                      <ClipboardDocumentIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <p className="text-sm text-base-content/50 mt-1">No password set</p>
-                )}
-              </div>
-
-              <div>
-                <label className="text-xs font-medium text-base-content/55 uppercase tracking-wide">
-                  Link
-                </label>
-                <div className="flex items-start gap-1 rounded-lg border border-base-200 bg-base-200/50 px-2 py-1.5 w-full mt-1">
-                  <span className="text-sm text-base-content/80 break-all flex-1 min-w-0">
-                    {portalUrl || '—'}
-                  </span>
+            <section className="rounded-2xl bg-white p-4 shadow-sm">
+              <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Password
+              </label>
+              {hasPassword && displayPassword ? (
+                <div className="flex items-center gap-1 mt-2">
+                  <code className="text-sm font-mono text-gray-900 flex-1 truncate">
+                    {displayPassword}
+                  </code>
                   <button
                     type="button"
-                    className="btn btn-ghost btn-xs btn-square shrink-0"
-                    onClick={copyLink}
-                    disabled={!portalUrl}
-                    title="Copy link"
+                    className="btn btn-ghost btn-xs btn-circle shrink-0"
+                    onClick={copyPassword}
+                    title="Copy password"
                   >
                     <ClipboardDocumentIcon className="w-4 h-4" />
                   </button>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-medium text-base-content/55 uppercase tracking-wide">
-                Portal password
-              </label>
-              {passwordFieldOpen ? (
-                <div className="flex flex-wrap gap-2 mt-1">
-                  <input
-                    type="text"
-                    className="input input-bordered input-sm flex-1 min-w-[10rem] font-mono"
-                    placeholder={hasPassword ? 'Leave blank to keep current password' : 'Min 6 characters'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    autoFocus
-                  />
+                  <span className="shrink-0 text-xs text-base-content/55">Create new</span>
                   <button
                     type="button"
-                    className="btn btn-sm btn-outline gap-1 shrink-0"
+                    className="btn btn-ghost btn-xs btn-circle shrink-0"
                     onClick={handleGeneratePassword}
                     disabled={saving}
                     title="Generate password"
                   >
                     <KeyIcon className="w-4 h-4" />
-                    Generate password
                   </button>
                 </div>
               ) : (
-                <div className="mt-1">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-outline gap-1"
-                    onClick={handleGeneratePassword}
-                    disabled={saving}
-                  >
-                    <KeyIcon className="w-4 h-4" />
-                    Generate password
-                  </button>
-                </div>
+                <p className="text-sm text-base-content/50 mt-2">No password set</p>
               )}
-            </div>
+            </section>
 
-            <div>
-              <label className="text-xs font-medium text-base-content/55 uppercase tracking-wide inline-flex items-center gap-1.5">
-                <UserGroupIcon className="w-4 h-4" />
-                Contacts
+            <section className="rounded-2xl bg-white p-4 shadow-sm">
+              <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                Link
               </label>
+              <div className="flex items-start gap-1 mt-2">
+                <span className="text-sm text-gray-900 break-all flex-1 min-w-0">
+                  {portalUrl || '—'}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs btn-circle shrink-0"
+                  onClick={copyLink}
+                  disabled={!portalUrl}
+                  title="Copy link"
+                >
+                  <ClipboardDocumentIcon className="w-4 h-4" />
+                </button>
+              </div>
+            </section>
+
+            <section className="rounded-2xl bg-white p-4 shadow-sm">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm w-full gap-2"
+                disabled={entering || !portalUrl}
+                onClick={() => void handleEnterPortal()}
+              >
+                {entering ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                )}
+                Open portal
+              </button>
+              <p className="mt-2 text-xs text-base-content/50">
+                Opens this case as the main contact. The client password is not required.
+              </p>
+            </section>
+
+            {!hasPassword && (
+              <section className="rounded-2xl bg-white p-4 shadow-sm">
+                <label className="text-xs font-medium text-base-content/55 uppercase tracking-wide">
+                  Portal password
+                </label>
+                {passwordFieldOpen ? (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    <input
+                      type="text"
+                      className="input input-bordered input-sm flex-1 min-w-[10rem] font-mono"
+                      placeholder="Min 6 characters"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline gap-1 shrink-0"
+                      onClick={handleGeneratePassword}
+                      disabled={saving}
+                      title="Generate password"
+                    >
+                      <KeyIcon className="w-4 h-4" />
+                      Generate password
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline gap-1"
+                      onClick={handleGeneratePassword}
+                      disabled={saving}
+                    >
+                      <KeyIcon className="w-4 h-4" />
+                      Generate password
+                    </button>
+                  </div>
+                )}
+              </section>
+            )}
+
+            <div className="space-y-3">
+              <p className="px-1 text-sm font-medium text-gray-900">Contacts</p>
               {contactsLoading ? (
-                <div className="flex justify-center py-4 mt-1">
+                <div className="flex justify-center rounded-2xl bg-white py-6 shadow-sm">
                   <span className="loading loading-spinner loading-sm" />
                 </div>
               ) : contacts.length === 0 ? (
-                <p className="text-sm text-base-content/50 mt-1">No contacts found</p>
+                <p className="rounded-2xl bg-white px-4 py-4 text-sm text-base-content/50 shadow-sm">
+                  No contacts found
+                </p>
               ) : (
-                <div className="mt-1 space-y-2">
-                  <ul className="divide-y divide-base-200 border border-base-200 rounded-lg overflow-hidden">
+                <>
+                  <ul className="space-y-3">
                     {(contactsExpanded
                       ? contacts
                       : contacts.slice(0, CONTACTS_PREVIEW_COUNT)
@@ -676,9 +735,9 @@ const ClientPortalAdminCard: React.FC<Props> = ({
                       const email = contact.email?.trim() || '';
                       const phone = contactPhone(contact);
                       return (
-                        <li key={contact.id} className="px-3 py-3 space-y-1.5">
+                        <li key={contact.id} className="rounded-2xl bg-white p-4 shadow-sm space-y-1.5">
                           <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-base font-medium text-base-content truncate">
+                            <span className="text-base font-medium text-gray-500 truncate">
                               {contact.name || `Contact #${contact.id}`}
                             </span>
                             {contact.isMain ? (
@@ -688,12 +747,12 @@ const ClientPortalAdminCard: React.FC<Props> = ({
 
                           {email ? (
                             <div className="flex items-center gap-1 min-w-0">
-                              <span className="text-sm text-gray-500 truncate flex-1 min-w-0">
+                              <span className="text-sm text-gray-900 truncate flex-1 min-w-0">
                                 {email}
                               </span>
                               <button
                                 type="button"
-                                className="btn btn-ghost btn-xs btn-square shrink-0"
+                                className="btn btn-ghost btn-xs btn-circle shrink-0"
                                 onClick={() => void copyText(email, 'Email')}
                                 title="Copy email"
                               >
@@ -712,12 +771,12 @@ const ClientPortalAdminCard: React.FC<Props> = ({
 
                           {phone ? (
                             <div className="flex items-center gap-1 min-w-0">
-                              <span className="text-sm text-gray-500 truncate flex-1 min-w-0">
+                              <span className="text-sm text-gray-900 truncate flex-1 min-w-0">
                                 {phone}
                               </span>
                               <button
                                 type="button"
-                                className="btn btn-ghost btn-xs btn-square shrink-0"
+                                className="btn btn-ghost btn-xs btn-circle shrink-0"
                                 onClick={() => void copyText(phone, 'Phone')}
                                 title="Copy phone"
                               >
@@ -748,7 +807,7 @@ const ClientPortalAdminCard: React.FC<Props> = ({
                         : `More (${contacts.length - CONTACTS_PREVIEW_COUNT})`}
                     </button>
                   ) : null}
-                </div>
+                </>
               )}
             </div>
           </div>

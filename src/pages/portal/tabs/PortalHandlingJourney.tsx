@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { CheckIcon } from '@heroicons/react/24/solid';
 import { ClockIcon, DocumentTextIcon, FlagIcon, XMarkIcon } from '@heroicons/react/24/outline';
@@ -202,8 +203,9 @@ const PortalHandlingJourney: React.FC<{ board: PortalHandlingBoard }> = ({ board
         />
       ) : null}
 
-      {openStageId && openDetail ? (
-        <div className="modal modal-open z-[300]">
+      {openStageId && openDetail
+        ? createPortal(
+        <div className="modal modal-open z-[400]">
           <div
             className="modal-box max-w-lg"
             dir={i18n.language.toLowerCase().startsWith('he') ? 'rtl' : 'ltr'}
@@ -275,8 +277,10 @@ const PortalHandlingJourney: React.FC<{ board: PortalHandlingBoard }> = ({ board
             aria-label={t('common.close')}
             onClick={() => setOpenStageId(null)}
           />
-        </div>
-      ) : null}
+        </div>,
+        document.body,
+        )
+        : null}
     </section>
   );
 };

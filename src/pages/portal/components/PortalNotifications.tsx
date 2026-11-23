@@ -94,7 +94,7 @@ function translateMeetingScheduledSubtitle(subtitle: string, t: TFunction, local
   return t('notifications.types.meeting_new.subtitleScheduled', { date: dateLabel });
 }
 
-function notificationTitle(n: PortalNotificationRow, t: TFunction, locale: string): string {
+export function notificationTitle(n: PortalNotificationRow, t: TFunction, locale: string): string {
   if (n.type === 'document_new') {
     return t('notifications.documentNewTitleFallback');
   }
@@ -142,7 +142,7 @@ function notificationTitle(n: PortalNotificationRow, t: TFunction, locale: strin
   return n.title;
 }
 
-function notificationSubtitle(
+export function notificationSubtitle(
   n: PortalNotificationRow,
   t: TFunction,
   locale: string,

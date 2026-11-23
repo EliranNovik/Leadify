@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
   BanknotesIcon,
@@ -8,13 +8,24 @@ import {
   BriefcaseIcon,
   DocumentArrowUpIcon,
   FlagIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  PlayIcon,
 } from '@heroicons/react/24/outline';
 import {
+  portalGetClientNeededDocuments,
+  portalGetNotifications,
   type PortalContact,
+  type PortalContactContractRow,
   type PortalMeetingRow,
+  type PortalNeededDocument,
+  type PortalNotificationRow,
   type PortalPaymentRow,
   type PortalTeamContact,
 } from '../../../lib/portalApi';
+import { buildPoaUrl } from '../../../lib/poaApi';
+import { getFrontendBaseUrl } from '../../../lib/api';
 import {
   fetchEmployeeProfileByName,
   type EmployeeProfile,
@@ -32,13 +43,39 @@ import {
 } from '../components/portalTheme';
 import PortalTeamContactButtons from '../components/PortalTeamContactButtons';
 import { usePortalTabData } from '../context/PortalTabDataContext';
+import { notificationSubtitle, notificationTitle } from '../components/PortalNotifications';
 import {
+  findCurrentPortalSubEffort,
   portalActiveSubEffortCardCopy,
   type PortalSubEffortRow,
 } from '../../../lib/portalSubEfforts';
+import { FaYoutube } from 'react-icons/fa';
 import { translatePortalDynamicLabel } from '../i18n/portalDynamicLabels';
 
 type TabId = 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings';
+
+const PORTAL_NEWS = [
+  { id: 'archive', image: '/portal-news-archive.jpg' },
+  { id: 'payments', image: '/portal-news-payment.jpg' },
+  { id: 'welcome', image: '/portal-news-welcome.jpg' },
+] as const;
+
+const PORTAL_VIDEOS = [
+  { id: 'aCBU_vZ3AK8', title: 'Navigating War and Law: Decker, Pex, Levi Stays the Course' },
+  { id: 'yRAhjY3mzRQ', title: 'Israeli Citizenship Process Interrupted: Rights & Legal Options for Foreign Spouses' },
+  { id: 'U6zbKnnfYAI', title: 'Legal Challenges in Wartime Israel – Interview with Joshua Pex | ILTV' },
+  { id: 'yPPUJZEps7A', title: 'Get German or Austrian Citizenship Through Jewish Ancestry.' },
+] as const;
+
+const PORTAL_FAQ: ReadonlyArray<{ id: string; tab?: TabId; anchor?: string }> = [
+  { id: 'pay', tab: 'finance' },
+  { id: 'meeting', tab: 'meetings' },
+  { id: 'documents', tab: 'documents' },
+  { id: 'upload', tab: 'documents' },
+  { id: 'team', anchor: 'portal-legal-team' },
+  { id: 'contact', anchor: 'portal-legal-team' },
+  { id: 'status', tab: 'stages' },
+];
 
 type Props = {
   sessionContact: PortalContact | null;
@@ -62,6 +99,67 @@ function formatTime(t: string | null | undefined): string {
   if (match) return `${match[1].padStart(2, '0')}:${match[2]}`;
   return t.trim();
 }
+
+function icsEscape(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+}
+
+function downloadMeetingIcs(meeting: PortalMeetingRow, summaryFallback: string) {
+  const dateMatch = (meeting.meeting_date || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!dateMatch) return;
+  const timeMatch = formatTime(meeting.meeting_time).match(/^(\d{2}):(\d{2})/);
+  const hour = timeMatch ? timeMatch[1] : '09';
+  const minute = timeMatch ? timeMatch[2] : '00';
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const start = `${dateMatch[1]}${dateMatch[2]}${dateMatch[3]}T${hour}${minute}00`;
+  const endHour = String((Number(hour) + 1) % 24).padStart(2, '0');
+  const end = `${dateMatch[1]}${dateMatch[2]}${dateMatch[3]}T${endHour}${minute}00`;
+  const summary = icsEscape((meeting.meeting_subject || '').trim() || summaryFallback);
+  const location = icsEscape((meeting.meeting_address || meeting.meeting_location || '').trim());
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Decker Pex Levi//Client Portal//EN',
+    'BEGIN:VEVENT',
+    `UID:portal-meeting-${meeting.id}@lawoffice.org.il`,
+    `DTSTAMP:${stamp}`,
+    `DTSTART;TZID=Asia/Jerusalem:${start}`,
+    `DTEND;TZID=Asia/Jerusalem:${end}`,
+    `SUMMARY:${summary}`,
+  ];
+  if (location) lines.push(`LOCATION:${location}`);
+  if (meeting.join_url) lines.push(`URL:${meeting.join_url}`);
+  lines.push('END:VEVENT', 'END:VCALENDAR');
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'meeting.ics';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function buildContractUrl(row: PortalContactContractRow): string {
+  const path = row.is_legacy ? 'public-legacy-contract' : 'public-contract';
+  return `${getFrontendBaseUrl()}/${path}/${encodeURIComponent(row.id)}/${encodeURIComponent(
+    row.public_token,
+  )}`;
+}
+
+const PORTAL_TABS = new Set<TabId>(['summary', 'stages', 'finance', 'documents', 'contacts', 'meetings']);
+
+const MEETING_ACTION_CLASS =
+  'inline-flex rounded-full bg-[#f4f5f8] px-3 py-1.5 text-xs font-medium text-[#1c1c22] hover:bg-[#eceef3]';
+
+type WaitingItem = {
+  id: string;
+  label: string;
+  actionLabel: string;
+  href?: string;
+  tab?: TabId;
+};
 
 function formatMoney(amount: number, currency: string | null): string {
   const sym = currency?.trim() || '₪';
@@ -117,7 +215,7 @@ type NextStepActionId = 'payOnline' | 'viewFinance' | 'joinMeeting' | 'viewCaseS
 
 type NextStepInfo = {
   title: string;
-  description: string;
+  description: React.ReactNode;
   actionId?: NextStepActionId;
   href?: string;
   onAction?: () => void;
@@ -151,10 +249,19 @@ function buildNextStep(input: {
   if (nextPaymentOverdue && nextPayment?.secure_token) {
     return {
       title: t('dashboard.nextStep.titleNext'),
-      description: t('dashboard.nextStep.paymentOverdue', {
-        amount: nextPaymentTotal,
-        date: formatDate(nextPayment.due_date, locale),
-      }),
+      description: (
+        <Trans
+          i18nKey="dashboard.nextStep.paymentOverdue"
+          values={{
+            amount: nextPaymentTotal,
+            date: formatDate(nextPayment.due_date, locale),
+          }}
+          components={{
+            amount: <span className="font-semibold underline underline-offset-2" />,
+            date: <span className="font-semibold underline underline-offset-2" />,
+          }}
+        />
+      ),
       actionId: 'payOnline',
       href: buildPaymentPagePath(nextPayment.secure_token),
     };
@@ -163,12 +270,27 @@ function buildNextStep(input: {
   if (nextPayment && nextPaymentTotal) {
     return {
       title: t('dashboard.nextStep.titleNext'),
-      description: t('dashboard.nextStep.paymentUpcoming', {
-        amount: nextPaymentTotal,
-        dueSuffix: nextPayment.due_date
-          ? t('dashboard.nextStep.dueSuffix', { date: formatDate(nextPayment.due_date, locale) })
-          : '',
-      }),
+      description: nextPayment.due_date ? (
+        <Trans
+          i18nKey="dashboard.nextStep.paymentUpcomingDated"
+          values={{
+            amount: nextPaymentTotal,
+            date: formatDate(nextPayment.due_date, locale),
+          }}
+          components={{
+            amount: <span className="font-semibold underline underline-offset-2" />,
+            date: <span className="font-semibold underline underline-offset-2" />,
+          }}
+        />
+      ) : (
+        <Trans
+          i18nKey="dashboard.nextStep.paymentUpcoming"
+          values={{ amount: nextPaymentTotal }}
+          components={{
+            amount: <span className="font-semibold underline underline-offset-2" />,
+          }}
+        />
+      ),
       actionId: 'viewFinance',
       onAction: () => onNavigate('finance'),
     };
@@ -332,6 +454,54 @@ const PortalDashboardTab: React.FC<Props> = ({
   const subEfforts = data?.subEfforts ?? [];
   const [businessCardEmployee, setBusinessCardEmployee] = useState<EmployeeProfile | null>(null);
   const [businessCardOpen, setBusinessCardOpen] = useState(false);
+  const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  const [neededDocs, setNeededDocs] = useState<PortalNeededDocument[]>([]);
+  const [changes, setChanges] = useState<PortalNotificationRow[] | null>(null);
+  const videoRowRef = useRef<HTMLDivElement>(null);
+  const [canScrollVideosBack, setCanScrollVideosBack] = useState(false);
+  const [canScrollVideosForward, setCanScrollVideosForward] = useState(true);
+
+  const updateVideoArrows = () => {
+    const row = videoRowRef.current;
+    if (!row) return;
+    setCanScrollVideosBack(row.scrollLeft > 8);
+    setCanScrollVideosForward(row.scrollLeft + row.clientWidth < row.scrollWidth - 8);
+  };
+
+  const moveVideos = (direction: 1 | -1) => {
+    const row = videoRowRef.current;
+    if (!row) return;
+    const card = row.querySelector('[data-video-card]') as HTMLElement | null;
+    const amount = (card?.offsetWidth ?? 360) + 16;
+    row.scrollBy({ left: amount * direction, behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    updateVideoArrows();
+    window.addEventListener('resize', updateVideoArrows);
+    return () => window.removeEventListener('resize', updateVideoArrows);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    portalGetClientNeededDocuments()
+      .then((rows) => {
+        if (!cancelled) setNeededDocs(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setNeededDocs([]);
+      });
+    portalGetNotifications(3)
+      .then((rows) => {
+        if (!cancelled) setChanges(rows.slice(0, 3));
+      })
+      .catch(() => {
+        if (!cancelled) setChanges([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const openTeamBusinessCard = async (
     displayName: string,
@@ -351,6 +521,61 @@ const PortalDashboardTab: React.FC<Props> = ({
   const nextMeeting = useMemo(() => pickNextMeeting(meetings), [meetings]);
   const nextPayment = useMemo(() => pickNextPayment(payments), [payments]);
   const caseStatusCopy = useMemo(() => portalActiveSubEffortCardCopy(subEfforts), [subEfforts]);
+  const stageProgress = useMemo(() => {
+    if (!subEfforts.length) return null;
+    const total = subEfforts.length;
+    const current = findCurrentPortalSubEffort(subEfforts);
+    if (current) {
+      const index = subEfforts.findIndex((row) => row.id === current.id);
+      if (index >= 0) return { current: index + 1, total };
+    }
+    if (subEfforts.every((row) => row.active === false)) return { current: total, total };
+    return null;
+  }, [subEfforts]);
+  const waitingItems = useMemo(() => {
+    const items: WaitingItem[] = [];
+    const poas = Object.values(data?.poasByContact ?? {}).flat();
+    for (const poa of poas) {
+      if (poa.status === 'signed' || poa.status === 'cancelled' || !poa.secure_token) continue;
+      items.push({
+        id: `poa-${poa.id}`,
+        label: poa.type_name?.trim() || t('dashboard.waiting.poaFallback'),
+        actionLabel: t('dashboard.waiting.sign'),
+        href: buildPoaUrl(poa.secure_token),
+      });
+    }
+    const contracts = Object.values(data?.contractsByContact ?? {}).flat();
+    for (const contract of contracts) {
+      if (contract.status === 'signed' || contract.status === 'cancelled' || !contract.public_token) continue;
+      items.push({
+        id: `contract-${contract.id}`,
+        label: contract.title?.trim() || t('dashboard.waiting.contractFallback'),
+        actionLabel: t('dashboard.waiting.sign'),
+        href: buildContractUrl(contract),
+      });
+    }
+    for (const doc of neededDocs) {
+      items.push({
+        id: `doc-${doc.id}`,
+        label: doc.name,
+        actionLabel: t('dashboard.waiting.upload'),
+        tab: 'documents',
+      });
+    }
+    return items.slice(0, 3);
+  }, [data?.poasByContact, data?.contractsByContact, neededDocs, t]);
+  const hasUnsignedDocuments = useMemo(() => {
+    const poas = Object.values(data?.poasByContact ?? {}).flat();
+    const contracts = Object.values(data?.contractsByContact ?? {}).flat();
+    const unsignedPoa = poas.some(
+      (poa) => poa.status !== 'signed' && poa.status !== 'cancelled' && Boolean(poa.secure_token),
+    );
+    const unsignedContract = contracts.some(
+      (contract) =>
+        contract.status !== 'signed' && contract.status !== 'cancelled' && Boolean(contract.public_token),
+    );
+    return unsignedPoa || unsignedContract;
+  }, [data?.poasByContact, data?.contractsByContact]);
   const latestSubEffort = caseStatusCopy.current;
 
   if (loading) return <PortalLoading />;
@@ -488,7 +713,7 @@ const PortalDashboardTab: React.FC<Props> = ({
         : t('dashboard.stats.caseStatus.hintLatestMilestone');
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-12 md:space-y-16">
       <div className={`${PORTAL_DASHBOARD_CONTAINER} pt-1 md:pt-2`}>
         <p className="text-xl font-semibold tracking-tight text-[#16161d] md:text-2xl">
           {t('dashboard.greeting.withName', {
@@ -496,10 +721,13 @@ const PortalDashboardTab: React.FC<Props> = ({
             firstName: clientFirstName,
           })}
         </p>
+        <p className="mt-1 text-sm font-medium text-[#8b909a] md:text-base">
+          {t('dashboard.greeting.subtitle')}
+        </p>
       </div>
 
-      <section className={`space-y-6 md:space-y-8 ${PORTAL_DASHBOARD_CONTAINER}`}>
-        <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 xl:grid-cols-3`}>
+      <section className={`space-y-8 md:space-y-12 ${PORTAL_DASHBOARD_CONTAINER}`}>
+        <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 sm:items-start xl:grid-cols-3`}>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
             label={t('dashboard.stats.nextMeeting.label')}
@@ -509,6 +737,33 @@ const PortalDashboardTab: React.FC<Props> = ({
             accent="sky"
             coverKey={`${coverKey}::stat-next-meeting`}
             onClick={() => onNavigate('meetings')}
+            action={
+              nextMeeting && (nextMeeting.join_url || nextMeeting.meeting_date) ? (
+                <>
+                  {nextMeeting.join_url ? (
+                    <a
+                      href={nextMeeting.join_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={MEETING_ACTION_CLASS}
+                    >
+                      {t('dashboard.stats.nextMeeting.join')}
+                    </a>
+                  ) : null}
+                  {nextMeeting.meeting_date ? (
+                    <button
+                      type="button"
+                      className={MEETING_ACTION_CLASS}
+                      onClick={() =>
+                        downloadMeetingIcs(nextMeeting, t('dashboard.stats.nextMeeting.calendarTitle'))
+                      }
+                    >
+                      {t('dashboard.stats.nextMeeting.addToCalendar')}
+                    </button>
+                  ) : null}
+                </>
+              ) : undefined
+            }
           />
         </div>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
@@ -526,7 +781,7 @@ const PortalDashboardTab: React.FC<Props> = ({
             onClick={() => onNavigate('finance')}
             badge={
               nextPaymentOverdue ? (
-                <span className="inline-flex rounded-full bg-red-100 px-3 py-0.5 text-xs font-semibold text-red-600 md:text-sm">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-[#9a4a4a]">
                   {t('common.badges.overdue')}
                 </span>
               ) : undefined
@@ -542,23 +797,21 @@ const PortalDashboardTab: React.FC<Props> = ({
             accent="primary"
             coverKey={`${coverKey}::stat-case-status`}
             onClick={() => onNavigate('stages')}
+            badge={
+              stageProgress ? (
+                <span className="text-[11px] font-medium tracking-wide text-[#8b909a]">
+                  {t('dashboard.stats.caseStatus.progress', stageProgress)}
+                </span>
+              ) : undefined
+            }
           />
         </div>
           </div>
 
-          <div className={`${PORTAL_NEXT_STEP_CARD_CLASS} mt-2 flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between md:gap-6 md:p-6`}>
-            <div
-              className="pointer-events-none absolute bottom-[18px] left-0 top-[18px] w-1 rounded-full bg-blue-800"
-              aria-hidden
-            />
-            <div className="flex min-w-0 items-start gap-4 pl-3">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-100 text-blue-800">
-                <NextStepIcon className="h-5 w-5" aria-hidden />
-              </span>
-              <div className="min-w-0">
-                <p className="text-xs font-bold uppercase tracking-[0.12em] text-[#747684]">{nextStep.title}</p>
-                <p className="mt-1.5 text-sm font-semibold leading-relaxed text-[#16161d] md:text-base">{nextStep.description}</p>
-              </div>
+          <div className={`${PORTAL_NEXT_STEP_CARD_CLASS} mt-2`}>
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-blue-100">{nextStep.title}</p>
+              <p className="mt-1.5 text-sm font-medium leading-relaxed text-white md:text-base">{nextStep.description}</p>
             </div>
             {nextStepActionLabel ? (
               nextStep.href ? (
@@ -566,30 +819,99 @@ const PortalDashboardTab: React.FC<Props> = ({
                   href={nextStep.href}
                   target={nextStep.href.startsWith('http') ? '_blank' : undefined}
                   rel={nextStep.href.startsWith('http') ? 'noopener noreferrer' : undefined}
-                  className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-blue-900 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_22px_rgba(30,58,138,0.3)] transition-all hover:-translate-y-0.5 hover:bg-blue-950 md:self-center"
+                  className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-blue-900 shadow-[0_8px_22px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:bg-blue-50 md:self-center"
                 >
-                  <NextStepIcon className="h-4 w-4" />
+                  <NextStepIcon className="h-6 w-6" />
                   {nextStepActionLabel}
                 </a>
               ) : (
                 <button
                   type="button"
                   onClick={nextStep.onAction}
-                  className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-blue-900 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_22px_rgba(30,58,138,0.3)] transition-all hover:-translate-y-0.5 hover:bg-blue-950 md:self-center"
+                  className="inline-flex shrink-0 items-center gap-2 self-start rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-blue-900 shadow-[0_8px_22px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:bg-blue-50 md:self-center"
                 >
-                  <NextStepIcon className="h-4 w-4" />
+                  <NextStepIcon className="h-6 w-6" />
                   {nextStepActionLabel}
                 </button>
               )
             ) : null}
           </div>
+
+          {waitingItems.length > 0 || hasUnsignedDocuments ? (
+          <div className="flex flex-col items-start gap-4 md:flex-row md:items-center" dir="ltr">
+            {waitingItems.length > 0 ? (
+              <div className="min-w-0" dir={locale.toLowerCase().startsWith('he') ? 'rtl' : 'ltr'}>
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#8b909a]">
+                  {t('dashboard.waiting.title')}
+                </p>
+                <ul className="mt-3 flex flex-col items-start gap-2">
+                  {waitingItems.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex max-w-full items-center gap-3 rounded-full bg-white py-1.5 ps-4 pe-1.5 shadow-[0_8px_22px_rgba(22,22,29,0.06)]"
+                    >
+                      <p className="min-w-0 truncate text-sm text-[#1c1c22]">{item.label}</p>
+                      {item.href ? (
+                        <a
+                          href={item.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex shrink-0 rounded-full bg-[#1c1c22] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2a2a32]"
+                        >
+                          {item.actionLabel}
+                        </a>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => item.tab && onNavigate(item.tab)}
+                          className="inline-flex shrink-0 rounded-full bg-[#1c1c22] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2a2a32]"
+                        >
+                          {item.actionLabel}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {hasUnsignedDocuments ? (
+            <button
+              type="button"
+              onClick={() => onNavigate('contacts')}
+              className="group flex w-full max-w-sm shrink-0 items-stretch overflow-hidden rounded-2xl bg-white text-start shadow-[0_10px_28px_rgba(22,22,29,0.06)] md:w-[22rem]"
+            >
+              <div
+                dir={locale.toLowerCase().startsWith('he') ? 'rtl' : 'ltr'}
+                className="flex min-w-0 flex-1 flex-col justify-center px-4 py-3"
+              >
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#8b909a]">
+                  {t('dashboard.contactsBanner.eyebrow')}
+                </p>
+                <p className="mt-1 text-sm leading-snug text-[#1c1c22]">
+                  {t('dashboard.contactsBanner.body')}
+                </p>
+                <span className="mt-3 inline-flex w-fit items-center rounded-full bg-[#1c1c22] px-3 py-1.5 text-xs font-semibold text-white transition-colors group-hover:bg-[#2a2a32]">
+                  {t('dashboard.contactsBanner.action')}
+                </span>
+              </div>
+              <div className="relative w-[42%] shrink-0 self-stretch">
+                <img
+                  src="/portal-contacts-banner.jpg"
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover object-[center_20%]"
+                />
+              </div>
+            </button>
+            ) : null}
+          </div>
+          ) : null}
       </section>
 
       {roles.length > 0 ? (
-      <div className={`flex flex-col gap-5 md:gap-6 ${PORTAL_DASHBOARD_CONTAINER}`}>
+      <div id="portal-legal-team" className={`flex flex-col gap-5 md:gap-6 ${PORTAL_DASHBOARD_CONTAINER}`}>
         <div className="flex flex-col gap-1">
           <h3 className="text-lg font-bold tracking-tight text-[#16161d]">{t('dashboard.team.title')}</h3>
-          <p className="text-sm text-[#747684]">{t('dashboard.team.subtitle')}</p>
         </div>
         <div className={TEAM_ROW_CLASS}>
             {roles.map((role) => {
@@ -668,13 +990,35 @@ const PortalDashboardTab: React.FC<Props> = ({
       ) : null}
 
       <div className={`${PORTAL_DASHBOARD_CONTAINER}`}>
-        <div className={`${PORTAL_TEAM_CARD_CLASS} p-5 md:p-6`}>
-          <h4 className="text-sm font-bold tracking-tight text-[#16161d]">{t('dashboard.recentActivity.title')}</h4>
-          {recentActivity.length > 0 ? (
+        <div>
+          <h4 className="text-lg font-bold tracking-tight text-[#16161d]">{t('dashboard.recentActivity.title')}</h4>
+          {changes && changes.length > 0 ? (
+            <ul className="mt-3 space-y-2.5">
+              {changes.map((item) => {
+                const title = notificationTitle(item, t, locale);
+                const subtitle = notificationSubtitle(item, t, locale);
+                const text = subtitle && subtitle !== title ? `${title} · ${subtitle}` : title;
+                const tab = PORTAL_TABS.has(item.tab as TabId) ? (item.tab as TabId) : null;
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2.5 text-left text-sm text-[#16161d] disabled:cursor-default"
+                      disabled={!tab}
+                      onClick={() => tab && onNavigate(tab)}
+                    >
+                      <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#c5c8d0]" aria-hidden />
+                      <span className="leading-relaxed">{text}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : recentActivity.length > 0 ? (
             <ul className="mt-3 space-y-2.5">
               {recentActivity.map((item) => (
                 <li key={item.id} className="flex items-start gap-2.5 text-sm text-[#16161d]">
-                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-800" aria-hidden />
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#c5c8d0]" aria-hidden />
                   <span className="leading-relaxed">{item.text}</span>
                 </li>
               ))}
@@ -684,6 +1028,171 @@ const PortalDashboardTab: React.FC<Props> = ({
           )}
         </div>
       </div>
+
+      <section className={PORTAL_DASHBOARD_CONTAINER}>
+        <h2 className="text-lg font-bold tracking-tight text-[#16161d]">
+          {t('dashboard.news.title')}
+        </h2>
+        <div className="mt-4 grid grid-cols-1 gap-6 md:grid-cols-3">
+          {PORTAL_NEWS.map((item) => (
+            <article key={item.id} className="flex flex-col">
+              <div className="overflow-hidden rounded-2xl">
+                <img
+                  src={item.image}
+                  alt=""
+                  className="h-44 w-full object-cover md:h-48"
+                />
+              </div>
+              <div className="relative z-10 -mt-8 mx-3 rounded-2xl bg-white p-4 shadow-[0_12px_32px_rgba(22,22,29,0.08)] md:p-5">
+                <h3 className="text-sm font-semibold leading-snug tracking-tight text-[#16161d]">
+                  {t(`dashboard.news.items.${item.id}.title`)}
+                </h3>
+                <p className="mt-2 text-sm leading-relaxed text-[#747684]">
+                  {t(`dashboard.news.items.${item.id}.body`)}
+                </p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className={PORTAL_DASHBOARD_CONTAINER}>
+        <div className="mx-auto max-w-4xl">
+          <h2 className="text-2xl font-bold tracking-tight text-[#16161d] md:text-3xl">
+            {t('dashboard.faq.title')}
+          </h2>
+          <div className="mt-6 divide-y divide-[rgba(20,20,30,0.08)]">
+            {PORTAL_FAQ.map((item) => (
+              <details key={item.id} className="group py-5 md:py-6">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-base font-semibold text-[#16161d] md:text-lg [&::-webkit-details-marker]:hidden">
+                  <span>{t(`dashboard.faq.items.${item.id}.question`)}</span>
+                  <ChevronDownIcon className="h-5 w-5 shrink-0 text-[#747684] transition-transform group-open:rotate-180" />
+                </summary>
+                <p className="mt-3 max-w-3xl text-base leading-relaxed text-[#747684]">
+                  {t(`dashboard.faq.items.${item.id}.answer`)}
+                </p>
+                <button
+                  type="button"
+                  className="mt-4 inline-flex items-center rounded-full bg-blue-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-950"
+                  onClick={() => {
+                    if (item.tab) onNavigate(item.tab);
+                    if (item.anchor) {
+                      document.getElementById(item.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                  }}
+                >
+                  {t(`dashboard.faq.items.${item.id}.action`)}
+                </button>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className={`${PORTAL_DASHBOARD_CONTAINER} flex justify-center`}>
+        <a
+          href="https://lawoffice.org.il/en/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group relative flex w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-gradient-to-br from-[#1e40af] via-[#1e3a8a] to-[#0b1f4d] text-white shadow-[0_18px_45px_rgba(30,58,138,0.28)] transition-shadow hover:shadow-[0_22px_50px_rgba(30,58,138,0.36)] md:min-h-[220px] md:flex-row"
+        >
+          <div className={`relative z-10 flex flex-1 flex-col justify-center px-6 py-6 md:px-8 ${locale.toLowerCase().startsWith('he') ? 'md:ml-auto md:w-[58%] md:flex-none' : 'md:max-w-[58%]'}`}>
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-blue-100">
+              {t('dashboard.websiteBanner.eyebrow')}
+            </p>
+            <p className="mt-2 max-w-md text-sm leading-relaxed text-blue-100">
+              {t('dashboard.websiteBanner.body')}
+            </p>
+            <span className="mt-4 inline-flex w-fit items-center gap-2 rounded-full bg-white px-4 py-1.5 text-sm font-semibold text-blue-900 transition-colors group-hover:bg-blue-50">
+              {t('dashboard.websiteBanner.action')}
+            </span>
+          </div>
+          <div className={`relative h-52 w-full md:absolute md:inset-y-0 md:h-full md:w-[42%] ${locale.toLowerCase().startsWith('he') ? 'md:left-0' : 'md:right-0'}`}>
+            <img
+              src="/portal-lawyer-commercial.jpg"
+              alt=""
+              className="h-full w-full object-cover object-[center_15%]"
+            />
+            <div className={`pointer-events-none absolute inset-y-0 hidden w-24 md:block ${locale.toLowerCase().startsWith('he') ? 'right-0 bg-gradient-to-l from-[#1e3a8a] to-transparent' : 'left-0 bg-gradient-to-r from-[#1e3a8a] to-transparent'}`} />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#0b1f4d] via-transparent to-transparent md:hidden" />
+          </div>
+        </a>
+      </div>
+
+      <section className="-mx-2 w-[calc(100%+1rem)] md:-mx-10 md:w-[calc(100%+5rem)]">
+        <div className="bg-white px-4 py-5 shadow-[0_12px_32px_rgba(22,22,29,0.06)] md:px-10 md:py-7">
+        <h2 className="text-2xl font-bold tracking-tight text-[#16161d] md:text-3xl">
+          {t('dashboard.videos.title')}
+        </h2>
+        <div className="mt-6 flex flex-col gap-6 md:flex-row md:items-center md:gap-3" dir="ltr">
+          <button
+            type="button"
+            className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f4f5f8] text-blue-900 transition-opacity disabled:opacity-30 md:inline-flex"
+            aria-label={t('dashboard.videos.previous')}
+            disabled={!canScrollVideosBack}
+            onClick={() => moveVideos(-1)}
+          >
+            <ChevronLeftIcon className="h-5 w-5" />
+          </button>
+          <div
+            ref={videoRowRef}
+            onScroll={updateVideoArrows}
+            className="flex min-w-0 flex-1 flex-col gap-6 md:snap-x md:snap-mandatory md:flex-row md:gap-4 md:overflow-x-auto md:scroll-smooth scrollbar-hide"
+          >
+          {PORTAL_VIDEOS.map((video) => (
+            <article
+              key={video.id}
+              data-video-card
+              className="w-full shrink-0 md:w-[min(88vw,32rem)] md:snap-start"
+            >
+              <div className="relative aspect-video overflow-hidden rounded-2xl bg-[#0b1f4d]">
+                {playingVideoId === video.id ? (
+                  <iframe
+                    src={`https://www.youtube-nocookie.com/embed/${video.id}?autoplay=1`}
+                    title={video.title}
+                    className="h-full w-full"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="group relative h-full w-full"
+                    onClick={() => setPlayingVideoId(video.id)}
+                    aria-label={t('dashboard.videos.play', { title: video.title })}
+                  >
+                    <img
+                      src={`https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                    <span className="absolute inset-0 bg-[#0b1f4d]/20 transition-colors group-hover:bg-[#0b1f4d]/35" />
+                    <span className="pointer-events-none absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-[#FF0000] px-2.5 py-1 text-[11px] font-bold text-white shadow-md">
+                      <FaYoutube className="h-4 w-4" aria-hidden />
+                      YouTube
+                    </span>
+                    <span className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white text-blue-900 shadow-lg">
+                      <PlayIcon className="ml-0.5 h-7 w-7" />
+                    </span>
+                  </button>
+                )}
+              </div>
+              <p className="px-1 pb-1 pt-3 text-base font-semibold leading-snug text-[#16161d]">{video.title}</p>
+            </article>
+          ))}
+          </div>
+          <button
+            type="button"
+            className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f4f5f8] text-blue-900 transition-opacity disabled:opacity-30 md:inline-flex"
+            aria-label={t('dashboard.videos.next')}
+            disabled={!canScrollVideosForward}
+            onClick={() => moveVideos(1)}
+          >
+            <ChevronRightIcon className="h-5 w-5" />
+          </button>
+        </div>
+        </div>
+      </section>
 
       {businessCardEmployee ? (
         <EmployeeBusinessCardModal

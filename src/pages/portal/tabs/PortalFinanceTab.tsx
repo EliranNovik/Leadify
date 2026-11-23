@@ -1,10 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
+import toast from 'react-hot-toast';
 import { DocumentTextIcon } from '@heroicons/react/24/outline';
 import { buildPaymentPagePath } from '../../../lib/proformaPaymentLink';
 import { buildPublicProformaUrl } from '../../../lib/proformaPublicLink';
-import type { PortalPaymentRow, PortalProformaRow } from '../../../lib/portalApi';
+import {
+  portalGetTaxInvoiceDocumentUrls,
+  type PortalPaymentRow,
+  type PortalProformaRow,
+  type PortalTaxInvoiceDocument,
+} from '../../../lib/portalApi';
 import {
   getPortalTabHeaderCoverImage,
   PortalCard,
@@ -34,6 +40,12 @@ function formatDate(d: string | null | undefined, locale?: string): string {
 
 function isPaidPayment(p: PortalPaymentRow): boolean {
   return p.paid === true || !!p.paid_at;
+}
+
+function taxInvoiceDocuments(p: PortalPaymentRow): PortalTaxInvoiceDocument[] {
+  const raw = p.tax_invoice_documents;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((doc) => Boolean(doc?.storage_path?.trim()));
 }
 
 type FinanceFilter = 'outstanding' | 'paid';
@@ -92,9 +104,17 @@ type Props = {
   payments: PortalPaymentRow[];
   proformas: PortalProformaRow[];
   isLegacy: boolean;
+  navAction?: string | null;
+  onNavActionHandled?: () => void;
 };
 
-const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) => {
+const PortalFinanceTab: React.FC<Props> = ({
+  payments,
+  proformas,
+  isLegacy,
+  navAction = null,
+  onNavActionHandled,
+}) => {
   const { t, i18n } = useTranslation();
   const locale = i18n.language;
   const outstanding = useMemo(
@@ -125,6 +145,62 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
     outstanding.length > 0 ? 'outstanding' : 'paid',
   );
 
+  useEffect(() => {
+    if (!navAction) return;
+    const targetId =
+      navAction === 'invoices'
+        ? 'portal-finance-invoices'
+        : navAction === 'taxReceipts'
+          ? 'portal-finance-tax-receipts'
+          : 'portal-finance-payments';
+    if (navAction === 'paid') setActiveFilter('paid');
+    if (navAction === 'due') setActiveFilter('outstanding');
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    onNavActionHandled?.();
+  }, [navAction, onNavActionHandled]);
+  const [openingTaxInvoiceId, setOpeningTaxInvoiceId] = useState<number | null>(null);
+
+  const openTaxInvoice = async (payment: PortalPaymentRow) => {
+    const docs = taxInvoiceDocuments(payment);
+    const newest = docs[docs.length - 1];
+    if (!newest) return;
+    setOpeningTaxInvoiceId(payment.id);
+    try {
+      const urls = await portalGetTaxInvoiceDocumentUrls(docs.map((doc) => doc.storage_path));
+      const url = urls[newest.storage_path];
+      if (!url) {
+        toast.error(t('finance.actions.taxInvoiceOpenFailed'));
+        return;
+      }
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('finance.actions.taxInvoiceOpenFailed'));
+    } finally {
+      setOpeningTaxInvoiceId(null);
+    }
+  };
+
+  const renderTaxInvoiceButton = (payment: PortalPaymentRow) => {
+    const docs = taxInvoiceDocuments(payment);
+    const newest = docs[docs.length - 1];
+    if (!newest) return null;
+    const opening = openingTaxInvoiceId === payment.id;
+    return (
+      <button
+        type="button"
+        className="btn btn-sm btn-outline"
+        disabled={opening}
+        title={newest.file_name || t('finance.actions.viewTaxInvoice')}
+        onClick={() => void openTaxInvoice(payment)}
+      >
+        {opening ? <span className="loading loading-spinner loading-xs" /> : null}
+        {t('finance.actions.viewTaxInvoice')}
+      </button>
+    );
+  };
+
   const filteredPayments = useMemo(() => {
     if (activeFilter === 'outstanding') return outstanding;
     return paid;
@@ -154,10 +230,17 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
 
   const paidInvoices = useMemo((): PaidInvoiceItem[] => {
     const items: PaidInvoiceItem[] = [];
+    const proformaTokens = new Set(
+      proformas.map((pf) => pf.public_token?.trim()).filter((token): token is string => Boolean(token)),
+    );
+    const proformaIds = new Set(proformas.map((pf) => pf.id));
 
     for (const p of paid) {
-      const invoicePath = buildInvoicePath(p);
-      if (!invoicePath) continue;
+      const token = p.public_token?.trim();
+      if (!token) continue;
+      // The same invoice is also listed from the proforma, which carries the invoice number.
+      if (proformaTokens.has(token)) continue;
+      if (p.proforma_id != null && proformaIds.has(p.proforma_id)) continue;
       const amount = Number(p.value || 0) + Number(p.value_vat || 0);
       items.push({
         key: `payment-${p.id}`,
@@ -168,7 +251,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
         url: buildPublicProformaUrl(
           p.is_legacy ? 'legacy' : 'new',
           p.is_legacy ? (p.proforma_id ?? p.id) : p.id,
-          p.public_token!,
+          token,
         ),
       });
     }
@@ -199,6 +282,15 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
     });
   }, [paid, proformas, isLegacy, t, locale]);
 
+  const taxReceipts = useMemo(
+    () =>
+      payments.filter(
+        (payment) =>
+          taxInvoiceDocuments(payment).length > 0 || Boolean(payment.payper_invoice_link?.trim()),
+      ),
+    [payments],
+  );
+
   const renderOutstandingRow = (p: PortalPaymentRow) => {
     const total = Number(p.value || 0) + Number(p.value_vat || 0);
     const payPath = p.secure_token ? buildPaymentPagePath(p.secure_token) : null;
@@ -228,6 +320,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
               {t('finance.actions.viewInvoice')}
             </a>
           )}
+          {renderTaxInvoiceButton(p)}
         </div>
       </PortalCard>
     );
@@ -237,6 +330,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
     const total = Number(p.value || 0) + Number(p.value_vat || 0);
     const invoicePath = buildInvoicePath(p);
     const taxReceiptLink = p.payper_invoice_link?.trim() || null;
+    const hasTaxInvoice = taxInvoiceDocuments(p).length > 0;
 
     return (
       <PortalCard key={p.id}>
@@ -251,13 +345,14 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
           </div>
           <PortalOriginallyDueText date={p.due_date} />
         </div>
-        {(invoicePath || taxReceiptLink) && (
+        {(invoicePath || taxReceiptLink || hasTaxInvoice) && (
           <div className="mt-3 flex flex-wrap gap-2">
             {invoicePath && (
               <a href={invoicePath} className="btn btn-sm btn-outline" target="_blank" rel="noopener noreferrer">
                 {t('finance.actions.viewInvoice')}
               </a>
             )}
+            {renderTaxInvoiceButton(p)}
             {taxReceiptLink && (
               <a
                 href={taxReceiptLink}
@@ -313,7 +408,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
         </div>
       </nav>
 
-      <section className="space-y-5">
+      <section id="portal-finance-payments" className="space-y-5">
         <PortalSectionLabel>
           {activeFilter === 'outstanding'
             ? t('finance.sections.outstanding')
@@ -332,7 +427,7 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
         )}
       </section>
 
-      <section className="space-y-5">
+      <section id="portal-finance-invoices" className="space-y-5">
         <PortalSectionLabel>{t('finance.sections.paidInvoices')}</PortalSectionLabel>
         {paidInvoices.length > 0 ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -358,6 +453,21 @@ const PortalFinanceTab: React.FC<Props> = ({ payments, proformas, isLegacy }) =>
         ) : (
           <PortalCard>
             <p className="text-sm text-base-content/45">{t('finance.empty.paidInvoices')}</p>
+          </PortalCard>
+        )}
+      </section>
+
+      <section id="portal-finance-tax-receipts" className="space-y-5">
+        <PortalSectionLabel>{t('finance.sections.taxReceipts')}</PortalSectionLabel>
+        {taxReceipts.length > 0 ? (
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {taxReceipts.map((payment) =>
+              isPaidPayment(payment) ? renderPaidRow(payment) : renderOutstandingRow(payment),
+            )}
+          </div>
+        ) : (
+          <PortalCard>
+            <p className="text-sm text-base-content/45">{t('finance.empty.taxReceipts')}</p>
           </PortalCard>
         )}
       </section>

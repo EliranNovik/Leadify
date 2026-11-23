@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   PencilSquareIcon,
   CheckIcon,
@@ -11,6 +11,7 @@ import {
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import {
+  portalCreateContact,
   portalUpdateContact,
   type PortalContactPoaRow,
   type PortalContactContractRow,
@@ -49,6 +50,8 @@ type ContactRow = {
 type Props = {
   sessionContactId?: number;
   onSessionRefresh?: () => void;
+  navAction?: string | null;
+  onNavActionHandled?: () => void;
 };
 
 function displayContactValue(value: string | null | undefined): string {
@@ -66,7 +69,12 @@ const FIELD_LABEL_KEYS: Record<'email' | 'phone' | 'mobile' | 'address' | 'id_pa
 
 const CONTACT_FIELDS = ['email', 'phone', 'mobile', 'address', 'id_passport'] as const;
 
-const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh }) => {
+const PortalContactsTab: React.FC<Props> = ({
+  sessionContactId,
+  onSessionRefresh,
+  navAction = null,
+  onNavActionHandled,
+}) => {
   const { t } = useTranslation();
   const { data, initialLoading, refresh } = usePortalTabData();
   const contacts = (data?.contacts?.contacts ?? []) as ContactRow[];
@@ -78,6 +86,17 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
   const [draft, setDraft] = useState<Partial<ContactRow>>({});
   const [saving, setSaving] = useState(false);
   const [expandedPoas, setExpandedPoas] = useState<Record<number, boolean>>({});
+  const [creating, setCreating] = useState(false);
+  const [newContact, setNewContact] = useState({ name: '', email: '', phone: '', mobile: '' });
+
+  useEffect(() => {
+    if (navAction !== 'create') return;
+    setCreating(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById('portal-new-contact')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    onNavActionHandled?.();
+  }, [navAction, onNavActionHandled]);
 
   const reloadContacts = useCallback(async () => {
     try {
@@ -121,6 +140,32 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
     }
   };
 
+  const saveNewContact = async () => {
+    const name = newContact.name.trim();
+    if (!name) {
+      toast.error(t('contacts.create.nameRequired'));
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await portalCreateContact({
+        name,
+        email: newContact.email.trim() || null,
+        phone: newContact.phone.trim() || null,
+        mobile: newContact.mobile.trim() || null,
+      });
+      if (!result.ok) throw new Error(result.error || t('contacts.create.failed'));
+      toast.success(t('contacts.create.saved'));
+      setCreating(false);
+      setNewContact({ name: '', email: '', phone: '', mobile: '' });
+      await reloadContacts();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t('contacts.create.failed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleProfileUpdated = async (contactId: number, _storagePath: string) => {
     if (sessionContactId === contactId) {
       onSessionRefresh?.();
@@ -136,6 +181,45 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
       subtitle={t('contacts.subtitle')}
       headerCoverImage={getPortalTabHeaderCoverImage('contacts')}
     >
+      {creating ? (
+        <div id="portal-new-contact">
+        <PortalCard>
+          <p className="text-sm font-semibold text-[#16161d]">{t('contacts.create.title')}</p>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {([
+              ['name', 'contacts.create.name'],
+              ['email', 'contacts.fields.email'],
+              ['phone', 'contacts.fields.phone'],
+              ['mobile', 'contacts.fields.mobile'],
+            ] as const).map(([field, labelKey]) => (
+              <label key={field} className="block text-sm">
+                <span className="mb-1 block font-medium text-gray-700">{t(labelKey)}</span>
+                <input
+                  className="input input-bordered input-sm w-full border-gray-200 bg-white"
+                  value={newContact[field]}
+                  onChange={(e) => setNewContact((current) => ({ ...current, [field]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <button type="button" className="btn btn-primary btn-sm" disabled={saving} onClick={() => void saveNewContact()}>
+              {t('contacts.create.save')}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setCreating(false);
+                setNewContact({ name: '', email: '', phone: '', mobile: '' });
+              }}
+            >
+              {t('contacts.create.cancel')}
+            </button>
+          </div>
+        </PortalCard>
+        </div>
+      ) : null}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {contacts.map((c) => {
           const isEditing = editingId === c.id;

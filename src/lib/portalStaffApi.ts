@@ -99,6 +99,35 @@ export async function portalStaffGetStatus(
   };
 }
 
+export async function portalStaffEnter(
+  leadId: string,
+  leadType: string,
+  leadNumber?: string | null,
+): Promise<{ session_token: string; lead_ref: string }> {
+  const { data, error } = await supabase.rpc(
+    'portal_staff_enter',
+    buildStaffStatusRpcArgs(leadId, leadType, leadNumber),
+  );
+
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') {
+      throw new Error(
+        `Run sql/2026-11-23_portal_staff_enter.sql in the Supabase SQL editor, then try again. (${formatRpcError(error)})`,
+      );
+    }
+    throw new Error(formatRpcError(error));
+  }
+
+  const result = parseRpcJson<{ ok?: boolean; error?: string; session_token?: string; lead_ref?: string }>(data);
+  if (result.ok === false || !result.session_token) {
+    throw new Error(result.error || 'Could not open the client portal');
+  }
+  return {
+    session_token: result.session_token,
+    lead_ref: result.lead_ref || (leadNumber || '').trim() || normalizePortalLeadId(leadId),
+  };
+}
+
 export async function portalStaffSetPassword(
   leadId: string,
   leadType: string,

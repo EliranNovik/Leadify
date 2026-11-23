@@ -6,7 +6,22 @@
     "documents": "Documents",
     "myContacts": "My contacts",
     "meetings": "Meetings",
-    "ariaCaseSections": "Case sections"
+    "ariaCaseSections": "Case sections",
+    "actions": {
+      "meetings": {
+        "create": "Create meeting",
+        "past": "Show past meetings"
+      },
+      "contacts": {
+        "create": "Create new"
+      },
+      "finance": {
+        "paid": "Paid",
+        "due": "Due",
+        "invoices": "Invoices",
+        "taxReceipts": "Tax receipts"
+      }
+    }
   },
   "layout": {
     "logoAlt": "Decker Pex & Co Law Offices",
@@ -138,7 +153,8 @@
       "morning": "Good morning",
       "afternoon": "Good afternoon",
       "evening": "Good evening",
-      "withName": "{{greeting}}, {{firstName}}"
+      "withName": "{{greeting}}, {{firstName}}",
+      "subtitle": "Here is the latest on your case."
     },
     "firstNameFallback": "there",
     "loadError": "Unable to load your dashboard.",
@@ -148,7 +164,10 @@
         "noneScheduled": "None scheduled",
         "hintTeams": "Teams meeting",
         "hintViewDetails": "View details in Meetings",
-        "hintSchedule": "Schedule a time in Meetings"
+        "hintSchedule": "Schedule a time in Meetings",
+        "join": "Join",
+        "addToCalendar": "Add to calendar",
+        "calendarTitle": "Meeting"
       },
       "nextPayment": {
         "label": "Next payment",
@@ -162,14 +181,16 @@
         "valueComplete": "Complete",
         "hintAllComplete": "All stages complete",
         "valueNoActiveStage": "No active stage",
-        "hintLatestMilestone": "Latest case milestone"
+        "hintLatestMilestone": "Latest case milestone",
+        "progress": "{{current}} of {{total}}"
       }
     },
     "nextStep": {
       "titleNext": "Next step",
       "titleOverview": "Case overview",
-      "paymentOverdue": "Your payment of {{amount}} was due {{date}}. Please complete it to keep your case on track.",
-      "paymentUpcoming": "Upcoming payment of {{amount}}{{dueSuffix}}.",
+      "paymentOverdue": "Your payment of <amount>{{amount}}</amount> was due <date>{{date}}</date>. Please complete it to keep your case on track.",
+      "paymentUpcoming": "Upcoming payment of <amount>{{amount}}</amount>.",
+      "paymentUpcomingDated": "Upcoming payment of <amount>{{amount}}</amount> due <date>{{date}}</date>.",
       "dueSuffix": " due {{date}}",
       "meetingScheduled": "Your meeting is scheduled for {{meetingLabel}}.",
       "caseInStage": "Your case is currently in {{stageName}}{{categorySuffix}}.",
@@ -183,6 +204,18 @@
         "viewDocuments": "View documents"
       }
     },
+    "contactsBanner": {
+      "eyebrow": "Unsigned documents",
+      "body": "Documents are waiting for your signature. You can check them here.",
+      "action": "Check documents"
+    },
+    "waiting": {
+      "title": "Still needed from you",
+      "sign": "Sign",
+      "upload": "Upload",
+      "poaFallback": "Power of attorney",
+      "contractFallback": "Contract"
+    },
     "recentActivity": {
       "title": "Recent activity",
       "empty": "No recent updates to show yet.",
@@ -190,6 +223,77 @@
       "paymentReceived": "Payment received on {{date}}",
       "paymentDue": "Payment due {{date}}",
       "caseMoved": "Case moved to {{stageName}}"
+    },
+    "videos": {
+      "title": "Videos",
+      "play": "Play {{title}}",
+      "previous": "Previous videos",
+      "next": "Next videos"
+    },
+    "websiteBanner": {
+      "eyebrow": "The law office",
+      "title": "Check out our website",
+      "body": "Immigration, citizenship, visas, and the full range of services from Decker, Pex, Levi.",
+      "action": "Visit lawoffice.org.il",
+      "previewTitle": "Decker, Pex, Levi Law Firm",
+      "previewBody": "Legal advice and assistance with visas, passports, and citizenship."
+    },
+    "news": {
+      "title": "News",
+      "items": {
+        "archive": {
+          "title": "Two archive researchers join the team",
+          "body": "Two German-speaking researchers have joined the office for official archive work on Austrian and German citizenship cases."
+        },
+        "payments": {
+          "title": "Pay online, securely and quickly",
+          "body": "A new online payment section is open, so you can settle what you owe from the portal in a secure, fast checkout."
+        },
+        "welcome": {
+          "title": "Welcome to the client portal",
+          "body": "Your case now has its own place. Meetings, documents, payments, and your legal team are here whenever you sign in."
+        }
+      }
+    },
+    "faq": {
+      "title": "Questions and answers",
+      "items": {
+        "pay": {
+          "question": "How do I pay what I owe?",
+          "answer": "Use Pay online on the dashboard, or open Finance and choose a payment that is due. Checkout stays on your case and is secure.",
+          "action": "Open Finance"
+        },
+        "meeting": {
+          "question": "How do I schedule a meeting?",
+          "answer": "Open Meetings and choose Create meeting. If self-scheduling is not turned on for your case, contact the office and we will set a time.",
+          "action": "Open Meetings"
+        },
+        "documents": {
+          "question": "Where are my documents?",
+          "answer": "Open Documents to download files we shared with you and to upload anything we asked for.",
+          "action": "Open Documents"
+        },
+        "upload": {
+          "question": "How do I upload documents?",
+          "answer": "Open Documents, then use the upload area at the top. Drag files onto it, or click to choose them from your device. They are added to your case once the upload finishes.",
+          "action": "Open Documents"
+        },
+        "team": {
+          "question": "Who is handling my case?",
+          "answer": "Your legal team is listed on the dashboard. You can email, call, or message the person shown on their card.",
+          "action": "See your legal team"
+        },
+        "contact": {
+          "question": "Who is my contact person?",
+          "answer": "Your contact person is the case handler on the dashboard, marked as the main contact. Use the email, call, or WhatsApp buttons on that card to reach them.",
+          "action": "See your contact person"
+        },
+        "status": {
+          "question": "How do I see where my case stands?",
+          "answer": "Case Status shows the current stage. The next step on the dashboard tells you what to do now.",
+          "action": "Open Case Status"
+        }
+      }
     },
     "team": {
       "title": "Your legal team",
@@ -366,12 +470,14 @@
     "sections": {
       "outstanding": "Outstanding",
       "paymentHistory": "Payment history",
-      "paidInvoices": "Paid invoices"
+      "paidInvoices": "Paid invoices",
+      "taxReceipts": "Tax receipts"
     },
     "empty": {
       "outstanding": "No outstanding payments.",
       "paid": "No completed payments yet.",
-      "paidInvoices": "Invoices will appear here after payments are completed."
+      "paidInvoices": "Invoices will appear here after payments are completed.",
+      "taxReceipts": "Tax receipts will appear here after a receipt is issued."
     },
     "paymentTitles": {
       "default": "Payment",
@@ -388,7 +494,9 @@
       "taxReceipt": "Tax receipt",
       "taxReceiptNumber": "Tax receipt #{{number}}",
       "viewTaxReceiptTitle": "View tax receipt",
-      "viewTaxReceiptWithNumberTitle": "Tax receipt #{{number}}"
+      "viewTaxReceiptWithNumberTitle": "Tax receipt #{{number}}",
+      "viewTaxInvoice": "Tax receipt",
+      "taxInvoiceOpenFailed": "Could not open the tax receipt"
     },
     "invoiceRow": {
       "invoiceWithAmount": "Invoice — {{amount}}",
@@ -467,6 +575,15 @@
       "idPassport": "ID / Passport"
     },
     "editContactAria": "Edit contact",
+    "create": {
+      "title": "New contact",
+      "name": "Name",
+      "nameRequired": "Enter a name for the new contact.",
+      "save": "Save contact",
+      "cancel": "Cancel",
+      "saved": "Contact added",
+      "failed": "Could not add the contact"
+    },
     "contractsSection": "Contracts",
     "contractTitleFallback": "Contract",
     "poaSection": "Power of Attorney",
@@ -493,7 +610,8 @@
       "past": "Past meetings"
     },
     "emptyUpcoming": "No upcoming meetings scheduled.",
-    "bookingAccessUnavailable": "Self-scheduling is not available for your case.",
+    "emptyPast": "No past meetings.",
+    "bookingAccessUnavailable": "Self-scheduling is not enabled for your case. Please contact our office.",
     "bookingAccessLoadFailed": "Could not load scheduling"
   }
 }

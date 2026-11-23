@@ -22,7 +22,7 @@ export const PORTAL_DASHBOARD_CONTAINER =
 export const PORTAL_TEAM_CARD_CLASS =
   'rounded-3xl border border-[rgba(20,20,30,0.06)] bg-white/[0.92] shadow-[0_18px_45px_rgba(15,23,42,0.06)]';
 export const PORTAL_NEXT_STEP_CARD_CLASS =
-  'relative overflow-hidden rounded-[22px] border border-white/70 bg-white shadow-[0_22px_50px_rgba(0,0,0,0.18)]';
+  'relative flex flex-col gap-4 rounded-3xl bg-gradient-to-br from-[#1e40af] via-[#1e3a8a] to-[#0b1f4d] px-5 py-5 text-white shadow-[0_18px_45px_rgba(30,58,138,0.28)] md:flex-row md:items-center md:justify-between md:gap-6 md:px-6';
 
 /** Charcoal gradient — client portal about panel & matching surfaces */
 export const PORTAL_LOGIN_PANEL_BG_CLASS =
@@ -580,13 +580,13 @@ export function PortalStatCard({
   const [imgBroken, setImgBroken] = useState(false);
   const hasPhoto = Boolean(coverImageUrl && !imgBroken);
 
-  const cardClassName = `group relative flex h-full w-full flex-col overflow-hidden rounded-[20px] text-left transition-all duration-300 ${
+  const cardClassName = `group relative flex h-full w-full flex-col overflow-hidden text-start transition-shadow duration-300 ${
     hasPhoto
-      ? 'border-0 bg-white shadow-[0_8px_28px_rgba(15,23,42,0.1)] hover:shadow-[0_12px_36px_rgba(15,23,42,0.14)]'
-      : `min-h-[145px] border p-4 lg:min-h-[145px] lg:p-4 ${theme.border} ${theme.bg} shadow-sm hover:shadow-md`
+      ? 'rounded-3xl border-0 bg-white shadow-[0_10px_30px_rgba(22,22,29,0.06)] hover:shadow-[0_16px_40px_rgba(22,22,29,0.1)]'
+      : `min-h-[145px] rounded-[20px] border p-4 lg:min-h-[145px] lg:p-4 ${theme.border} ${theme.bg} shadow-sm hover:shadow-md`
   } ${
     onClick
-      ? 'cursor-pointer hover:scale-[1.005] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-900/30'
+      ? 'cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/40'
       : ''
   }`;
 
@@ -628,24 +628,30 @@ export function PortalStatCard({
 
   const content = hasPhoto ? (
     <>
-      <div className="relative h-36 w-full shrink-0 overflow-hidden bg-[#f1f2f6]">
+      <div className="relative h-36 w-full shrink-0 overflow-hidden bg-[#f3f4f6]">
         <img
           src={coverImageUrl!}
           alt=""
-          className="h-full w-full object-cover"
+          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setImgBroken(true)}
         />
-        <span
-          className={`absolute left-3 top-3 rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] shadow-sm backdrop-blur-sm lg:text-xs ${theme.bg} ${theme.subtitle}`}
-        >
-          {label}
-        </span>
       </div>
-      <div className="flex h-full flex-col p-4 pt-3">
-        {details({ chevronFirst: true })}
-        {actionBlock}
+      <div className="flex items-center gap-3 px-4 py-3.5">
+        <Icon className="h-8 w-8 shrink-0 text-[#a0a4ad]" aria-hidden />
+        <div className="min-w-0 flex-1 text-start">
+          <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#8b909a] rtl:text-sm rtl:tracking-normal">{label}</p>
+          <div className="mt-0.5 flex min-w-0 items-center justify-start gap-2">
+            <p className="min-w-0 truncate text-start text-[15px] font-medium leading-snug tracking-tight text-[#1c1c22]">
+              {value}
+            </p>
+            {badge ? <span className="inline-flex shrink-0">{badge}</span> : null}
+          </div>
+        </div>
+        {showChevron && onClick ? (
+          <ChevronRightIcon className="h-4 w-4 shrink-0 text-[#c5c8d0]" aria-hidden />
+        ) : null}
       </div>
     </>
   ) : (
@@ -662,6 +668,17 @@ export function PortalStatCard({
       {actionBlock}
     </>
   );
+
+  if (hasPhoto && action && onClick) {
+    return (
+      <div className={cardClassName}>
+        <button type="button" onClick={onClick} className="flex w-full flex-col text-left">
+          {content}
+        </button>
+        <div className="flex flex-wrap gap-2 px-4 pb-4">{action}</div>
+      </div>
+    );
+  }
 
   if (onClick) {
     return (

@@ -12,6 +12,34 @@ const OPTIONS: { code: PortalAppLocale; label: string }[] = [
   { code: 'he', label: 'עברית' },
 ];
 
+function RoundFlag({ code }: { code: PortalAppLocale }) {
+  if (code === 'he') {
+    return (
+      <span className="inline-flex h-5 w-5 shrink-0 overflow-hidden rounded-full ring-1 ring-black/10" aria-hidden>
+        <svg viewBox="0 0 60 60" className="h-full w-full">
+          <rect width="60" height="60" fill="#fff" />
+          <rect y="9" width="60" height="8" fill="#0038b8" />
+          <rect y="43" width="60" height="8" fill="#0038b8" />
+          <polygon points="30,18 39,34 21,34" fill="none" stroke="#0038b8" strokeWidth="2.2" />
+          <polygon points="30,36 21,20 39,20" fill="none" stroke="#0038b8" strokeWidth="2.2" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex h-5 w-5 shrink-0 overflow-hidden rounded-full ring-1 ring-black/10" aria-hidden>
+      <svg viewBox="0 0 60 60" className="h-full w-full">
+        <rect width="60" height="60" fill="#012169" />
+        <path d="M0 0 L60 60 M60 0 L0 60" stroke="#fff" strokeWidth="14" />
+        <path d="M0 0 L60 60 M60 0 L0 60" stroke="#C8102E" strokeWidth="8" />
+        <path d="M30 0 V60 M0 30 H60" stroke="#fff" strokeWidth="22" />
+        <path d="M30 0 V60 M0 30 H60" stroke="#C8102E" strokeWidth="12" />
+      </svg>
+    </span>
+  );
+}
+
 type Props = {
   /** Compact control for the authenticated header next to the user menu. */
   compact?: boolean;
@@ -49,11 +77,12 @@ const PortalAppLanguageSwitcher: React.FC<Props> = ({ compact = true }) => {
             <button
               key={option.code}
               type="button"
-              className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${
+              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-gray-50 ${
                 locale === option.code ? 'bg-primary/10 font-semibold text-primary' : 'text-gray-700'
               }`}
               onClick={() => setLocale(option.code)}
             >
+              <RoundFlag code={option.code} />
               {option.label}
             </button>
           ))}
@@ -64,12 +93,13 @@ const PortalAppLanguageSwitcher: React.FC<Props> = ({ compact = true }) => {
         onClick={() => setOpen((v) => !v)}
         className={
           compact
-            ? 'inline-flex items-center gap-1 rounded-full border border-gray-200/80 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50 sm:px-3 sm:text-[13px]'
+            ? 'inline-flex items-center gap-1.5 rounded-full border border-gray-200/80 bg-white px-2 py-1.5 text-xs font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50 sm:px-2.5 sm:text-[13px]'
             : 'inline-flex items-center gap-1.5 rounded-full border border-gray-200/80 bg-white/95 px-3 py-2 text-[13px] font-normal text-gray-600 shadow-sm transition-shadow hover:shadow'
         }
         aria-expanded={open}
         aria-label={t('common.language')}
       >
+        <RoundFlag code={locale} />
         <span className="sm:hidden">{locale.toUpperCase()}</span>
         <span className="hidden sm:inline">{currentLabel}</span>
         <ChevronDownIcon className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />

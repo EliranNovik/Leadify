@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { portalValidateSession } from '../../lib/portalApi';
 import {
   clearPortalSession,
+  consumeStaffPortalSession,
   getPortalLeadRef,
   getPortalSessionToken,
 } from '../../lib/portalSession';
@@ -28,6 +29,10 @@ export function usePortalSession(requireValid = false): PortalSessionState {
 
   const storedLeadRef = getPortalLeadRef();
   const leadRef = routeLeadRef ?? storedLeadRef;
+
+  useLayoutEffect(() => {
+    consumeStaffPortalSession(routeLeadRef);
+  }, [routeLeadRef]);
 
   const refresh = useCallback(async () => {
     const token = getPortalSessionToken();

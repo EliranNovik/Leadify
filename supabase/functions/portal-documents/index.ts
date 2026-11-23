@@ -3,6 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
 
 const BUCKET = 'lead-sub-efforts-documents';
+const TAX_INVOICE_BUCKET = 'payment-plan-tax-invoice-documents';
 const SIGNED_SECONDS = 60 * 60 * 24;
 
 type LeadSummary = {
@@ -109,6 +110,79 @@ serve(async (req) => {
 
     const leadSummary = sessionData.lead_summary as LeadSummary | undefined;
     const urls: Record<string, string> = {};
+    const bucket = String(body.bucket ?? '').trim();
+
+    if (bucket === TAX_INVOICE_BUCKET) {
+      const { data: docRows, error: docErr } = await admin
+        .from('payment_plan_tax_invoice_documents')
+        .select('storage_path, payment_plan_id, is_legacy')
+        .in('storage_path', storagePaths);
+      if (docErr) throw docErr;
+
+      const rows = (docRows ?? []) as Array<{
+        storage_path: string;
+        payment_plan_id: number;
+        is_legacy: boolean;
+      }>;
+      const newIds = rows.filter((row) => !row.is_legacy).map((row) => row.payment_plan_id);
+      const legacyIds = rows.filter((row) => row.is_legacy).map((row) => row.payment_plan_id);
+      const allowedPlanIds = new Set<string>();
+
+      if (newIds.length && leadSummary?.new_lead_id) {
+        const { data: plans, error: planErr } = await admin
+          .from('payment_plans')
+          .select('id, lead_id')
+          .in('id', newIds);
+        if (planErr) throw planErr;
+        for (const plan of plans ?? []) {
+          if (String(plan.lead_id) === String(leadSummary.new_lead_id)) {
+            allowedPlanIds.add(`new:${plan.id}`);
+          }
+        }
+      }
+      if (legacyIds.length && leadSummary?.legacy_lead_id != null && leadSummary.legacy_lead_id !== '') {
+        const { data: plans, error: planErr } = await admin
+          .from('finances_paymentplanrow')
+          .select('id, lead_id')
+          .in('id', legacyIds);
+        if (planErr) throw planErr;
+        for (const plan of plans ?? []) {
+          if (String(plan.lead_id) === String(leadSummary.legacy_lead_id)) {
+            allowedPlanIds.add(`legacy:${plan.id}`);
+          }
+        }
+      }
+
+      const signErrors: string[] = [];
+      for (const row of rows) {
+        const key = `${row.is_legacy ? 'legacy' : 'new'}:${row.payment_plan_id}`;
+        if (!allowedPlanIds.has(key)) continue;
+        const { data, error } = await admin.storage
+          .from(TAX_INVOICE_BUCKET)
+          .createSignedUrl(row.storage_path, SIGNED_SECONDS);
+        if (!error && data?.signedUrl) {
+          urls[row.storage_path] = data.signedUrl;
+        } else if (error?.message) {
+          signErrors.push(error.message);
+        }
+      }
+
+      if (!Object.keys(urls).length) {
+        const error = !rows.length
+          ? 'Tax invoice file was not found'
+          : !allowedPlanIds.size
+            ? 'Tax invoice does not belong to this case'
+            : signErrors[0] || 'Could not sign the tax invoice';
+        return new Response(JSON.stringify({ ok: false, error }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({ ok: true, urls }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     for (const path of storagePaths) {
       if (!isStoragePathAllowed(path, leadSummary)) continue;

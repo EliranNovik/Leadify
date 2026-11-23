@@ -6,7 +6,22 @@
     "documents": "מסמכים",
     "myContacts": "אנשי הקשר שלי",
     "meetings": "פגישות",
-    "ariaCaseSections": "אזורי התיק"
+    "ariaCaseSections": "אזורי התיק",
+    "actions": {
+      "meetings": {
+        "create": "קביעת פגישה",
+        "past": "הצגת פגישות קודמות"
+      },
+      "contacts": {
+        "create": "יצירת איש קשר"
+      },
+      "finance": {
+        "paid": "שולמו",
+        "due": "לתשלום",
+        "invoices": "חשבוניות",
+        "taxReceipts": "קבלות מס"
+      }
+    }
   },
   "layout": {
     "logoAlt": "משרד עורכי דין Decker Pex & Co",
@@ -138,7 +153,8 @@
       "morning": "בוקר טוב",
       "afternoon": "צהריים טובים",
       "evening": "ערב טוב",
-      "withName": "{{greeting}}, {{firstName}}"
+      "withName": "{{greeting}}, {{firstName}}",
+      "subtitle": "הנה העדכון האחרון בתיק שלך."
     },
     "firstNameFallback": "לכם",
     "loadError": "לא ניתן לטעון את לוח הבקרה.",
@@ -148,7 +164,10 @@
         "noneScheduled": "לא נקבעה פגישה",
         "hintTeams": "פגישת Teams",
         "hintViewDetails": "פרטים נוספים בפגישות",
-        "hintSchedule": "קביעת מועד בפגישות"
+        "hintSchedule": "קביעת מועד בפגישות",
+        "join": "הצטרפות",
+        "addToCalendar": "הוספה ליומן",
+        "calendarTitle": "פגישה"
       },
       "nextPayment": {
         "label": "התשלום הבא",
@@ -162,14 +181,16 @@
         "valueComplete": "הושלם",
         "hintAllComplete": "כל השלבים הושלמו",
         "valueNoActiveStage": "אין שלב פעיל",
-        "hintLatestMilestone": "אבן הדרך האחרונה בתיק"
+        "hintLatestMilestone": "אבן הדרך האחרונה בתיק",
+        "progress": "{{current}} מתוך {{total}}"
       }
     },
     "nextStep": {
       "titleNext": "הצעד הבא",
       "titleOverview": "סקירת התיק",
-      "paymentOverdue": "תשלום בסך {{amount}} היה אמור להיות משולם עד {{date}}. יש להשלים את התשלום כדי להמשיך בטיפול בתיק.",
-      "paymentUpcoming": "תשלום קרוב בסך {{amount}}{{dueSuffix}}.",
+      "paymentOverdue": "תשלום בסך <amount>{{amount}}</amount> היה אמור להיות משולם עד <date>{{date}}</date>. יש להשלים את התשלום כדי להמשיך בטיפול בתיק.",
+      "paymentUpcoming": "תשלום קרוב בסך <amount>{{amount}}</amount>.",
+      "paymentUpcomingDated": "תשלום קרוב בסך <amount>{{amount}}</amount> — לתשלום עד <date>{{date}}</date>.",
       "dueSuffix": " — לתשלום עד {{date}}",
       "meetingScheduled": "הפגישה שלכם נקבעה ל-{{meetingLabel}}.",
       "caseInStage": "התיק שלכם נמצא כעת בשלב {{stageName}}{{categorySuffix}}.",
@@ -183,6 +204,18 @@
         "viewDocuments": "צפייה במסמכים"
       }
     },
+    "contactsBanner": {
+      "eyebrow": "מסמכים לחתימה",
+      "body": "יש מסמכים שממתינים לחתימתך. אפשר לבדוק אותם כאן.",
+      "action": "לבדיקת המסמכים"
+    },
+    "waiting": {
+      "title": "עדיין נדרש ממך",
+      "sign": "לחתימה",
+      "upload": "העלאה",
+      "poaFallback": "ייפוי כוח",
+      "contractFallback": "חוזה"
+    },
     "recentActivity": {
       "title": "פעילות אחרונה",
       "empty": "אין עדכונים אחרונים להצגה.",
@@ -190,6 +223,77 @@
       "paymentReceived": "תשלום התקבל ב-{{date}}",
       "paymentDue": "תשלום לתאריך {{date}}",
       "caseMoved": "התיק עבר לשלב {{stageName}}"
+    },
+    "videos": {
+      "title": "סרטונים",
+      "play": "ניגון {{title}}",
+      "previous": "סרטונים קודמים",
+      "next": "סרטונים הבאים"
+    },
+    "websiteBanner": {
+      "eyebrow": "משרד עורכי הדין",
+      "title": "בקרו באתר המשרד",
+      "body": "הגירה, אזרחות, אשרות ומגוון השירותים של דקר, פקס, לוי.",
+      "action": "לאתר lawoffice.org.il",
+      "previewTitle": "Decker, Pex, Levi Law Firm",
+      "previewBody": "ייעוץ משפטי וסיוע באשרות, דרכונים ואזרחות."
+    },
+    "news": {
+      "title": "חדשות",
+      "items": {
+        "archive": {
+          "title": "שני חוקרי ארכיון הצטרפו לצוות",
+          "body": "שני חוקרים דוברי גרמנית הצטרפו למשרד לחיפושי ארכיון רשמיים בתיקי אזרחות אוסטרית וגרמנית."
+        },
+        "payments": {
+          "title": "תשלום מקוון, מאובטח ומהיר",
+          "body": "נפתח אזור תשלומים מקוון חדש, כך שאפשר להסדיר את התשלום מהפורטל בצורה מאובטחת ומהירה."
+        },
+        "welcome": {
+          "title": "ברוכים הבאים לפורטל הלקוחות",
+          "body": "לתיק שלכם יש עכשיו מקום משלו. פגישות, מסמכים, תשלומים והצוות המשפטי מחכים כאן בכל כניסה."
+        }
+      }
+    },
+    "faq": {
+      "title": "שאלות ותשובות",
+      "items": {
+        "pay": {
+          "question": "איך משלמים את מה שחייבים?",
+          "answer": "אפשר ללחוץ על תשלום מקוון בלוח הבקרה, או לפתוח את כספים ולבחור תשלום שמועד הפירעון שלו הגיע. התשלום נשאר על התיק ומתבצע באופן מאובטח.",
+          "action": "לכספים"
+        },
+        "meeting": {
+          "question": "איך קובעים פגישה?",
+          "answer": "פותחים את פגישות ובוחרים קביעת פגישה. אם קביעה עצמית אינה מופעלת לתיק, פונים למשרד ונקבע מועד.",
+          "action": "לפגישות"
+        },
+        "documents": {
+          "question": "איפה המסמכים שלי?",
+          "answer": "במסמכים אפשר להוריד קבצים ששיתפנו ולהעלות כל מה שביקשנו.",
+          "action": "למסמכים"
+        },
+        "upload": {
+          "question": "איך מעלים מסמכים?",
+          "answer": "פותחים את מסמכים ומשתמשים באזור ההעלאה למעלה. אפשר לגרור קבצים לתוכו או ללחוץ ולבחור אותם מהמכשיר. הם מתווספים לתיק כשההעלאה מסתיימת.",
+          "action": "למסמכים"
+        },
+        "team": {
+          "question": "מי מטפל בתיק שלי?",
+          "answer": "הצוות המשפטי מופיע בלוח הבקרה. אפשר לשלוח דוא״ל, להתקשר או לשלוח הודעה לאדם שמופיע בכרטיס.",
+          "action": "לצוות המשפטי"
+        },
+        "contact": {
+          "question": "מי איש הקשר שלי?",
+          "answer": "איש הקשר הוא המטפל בתיק בלוח הבקרה, המסומן כאיש הקשר הראשי. אפשר לפנות אליו בכפתורי הדוא״ל, השיחה או הוואטסאפ שבכרטיס.",
+          "action": "לאיש הקשר"
+        },
+        "status": {
+          "question": "איך רואים איפה התיק עומד?",
+          "answer": "סטטוס התיק מציג את השלב הנוכחי. הצעד הבא בלוח הבקרה אומר מה צריך לעשות עכשיו.",
+          "action": "לסטטוס התיק"
+        }
+      }
     },
     "team": {
       "title": "צוות המשפטי שלכם",
@@ -367,12 +471,14 @@
     "sections": {
       "outstanding": "ממתינים לתשלום",
       "paymentHistory": "היסטוריית תשלומים",
-      "paidInvoices": "חשבוניות ששולמו"
+      "paidInvoices": "חשבוניות ששולמו",
+      "taxReceipts": "קבלות מס"
     },
     "empty": {
       "outstanding": "אין תשלומים ממתינים.",
       "paid": "אין תשלומים שהושלמו עדיין.",
-      "paidInvoices": "חשבוניות יופיעו כאן לאחר השלמת התשלומים."
+      "paidInvoices": "חשבוניות יופיעו כאן לאחר השלמת התשלומים.",
+      "taxReceipts": "קבלות מס יופיעו כאן לאחר הנפקת קבלה."
     },
     "paymentTitles": {
       "default": "תשלום",
@@ -389,7 +495,9 @@
       "taxReceipt": "קבלה מס",
       "taxReceiptNumber": "קבלה מס מס׳ {{number}}",
       "viewTaxReceiptTitle": "צפייה בקבלה מס",
-      "viewTaxReceiptWithNumberTitle": "קבלה מס מס׳ {{number}}"
+      "viewTaxReceiptWithNumberTitle": "קבלה מס מס׳ {{number}}",
+      "viewTaxInvoice": "קבלה מס",
+      "taxInvoiceOpenFailed": "לא ניתן לפתוח את הקבלה"
     },
     "invoiceRow": {
       "invoiceWithAmount": "חשבונית — {{amount}}",
@@ -468,6 +576,15 @@
       "idPassport": "ת.ז. / דרכון"
     },
     "editContactAria": "עריכת איש קשר",
+    "create": {
+      "title": "איש קשר חדש",
+      "name": "שם",
+      "nameRequired": "יש להזין שם לאיש הקשר החדש.",
+      "save": "שמירת איש קשר",
+      "cancel": "ביטול",
+      "saved": "איש הקשר נוסף",
+      "failed": "לא ניתן להוסיף את איש הקשר"
+    },
     "contractsSection": "חוזים",
     "contractTitleFallback": "חוזה",
     "poaSection": "ייפוי כוח",
@@ -494,7 +611,8 @@
       "past": "פגישות קודמות"
     },
     "emptyUpcoming": "אין פגישות קרובות.",
-    "bookingAccessUnavailable": "קביעת תורים עצמית אינה זמינה לתיק שלכם.",
+    "emptyPast": "אין פגישות קודמות.",
+    "bookingAccessUnavailable": "קביעת תורים עצמית אינה מופעלת לתיק שלכם. אנא צרו קשר עם המשרד.",
     "bookingAccessLoadFailed": "לא ניתן לטעון את מערכת הקביעה"
   }
 }

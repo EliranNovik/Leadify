@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowsRightLeftIcon,
   EnvelopeIcon,
@@ -50,9 +51,9 @@ const EmployeeBusinessCardModal: React.FC<Props> = ({ employee, open, onClose })
   const photoSrc = employee.photo_url || 'https://ui-avatars.com/api/?background=random';
   const backgroundUrl = employee.chat_background_image_url || DEFAULT_BACKGROUND;
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm print-hide"
+      className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm print-hide"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -248,7 +249,8 @@ const EmployeeBusinessCardModal: React.FC<Props> = ({ employee, open, onClose })
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

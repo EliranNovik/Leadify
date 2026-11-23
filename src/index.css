@@ -793,6 +793,17 @@ body:has(main.clients-detail-scroll) .navbar {
     -webkit-overflow-scrolling: touch;
     touch-action: pan-y;
   }
+
+  /* Signed-in client portal has no .app-main-scroll. Without this, the fixed
+     shell clips every tab and the phone cannot scroll. */
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div.portal-page-shell {
+    height: 100% !important;
+    max-height: 100% !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
 }
 @media (min-width: 768px) {
   .app-main-scroll {
@@ -2504,6 +2515,35 @@ html.dark.theme-dark2 .hover\:bg-base-200:hover {
 .portal-brand {
   --portal-brand: 30 58 138;
   --portal-brand-dark: 23 37 84;
+}
+
+/* One line drawing on the right edge. The file is transparent, so no white sheet. */
+.portal-dashboard-wash {
+  background-color: #f7f8fc;
+  background-image: url('/portal-dashboard-scene.png?v=5');
+  background-repeat: no-repeat;
+  background-position: right -12px center;
+  background-size: auto 70vh;
+}
+
+@media (min-width: 768px) {
+  .portal-dashboard-wash {
+    background-attachment: fixed;
+    background-position: right 8px center;
+    background-size: auto min(88vh, 920px);
+  }
+}
+
+/* Hebrew: the same drawing sits on the left, and the fade faces the page. */
+[dir='rtl'] .portal-dashboard-wash {
+  background-image: url('/portal-dashboard-scene-rtl.png?v=1');
+  background-position: left -12px center;
+}
+
+@media (min-width: 768px) {
+  [dir='rtl'] .portal-dashboard-wash {
+    background-position: left 8px center;
+  }
 }
 
 .portal-brand .text-primary {
