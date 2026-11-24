@@ -309,6 +309,178 @@ export async function createTeamsMeeting(accessToken: string, meetingDetails: {
   };
 }
 
+const GRAPH_WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+
+type StaffRecurrenceInput = {
+  isRecurring?: boolean;
+  recurrencePattern?: 'daily' | 'weekly' | 'monthly';
+  recurrenceInterval?: number;
+  recurrenceEndDate?: string | null;
+  startDateTime: string;
+};
+
+/**
+ * Outlook rejects `monthly`. The Graph pattern type for "on this day of the month" is absoluteMonthly,
+ * and a weekly series is invalid unless daysOfWeek includes the meeting's own weekday.
+ */
+export function buildStaffEventRecurrence(details: StaffRecurrenceInput): {
+  pattern: Record<string, unknown>;
+  range: Record<string, unknown>;
+} | null {
+  if (!details.isRecurring) return null;
+
+  const startDate = String(details.startDateTime || '').split('T')[0];
+  const [year, month, day] = startDate.split('-').map((part) => Number(part));
+  if (!year || !month || !day) {
+    throw new Error('A meeting date is required before a recurring series can be created.');
+  }
+
+  const weekday = GRAPH_WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+  const patternType =
+    details.recurrencePattern === 'daily'
+      ? 'daily'
+      : details.recurrencePattern === 'monthly'
+        ? 'absoluteMonthly'
+        : 'weekly';
+  const pattern: Record<string, unknown> = {
+    type: patternType,
+    interval: Math.max(1, Math.trunc(Number(details.recurrenceInterval) || 1)),
+  };
+  if (patternType === 'weekly') pattern.daysOfWeek = [weekday];
+  if (patternType === 'absoluteMonthly') pattern.dayOfMonth = day;
+
+  const endDate = details.recurrenceEndDate ? String(details.recurrenceEndDate).split('T')[0] : '';
+  if (endDate && endDate < startDate) {
+    throw new Error('The recurrence end date has to be on or after the meeting date.');
+  }
+
+  const range: Record<string, unknown> = {
+    type: endDate ? 'endDate' : 'noEnd',
+    startDate,
+  };
+  if (endDate) range.endDate = endDate;
+  return { pattern, range };
+}
+
+async function graphErrorMessage(response: Response, fallback: string): Promise<string> {
+  const error = await response.json().catch(() => ({}));
+  return error?.error?.message || fallback;
+}
+
+/**
+ * Graph will not accept isOnlineMeeting on the same request as recurrence.
+ * Create the series first, then turn Teams on. If that second step fails, remove the series
+ * so a retry does not leave a duplicate on the staff calendar.
+ */
+async function enableTeamsOnCalendarEvent(
+  accessToken: string,
+  calendarEmail: string,
+  eventId: string,
+): Promise<any> {
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/events/${encodeURIComponent(eventId)}`;
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      isOnlineMeeting: true,
+      onlineMeetingProvider: 'teamsForBusiness',
+    }),
+  });
+  if (!response.ok) {
+    const message = await graphErrorMessage(response, 'Teams could not be added to the recurring meeting.');
+    await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }).catch(() => {});
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function graphInstantToIso(value: { dateTime?: string; timeZone?: string } | undefined): string {
+  const raw = String(value?.dateTime || '').trim();
+  if (!raw) return '';
+  if (/[zZ]$/.test(raw) || /[+-]\d{2}:\d{2}$/.test(raw)) {
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+  }
+  const zone = String(value?.timeZone || '').toLowerCase();
+  const utc =
+    zone === 'utc' ||
+    zone.includes('coordinated universal') ||
+    zone === 'tzone://microsoft/utc';
+  const normalized = raw.replace(/\.\d+$/, '') + (utc ? 'Z' : '');
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString();
+}
+
+/** How far to expand a series that has no end date, so the calendar can list each date. */
+export function recurringSeriesWindowEnd(
+  start: Date,
+  pattern: 'daily' | 'weekly' | 'monthly' | undefined,
+  endDateYmd: string | null,
+): Date {
+  if (endDateYmd) {
+    const [year, month, day] = endDateYmd.split('-').map((part) => Number(part));
+    if (year && month && day) return new Date(year, month - 1, day, 23, 59, 59);
+  }
+  const end = new Date(start.getTime());
+  if (pattern === 'daily') end.setDate(end.getDate() + 90);
+  else if (pattern === 'monthly') end.setMonth(end.getMonth() + 18);
+  else end.setDate(end.getDate() + 7 * 52);
+  return end;
+}
+
+export type CalendarSeriesInstance = { id: string; startIso: string; endIso: string };
+
+/** Occurrences of a series master. Graph requires both ends of the window. */
+export async function listCalendarSeriesInstances(
+  accessToken: string,
+  calendarEmail: string,
+  seriesId: string,
+  rangeStartIso: string,
+  rangeEndIso: string,
+): Promise<CalendarSeriesInstance[]> {
+  const instances: CalendarSeriesInstance[] = [];
+  let nextUrl: string | null =
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}` +
+    `/events/${encodeURIComponent(seriesId)}/instances` +
+    `?startDateTime=${encodeURIComponent(rangeStartIso)}` +
+    `&endDateTime=${encodeURIComponent(rangeEndIso)}` +
+    `&$select=id,start,end,type&$top=100`;
+
+  for (let page = 0; page < 8 && nextUrl; page++) {
+    const response = await fetch(nextUrl, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Prefer: 'outlook.timezone="UTC"',
+      },
+    });
+    if (!response.ok) {
+      throw new Error(await graphErrorMessage(response, 'Could not list the recurring meeting dates.'));
+    }
+    const data = await response.json();
+    for (const row of Array.isArray(data?.value) ? data.value : []) {
+      const id = String(row?.id || '').trim();
+      const startIso = graphInstantToIso(row?.start);
+      const endIso = graphInstantToIso(row?.end);
+      if (!id || !startIso || !endIso) continue;
+      if (String(row?.type || '').toLowerCase() === 'seriesmaster') continue;
+      instances.push({ id, startIso, endIso });
+    }
+    nextUrl = typeof data?.['@odata.nextLink'] === 'string' ? data['@odata.nextLink'] : null;
+  }
+
+  const byStart = new Map<string, CalendarSeriesInstance>();
+  for (const instance of instances) {
+    if (!byStart.has(instance.startIso)) byStart.set(instance.startIso, instance);
+  }
+  return Array.from(byStart.values()).sort((a, b) => a.startIso.localeCompare(b.startIso));
+}
+
 export async function createStaffTeamsMeeting(
   accessToken: string,
   meetingDetails: {
@@ -325,16 +497,18 @@ export async function createStaffTeamsMeeting(
   // Create meeting in staff calendar
   const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events`;
-  
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const recurrence = buildStaffEventRecurrence(meetingDetails);
+
   const body: any = {
     subject: meetingDetails.subject,
     start: {
       dateTime: meetingDetails.startDateTime,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      timeZone
     },
     end: {
       dateTime: meetingDetails.endDateTime,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      timeZone
     },
     // Removed attendees to prevent automatic email invitations
     // attendees: (meetingDetails.attendees || []).map(a => ({
@@ -343,46 +517,14 @@ export async function createStaffTeamsMeeting(
     //   },
     //   type: 'required'
     // })),
-    isOnlineMeeting: true,
-    onlineMeetingProvider: 'teamsForBusiness'
   };
 
-  // Add recurrence if specified
-  if (meetingDetails.isRecurring) {
-    const startDate = new Date(meetingDetails.startDateTime);
-    const dayOfWeek = startDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
-    
-    // Map JavaScript day numbers to Microsoft Graph day names
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const dayOfWeekName = dayNames[dayOfWeek];
-    
-    const recurrence: any = {
-      pattern: {
-        type: meetingDetails.recurrencePattern || 'weekly',
-        interval: meetingDetails.recurrenceInterval || 1
-      },
-      range: {
-        type: meetingDetails.recurrenceEndDate ? 'endDate' : 'noEnd',
-        startDate: meetingDetails.startDateTime.split('T')[0],
-        ...(meetingDetails.recurrenceEndDate && {
-          endDate: meetingDetails.recurrenceEndDate.split('T')[0]
-        })
-      }
-    };
-
-    // Add daysOfWeek for weekly pattern
-    if (meetingDetails.recurrencePattern === 'weekly') {
-      recurrence.pattern.daysOfWeek = [dayOfWeekName];
-    }
-    
-    // Add dayOfMonth for monthly pattern
-    if (meetingDetails.recurrencePattern === 'monthly') {
-      recurrence.pattern.dayOfMonth = startDate.getDate();
-    }
-
+  if (recurrence) {
     body.recurrence = recurrence;
+  } else {
+    body.isOnlineMeeting = true;
+    body.onlineMeetingProvider = 'teamsForBusiness';
   }
-
 
   const response = await fetch(url, {
     method: 'POST',
@@ -394,11 +536,13 @@ export async function createStaffTeamsMeeting(
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error?.message || `Failed to create Staff Teams meeting: ${response.status} ${response.statusText}`);
+    throw new Error(await graphErrorMessage(response, `Failed to create Staff Teams meeting: ${response.status} ${response.statusText}`));
   }
 
-  const data = await response.json();
+  let data = await response.json();
+  if (recurrence) {
+    data = await enableTeamsOnCalendarEvent(accessToken, staffCalendarEmail, data.id);
+  }
   const resolved = await resolveTeamsJoinUrlForEvent(accessToken, {
     calendarUserEmail: staffCalendarEmail,
     eventId: data.id,
@@ -685,6 +829,7 @@ export async function createStaffCalendarEvent(
     descLines.push(`Participants (no invites): ${eventDetails.attendeesEmails.join(', ')}`);
   }
 
+  const recurrence = buildStaffEventRecurrence(eventDetails);
   const body: any = {
     subject: eventDetails.subject,
     start: { dateTime: eventDetails.startDateTime, timeZone: tz },
@@ -694,38 +839,9 @@ export async function createStaffCalendarEvent(
       content: descLines.filter(Boolean).join('\n').trim() || ''
     },
     location: eventDetails.locationName ? { displayName: eventDetails.locationName } : undefined,
-    isOnlineMeeting: false
+    isOnlineMeeting: false,
   };
-
-  if (eventDetails.isRecurring) {
-    const startDate = new Date(eventDetails.startDateTime);
-    const dayOfWeek = startDate.getDay();
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const dayOfWeekName = dayNames[dayOfWeek];
-
-    const recurrence: any = {
-      pattern: {
-        type: eventDetails.recurrencePattern || 'weekly',
-        interval: eventDetails.recurrenceInterval || 1
-      },
-      range: {
-        type: eventDetails.recurrenceEndDate ? 'endDate' : 'noEnd',
-        startDate: eventDetails.startDateTime.split('T')[0],
-        ...(eventDetails.recurrenceEndDate && {
-          endDate: eventDetails.recurrenceEndDate.split('T')[0]
-        })
-      }
-    };
-
-    if (eventDetails.recurrencePattern === 'weekly') {
-      recurrence.pattern.daysOfWeek = [dayOfWeekName];
-    }
-    if (eventDetails.recurrencePattern === 'monthly') {
-      recurrence.pattern.dayOfMonth = startDate.getDate();
-    }
-
-    body.recurrence = recurrence;
-  }
+  if (recurrence) body.recurrence = recurrence;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -737,9 +853,8 @@ export async function createStaffCalendarEvent(
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
     throw new Error(
-      error?.error?.message || `Failed to create staff calendar event: ${response.status} ${response.statusText}`
+      await graphErrorMessage(response, `Failed to create staff calendar event: ${response.status} ${response.statusText}`)
     );
   }
 

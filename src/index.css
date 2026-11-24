@@ -771,8 +771,10 @@ body:has(main.clients-detail-scroll) .navbar {
    * keep a definite height so the page still scrolls inside main.
    * max-height: none on a growing shell made that pane as tall as the content,
    * so nothing on the page could scroll.
+   * The installed-app address bar is also a direct child of #root. Leave it out:
+   * this rule would stretch that white bar over the whole screen.
    */
-  html:not(.login-page-active):not(.entry-kiosk-active) #root > div:not(.contract-studio) {
+  html:not(.login-page-active):not(.entry-kiosk-active) #root > div:not(.contract-studio):not(.rmq-url-bar) {
     position: fixed;
     inset: 0;
     width: 100%;

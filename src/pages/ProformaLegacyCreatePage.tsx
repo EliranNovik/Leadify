@@ -31,6 +31,7 @@ import {
 
 import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
 import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
+import { isInvoiceBlockedBeforeSignedAgreement } from '../lib/invoiceAgreementGuard';
 import { formatLegacyLeadNumber } from '../lib/masterLeadApi';
 import {
   displaySymbolForPaymentSave,
@@ -802,22 +803,26 @@ const ProformaLegacyCreatePage: React.FC = () => {
           proformaData.rows?.[0]?.description ||
           (proformaData.paymentOrder != null ? String(proformaData.paymentOrder) : 'Payment');
 
-        await ensureProformaPaymentLink({
-          paymentPlanId: proformaData.pprId,
-          leadClientId: leadId,
-          leadType: 'legacy',
-          isLegacyPaymentPlan: true,
-          planContactId:
-            proformaData.planContactId != null
-              ? Number(proformaData.planContactId)
-              : null,
-          value: totalBase,
-          valueVat: vat,
-          currency: currencySymbol,
-          order: orderLabel,
-          clientName: proformaData.client || lead?.name || 'Client',
-          leadNumber,
-        });
+        try {
+          await ensureProformaPaymentLink({
+            paymentPlanId: proformaData.pprId,
+            leadClientId: leadId,
+            leadType: 'legacy',
+            isLegacyPaymentPlan: true,
+            planContactId:
+              proformaData.planContactId != null
+                ? Number(proformaData.planContactId)
+                : null,
+            value: totalBase,
+            valueVat: vat,
+            currency: currencySymbol,
+            order: orderLabel,
+            clientName: proformaData.client || lead?.name || 'Client',
+            leadNumber,
+          });
+        } catch (linkError) {
+          if (!isInvoiceBlockedBeforeSignedAgreement(linkError)) throw linkError;
+        }
       }
 
       setIsSaving(false);

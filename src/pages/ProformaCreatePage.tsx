@@ -34,6 +34,7 @@ import {
 } from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
+import { isInvoiceBlockedBeforeSignedAgreement } from '../lib/invoiceAgreementGuard';
 
 /** Matches invoice sheet on ProformaViewPage */
 const PROFORMA_INVOICE_SHEET_CLASS =
@@ -395,17 +396,21 @@ const ProformaCreatePage: React.FC = () => {
       if (error) throw error;
 
       if (!isEditMode) {
-        await ensureProformaPaymentLink({
-          paymentPlanId: paymentId!,
-          leadClientId: payment.lead_id || proformaData.clientId,
-          planContactId: payment.client_id ?? proformaData.contactId ?? null,
-          value: Number(payment.value) || 0,
-          valueVat: Number(payment.value_vat ?? vat) || 0,
-          currency,
-          order: String(proformaData.paymentOrder ?? payment.payment_order ?? 'Payment'),
-          clientName: proformaData.client || 'Client',
-          leadNumber: leadNumber || proformaData.lead_number || '',
-        });
+        try {
+          await ensureProformaPaymentLink({
+            paymentPlanId: paymentId!,
+            leadClientId: payment.lead_id || proformaData.clientId,
+            planContactId: payment.client_id ?? proformaData.contactId ?? null,
+            value: Number(payment.value) || 0,
+            valueVat: Number(payment.value_vat ?? vat) || 0,
+            currency,
+            order: String(proformaData.paymentOrder ?? payment.payment_order ?? 'Payment'),
+            clientName: proformaData.client || 'Client',
+            leadNumber: leadNumber || proformaData.lead_number || '',
+          });
+        } catch (linkError) {
+          if (!isInvoiceBlockedBeforeSignedAgreement(linkError)) throw linkError;
+        }
       }
 
       toast.success(isEditMode ? 'Proforma updated successfully!' : 'Proforma created and saved successfully!');

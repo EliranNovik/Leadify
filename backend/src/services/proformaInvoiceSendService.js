@@ -408,7 +408,114 @@ async function sendProformaInvoiceWhatsAppBackend(input, senderAuthUserId) {
   return { phoneNumber };
 }
 
+const DROPPED_STAGE_ID = 91;
+
+function stageAllowsClientInvoice(stage) {
+  if (stage == null || stage === '') return false;
+  const numeric = Number(stage);
+  if (numeric === DROPPED_STAGE_ID) return false;
+  if (Number.isFinite(numeric) && numeric >= 60) return true;
+  const name = String(stage).toLowerCase().replace(/[\s_-]/g, '');
+  return name === 'clientsigned' || name === 'clientsignedagreement' || name === 'paymentrequestsent';
+}
+
+function legacyLeadId(leadId) {
+  const id = Number(String(leadId).replace(/^legacy_?/i, ''));
+  return Number.isFinite(id) ? id : null;
+}
+
+async function lookupLeadStage(leadId, isLegacy) {
+  if (isLegacy) {
+    const id = legacyLeadId(leadId);
+    if (id == null) return { found: false, stage: null };
+    const { data, error } = await supabase.from('leads_lead').select('stage').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!data) return { found: false, stage: null };
+    return { found: true, stage: data.stage };
+  }
+
+  const id = String(leadId).replace(/^legacy_?/i, '').trim();
+  if (!id) return { found: false, stage: null };
+  const { data, error } = await supabase.from('leads').select('stage').eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!data) return { found: false, stage: null };
+  return { found: true, stage: data.stage };
+}
+
+async function resolveLeadForInvoiceSend(input) {
+  const preferLegacy = Boolean(input.isLegacyLead) || input.kind === 'legacy';
+  if (input.leadId != null && String(input.leadId).trim() !== '') {
+    const primary = await lookupLeadStage(input.leadId, preferLegacy);
+    if (primary.found) return { isLegacy: preferLegacy, stage: primary.stage };
+    const other = await lookupLeadStage(input.leadId, !preferLegacy);
+    if (other.found) return { isLegacy: !preferLegacy, stage: other.stage };
+  }
+
+  if (!preferLegacy) {
+    const planId = input.paymentPlanId ?? input.recordId;
+    if (planId != null && String(planId).trim() !== '') {
+      const { data, error } = await supabase.from('payment_plans').select('lead_id').eq('id', planId).maybeSingle();
+      if (error) throw error;
+      if (data?.lead_id != null && String(data.lead_id).trim() !== '') {
+        const looked = await lookupLeadStage(data.lead_id, false);
+        if (looked.found) return looked;
+      }
+    }
+    return null;
+  }
+
+  if (input.paymentPlanId != null && String(input.paymentPlanId).trim() !== '') {
+    const { data, error } = await supabase
+      .from('finances_paymentplanrow')
+      .select('lead_id')
+      .eq('id', input.paymentPlanId)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.lead_id != null && String(data.lead_id).trim() !== '') {
+      const looked = await lookupLeadStage(data.lead_id, true);
+      if (looked.found) return looked;
+    }
+  }
+
+  if (input.recordId != null && String(input.recordId).trim() !== '') {
+    const { data, error } = await supabase
+      .from('proformainvoice')
+      .select('lead_id')
+      .eq('id', input.recordId)
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.lead_id != null && String(data.lead_id).trim() !== '') {
+      const looked = await lookupLeadStage(data.lead_id, true);
+      if (looked.found) return looked;
+    }
+  }
+
+  return null;
+}
+
+function invoiceBlockedError() {
+  const error = new Error(
+    'This lead has not reached Client signed agreement, so no invoice can be sent.',
+  );
+  error.code = 'AGREEMENT_NOT_SIGNED';
+  return error;
+}
+
+/** Refuse the send unless the lead is at Client signed agreement (stage 60) or later. */
+async function assertLeadMayReceiveInvoice(input) {
+  try {
+    const lead = await resolveLeadForInvoiceSend(input);
+    if (!lead || !stageAllowsClientInvoice(lead.stage)) throw invoiceBlockedError();
+  } catch (error) {
+    if (error?.code === 'AGREEMENT_NOT_SIGNED') throw error;
+    console.error('[sendProformaInvoiceBundleBackend] stage check failed, refusing send:', error);
+    throw invoiceBlockedError();
+  }
+}
+
 async function sendProformaInvoiceBundleBackend(input, mailboxUserId) {
+  await assertLeadMayReceiveInvoice(input);
+
   const contact =
     input.contactId != null || input.contactEmail || input.contactPhone
       ? {

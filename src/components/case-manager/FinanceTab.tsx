@@ -104,6 +104,8 @@ import {
 } from '../../lib/proformaAutomationCreate';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { useAgreementNotSignedPrompt } from '../proforma/AgreementNotSignedModal';
+import { isInvoiceBlockedBeforeSignedAgreement } from '../../lib/invoiceAgreementGuard';
 
 interface PaymentPlan {
   id: string | number;
@@ -197,6 +199,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
   };
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
+  const { blockIfUnsigned, modal: agreementNotSignedModal } = useAgreementNotSignedPrompt();
   const [isLoadingFinancePlan, setIsLoadingFinancePlan] = useState<boolean>(true);
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
@@ -480,6 +483,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
   // Handler to generate and copy payment link
   const handleGeneratePaymentLink = async (payment: PaymentPlan) => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (
+      client?.id &&
+      (await blockIfUnsigned([{ leadId: client.id, isLegacy: Boolean(isLegacyLead) }]))
+    ) {
+      return;
+    }
     try {
       const secureToken = await getOrCreatePaymentLinkToken({
         paymentPlanId: payment.id,
@@ -503,6 +513,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       await navigator.clipboard.writeText(paymentUrl);
       toast.success('Payment link copied to clipboard!');
     } catch (error) {
+      if (isInvoiceBlockedBeforeSignedAgreement(error)) return;
       console.error('Error generating payment link:', error);
       toast.error('Failed to generate payment link');
     }
@@ -510,8 +521,14 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
   // Handler to mark a payment as ready to pay
   const handleMarkAsReadyToPay = async (payment: PaymentPlan) => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (
+      client?.id &&
+      (await blockIfUnsigned([{ leadId: client.id, isLegacy: Boolean(isLegacyLead) }]))
+    ) {
+      return;
+    }
     try {
-      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
       const currentUserEmployeeId = await getCurrentUserEmployeeId();
       const currentUserName = await getCurrentUserName();
@@ -892,9 +909,15 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
   // Handler to mark payment as sent to finance
   const handleSentToFinance = async (payment: PaymentPlan) => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (
+      client?.id &&
+      (await blockIfUnsigned([{ leadId: client.id, isLegacy: Boolean(isLegacyLead) }]))
+    ) {
+      return;
+    }
     try {
       const isLegacy = payment.isLegacy;
-      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
 
       let error = null;
 
@@ -7188,6 +7211,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
         isSaving={isSavingNotes}
         paymentId={selectedPaymentForNotes?.id}
       />
+      {agreementNotSignedModal}
     </>
   );
 };

@@ -146,6 +146,9 @@ export type FinanceFailedPaymentRow = {
   errorCode: string | null;
   paymentMethod: string;
   secureToken: string | null;
+  /** Lead the payment link belongs to, so copying it can be stopped before stage 60. */
+  leadId: string;
+  isLegacy: boolean;
   href: string;
   failedAt: string;
 };
@@ -1459,6 +1462,8 @@ export async function fetchFinanceFailedPaymentsToday(
       errorCode: copy.code,
       paymentMethod: formatFinancePaymentMethod(tx.payment_method || link?.payment_method),
       secureToken: String(link?.secure_token || '').trim() || null,
+      leadId,
+      isLegacy,
       href,
       failedAt: String(tx.created_at || tx.completed_at || ''),
     });

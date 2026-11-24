@@ -5,13 +5,16 @@ import {
   createStaffTeamsMeeting,
   getAccessTokenWithFallback,
   AuthPopupBlockedError,
-  triggerTokenRedirect
+  triggerTokenRedirect,
+  listCalendarSeriesInstances,
+  recurringSeriesWindowEnd,
+  type CalendarSeriesInstance,
 } from '../lib/graph';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
-import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../lib/outlookTeamsMeetingsApi';
+import { type OutlookTeamsMeeting } from '../lib/outlookTeamsMeetingsApi';
 import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
 
@@ -48,6 +51,22 @@ interface MeetingFormData {
 
 // Staff calendar email
 const STAFF_CALENDAR_EMAIL = 'shared-staffcalendar@lawoffice.org.il';
+
+function jerusalemMeetingStamp(iso: string): { date: string; time: string } {
+  const parsed = new Date(iso);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(parsed);
+  const read = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
+  const hour = read('hour') === '24' ? '00' : read('hour');
+  return { date: `${read('year')}-${read('month')}-${read('day')}`, time: `${hour}:${read('minute')}` };
+}
 
 const getInitials = (name: string) => {
   if (!name) return '--';
@@ -548,7 +567,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           isRecurring: formData.isRecurring,
           recurrencePattern: formData.recurrencePattern,
           recurrenceInterval: formData.recurrenceInterval,
-          recurrenceEndDate: formData.recurrenceEndDate ? formatDateTimeForGraph(new Date(formData.recurrenceEndDate)) : null
+          recurrenceEndDate: formData.recurrenceEndDate || null
         };
 
         const result = await createStaffTeamsMeeting(accessToken, meetingDetails);
@@ -566,55 +585,95 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           isRecurring: formData.isRecurring,
           recurrencePattern: formData.recurrencePattern,
           recurrenceInterval: formData.recurrenceInterval,
-          recurrenceEndDate: formData.recurrenceEndDate ? formatDateTimeForGraph(new Date(formData.recurrenceEndDate)) : null
+          recurrenceEndDate: formData.recurrenceEndDate || null
         });
         teamsMeetingId = result?.id || null; // stored as "teams_meeting_id" in meta table for staff listing
       }
 
+      // A series master is one Outlook id. Each date the calendar should show is a separate occurrence.
+      let occurrences: CalendarSeriesInstance[] = [];
+      if (formData.isRecurring && teamsMeetingId) {
+        try {
+          const windowEnd = recurringSeriesWindowEnd(
+            startDateTime,
+            formData.recurrencePattern,
+            formData.recurrenceEndDate || null,
+          );
+          const listOccurrences = () => listCalendarSeriesInstances(
+            accessToken,
+            STAFF_CALENDAR_EMAIL,
+            teamsMeetingId as string,
+            new Date(startDateTime.getTime() - 60_000).toISOString(),
+            windowEnd.toISOString(),
+          );
+          occurrences = await listOccurrences();
+          if (occurrences.length === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            occurrences = await listOccurrences();
+          }
+        } catch (expandError) {
+          console.warn('Recurring internal meeting dates could not be listed', expandError);
+        }
+      }
+      if (occurrences.length === 0) {
+        occurrences = [{
+          id: teamsMeetingId || '',
+          startIso: startDateTime.toISOString(),
+          endIso: endDateTime.toISOString(),
+        }];
+      }
+
       // Persist staff calendar meta table (best-effort) so CalendarPage shows the meeting immediately.
       const { data: { user } } = await supabase.auth.getUser();
-      if (user && teamsMeetingId) {
-        const meetingData: OutlookTeamsMeeting = {
-          teams_meeting_id: teamsMeetingId,
-          subject: formData.subject,
-          start_date_time: startDateTime.toISOString(),
-          end_date_time: endDateTime.toISOString(),
-          ...(shouldCreateTeamsMeeting && teamsJoinUrl ? { teams_join_url: teamsJoinUrl, teams_meeting_url: teamsJoinUrl } : {}),
-          calendar_id: STAFF_CALENDAR_EMAIL,
-          attendees: teamsAttendeeEmails,
-          description: formData.description,
-          location: formData.location,
-          created_by: user.id,
-          is_online_meeting: shouldCreateTeamsMeeting,
-          ...(shouldCreateTeamsMeeting ? { online_meeting_provider: 'teamsForBusiness' } : {})
-        };
-        await saveOutlookTeamsMeeting(meetingData);
+      if (user) {
+        const outlookRows: OutlookTeamsMeeting[] = occurrences
+          .filter((occurrence) => occurrence.id)
+          .map((occurrence) => ({
+            teams_meeting_id: occurrence.id,
+            subject: formData.subject,
+            start_date_time: occurrence.startIso,
+            end_date_time: occurrence.endIso,
+            ...(shouldCreateTeamsMeeting && teamsJoinUrl ? { teams_join_url: teamsJoinUrl, teams_meeting_url: teamsJoinUrl } : {}),
+            calendar_id: STAFF_CALENDAR_EMAIL,
+            attendees: teamsAttendeeEmails,
+            description: formData.description,
+            location: formData.location,
+            created_by: user.id,
+            is_online_meeting: shouldCreateTeamsMeeting,
+            ...(shouldCreateTeamsMeeting ? { online_meeting_provider: 'teamsForBusiness' } : {}),
+          }));
+        if (outlookRows.length > 0) {
+          const { error: outlookError } = await supabase.from('outlook_teams_meetings').insert(outlookRows);
+          if (outlookError) console.warn('outlook_teams_meetings insert failed', outlookError);
+        }
       }
 
       // Always create the internal meeting row in DB (drives CalendarPage UI)
-      const { data: insertedMeeting, error: meetingInsertError } = await supabase
+      const { data: insertedMeetings, error: meetingInsertError } = await supabase
         .from('meetings')
-        .insert({
-          meeting_date: formData.date,
-          meeting_time: formData.time,
-          meeting_location: formData.location,
-          meeting_subject: formData.subject,
-          meeting_brief: formData.description || null,
-          manual_address: formData.manualAddress.trim() || null,
-          calendar_type: 'staff',
-          internal_meeting_type_id: selectedInternalMeetingTypeId,
-          // Always persist the Outlook event id so edit modal can resolve deterministically.
-          teams_id: teamsMeetingId,
-          teams_meeting_url: teamsJoinUrl,
-          custom_link: null,
-          status: 'scheduled',
-        })
-        .select('id')
-        .single();
+        .insert(occurrences.map((occurrence) => {
+          const stamp = jerusalemMeetingStamp(occurrence.startIso);
+          return {
+            meeting_date: stamp.date,
+            meeting_time: stamp.time,
+            meeting_location: formData.location,
+            meeting_subject: formData.subject,
+            meeting_brief: formData.description || null,
+            manual_address: formData.manualAddress.trim() || null,
+            calendar_type: 'staff',
+            internal_meeting_type_id: selectedInternalMeetingTypeId,
+            // Each date keeps its own Outlook occurrence id so the calendar row stays unique.
+            teams_id: occurrence.id || teamsMeetingId,
+            teams_meeting_url: teamsJoinUrl,
+            custom_link: null,
+            status: 'scheduled',
+          };
+        }))
+        .select('id');
       if (meetingInsertError) throw meetingInsertError;
 
-      const meetingId = insertedMeeting?.id;
-      if (meetingId == null) throw new Error('Failed to save meeting');
+      const meetingIds = (insertedMeetings || []).map((row) => row.id).filter((id) => id != null);
+      if (meetingIds.length === 0) throw new Error('Failed to save meeting');
 
       // Save participants
       // Include freeDraft automatically if user filled it but didn't click "Add participant".
@@ -635,20 +694,22 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       ].filter((p) => p && typeof p.name === 'string' && p.name.trim() !== '');
 
       const participantRows: any[] = [];
-      selectedEmployeeIds.forEach((employeeId) => participantRows.push({ meeting_id: meetingId, employee_id: employeeId }));
-      selectedFirmContactIds.forEach((firmContactId) => participantRows.push({ meeting_id: meetingId, firm_contact_id: firmContactId }));
-      effectiveFreeParticipants.forEach((p) =>
-        participantRows.push({
-          meeting_id: meetingId,
-          free_name: String(p.name).trim(),
-          free_email: p.email ? String(p.email).trim() : null,
-          free_phone: p.phone ? String(p.phone).trim() : null,
-          notes: p.notes ? String(p.notes).trim() : null,
-        })
-      );
+      meetingIds.forEach((meetingId) => {
+        selectedEmployeeIds.forEach((employeeId) => participantRows.push({ meeting_id: meetingId, employee_id: employeeId }));
+        selectedFirmContactIds.forEach((firmContactId) => participantRows.push({ meeting_id: meetingId, firm_contact_id: firmContactId }));
+        effectiveFreeParticipants.forEach((p) =>
+          participantRows.push({
+            meeting_id: meetingId,
+            free_name: String(p.name).trim(),
+            free_email: p.email ? String(p.email).trim() : null,
+            free_phone: p.phone ? String(p.phone).trim() : null,
+            notes: p.notes ? String(p.notes).trim() : null,
+          })
+        );
+      });
       if (participantRows.length > 0) {
         console.groupCollapsed('[Internal Meeting] meeting_participants insert');
-        console.log('meetingId:', meetingId);
+        console.log('meetingIds:', meetingIds);
         console.log('selectedEmployeeIds:', selectedEmployeeIds);
         console.log('selectedFirmContactIds:', selectedFirmContactIds);
         console.log('freeParticipants:', freeParticipants);
@@ -678,7 +739,12 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         }
       }
 
-      toast.success('Internal meeting created successfully!', { duration: 5000 });
+      toast.success(
+        meetingIds.length > 1
+          ? `Recurring internal meeting created (${meetingIds.length} dates).`
+          : 'Internal meeting created successfully!',
+        { duration: 5000 },
+      );
 
       // Reset + close
         setFormData({

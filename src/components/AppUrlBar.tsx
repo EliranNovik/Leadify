@@ -232,7 +232,7 @@ const AppUrlBar: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="fixed inset-x-0 top-0 z-[60] bg-white dark:bg-base-100"
+      className="rmq-url-bar fixed inset-x-0 top-0 z-[60] bg-white dark:bg-base-100"
       style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
     >
       <div className="flex h-9 items-center gap-1 px-1.5">

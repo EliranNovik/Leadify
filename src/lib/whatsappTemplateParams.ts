@@ -8,6 +8,10 @@ import {
   type MeetingLocationAddressFields,
 } from './meetingLocationUtils';
 import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
+import {
+  assertPaymentLinkAllowed,
+  isInvoiceBlockedBeforeSignedAgreement,
+} from './invoiceAgreementGuard';
 
 /** DevTools: filter by [getMeetingLocation]. Enable in prod with VITE_DEBUG_MEETING_LOCATION=true */
 const DEBUG_MEETING_LOCATION =
@@ -283,11 +287,6 @@ export async function getPaymentLinkForClient(
   paymentPlanId?: string | number | null,
   prefilledUrl?: string | null,
 ): Promise<string> {
-  const preset = (prefilledUrl || '').trim();
-  if (preset) {
-    return sanitizeWhatsAppTemplateVariableText(preset);
-  }
-
   try {
     let leadClientId: string | number | null =
       client?.isContact && client?.lead_id != null && client?.lead_id !== ''
@@ -299,11 +298,25 @@ export async function getPaymentLinkForClient(
     }
 
     const idStr = String(leadClientId);
+    const isLegacy =
+      client?.lead_type === 'legacy' || idStr.startsWith('legacy_');
     if (idStr.startsWith('legacy_')) {
       const legacyNum = idStr.replace(/^legacy_/, '');
       if (/^\d+$/.test(legacyNum)) {
         leadClientId = legacyNum;
       }
+    }
+
+    await assertPaymentLinkAllowed({
+      leadId: leadClientId,
+      isLegacyLead: isLegacy,
+      kind: isLegacy ? 'legacy' : 'new',
+      paymentPlanId: paymentPlanId ?? null,
+    });
+
+    const preset = (prefilledUrl || '').trim();
+    if (preset) {
+      return sanitizeWhatsAppTemplateVariableText(preset);
     }
 
     const url = await resolveProformaPaymentLinkUrl({
@@ -313,6 +326,7 @@ export async function getPaymentLinkForClient(
 
     return url ? sanitizeWhatsAppTemplateVariableText(url) : '';
   } catch (error) {
+    if (isInvoiceBlockedBeforeSignedAgreement(error)) throw error;
     console.error('Error resolving payment link for WhatsApp:', error);
     return '';
   }

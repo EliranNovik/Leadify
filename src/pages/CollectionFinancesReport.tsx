@@ -15,6 +15,11 @@ import MultiLeadContactSelectorModal, {
 } from '../components/MultiLeadContactSelectorModal';
 import CollectionViewInvoicePickerModal from '../components/collection/CollectionViewInvoicePickerModal';
 import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
+import { useAgreementNotSignedPrompt } from '../components/proforma/AgreementNotSignedModal';
+import {
+  InvoiceBlockedBeforeSignedAgreementError,
+  isInvoiceBlockedBeforeSignedAgreement,
+} from '../lib/invoiceAgreementGuard';
 import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import {
@@ -1340,6 +1345,7 @@ const CollectionFinancesReport: React.FC<{
   const [viewInvoiceLoading, setViewInvoiceLoading] = useState(false);
   const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
   const [sendingInvoice, setSendingInvoice] = useState(false);
+  const { blockIfUnsigned, showBlocked, modal: agreementNotSignedModal } = useAgreementNotSignedPrompt();
   const [sortColumn, setSortColumn] = useState<CollectionSortColumn | null>(null);
   const [sortDirection, setSortDirection] = useState<CollectionSortDirection>('asc');
   const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
@@ -2214,7 +2220,7 @@ const loadPayments = async ({
     setViewInvoiceModalOpen(false);
   }, []);
 
-  const handleSendInvoice = useCallback(() => {
+  const handleSendInvoice = useCallback(async () => {
     const picked = requireSelectedRows();
     if (!picked) return;
 
@@ -2227,12 +2233,23 @@ const loadPayments = async ({
       return;
     }
 
+    if (
+      await blockIfUnsigned(
+        sendableInvoiceRows.map((row) => ({
+          leadId: row.leadId,
+          isLegacy: row.leadType === 'legacy',
+        })),
+      )
+    ) {
+      return;
+    }
+
     if (sendableInvoiceRows.length < picked.length) {
       toast('Only pending rows with a proforma will be sent', { icon: 'ℹ️' });
     }
 
     setSendInvoiceModalOpen(true);
-  }, [requireSelectedRows, sendableInvoiceRows]);
+  }, [blockIfUnsigned, requireSelectedRows, sendableInvoiceRows]);
 
   const handleSendInvoiceConfirm = useCallback(
     async (language: ProformaSendLanguage) => {
@@ -2285,6 +2302,11 @@ const loadPayments = async ({
               failed += 1;
             }
           } catch (err) {
+            if (isInvoiceBlockedBeforeSignedAgreement(err)) {
+              showBlocked(err instanceof InvoiceBlockedBeforeSignedAgreementError ? err.stageName : '');
+              setSendInvoiceModalOpen(false);
+              return;
+            }
             failed += 1;
             const message = err instanceof Error ? err.message : 'Failed to send invoice';
             if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
@@ -2312,7 +2334,7 @@ const loadPayments = async ({
         setSendingInvoice(false);
       }
     },
-    [sendableInvoiceRows, showReconnectModal],
+    [sendableInvoiceRows, showBlocked, showReconnectModal],
   );
 
   const handleViewPayments = useCallback(() => {
@@ -3111,6 +3133,7 @@ const loadPayments = async ({
         onSelect={handleViewInvoiceSelect}
         formatAmount={formatCurrency}
       />
+      {agreementNotSignedModal}
       <ProformaSendLanguageModal
         open={sendInvoiceModalOpen}
         onClose={() => !sendingInvoice && setSendInvoiceModalOpen(false)}

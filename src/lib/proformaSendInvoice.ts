@@ -10,6 +10,7 @@ import {
 import type { ProformaSendLanguage } from './proformaSendLanguage';
 import { proformaSendLanguageLabel } from './proformaSendLanguage';
 import { markPaymentPlanInvoiceSent } from './markPaymentPlanInvoiceSent';
+import { assertLeadMayReceiveInvoice } from './invoiceAgreementGuard';
 
 export type ProformaSendBundleResult = {
   emailSent: boolean;
@@ -35,6 +36,8 @@ function invoiceSendKey(input: ProformaSendEmailInput): string {
 async function sendProformaInvoiceBundleOnce(
   input: ProformaSendEmailInput,
 ): Promise<ProformaSendBundleResult> {
+  await assertLeadMayReceiveInvoice(input);
+
   const [resolvedEmail, resolvedPhone] = await Promise.all([
     resolveProformaContactEmail(input.contactId, input.contactEmail),
     resolveProformaContactPhone(input),

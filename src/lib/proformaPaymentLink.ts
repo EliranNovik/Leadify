@@ -14,6 +14,7 @@ import {
   type PaymentPlanCheckoutSnapshot,
 } from './paymentLinkPlanSnapshot';
 import { paymentOrderLabel } from './paymentPlanOrderLabel';
+import { assertPaymentLinkAllowed } from './invoiceAgreementGuard';
 
 type PaymentLinkRow = {
   secure_token?: string | null;
@@ -278,14 +279,21 @@ async function persistLiveLinkSnapshot(
 export async function ensureProformaPaymentLink(
   options: EnsureProformaPaymentLinkInput,
 ): Promise<{ url: string | null; created: boolean }> {
+  const isLegacyPaymentPlan =
+    options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId);
+  await assertPaymentLinkAllowed({
+    leadId: options.leadClientId,
+    isLegacyLead: isLegacyPaymentPlan,
+    kind: isLegacyPaymentPlan ? 'legacy' : 'new',
+    paymentPlanId: options.paymentPlanId,
+  });
+
   const planRowId = Number(options.paymentPlanId);
   if (!Number.isFinite(planRowId)) {
     console.error('[ensureProformaPaymentLink] invalid payment plan id:', options.paymentPlanId);
     return { url: null, created: false };
   }
 
-  const isLegacyPaymentPlan =
-    options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId);
   const leadRef = buildPaymentLinkLeadRef({
     leadId: options.leadClientId,
     leadType: options.leadType,
@@ -357,6 +365,12 @@ export async function ensurePaymentLinkUrlForInvoice(options: {
   contactId?: string | number | null;
 }): Promise<string | null> {
   const isLegacy = options.kind === 'legacy' || Boolean(options.isLegacyLead);
+  await assertPaymentLinkAllowed({
+    leadId: options.leadId,
+    isLegacyLead: isLegacy,
+    kind: isLegacy ? 'legacy' : 'new',
+    paymentPlanId: options.paymentPlanId,
+  });
   if (options.paymentPlanId != null && options.paymentPlanId !== '' && options.leadId != null && options.leadId !== '') {
     const ensured = await ensureProformaPaymentLink({
       paymentPlanId: options.paymentPlanId,

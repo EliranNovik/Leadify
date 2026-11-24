@@ -41,6 +41,10 @@ import {
 } from '../../lib/financeManagementOverview';
 import { last7DaysRange } from '../../lib/paymentRequestEmail';
 import { buildPaymentLinkPublicUrl } from '../../lib/proformaPaymentLink';
+import {
+  assertPaymentLinkAllowed,
+  isInvoiceBlockedBeforeSignedAgreement,
+} from '../../lib/invoiceAgreementGuard';
 import { getJerusalemDateFromTimestamp, getJerusalemTodayIsoDate } from '../../lib/boiCurrencyConversion';
 import { isPelecardApprovedCode } from '../../lib/pelecardErrors';
 import toast from 'react-hot-toast';
@@ -338,6 +342,8 @@ type FailedPaymentGroup = {
   method: string;
   kind: 'card' | 'bank' | 'other';
   secureToken: string | null;
+  leadId: string;
+  isLegacy: boolean;
   lastAt: string;
   attempts: FinanceFailedPaymentRow[];
 };
@@ -380,6 +386,8 @@ function groupFailedPayments(rows: FinanceFailedPaymentRow[]): FailedPaymentGrou
       method: row.paymentMethod || '',
       kind: failureKind(row),
       secureToken: row.secureToken,
+      leadId: row.leadId,
+      isLegacy: row.isLegacy,
       lastAt: row.failedAt,
       attempts: [row],
     });
@@ -729,7 +737,20 @@ function FailedPaymentsTable({
                           className="text-gray-500 hover:text-gray-800 hover:underline"
                           onClick={(event) => {
                             event.stopPropagation();
-                            void copyPaymentLink(group.secureToken as string);
+                            void (async () => {
+                              try {
+                                await assertPaymentLinkAllowed({
+                                  leadId: group.leadId,
+                                  isLegacyLead: group.isLegacy,
+                                  kind: group.isLegacy ? 'legacy' : 'new',
+                                });
+                                await copyPaymentLink(group.secureToken as string);
+                              } catch (error) {
+                                if (!isInvoiceBlockedBeforeSignedAgreement(error)) {
+                                  toast.error('Could not copy payment link');
+                                }
+                              }
+                            })();
                           }}
                         >
                           Copy link

@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { getStageName, hasPassedSignedAgreementStage } from '../../lib/stageUtils';
+import { getStageName } from '../../lib/stageUtils';
+import {
+  describeInvoiceAgreementBlock,
+  InvoiceBlockedBeforeSignedAgreementError,
+  isInvoiceBlockedBeforeSignedAgreement,
+} from '../../lib/invoiceAgreementGuard';
+import AgreementNotSignedModal from '../proforma/AgreementNotSignedModal';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon, ComputerDesktopIcon, ReceiptPercentIcon, BuildingOffice2Icon } from '@heroicons/react/24/outline';
 import { CheckBadgeIcon } from '@heroicons/react/24/solid';
 import { ClientTabPageHeader } from './ClientTabPageHeader';
@@ -925,6 +931,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const sendingReadyToPayInvoiceRef = useRef(false);
   /** Open when an invoice was asked for on a lead that has not reached the signed agreement. */
   const [agreementNotSignedOpen, setAgreementNotSignedOpen] = useState(false);
+  const [agreementBlockStageName, setAgreementBlockStageName] = useState('');
 
   // Add state for paid date modal
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -1278,6 +1285,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to generate and copy payment link
   const createPaymentLinkToken = async (payment: PaymentPlan): Promise<string | null> => {
+    if (await invoiceBlockedByUnsignedAgreement()) return null;
     try {
       const planRowId = Number(payment.id);
       if (!Number.isFinite(planRowId)) {
@@ -1305,6 +1313,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
       return secureToken;
     } catch (error: any) {
+      if (isInvoiceBlockedBeforeSignedAgreement(error)) return null;
       console.error('Error generating payment link:', error);
       const code = error?.code || '';
       if (code === '23503' || code === 'PGRST204') {
@@ -1465,16 +1474,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   /**
    * An invoice is only sent once the client is bound by a signed agreement, which is what stage
    * 60 records — whether they signed in the portal or a paper copy was filed and the stage moved
-   * by hand. Anything earlier is stopped here and the handler is told which of the two is missing.
+   * by hand. The stage is read from the lead row, not from the screen, so a stale tab cannot skip it.
    */
-  const invoiceBlockedByUnsignedAgreement = (): boolean => {
-    if (hasPassedSignedAgreementStage(client?.stage)) return false;
-    setAgreementNotSignedOpen(true);
+  const invoiceBlockedByUnsignedAgreement = async (): Promise<boolean> => {
+    const isLegacy =
+      client?.lead_type === 'legacy' || String(client?.id ?? '').startsWith('legacy_');
+    const openBlock = (stageName: string) => {
+      setAgreementBlockStageName(stageName);
+      setAgreementNotSignedOpen(true);
+    };
+
+    if (client?.id == null || String(client.id).trim() === '') {
+      openBlock(getStageName(String(client?.stage ?? '')));
+      return true;
+    }
+
+    const result = await describeInvoiceAgreementBlock(client.id, isLegacy);
+    if (!result.blocked) return false;
+    openBlock(result.stageName || getStageName(String(client?.stage ?? '')));
     return true;
   };
 
-  const handleOpenSentToFinanceModal = (payment: PaymentPlan) => {
-    if (invoiceBlockedByUnsignedAgreement()) return;
+  const handleOpenSentToFinanceModal = async (payment: PaymentPlan) => {
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     setSentToFinancePayment(payment);
   };
 
@@ -1488,7 +1510,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const handleSentToFinanceSendInvoice = async (language: ProformaSendLanguage) => {
     if (!sentToFinancePayment || !client?.id) return;
-    if (invoiceBlockedByUnsignedAgreement()) return;
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     if (sendingReadyToPayInvoiceRef.current) return;
     sendingReadyToPayInvoiceRef.current = true;
 
@@ -1591,6 +1613,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
       await refreshPaymentPlans();
     } catch (err) {
+      if (isInvoiceBlockedBeforeSignedAgreement(err)) {
+        setAgreementBlockStageName(
+          err instanceof InvoiceBlockedBeforeSignedAgreementError ? err.stageName : '',
+        );
+        setAgreementNotSignedOpen(true);
+        return;
+      }
       const message = err instanceof Error ? err.message : 'Failed to send invoice';
       if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
         showReconnectModal('Connect Outlook to send invoices by email.');
@@ -1893,6 +1922,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to mark payment as sent to finance
   const handleSentToFinance = async (payment: PaymentPlan) => {
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     try {
       const isLegacy = payment.isLegacy;
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
@@ -6275,7 +6305,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               if (sendInvoiceSelectMode) {
                 exitSendInvoiceSelectMode();
               } else {
-                enterSendInvoiceSelectMode();
+                void enterSendInvoiceSelectMode();
               }
             }}
           >
@@ -6293,7 +6323,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               if (invoiceAutomationSelectMode) {
                 exitInvoiceAutomationSelectMode();
               } else {
-                enterInvoiceAutomationSelectMode();
+                void enterInvoiceAutomationSelectMode();
               }
             }}
           >
@@ -6325,6 +6355,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   if (!financePlan) {
     return (
       <>
+        <AgreementNotSignedModal
+          open={agreementNotSignedOpen}
+          stageName={agreementBlockStageName}
+          onClose={() => setAgreementNotSignedOpen(false)}
+        />
         <div className="p-1 sm:p-2 md:p-3">
           <ClientTabPageHeader
             icon={BanknotesIcon}
@@ -6991,14 +7026,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setSelectedAutomationPaymentKeys(new Set());
   };
 
-  const enterSendInvoiceSelectMode = () => {
-    if (invoiceBlockedByUnsignedAgreement()) return;
+  const enterSendInvoiceSelectMode = async () => {
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     exitInvoiceAutomationSelectMode();
     setSendInvoiceSelectMode(true);
     setSelectedSendInvoicePaymentKeys(new Set());
   };
 
-  const enterInvoiceAutomationSelectMode = () => {
+  const enterInvoiceAutomationSelectMode = async () => {
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     exitSendInvoiceSelectMode();
     setInvoiceAutomationSelectMode(true);
     setSelectedAutomationPaymentKeys(new Set());
@@ -7063,17 +7099,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     });
   };
 
-  const openSendInvoiceModal = () => {
+  const openSendInvoiceModal = async () => {
     if (selectedSendInvoicePayments.length === 0) {
       toast.error('Select at least one payment row');
       return;
     }
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     setSendInvoiceModalOpen(true);
   };
 
   const handleSendInvoiceConfirm = async (language: ProformaSendLanguage) => {
     if (!client?.id || selectedSendInvoicePayments.length === 0) return;
-    if (invoiceBlockedByUnsignedAgreement()) return;
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     if (sendingInvoiceRef.current) return;
     sendingInvoiceRef.current = true;
 
@@ -7145,6 +7182,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             failed += 1;
           }
         } catch (err) {
+          if (isInvoiceBlockedBeforeSignedAgreement(err)) {
+            setAgreementBlockStageName(
+              err instanceof InvoiceBlockedBeforeSignedAgreementError ? err.stageName : '',
+            );
+            setAgreementNotSignedOpen(true);
+            setSendInvoiceModalOpen(false);
+            return;
+          }
           failed += 1;
           const message = err instanceof Error ? err.message : 'Failed to send invoice';
           if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
@@ -7188,11 +7233,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  const openInvoiceAutomationModal = () => {
+  const openInvoiceAutomationModal = async () => {
     if (selectedAutomationPayments.length === 0) {
       toast.error('Select at least one payment row');
       return;
     }
+    if (await invoiceBlockedByUnsignedAgreement()) return;
     setInvoiceAutomationModalOpen(true);
   };
 
@@ -7202,6 +7248,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
     if (selectedAutomationPayments.length === 0) return;
+    if (await invoiceBlockedByUnsignedAgreement()) return;
 
     setSavingInvoiceAutomation(true);
     try {
@@ -7814,7 +7861,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             type="button"
             className={`${paymentRowIconBtn} bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
             title="Sent to finance"
-            onClick={() => handleOpenSentToFinanceModal(p)}
+            onClick={() => void handleOpenSentToFinanceModal(p)}
           >
             <PaperAirplaneIcon className="h-5 w-5" />
           </button>
@@ -7850,6 +7897,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   return (
     <>
+      <AgreementNotSignedModal
+        open={agreementNotSignedOpen}
+        stageName={agreementBlockStageName}
+        onClose={() => setAgreementNotSignedOpen(false)}
+      />
       <div className="overflow-x-auto w-full">
         <ClientTabPageHeader
           icon={BanknotesIcon}
@@ -10320,7 +10372,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            onClick={openSendInvoiceModal}
+            onClick={() => void openSendInvoiceModal()}
           >
             Send invoice
           </button>
@@ -10343,7 +10395,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            onClick={openInvoiceAutomationModal}
+            onClick={() => void openInvoiceAutomationModal()}
           >
             Schedule invoice send
           </button>
@@ -10357,32 +10409,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         resource={{ resourceType: 'payment', resourceToken: kioskPaymentToken || '' }}
         title="Display payment on kiosk"
       />
-
-      {agreementNotSignedOpen ? (
-        <dialog open className="modal modal-open z-[140]">
-          <div className="modal-box max-w-lg">
-            <h3 className="text-xl font-bold text-gray-900">The client has not signed the agreement yet</h3>
-            <p className="mt-1 text-sm text-gray-600">
-              This lead is still at <span className="font-medium text-gray-800">{getStageName(client?.stage) || 'an earlier stage'}</span>, so no invoice can be sent.
-            </p>
-            <p className="mt-3 text-sm text-gray-600">Before sending the invoice, either:</p>
-            <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-gray-600">
-              <li>upload the physically signed agreement and update the system so the lead moves to <span className="font-medium text-gray-800">Client signed agreement</span>, or</li>
-              <li>have the client sign the agreement first.</li>
-            </ul>
-            <div className="modal-action">
-              <button type="button" className="btn btn-primary" onClick={() => setAgreementNotSignedOpen(false)}>
-                Got it
-              </button>
-            </div>
-          </div>
-          <form method="dialog" className="modal-backdrop bg-black/40">
-            <button type="button" onClick={() => setAgreementNotSignedOpen(false)} aria-label="Close">
-              close
-            </button>
-          </form>
-        </dialog>
-      ) : null}
 
       <SentToFinanceChoiceModal
         open={Boolean(sentToFinancePayment)}

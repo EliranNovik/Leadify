@@ -23,6 +23,10 @@ import {
   collectProformaSendPartialErrors,
   sendProformaInvoiceBundle,
 } from './proformaSendInvoice';
+import {
+  describeInvoiceAgreementBlock,
+  InvoiceBlockedBeforeSignedAgreementError,
+} from './invoiceAgreementGuard';
 
 export type SendInvoiceRow = {
   id: string;
@@ -489,6 +493,17 @@ export async function listSendInvoiceCandidates(args: {
 export async function sendInvoiceForRow(row: SendInvoiceRow): Promise<SendInvoiceSendResult> {
   try {
     const language = row.sendLanguage || 'en';
+    const agreement = await describeInvoiceAgreementBlock(row.leadId, row.kind === 'legacy');
+    if (agreement.blocked) {
+      return {
+        id: row.id,
+        leadNumber: row.leadNumber,
+        name: row.name,
+        ok: false,
+        language,
+        error: new InvoiceBlockedBeforeSignedAgreementError(agreement.stageName).message,
+      };
+    }
     const actor = await resolveActor();
     let proforma = row.proforma;
     let legacyProformas: Array<{ id: string | number; ppr_id?: number | string | null }> = [];

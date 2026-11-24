@@ -8,6 +8,11 @@ import { sendProformaInvoiceBundle, buildProformaSendSuccessMessage, collectProf
 import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
+import { useAgreementNotSignedPrompt } from '../components/proforma/AgreementNotSignedModal';
+import {
+  InvoiceBlockedBeforeSignedAgreementError,
+  isInvoiceBlockedBeforeSignedAgreement,
+} from '../lib/invoiceAgreementGuard';
 import ProformaViewActionButtons from '../components/proforma/ProformaViewActionButtons';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
@@ -57,6 +62,7 @@ const ProformaLegacyViewPage: React.FC = () => {
   const [sharing, setSharing] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendLanguageModalOpen, setSendLanguageModalOpen] = useState(false);
+  const { blockIfUnsigned, showBlocked, modal: agreementNotSignedModal } = useAgreementNotSignedPrompt();
   const [contactIdForEmail, setContactIdForEmail] = useState<number | null>(null);
   const { showReconnectModal } = useMailboxReconnect();
   const [leadData, setLeadData] = useState<any>(null);
@@ -614,6 +620,15 @@ const ProformaLegacyViewPage: React.FC = () => {
     language,
   });
 
+  const handleSendClick = async () => {
+    const leadId = proforma?.lead_id ?? null;
+    if (leadId != null && String(leadId).trim() !== '') {
+      const blocked = await blockIfUnsigned([{ leadId, isLegacy: true }]);
+      if (blocked) return;
+    }
+    setSendLanguageModalOpen(true);
+  };
+
   const handleSendConfirm = async (language: ProformaSendLanguage) => {
     if (!id || !proforma) return;
     setSending(true);
@@ -633,6 +648,11 @@ const ProformaLegacyViewPage: React.FC = () => {
       }
       setSendLanguageModalOpen(false);
     } catch (e: unknown) {
+      if (isInvoiceBlockedBeforeSignedAgreement(e)) {
+        setSendLanguageModalOpen(false);
+        showBlocked(e instanceof InvoiceBlockedBeforeSignedAgreementError ? e.stageName : '');
+        return;
+      }
       const err = e as Error & { code?: string };
       if (err.code === 'MAILBOX_NOT_CONNECTED') {
         showReconnectModal('Connect Outlook to send invoices by email.');
@@ -666,6 +686,7 @@ const ProformaLegacyViewPage: React.FC = () => {
 
   return (
     <div className="w-full min-h-0">
+      {agreementNotSignedModal}
       <ProformaSendLanguageModal
         open={sendLanguageModalOpen}
         onClose={() => !sending && setSendLanguageModalOpen(false)}
@@ -687,7 +708,7 @@ const ProformaLegacyViewPage: React.FC = () => {
         <ProformaViewActionButtons
           onEdit={() => navigate(`/proforma-legacy/edit/${id}`)}
           onPrint={handlePrint}
-          onSend={() => setSendLanguageModalOpen(true)}
+          onSend={() => void handleSendClick()}
           onShare={handleShare}
           onDelete={handleDelete}
           sending={sending}

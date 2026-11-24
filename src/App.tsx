@@ -31,6 +31,7 @@ import { CelebrationProvider } from './contexts/CelebrationContext';
 import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
+import { AgreementNotSignedHost } from './components/proforma/AgreementNotSignedModal';
 import MailboxHealthMonitor from './components/MailboxHealthMonitor';
 // import PWAUpdateNotification from './components/PWAUpdateNotification';
 import AppUrlBar from './components/AppUrlBar';
@@ -1428,6 +1429,7 @@ const AppContent: React.FC = () => {
               <AppContentInner />
               <MoneyRainCelebration />
               <MailboxReconnectModal />
+              <AgreementNotSignedHost />
               {/* <PWAUpdateNotification /> */}
               <Toaster
                 position="top-center"
