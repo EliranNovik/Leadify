@@ -38,6 +38,7 @@ import {
   BoltIcon,
   ChatBubbleLeftRightIcon,
   StarIcon,
+  TagIcon,
   Cog6ToothIcon,
   ShieldCheckIcon,
   ClipboardDocumentCheckIcon,
@@ -835,6 +836,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         onSelect: () => {
           setShowQuickActionsDropdown(false);
           navigate('/settings');
+        },
+      },
+      {
+        id: 'tags_flags',
+        label: 'Tags & flags',
+        description: '/reports/tags-manager',
+        keywords: ['tags', 'flags', 'tag manager', 'flag type', 'tagged'],
+        icon: TagIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          navigate('/reports/tags-manager');
         },
       },
       {
@@ -4547,6 +4559,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
                       onClick={() => {
                         setShowProfileDropdown(false);
+                        navigate('/reports/tags-manager');
+                      }}
+                    >
+                      <TagIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <span className="text-base font-medium">Tags & flags</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
                         setIsHighlightsPanelOpen(true);
                       }}
                     >
@@ -4781,6 +4805,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   >
                     <UserIcon className="w-5 h-5 text-base-content/70" />
                     View profile
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      navigate('/reports/tags-manager');
+                    }}
+                  >
+                    <TagIcon className="w-5 h-5 text-base-content/70" />
+                    Tags & flags
                   </button>
                   <button
                     type="button"

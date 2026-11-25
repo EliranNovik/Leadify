@@ -537,24 +537,38 @@ export async function fetchLeadCaseFileForAi(params: {
     return `${caseFile}${await sheetsPromise}`;
   };
 
-  try {
-    const { data, error } = await supabase.functions.invoke('ai-lead-followup', {
+  const edgePromise = supabase.functions
+    .invoke('ai-lead-followup', {
       body: { leadId, isLegacy, caseFileOnly: true },
+    })
+    .catch((error) => {
+      console.warn('[leadFollowup] caseFileOnly unavailable, loading CRM tables locally', error);
+      return null;
     });
-    if (!error && !data?.error) {
-      const text = typeof data?.caseFile === 'string' ? data.caseFile.trim() : '';
-      if (text) {
-        try {
-          return await appendSheets(mergeEdgeAndLocalCaseFiles(text, await localPromise));
-        } catch {
-          return await appendSheets(text);
-        }
+
+  const [localFile, edge] = await Promise.all([
+    localPromise,
+    Promise.race([
+      edgePromise,
+      new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), 3500);
+      }),
+    ]),
+  ]);
+
+  const edgeData = edge && typeof edge === 'object' && 'data' in edge ? edge.data : null;
+  const edgeError = edge && typeof edge === 'object' && 'error' in edge ? edge.error : null;
+  if (!edgeError && edgeData && !edgeData.error) {
+    const text = typeof edgeData.caseFile === 'string' ? edgeData.caseFile.trim() : '';
+    if (text) {
+      try {
+        return await appendSheets(mergeEdgeAndLocalCaseFiles(text, localFile));
+      } catch {
+        return await appendSheets(text);
       }
     }
-  } catch (error) {
-    console.warn('[leadFollowup] caseFileOnly unavailable, loading CRM tables locally', error);
   }
-  return appendSheets(await localPromise);
+  return appendSheets(localFile);
 }
 
 function clipCaseText(raw: unknown, max = 400): string {

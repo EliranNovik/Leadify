@@ -34,6 +34,7 @@ import {
   buildLeadSignals,
   buildRmqAiSystemPrompt,
   classifyAnswerability,
+  consumeLoadedMemories,
   detectPossibleUserCorrection,
   detectQualityEvents,
   evidenceFromTools,
@@ -2213,6 +2214,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         selectedTools,
         userMessage: userText,
       });
+      const loadedMemories = consumeLoadedMemories();
       const events = detectQualityEvents({
         userMessage: userText,
         selectedTools,
@@ -2220,6 +2222,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         toolResults,
         finalContent: storedContent,
         totalMs: Date.now() - modelStarted,
+        memories: loadedMemories.facts,
+        memoryLoadFailed: loadedMemories.failed,
       });
       const finished = finishAiTrace({
         selectedTools,

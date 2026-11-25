@@ -8,6 +8,7 @@ export * from './memory';
 export * from './observe';
 export * from './roles';
 export * from './knowledge';
+export * from './guides';
 export * from './eval';
 export * from './signals';
 export * from './recommendations';

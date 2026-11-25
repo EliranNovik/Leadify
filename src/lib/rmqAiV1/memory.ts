@@ -212,7 +212,90 @@ export async function listFirmLessonCandidates() {
     .order('evidence_count', { ascending: false })
     .limit(20);
   if (error || !data) return [];
-  return data as Array<{ id: string; fact: string; evidence_count: number; status: string }>;
+  return data as Array<{ id: string; fact: string; evidence_count: number; status: string; created_at?: string }>;
+}
+
+export type LessonChatEvidence = {
+  chatId: string;
+  userId: string | null;
+  when: string | null;
+  question: string;
+  answer: string;
+};
+
+function messagePlainText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && 'text' in part) return String((part as { text?: string }).text || '');
+        return '';
+      })
+      .join('\n');
+  }
+  if (content && typeof content === 'object' && 'text' in content) {
+    return String((content as { text?: string }).text || '');
+  }
+  return '';
+}
+
+function tidyChatText(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!clean || clean === 'AI is thinking...' || clean === 'Looking up CRM data...') return '';
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max).trim()}…`;
+}
+
+/** Chats whose saved messages contain the suggested line, with the question and the reply. */
+export async function loadLessonChatEvidence(facts: string[]): Promise<Record<string, LessonChatEvidence[]>> {
+  const needles = [...new Set(facts.map((fact) => fact.trim()).filter((fact) => fact.length >= 8))];
+  const empty = Object.fromEntries(needles.map((fact) => [fact, [] as LessonChatEvidence[]]));
+  if (needles.length === 0) return empty;
+
+  const { data, error } = await supabase
+    .from('ai_chat_history')
+    .select('id, user_id, title, updated_at, messages')
+    .eq('is_archived', false)
+    .order('updated_at', { ascending: false })
+    .limit(120);
+  if (error || !data) return empty;
+
+  for (const fact of needles) {
+    const needle = fact.toLowerCase();
+    const hits: LessonChatEvidence[] = [];
+    for (const row of data) {
+      const messages = Array.isArray(row.messages) ? row.messages : [];
+      const lines = messages.map((message: { role?: string; content?: unknown; promptContent?: unknown }) => ({
+        role: String(message?.role || ''),
+        text: (messagePlainText(message?.content) || messagePlainText(message?.promptContent)).replace(/\s+/g, ' ').trim(),
+      }));
+      const spoken = (line: { text: string }) =>
+        Boolean(line.text) && line.text !== 'AI is thinking...' && line.text !== 'Looking up CRM data...';
+      let index = lines.findIndex((line) => spoken(line) && line.text.toLowerCase().includes(needle));
+      const titleHit = index < 0 && String(row.title || '').toLowerCase().includes(needle);
+      if (titleHit) index = lines.findIndex((line) => line.role === 'user' && spoken(line));
+      if (index < 0) continue;
+      const matched = lines[index];
+      const previousUser = [...lines.slice(0, index)].reverse().find((line) => line.role === 'user' && spoken(line));
+      const nextAnswer = lines
+        .slice(index + (matched.role === 'assistant' ? 0 : 1))
+        .find((line) => line.role === 'assistant' && spoken(line));
+      const question =
+        matched.role === 'user' ? matched.text : previousUser?.text || matched.text;
+      const answer = matched.role === 'assistant' ? matched.text : nextAnswer?.text || '';
+      hits.push({
+        chatId: String(row.id),
+        userId: typeof row.user_id === 'string' ? row.user_id : null,
+        when: typeof row.updated_at === 'string' ? row.updated_at : null,
+        question: tidyChatText(question, 360),
+        answer: tidyChatText(answer, 700),
+      });
+      if (hits.length >= 3) break;
+    }
+    empty[fact] = hits;
+  }
+  return empty;
 }
 
 export async function reviewFirmLesson(id: string, status: 'approved' | 'rejected', fact?: string) {

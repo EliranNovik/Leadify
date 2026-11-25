@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
+import { extractParenthesizedSourceCode } from '../lib/whatsappInboundSourceCode';
 import { fetchAiMessageSuggestion } from '../lib/aiMessageSuggestion';
 import { toast } from 'react-hot-toast';
 import { buildOutgoingHtmlWithSignature } from '../lib/emailSignature';
@@ -154,6 +155,84 @@ function senderEmailLookupValues(email: string | null | undefined): string[] {
   if (!raw) return [];
   const lower = raw.toLowerCase();
   return Array.from(new Set([raw, lower]));
+}
+
+function plainEmailText(value: string | null | undefined): string {
+  return String(value || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (_, digits) => {
+      const code = Number(digits);
+      return Number.isFinite(code) ? String.fromCharCode(code) : ' ';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+type EntryEmailSnippet = {
+  sent_at?: string | null;
+  direction?: string | null;
+  sender_email?: string | null;
+  subject?: string | null;
+  body_html?: string | null;
+  body_preview?: string | null;
+  id?: string | number | null;
+  db_id?: string | number | null;
+};
+
+/** The client's first email to the office inbox, subject plus body. */
+async function entryEmailSourceText(lead: EmailLead, openMessages: EntryEmailSnippet[]): Promise<string> {
+  const sender = lead.sender_email.toLowerCase().trim();
+  const { data } = await supabase
+    .from('emails')
+    .select('id, subject, body_preview, body_html, sent_at, recipient_list, sender_email')
+    .eq('direction', 'incoming')
+    .in('sender_email', senderEmailLookupValues(lead.sender_email))
+    .order('sent_at', { ascending: true })
+    .limit(15);
+  const stored =
+    (data || []).find((row) =>
+      String(row.recipient_list || '').toLowerCase().includes(OFFICE_INBOX_EMAIL),
+    ) || (data || [])[0];
+  if (stored) {
+    return `${stored.subject || ''}\n${plainEmailText(stored.body_html || stored.body_preview)}`;
+  }
+
+  const rows: Array<{ sentAt: number; subject: string; body: string }> = [];
+  const push = (row: EntryEmailSnippet) => {
+    if (String(row.direction || 'incoming').toLowerCase() === 'outgoing') return;
+    const who = String(row.sender_email || sender).toLowerCase().trim();
+    if (who && who !== sender) return;
+    const sentAt = new Date(String(row.sent_at || '')).getTime();
+    rows.push({
+      sentAt: Number.isFinite(sentAt) ? sentAt : Number.MAX_SAFE_INTEGER,
+      subject: String(row.subject || ''),
+      body: plainEmailText(row.body_html || row.body_preview),
+    });
+  };
+  openMessages.forEach(push);
+  (lead.recentEmails || []).forEach((email) => push(email));
+  rows.sort((a, b) => a.sentAt - b.sentAt);
+  const first = rows[0];
+  if (!first) return '';
+  return `${first.subject}\n${first.body}`;
+}
+
+async function resolveActiveLeadSource(code: number): Promise<{ id: number; name: string } | null> {
+  const { data, error } = await supabase
+    .from('misc_leadsource')
+    .select('id, name')
+    .eq('code', code)
+    .eq('active', true)
+    .maybeSingle();
+  if (error) {
+    console.error('Email source-code lookup failed:', error);
+    return null;
+  }
+  if (data?.id == null) return null;
+  return { id: Number(data.id), name: data.name || 'Email' };
 }
 
 function asJsonArray<T>(data: unknown): T[] {
@@ -2423,18 +2502,53 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       const leadName = lead.sender_name?.trim() || lead.sender_email.split('@')[0] || 'Email Lead';
+      const entryText = await entryEmailSourceText(lead, messages);
+      const sourceCode = extractParenthesizedSourceCode(entryText);
+      const matchedSource = sourceCode == null ? null : await resolveActiveLeadSource(sourceCode);
 
-      const { data, error } = await supabase.rpc('create_new_lead_v3', {
-        p_lead_name: leadName,
-        p_lead_email: lead.sender_email,
-        p_lead_phone: null,
-        p_lead_topic: 'Email Inquiry',
-        p_lead_language: 'English',
-        p_lead_source: 'Email',
-        p_created_by: user.email,
-        p_balance_currency: 'NIS',
-        p_proposal_currency: 'NIS'
-      });
+      let data: any = null;
+      let error: any = null;
+      if (matchedSource && sourceCode != null) {
+        const created = await supabase.rpc('create_lead_with_source_validation', {
+          p_lead_name: leadName,
+          p_lead_email: lead.sender_email,
+          p_lead_phone: null,
+          p_lead_topic: 'Email Inquiry',
+          p_lead_language: 'English',
+          p_lead_source: matchedSource.name,
+          p_created_by: user.email,
+          p_source_code: sourceCode,
+          p_balance_currency: 'NIS',
+          p_proposal_currency: 'NIS',
+        });
+        data = created.data;
+        error = created.error;
+        if (!error && data?.[0]?.id) {
+          await supabase
+            .from('leads')
+            .update({
+              utm_params: {
+                arrived_via_email: true,
+                email_source_code: sourceCode,
+              },
+            })
+            .eq('id', data[0].id);
+        }
+      } else {
+        const created = await supabase.rpc('create_new_lead_v3', {
+          p_lead_name: leadName,
+          p_lead_email: lead.sender_email,
+          p_lead_phone: null,
+          p_lead_topic: 'Email Inquiry',
+          p_lead_language: 'English',
+          p_lead_source: 'Email',
+          p_created_by: user.email,
+          p_balance_currency: 'NIS',
+          p_proposal_currency: 'NIS'
+        });
+        data = created.data;
+        error = created.error;
+      }
 
       if (error) {
         console.error('Error creating lead:', error);
@@ -2490,6 +2604,9 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       const leadName = selectedLead.sender_name?.trim() || selectedLead.sender_email.split('@')[0] || 'Email Lead';
+      const entryText = await entryEmailSourceText(selectedLead, messages);
+      const subLeadSourceCode = extractParenthesizedSourceCode(entryText);
+      const matchedSource = subLeadSourceCode == null ? null : await resolveActiveLeadSource(subLeadSourceCode);
       const parentLeadNumber = parentLead.lead_number;
 
       // Generate sublead number
@@ -2561,7 +2678,16 @@ const EmailThreadLeadPage: React.FC = () => {
         mobile: null,
         topic: 'Email Inquiry',
         language: 'English',
-        source: 'Email',
+        source: matchedSource?.name || 'Email',
+        ...(matchedSource ? { source_id: matchedSource.id } : {}),
+        ...(matchedSource && subLeadSourceCode != null
+          ? {
+              utm_params: {
+                arrived_via_email: true,
+                email_source_code: subLeadSourceCode,
+              },
+            }
+          : {}),
         stage: 0,
         status: 'new',
         created_at: new Date().toISOString(),

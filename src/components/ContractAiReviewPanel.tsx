@@ -41,6 +41,9 @@ type ContractAiReviewPanelProps = {
   inputDir?: 'ltr' | 'rtl';
   /** When set, shows Contract / POA chips that insert this client’s real URLs into remarks. */
   leadId?: string | null;
+  /** Summary action shown in the chat header. */
+  onSummary?: () => void;
+  summaryBusy?: boolean;
   isLegacy?: boolean;
   /** Suggestion buttons shown in the empty chat instead of the default hint. */
   quickActions?: Array<{ id?: string; label: string; hint?: string; prompt: string }>;
@@ -76,6 +79,8 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   inputDir,
   leadId = null,
   isLegacy = false,
+  onSummary,
+  summaryBusy = false,
   quickActions,
   onQuickAction,
 }) => {
@@ -197,8 +202,14 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
   const CHANGE_SECTION_RE =
     /^(Removed:|Added:|Inserted after:|Added at beginning:)\n?([\s\S]*)$/;
 
+  const visibleChatText = (text: string) =>
+    text
+      .replace(/\[\[\/?(?:B|I|U|S)\]\]/g, '')
+      .replace(/\[\[(?:FS|FF):[^\]]+\]\]/g, '')
+      .replace(/\[\[\/(?:FS|FF)\]\]/g, '');
+
   const renderChangeContent = (content: string) => {
-    const sections = content.split(/\n\n/);
+    const sections = visibleChatText(content).split(/\n\n/);
     return sections.map((section, index) => {
       const match = section.match(CHANGE_SECTION_RE);
       if (match) {
@@ -250,7 +261,7 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           <div>{renderChangeContent(msg.content)}</div>
         ) : (
           <p className={`whitespace-pre-wrap text-sm ${alignFor(bubbleDir)} ${msg.role === 'user' ? 'text-white' : 'text-gray-800'}`}>
-            {msg.content}
+            {visibleChatText(msg.content)}
           </p>
         )}
       </div>
@@ -277,7 +288,7 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           border-top-left-radius: 2rem !important;
         }
         .contract-ai-input-area {
-          background: #f9fafb;
+          background: #f3f4f6;
           box-shadow: none;
         }
         .contract-ai-input-shell {
@@ -347,8 +358,20 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
         title={title}
         subtitle={subtitle}
         headerRight={
-          <div className="flex items-center gap-2">
-            {headerExtra}
+          <>
+            {onSummary ? (
+              <button
+                type="button"
+                className="btn h-9 min-h-9 gap-1.5 rounded-full border-0 bg-[#1c1917] px-3 text-sm font-semibold text-[#f7f4ee] hover:bg-black disabled:opacity-70"
+                onClick={onSummary}
+                disabled={summaryBusy}
+                title="Improve contract with AI using meeting summaries"
+                aria-label="Summary"
+              >
+                <SparklesIcon className="h-4 w-4 shrink-0" />
+                Summary
+              </button>
+            ) : null}
             <button
               type="button"
               className="btn btn-ghost btn-circle btn-sm text-base-content/60 hover:bg-base-200 hover:text-base-content"
@@ -358,21 +381,22 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
             >
               {closeIcon ?? <XMarkIcon className="h-5 w-5" />}
             </button>
-          </div>
+          </>
         }
         zIndex={zIndex ?? 70}
         desktopLayout="drawer-right"
         mobileFullHeight
-        sheetClassName={`print-hide !bg-gray-50 !shadow-none md:max-w-md ${sheetClassName}`}
+        sheetClassName={`print-hide !bg-[#f3f4f6] !shadow-none md:max-w-md md:!rounded-tl-3xl md:!rounded-bl-3xl ${sheetClassName}`}
         sheetStyle={{
           boxShadow: 'none',
           ...(dockRightPx != null ? { marginRight: dockRightPx } : {}),
         }}
         overlayClassName="md:bg-transparent md:pointer-events-none"
         scrollLock="mobile"
-        contentClassName={`!p-0 !bg-gray-50 ${contentClassName}`}
-        headerClassName={`!bg-gray-50 border-gray-200/70 ${headerClassName}`}
-        footerClassName="border-t-0 !bg-gray-50"
+        contentClassName={`!p-0 !bg-[#f3f4f6] ${contentClassName}`}
+        headerClassName={`!h-16 !min-h-16 !max-h-16 !items-center !overflow-hidden !bg-white !px-4 !py-0 !border-0 !shadow-none md:!px-5 ${headerClassName}`}
+        subtitle={undefined}
+        footerClassName="!border-0 !border-t-0 !shadow-none !bg-[#f3f4f6]"
         footer={
           <div className="contract-ai-input-area p-4 pt-3" data-sheet-no-drag>
             {leadId ? (
@@ -443,7 +467,13 @@ const ContractAiReviewPanel: React.FC<ContractAiReviewPanelProps> = ({
           </div>
         }
       >
-        <div className="min-h-full space-y-4 bg-gray-50 p-4 md:p-5">
+        <div className="min-h-full space-y-4 bg-[#f3f4f6] p-4 md:p-5">
+          {subtitle ? (
+            <p className="text-sm text-gray-500">{subtitle}</p>
+          ) : null}
+          {headerExtra ? (
+            <div className="rounded-2xl bg-white px-4 py-3 shadow-sm">{headerExtra}</div>
+          ) : null}
           {initialSummary ? (
             <div className="flex justify-start">
               <div

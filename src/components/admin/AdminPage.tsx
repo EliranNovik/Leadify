@@ -19,6 +19,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
+import ContractAiPoliciesManager from './ContractAiPoliciesManager';
 import PoaTemplatesManager from './PoaTemplatesManager';
 import UsersManager from './UsersManager';
 // import PaymentPlanRowsManager from './PaymentPlanRowsManager';
@@ -127,6 +128,7 @@ const ADMIN_TABS: AdminTab[] = [
     subcategories: [
       'Bonus formulas',
       'Contract templates',
+      'Contract AI',
       'Case document categories',
       'Case document types',
       'Countries',
@@ -1684,6 +1686,9 @@ const AdminPage: React.FC<AdminPageProps> = ({
               return selectedTab?.label === 'Misc' &&
                 selectedTab?.subcategories[selected.sub] === 'Contract templates' ? (
                 <div className="w-full"><ContractTemplatesManager /></div>
+              ) : selectedTab?.label === 'Misc' &&
+                selectedTab?.subcategories[selected.sub] === 'Contract AI' ? (
+                <div className="w-full"><ContractAiPoliciesManager /></div>
               ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'POA Templates' ? (
                   <div className="w-full"><PoaTemplatesManager /></div>

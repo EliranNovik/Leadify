@@ -71,7 +71,9 @@ export type AiQualityEventName =
   | 'high_latency'
   | 'empty_result'
   | 'user_correction'
-  | 'possible_user_correction';
+  | 'possible_user_correction'
+  | 'memory_missed'
+  | 'memory_not_loaded';
 
 export type AiEvalSeverity = 'cosmetic' | 'minor' | 'major' | 'critical';
 

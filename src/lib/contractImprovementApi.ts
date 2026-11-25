@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
 import { consumeContractAiReviewSse } from './aiReviewStreaming';
+import {
+  proveFeeAgreementQuotes,
+  type FeeAgreementProof,
+} from './feeAgreementPolicy';
+import { loadContractAiContext, type ContractAiPolicy } from './contractAiDirectives';
 
 export type LeadMeetingSummary = {
   id: number;
@@ -258,15 +263,6 @@ function parseBlockLine(line: string): TiptapNode | null {
     };
   }
 
-  const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
-  if (orderedMatch) {
-    const inline = parseMarkedInline(orderedMatch[1]);
-    return {
-      type: 'listItem',
-      content: inline.length ? inline : [{ type: 'paragraph', content: [] }],
-    };
-  }
-
   return { type: 'paragraph', content: parseMarkedInline(trimmed) };
 }
 
@@ -282,13 +278,22 @@ function markedAiTextToTiptapDoc(text: string): TiptapDoc {
     const isBulletBlock = lines.every((line) => /^-\s+/.test(line.trim()));
     const isOrderedBlock = lines.every((line) => /^\d+\.\s+/.test(line.trim()));
 
-    if (isBulletBlock || isOrderedBlock) {
+    if (isBulletBlock) {
       const items = lines
         .map((line) => parseBlockLine(line))
         .filter((node): node is TiptapNode => node !== null);
       content.push({
-        type: isBulletBlock ? 'bulletList' : 'orderedList',
+        type: 'bulletList',
         content: items,
+      });
+      continue;
+    }
+
+    if (isOrderedBlock) {
+      lines.forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        content.push({ type: 'paragraph', content: parseMarkedInline(trimmed) });
       });
       continue;
     }
@@ -390,12 +395,130 @@ function inlineNodesFromBlockText(blockText: string): TiptapNode[] {
   return nodes;
 }
 
+function stripInlineMarkers(text: string): string {
+  return text.replace(/\[\[\/?(?:B|I|U|S)\]\]/g, '').replace(/\[\[(?:FS|FF):[^\]]+\]\]/g, '').replace(/\[\[\/(?:FS|FF)\]\]/g, '');
+}
+
+/** Put each new numbered clause on its own paragraph and bold a short clause title. */
+function polishContractClauseBreaks(text: string, originalMarked = ''): string {
+  const originalParagraphs = new Set(
+    originalMarked
+      .replace(/\r\n/g, '\n')
+      .split(/\n\n+/)
+      .map((paragraph) => stripInlineMarkers(paragraph).trim())
+      .filter(Boolean),
+  );
+  const paragraphs = text.replace(/\r\n/g, '\n').split(/\n\n+/);
+  const expanded: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const pieces = paragraph
+      .split(/(?<=[.!?])\s+(?=\d{1,3}\.\s+[A-Z])/)
+      .map((piece) => piece.trim())
+      .filter(Boolean);
+    const laterPiecesAreClauses =
+      pieces.length > 1 && pieces.slice(1).every((piece) => /^\d{1,3}\.\s+/.test(stripInlineMarkers(piece)));
+    if (laterPiecesAreClauses) {
+      expanded.push(...pieces);
+      continue;
+    }
+
+    const lines = paragraph.split('\n').map((line) => line.trim()).filter(Boolean);
+    const numberedLines = lines.filter((line) => /^\d{1,3}\.\s+/.test(stripInlineMarkers(line)));
+    if (lines.length > 1 && numberedLines.length === lines.length) {
+      expanded.push(...lines);
+      continue;
+    }
+
+    expanded.push(paragraph.trim());
+  }
+
+  return closeNumberingGaps(expanded)
+    .map((paragraph) => {
+      const plain = stripInlineMarkers(paragraph).trim();
+      if (originalParagraphs.has(plain)) return paragraph.trim();
+      return emphasizeClauseLead(paragraph);
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function leadingClauseNumber(paragraph: string): number | null {
+  const plain = stripInlineMarkers(paragraph).trim();
+  const match = plain.match(/^(\d{1,3})\.\s+\S/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isSkippedClause(paragraph: string): boolean {
+  const plain = stripInlineMarkers(paragraph).trim();
+  if (plain.length < 24) return false;
+  if (/^additional notes:?$/i.test(plain)) return false;
+  if (/:$/.test(plain) && plain.length < 40) return false;
+  return true;
+}
+
+/** Number the paragraphs that sit in a gap, so 5 is followed by 6 rather than jumping to 10. */
+function closeNumberingGaps(paragraphs: string[]): string[] {
+  const result = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean);
+  let index = 0;
+  while (index < result.length) {
+    const start = leadingClauseNumber(result[index]);
+    if (start == null) {
+      index += 1;
+      continue;
+    }
+    let expected = start + 1;
+    let cursor = index + 1;
+    const pending: number[] = [];
+    while (cursor < result.length) {
+      const number = leadingClauseNumber(result[cursor]);
+      if (number != null && number === expected && pending.length === 0) {
+        expected += 1;
+        cursor += 1;
+        continue;
+      }
+      if (number != null && number > expected && pending.length === number - expected) {
+        pending.forEach((pendingIndex, offset) => {
+          result[pendingIndex] = `${expected + offset}. ${result[pendingIndex].trim()}`;
+        });
+        expected = number + 1;
+        pending.length = 0;
+        cursor += 1;
+        continue;
+      }
+      if (number == null && isSkippedClause(result[cursor])) {
+        pending.push(cursor);
+        cursor += 1;
+        continue;
+      }
+      break;
+    }
+    index = Math.max(cursor, index + 1);
+  }
+  return result;
+}
+
+function emphasizeClauseLead(paragraph: string): string {
+  const trimmed = paragraph.trim();
+  if (!trimmed || trimmed.startsWith('[[B]]') || trimmed.includes('[[')) return trimmed;
+  const titled = trimmed.match(/^(\d{1,3})\.\s+(.{2,48}?)\.\s+([\s\S]+)$/);
+  if (titled && !titled[2].includes('\n')) {
+    return `[[B]]${titled[1]}. ${titled[2]}.[[/B]] ${titled[3]}`;
+  }
+  const numbered = trimmed.match(/^(\d{1,3})\.\s+([\s\S]+)$/);
+  if (numbered) return `[[B]]${numbered[1]}.[[/B]] ${numbered[2]}`;
+  return trimmed;
+}
+
 /** Apply AI text while preserving the original TipTap block structure when possible. */
 export function aiTextToTiptapDoc(aiText: string, originalDoc?: unknown): TiptapDoc {
   const originalMarked = originalDoc ? tiptapJsonToAiText(originalDoc) : '';
-  const restoredText = originalMarked
-    ? restoreFormattingMarkersFromOriginal(originalMarked, aiText)
-    : aiText;
+  const restoredText = polishContractClauseBreaks(
+    originalMarked ? restoreFormattingMarkersFromOriginal(originalMarked, aiText) : aiText,
+    originalMarked,
+  );
 
   if (originalDoc && typeof originalDoc === 'object') {
     const original = cloneDoc(originalDoc);
@@ -437,6 +560,8 @@ export type ImproveContractInput = {
   leadNumber?: string | null;
   userRemarks?: string | null;
   chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /** Standing firm rule, sent only for client legal-fee agreements. */
+  feeAgreementInstruction?: string | null;
 };
 
 export type ImproveContractResult = {
@@ -468,6 +593,34 @@ export async function sendContractAiChatMessage(
   onThinking?: (text: string) => void,
 ): Promise<ContractAiChatResult> {
   return invokeContractAi(input, onThinking);
+}
+
+export async function checkFeeAgreementPolicy(
+  currentContractText: string,
+  policies?: ContractAiPolicy[],
+): Promise<FeeAgreementProof> {
+  const activePolicies = policies ?? (await loadContractAiContext()).policies;
+  const { data, error } = await supabase.functions.invoke('ai-contract-improvement', {
+    body: {
+      currentContractText,
+      feePolicyCheck: true,
+      principles: activePolicies.map((principle) => ({
+        id: principle.id,
+        title: principle.title,
+        summary: principle.summary,
+      })),
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message || 'The fee-agreement check could not be completed.');
+  }
+  if (data?.error) {
+    throw new Error(String(data.error));
+  }
+
+  const quotes = Array.isArray(data?.principles) ? data.principles : [];
+  return proveFeeAgreementQuotes(currentContractText, quotes, activePolicies);
 }
 
 function normalizeContractAiResult(data: Record<string, unknown>): ContractAiChatResult {

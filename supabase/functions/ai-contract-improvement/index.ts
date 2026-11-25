@@ -15,7 +15,8 @@ const FORMATTING_RULES = `FORMATTING RULES (strict):
 - If you improve words inside a marked region, keep the same opening/closing markers around the updated text.
 - Do NOT remove, add, or change these markers except to wrap the same styled span after wording changes.
 - Do NOT use markdown or HTML (no **, <b>, etc.).
-- Do NOT add or remove paragraph breaks unless clearly needed for the requested change.
+- Do NOT add or remove paragraph breaks in existing text unless clearly needed for the requested change.
+- When you ADD clauses, each new clause is its own paragraph with a blank line before and after it. Continue the contract's numbering. Bold the number and a short title, then the clause: [[B]]17. No refunds.[[/B]] The clause sentence. Never place two new clauses in one paragraph.
 - Only change or add plain words inside markers; never change styling structure.`;
 
 function buildInitialPrompt(
@@ -165,6 +166,9 @@ serve(async (req) => {
       userRemarks,
       chatHistory,
       streamThinking,
+      feePolicyCheck,
+      feeAgreementInstruction,
+      principles,
     } = await req.json();
 
     if (!currentContractText || typeof currentContractText !== 'string' || !currentContractText.trim()) {
@@ -174,6 +178,84 @@ serve(async (req) => {
     if (!OPENAI_API_KEY) {
       throw new Error('OpenAI API key not configured');
     }
+
+    if (feePolicyCheck === true) {
+      const listed = Array.isArray(principles) ? principles : [];
+      const principleLines = listed
+        .map((principle: { id?: string; title?: string; summary?: string }) => {
+          const id = String(principle?.id || '').trim();
+          const title = String(principle?.title || '').trim();
+          const summary = String(principle?.summary || '').trim();
+          if (!id || !title) return '';
+          return `- id "${id}" — ${title}: ${summary}`;
+        })
+        .filter(Boolean)
+        .join('\n');
+
+      const checkBody = buildChatCompletionBody({
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You check whether a legal fee agreement explicitly states each required principle. Respond with valid JSON only. Copy excerpts exactly from the contract. Never paraphrase, translate, or invent wording.',
+          },
+          {
+            role: 'user',
+            content: `For each principle, decide one status:
+- "present": the contract states the principle clearly and explicitly. Equivalent wording counts. A heading alone does not count.
+- "partial": the contract has a real passage that touches the principle but does not state it fully.
+- "missing": the contract does not address the principle.
+
+Copy excerpt exactly from the contract, one contiguous passage, never paraphrased. For "missing", set excerpt to "" and note to "". For "partial", excerpt must be the closest passage and note must be one sentence saying what is still missing. For "present", note is "".
+
+Return JSON:
+{
+  "thinking": "one short line",
+  "principles": [{ "id": "the id", "status": "present", "excerpt": "exact passage or empty", "note": "" }]
+}
+
+Include every id below exactly once.
+${principleLines}
+
+Contract text:
+${currentContractText.trim()}`,
+          },
+        ],
+        maxTokens: 1600,
+        temperature: 0,
+      });
+
+      const checkRes = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(checkBody),
+      });
+      if (!checkRes.ok) {
+        const err = await checkRes.json().catch(() => ({}));
+        throw new Error(err.error?.message || 'The fee-agreement check could not be completed.');
+      }
+      const checkData = await checkRes.json();
+      const checkRaw = (checkData.choices?.[0]?.message?.content || '').trim();
+      if (!checkRaw) throw new Error('The fee-agreement check returned an empty response.');
+      let checkParsed: { principles?: unknown };
+      try {
+        checkParsed = JSON.parse(checkRaw);
+      } catch {
+        throw new Error('The fee-agreement check returned invalid JSON.');
+      }
+      return new Response(JSON.stringify({ principles: checkParsed.principles || [] }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const firmRule =
+      typeof feeAgreementInstruction === 'string' && feeAgreementInstruction.trim()
+        ? `\n\n${feeAgreementInstruction.trim()}`
+        : '';
 
     const contextLines = [
       clientName ? `Client: ${clientName}` : '',
@@ -198,15 +280,19 @@ serve(async (req) => {
         )
       : buildInitialPrompt(contextLines, currentContractText, summariesBlock);
 
-    const systemContent = isChat
+    const promptWithRule = firmRule
+      ? `${prompt}\n\n${firmRule}\nOn this review, name any of these principles that are not yet explicit in the contract. If the lawyer asks you to add them, insert explicit clauses in the contract's language.`
+      : prompt;
+
+    const systemContent = (isChat
       ? 'You assist lawyers reviewing contract drafts in a citizenship/immigration law CRM. Put "thinking" first in JSON. Classify each message as question or action. For questions, answer only. For actions, return improvedContractText with all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers preserved. Respond with valid JSON only.'
-      : 'You improve legal service contracts for a citizenship/immigration law CRM. Put "thinking" first in JSON. Preserve all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers in improvedContractText. Respond with valid JSON only.';
+      : 'You improve legal service contracts for a citizenship/immigration law CRM. Put "thinking" first in JSON. Preserve all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers in improvedContractText. Respond with valid JSON only.') + firmRule;
 
     const openaiBody = buildChatCompletionBody({
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemContent },
-        { role: 'user', content: prompt },
+        { role: 'user', content: promptWithRule },
       ],
       maxTokens: isChat ? 3500 : 4500,
       temperature: isChat ? 0.3 : 0.35,

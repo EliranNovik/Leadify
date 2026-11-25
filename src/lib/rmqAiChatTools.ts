@@ -85,6 +85,7 @@ import {
   searchMyPastChats,
   upsertUserMemory,
 } from './rmqAiV1';
+import { isTaskDump } from './rmqAiV1/memoryCheck';
 import type { UserMemoryCategory } from './rmqAiV1/types';
 import { recordTraceTool } from './rmqAiV1/trace';
 import { validateToolResult, wrapInvalidToolResult } from './rmqAiV1/toolSchemas';
@@ -1319,7 +1320,8 @@ export const RMQ_AI_TOOLS = [
         'Decide yourself when something is worth remembering — do not wait for the words “remember” or “from now on”. ' +
         'Save lasting preferences (tone, language, format, workflow, what to avoid in drafts). ' +
         'Do NOT save one-off case facts, lead numbers, passwords, or temporary task details. ' +
-        'Write a short durable fact in your own words (e.g. “Prefers short concise WhatsApp drafts in Hebrew”).',
+        'Write a short durable fact in your own words (e.g. “Prefers short concise WhatsApp drafts in Hebrew”). ' +
+        'Never save the current task, a tool name, a lead number, or the user’s whole message.',
       parameters: {
         type: 'object',
         properties: {
@@ -1515,6 +1517,7 @@ export const RMQ_AI_SYSTEM_PROMPT =
   'PAST CHAT MEMORY IS AVAILABLE. If the user refers to previous discussions, decisions, drafts, preferences, or earlier work, use search_my_past_chats. ' +
   'PERSONAL MEMORY: You decide when to remember. When the user states a lasting preference, habit, drafting style, language choice, or correction that should apply on future leads, call save_user_memory with a short durable fact — even if they never say “remember”. ' +
   'When they retract or change a preference, call forget_user_memory. When they state a team-wide process rule, call propose_firm_lesson. ' +
+  'SAVED PREFERENCES in the prompt are mandatory on drafts, summaries, and client replies, including language and what not to say. ' +
   'Do not save one-off case details, passwords, or ephemeral task notes as personal memory. ACTIVE USER PREFERENCES in the prompt are already loaded — apply them unless this turn clearly overrides them. ' +
   'Firm knowledge explains processes, policy, and firm facts such as office address and phone. CRM tools determine current client-specific facts. ' +
   'When they ask where the office is, the address, phone, hours, or what type of office/firm we are, ALWAYS call search_firm_knowledge first. Pass short keywords (office address, Ramat Gan, Jerusalem) — not the full question. Quote the street and city from the retrieved chunks. Do not say the knowledge base has no address if a chunk contains a street, city, or phone. ' +
@@ -1854,9 +1857,11 @@ async function loadLeadTeamRoles(
     block: 'TEAM ROLES: (unavailable)',
   };
   try {
-    const employees = await loadCloserEmployees();
+    const employeesPromise = loadCloserEmployees();
     const rawId = String(leadId || '').replace(/^legacy_/i, '');
-    let fields = isLegacy ? await fetchLegacyRoleFields(rawId) : await fetchNewRoleFields(rawId);
+    const primaryFieldsPromise = isLegacy ? fetchLegacyRoleFields(rawId) : fetchNewRoleFields(rawId);
+    const [employees, primaryFields] = await Promise.all([employeesPromise, primaryFieldsPromise]);
+    let fields = primaryFields;
     if (!fields) {
       fields = isLegacy ? await fetchNewRoleFields(rawId) : await fetchLegacyRoleFields(rawId);
     }
@@ -1886,13 +1891,15 @@ async function loadLeadTeamRoles(
       return fromDb;
     };
 
-    const caseHandler = await fill(dbHandler, open?.handler, open?.case_handler_id);
-    const retentionHandler = await fill(dbRetention, open?.retainer_handler_id);
-    const closer = await fill(dbCloser, open?.closer, open?.closer_id);
-    const expert = await fill(dbExpert, open?.expert, open?.expert_id);
-    const scheduler = await fill(dbScheduler, open?.scheduler, open?.meeting_scheduler_id);
-    const manager = await fill(dbManager, open?.manager, open?.meeting_manager_id);
-    const helper = await fill(dbHelper, open?.helper, open?.meeting_lawyer_id);
+    const [caseHandler, retentionHandler, closer, expert, scheduler, manager, helper] = await Promise.all([
+      fill(dbHandler, open?.handler, open?.case_handler_id),
+      fill(dbRetention, open?.retainer_handler_id),
+      fill(dbCloser, open?.closer, open?.closer_id),
+      fill(dbExpert, open?.expert, open?.expert_id),
+      fill(dbScheduler, open?.scheduler, open?.meeting_scheduler_id),
+      fill(dbManager, open?.manager, open?.meeting_manager_id),
+      fill(dbHelper, open?.helper, open?.meeting_lawyer_id),
+    ]);
 
     return {
       assignedExpert: expert,
@@ -1924,7 +1931,7 @@ async function executeGetLeadCaseFile(args: {
   is_legacy?: boolean;
 }): Promise<string> {
   const lead = await requireResolvedLead(args);
-  const [caseFile, team, portalAccess] = await Promise.all([
+  const [caseFile, team, portalAccess, categories] = await Promise.all([
     fetchLeadCaseFileForAi({
       leadId: lead.leadId,
       isLegacy: lead.isLegacy,
@@ -1935,9 +1942,9 @@ async function executeGetLeadCaseFile(args: {
       is_legacy: lead.isLegacy,
       query: lead.leadNumber,
     }).catch(() => null),
+    ensureLeadCategories().catch(() => []),
   ]);
   const crm = parseCrmFieldsFromCaseFile(caseFile);
-  const categories = await ensureLeadCategories().catch(() => []);
   const category =
     resolveLeadCategoryName(
       { category: crm.category, category_id: /^\d+$/.test(crm.category) ? crm.category : null },
@@ -6586,6 +6593,7 @@ export async function executeRmqAiTool(toolCall: {
         ? categoryRaw
         : 'preference') as UserMemoryCategory;
       if (fact.length < 8) return 'Memory fact is too short — rewrite as a durable preference.';
+      if (isTaskDump(fact)) return 'That is a one-off task, not a preference. Save only the lasting rule in one short sentence.';
       const saved = await upsertUserMemory({
         fact,
         category,
@@ -6595,7 +6603,7 @@ export async function executeRmqAiTool(toolCall: {
       if (!saved) return 'Could not save that preference.';
       if (saved.reinforced) toast.success('Updated that preference.');
       else toast.success('I’ll remember that.');
-      const active = await listActiveUserMemories(8);
+      const active = (await listActiveUserMemories(40)).filter((row) => !isTaskDump(row.fact)).slice(0, 12);
       return JSON.stringify({
         ok: true,
         reinforced: Boolean(saved.reinforced),

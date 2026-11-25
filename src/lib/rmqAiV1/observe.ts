@@ -1,4 +1,5 @@
 import { supabase } from '../supabase';
+import { verdictForReply } from './memoryCheck';
 import { peekLeadResolution } from '../rmqAiLeadResolver';
 import { getRmqAiCurrentLead } from '../rmqAiChatContext';
 import { getCurrentAiTrace } from './trace';
@@ -46,6 +47,8 @@ export function detectQualityEvents(input: {
   toolResults?: Array<{ name: string; content: string }>;
   finalContent: string;
   totalMs?: number;
+  memories?: string[];
+  memoryLoadFailed?: boolean;
 }): AiQualityEventName[] {
   const events: AiQualityEventName[] = [];
   const resolution = peekLeadResolution();
@@ -89,6 +92,15 @@ export function detectQualityEvents(input: {
     const hasMeetings = meetingResults.some((row) => /meeting|date|11:|10:/i.test(row.content));
     const empty = meetingResults.some((row) => /no meetings|none found/i.test(row.content));
     if (hasMeetings && empty) events.push('conflicting_tool_results');
+  }
+  if (input.memoryLoadFailed) events.push('memory_not_loaded');
+  else {
+    let missed = 0;
+    for (const fact of input.memories || []) {
+      if (verdictForReply(fact, input.userMessage, input.finalContent) !== 'missed') continue;
+      missed += 1;
+      if (missed <= 3) events.push('memory_missed');
+    }
   }
   return events;
 }

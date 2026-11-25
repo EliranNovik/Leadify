@@ -51,7 +51,8 @@ function chunkText(text: string, size = 900): string[] {
     chunks.push(clean.slice(i, i + size));
     i += size - 80;
   }
-  return chunks.filter((chunk) => chunk.trim().length > 20);
+  const kept = chunks.filter((chunk) => chunk.trim().length > 20);
+  return kept.length > 0 ? kept : chunks.filter((chunk) => chunk.trim().length > 0);
 }
 
 
@@ -312,6 +313,50 @@ export async function listKnowledgeFiles(): Promise<KnowledgeFileRow[]> {
     .limit(40);
   if (error || !data) return [];
   return data as KnowledgeFileRow[];
+}
+
+function stitchKnowledgeChunks(chunks: string[]): string {
+  if (chunks.length === 0) return '';
+  let text = chunks[0];
+  for (const next of chunks.slice(1)) {
+    let cut = 0;
+    const max = Math.min(120, text.length, next.length);
+    for (let size = max; size >= 20; size -= 1) {
+      if (text.slice(-size) === next.slice(0, size)) {
+        cut = size;
+        break;
+      }
+    }
+    text += next.slice(cut);
+  }
+  return text;
+}
+
+export async function getKnowledgeText(fileId: string): Promise<string> {
+  const { data, error } = await supabase
+    .from('ai_knowledge_chunks')
+    .select('content, chunk_index')
+    .eq('file_id', fileId)
+    .order('chunk_index', { ascending: true });
+  if (error || !data) return '';
+  return stitchKnowledgeChunks(data.map((row) => String(row.content || '')));
+}
+
+export async function replaceKnowledgeText(fileId: string, title: string, text: string): Promise<boolean> {
+  const chunks = chunkText(text);
+  const cleanTitle = title.trim();
+  if (!fileId || !cleanTitle || chunks.length === 0) return false;
+  const { error: fileError } = await supabase.from('ai_knowledge_files').update({ title: cleanTitle }).eq('id', fileId);
+  if (fileError) return false;
+  const { error: deleteError } = await supabase.from('ai_knowledge_chunks').delete().eq('file_id', fileId);
+  if (deleteError) return false;
+  const rows = chunks.map((content, chunk_index) => ({
+    file_id: fileId,
+    chunk_index,
+    content,
+  }));
+  const { error: insertError } = await supabase.from('ai_knowledge_chunks').insert(rows);
+  return !insertError;
 }
 
 export async function getKnowledgePreview(fileId: string): Promise<string> {

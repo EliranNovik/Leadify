@@ -1,15 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type FC } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
-  ArrowPathIcon,
+  ArchiveBoxIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   ExclamationTriangleIcon,
+  FlagIcon,
+  FunnelIcon,
+  PencilSquareIcon,
+  PhoneIcon,
   TagIcon,
+  XMarkIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import { CheckCircleIcon } from '@heroicons/react/24/solid';
+import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
 import { convertToNIS } from '../../lib/currencyConversion';
 import {
@@ -22,6 +29,14 @@ import {
   pickUnpaidAmountForCurrency,
   type UnpaidByCurrencyMap,
 } from '../../lib/financeUnpaidTotal';
+import {
+  conversationChannelLabel,
+  fetchFlagTypes,
+  FLAG_TYPE_PROBABILITY,
+  type ConversationChannel,
+  type FlagTypeRow,
+} from '../../lib/userContentFlags';
+import { fetchStageNames, getSoftStageBadgeStyle, getStageColour, getStageName } from '../../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../../hooks/usePersistedState';
 
 type JunctionRow = {
@@ -48,6 +63,8 @@ type TagsManagerFilterState = {
   paymentPlanToDate: string;
   filterTagIds: number[];
   filterEmployeeIds: number[];
+  /** First visit selects the signed-in employee, then stays as the user left it. */
+  mineDefaultPending?: boolean;
 };
 
 /** Serialized report cache (sessionStorage) — maps as entry arrays for JSON. */
@@ -68,6 +85,7 @@ function tagsManagerReportFetchSignature(f: {
   filterEmployeeIds: number[];
 }): string {
   return JSON.stringify({
+    v: 3,
     from: f.taggedFromDate,
     to: f.taggedToDate,
     tags: [...f.filterTagIds].sort((a, b) => a - b),
@@ -104,13 +122,17 @@ function filterPaymentPlanRowsByPlanDate(
   });
 }
 
-/** Page title (Tags manager standalone page). */
-export const TagsManagerShellTitle: FC = () => (
-  <div className="min-w-0 pr-2 flex items-center gap-3">
-    <TagIcon className="w-8 h-8 shrink-0 text-primary" aria-hidden />
-    <h3 className="text-2xl font-bold text-gray-900 dark:text-white">Tags manager</h3>
-  </div>
-);
+/** Page title. Flags tab uses its own name and icon. */
+export const TagsManagerShellTitle: FC<{ mode?: 'tags' | 'flags' }> = ({ mode = 'tags' }) => {
+  const flags = mode === 'flags';
+  const Icon = flags ? FlagIcon : TagIcon;
+  return (
+    <div className="min-w-0 pr-2 flex items-center gap-3">
+      <Icon className="w-8 h-8 shrink-0 text-primary" aria-hidden />
+      <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{flags ? 'Flags manager' : 'Tags manager'}</h3>
+    </div>
+  );
+};
 
 function tagNameFromRow(row: JunctionRow): string {
   const rel = row.misc_leadtag as any;
@@ -178,7 +200,7 @@ function EmployeeAvatarCircle({
 
   const dim = size === 'sm' ? 'w-6 h-6' : size === 'md' ? 'w-9 h-9' : 'w-10 h-10';
   const textSz =
-    size === 'sm' ? 'text-[10px] leading-none' : size === 'md' ? 'text-xs leading-none' : 'text-base leading-none';
+    size === 'sm' ? 'text-[10px] leading-none' : size === 'md' ? 'text-xs leading-none' : 'text-sm leading-none';
 
   const hue = stableHueForAvatar(employeeId ?? null, label);
   const hue2 = (hue + 32) % 360;
@@ -206,15 +228,47 @@ function EmployeeAvatarCircle({
   );
 }
 
-/** Today's date in local time as `YYYY-MM-DD` for `<input type="date" />`. */
-function todayYmdLocal(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+function FilterDateInput({
+  value,
+  onChange,
+  min,
+  max,
+  title,
+  className = 'min-w-0 flex-1',
+  inputClassName = 'input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  min?: string;
+  max?: string;
+  title?: string;
+  className?: string;
+  inputClassName?: string;
+}) {
+  return (
+    <div className={`relative ${className}`}>
+      <input
+        type="date"
+        className={`${inputClassName} ${value ? 'pr-8' : ''}`}
+        value={value}
+        min={min}
+        max={max}
+        title={title}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {value && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-circle btn-xs absolute right-1 top-1/2 z-[1] -translate-y-1/2"
+          aria-label="Clear date"
+          onClick={() => onChange('')}
+        >
+          <XMarkIcon className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
 }
-
 /** Local calendar day → ISO bounds for `tagged_at` filtering. */
 function taggedAtRangeIso(fromDate: string, toDate: string): { gte?: string; lte?: string } {
   const out: { gte?: string; lte?: string } = {};
@@ -235,12 +289,13 @@ function taggedAtRangeIso(fromDate: string, toDate: string): { gte?: string; lte
 function applyTaggedAtRange<T extends { gte: (c: string, v: string) => T; lte: (c: string, v: string) => T }>(
   query: T,
   fromDate: string,
-  toDate: string
+  toDate: string,
+  column = 'tagged_at'
 ): T {
   const { gte, lte } = taggedAtRangeIso(fromDate, toDate);
   let q = query;
-  if (gte) q = q.gte('tagged_at', gte);
-  if (lte) q = q.lte('tagged_at', lte);
+  if (gte) q = q.gte(column, gte);
+  if (lte) q = q.lte(column, lte);
   return q;
 }
 
@@ -315,19 +370,26 @@ function formatMoney(cur: string, n: number): string {
 
 /** Same as Clients list / header: legacy number is not always in `lead_number`. */
 function legacyLeadDisplayNumber(lead: Record<string, unknown>): string {
-  const a = lead.lead_number != null ? String(lead.lead_number).trim() : '';
-  if (a) return a;
-  const b = lead.manual_id != null ? String(lead.manual_id).trim() : '';
-  if (b) return b;
+  const number = readableLeadNumber(lead.lead_number, lead.manual_id);
+  if (number) return number;
   if (lead.id != null && String(lead.id).trim() !== '') return String(lead.id);
   return '—';
 }
 
+const LEAD_NUMBER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function readableLeadNumber(...values: unknown[]): string {
+  for (const value of values) {
+    const text = value != null ? String(value).trim() : '';
+    if (!text || LEAD_NUMBER_UUID.test(text)) continue;
+    return text;
+  }
+  return '';
+}
+
 function newLeadDisplayNumber(lead: Record<string, unknown>): string {
-  const a = lead.lead_number != null ? String(lead.lead_number).trim() : '';
-  if (a) return a;
-  if (lead.id != null && String(lead.id).trim() !== '') return String(lead.id);
-  return '—';
+  const number = readableLeadNumber(lead.lead_number, lead.manual_id, lead.display_lead_number);
+  return number || '—';
 }
 
 /**
@@ -384,7 +446,12 @@ type EmployeeOption = {
   photo?: string | null;
 };
 
-type PickerOption = { id: number; label: string; avatarUrl?: string | null };
+type PickerOption = {
+  id: number;
+  label: string;
+  avatarUrl?: string | null;
+  icon?: React.ReactNode;
+};
 
 function EmployeeTagCell({
   name,
@@ -396,11 +463,11 @@ function EmployeeTagCell({
   employeeId?: number | null;
 }) {
   if (employeeId == null) {
-    return <span className="text-base text-base-content/60">—</span>;
+    return <span className="text-sm text-base-content/60">—</span>;
   }
   return (
-    <span className="inline-flex items-center gap-2 min-w-0 text-base">
-      <EmployeeAvatarCircle label={name} photoUrl={avatarUrl} employeeId={employeeId} size="lg" />
+    <span className="inline-flex items-center gap-2 min-w-0 text-sm">
+      <EmployeeAvatarCircle label={name} photoUrl={avatarUrl} employeeId={employeeId} size="md" />
       <span className="truncate">{name}</span>
     </span>
   );
@@ -424,6 +491,7 @@ function MultiIdPicker({
 }) {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
+  const [typingUnlocked, setTypingUnlocked] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -435,40 +503,74 @@ function MultiIdPicker({
   }, [open]);
 
   const q = search.trim().toLowerCase();
-  const filtered = options.filter((o) => o.label.toLowerCase().includes(q));
+  const selectedSet = new Set(selectedIds);
+  const selectedOptions = options.filter((o) => selectedSet.has(o.id));
+  const filtered = options.filter((o) => !selectedSet.has(o.id) && o.label.toLowerCase().includes(q));
+  const chosenCount = selectedIds.length;
 
   const toggle = (id: number) => {
     if (selectedIds.includes(id)) onChange(selectedIds.filter((x) => x !== id));
-    else onChange([...selectedIds, id].sort((a, b) => a - b));
+    else {
+      onChange([...selectedIds, id].sort((a, b) => a - b));
+      setSearch('');
+    }
   };
 
-  const selectedSet = new Set(selectedIds);
-  const selectedOptions = options.filter((o) => selectedSet.has(o.id));
-
-  const summaryPlaceholder = `${selectedIds.length} selected — focus the field to search or change`;
-  const inputPlaceholder =
-    !open && selectedIds.length > 0 && search === '' ? summaryPlaceholder : placeholder;
+  const inputPlaceholder = search === '' && chosenCount > 0 ? `${chosenCount} chosen` : placeholder;
 
   return (
     <div ref={ref} className="relative w-full min-w-[220px] max-w-sm">
       <div className="label justify-between py-1">
         <span className="label-text font-medium">{label}</span>
-        {selectedIds.length > 0 && (
-          <button type="button" className="label-text-alt link link-hover text-xs" onClick={() => onChange([])}>
-            Clear all
+      </div>
+      <form autoComplete="off" onSubmit={(event) => event.preventDefault()} className="relative">
+        <input
+          type="search"
+          name="list-filter"
+          inputMode="search"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-form-type="other"
+          aria-autocomplete="none"
+          readOnly={!typingUnlocked}
+          onPointerDown={(event) => {
+            event.currentTarget.readOnly = false;
+            setTypingUnlocked(true);
+          }}
+          className={`input input-bordered input-sm md:input-md w-full bg-base-100 [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden ${
+            chosenCount > 0 ? 'pr-16' : search ? 'pr-8' : ''
+          }`}
+          placeholder={inputPlaceholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onFocus={() => setOpen(true)}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+        />
+        {chosenCount > 0 && (
+          <span className="pointer-events-none absolute right-8 top-1/2 -translate-y-1/2 badge badge-primary badge-sm">
+            {chosenCount}
+          </span>
+        )}
+        {(chosenCount > 0 || search) && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-xs absolute right-1 top-1/2 z-[1] -translate-y-1/2"
+            aria-label="Clear filter"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              onChange([]);
+              setSearch('');
+            }}
+          >
+            <XMarkIcon className="h-3.5 w-3.5" />
           </button>
         )}
-      </div>
-      <input
-        type="text"
-        className="input input-bordered input-sm md:input-md w-full bg-base-100"
-        placeholder={inputPlaceholder}
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        onFocus={() => setOpen(true)}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-      />
+      </form>
       {open && (
         <div
           className="absolute left-0 right-0 top-full z-[100] mt-1 max-h-72 overflow-y-auto rounded-lg border border-base-300 bg-base-100 shadow-lg"
@@ -476,23 +578,22 @@ function MultiIdPicker({
         >
           {selectedOptions.length > 0 && (
             <div className="border-b border-base-200 bg-base-200/40 p-2">
-              <p className="mb-1 text-xs font-medium text-base-content/60">Selected</p>
+              <p className="mb-1 text-xs font-medium text-base-content/60">{chosenCount} chosen</p>
               <div className="flex flex-wrap gap-1">
                 {selectedOptions.map((o) => (
                   <button
                     key={o.id}
                     type="button"
-                    className="badge badge-primary badge-sm gap-1 pr-1 h-auto min-h-7 py-0.5"
+                    className="badge badge-primary gap-1.5 pr-1.5 h-auto min-h-8 py-1 text-sm"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => toggle(o.id)}
                   >
+                    {o.icon}
                     {showOptionAvatars && (
                       <EmployeeAvatarCircle label={o.label} photoUrl={o.avatarUrl} employeeId={o.id} size="sm" />
                     )}
                     {o.label}
-                    <span className="opacity-70" aria-hidden>
-                      ×
-                    </span>
+                    <XMarkIcon className="h-4 w-4 shrink-0" aria-hidden />
                   </button>
                 ))}
               </div>
@@ -500,24 +601,24 @@ function MultiIdPicker({
           )}
           <div className="py-1">
             {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-base-content/50">No matches</div>
+              <div className="px-3 py-2 text-sm text-base-content/50">
+                {q ? 'No matches' : 'No more to add'}
+              </div>
             ) : (
               filtered.map((o) => (
-                <label
+                <button
                   key={o.id}
-                  className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-base-200"
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm hover:bg-base-200"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => toggle(o.id)}
                 >
-                  <input
-                    type="checkbox"
-                    className="checkbox checkbox-primary checkbox-sm shrink-0"
-                    checked={selectedIds.includes(o.id)}
-                    onChange={() => toggle(o.id)}
-                  />
+                  {o.icon}
                   {showOptionAvatars && (
                     <EmployeeAvatarCircle label={o.label} photoUrl={o.avatarUrl} employeeId={o.id} size="md" />
                   )}
                   <span className="truncate">{o.label}</span>
-                </label>
+                </button>
               ))
             )}
           </div>
@@ -527,20 +628,100 @@ function MultiIdPicker({
   );
 }
 
+function PlanPaymentDateFilter({
+  fromDate,
+  toDate,
+  onChange,
+}: {
+  fromDate: string;
+  toDate: string;
+  onChange: (next: { fromDate: string; toDate: string }) => void;
+}) {
+  const active = Boolean(fromDate.trim() || toDate.trim());
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onDoc = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    if (open) document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        className={`btn btn-circle btn-sm md:btn-md h-10 w-10 min-h-10 min-w-10 rounded-full border-0 p-0 shadow-sm ring-1 ring-gray-200 ${
+          open || active ? 'bg-primary text-primary-content' : 'bg-white text-gray-700 hover:bg-gray-100'
+        }`}
+        aria-expanded={open}
+        aria-label="Plan payment dates"
+        title="Plan payment dates"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <FunnelIcon className="h-5 w-5" />
+      </button>
+      {active && !open && (
+        <span className="pointer-events-none absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[#ececec]" />
+      )}
+      {open && (
+        <div className="absolute right-0 top-full z-[80] mt-2 w-[min(100vw-2rem,22rem)] rounded-2xl bg-white p-3 shadow-lg ring-1 ring-gray-100">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-sm font-medium text-gray-900">Plan payment dates</p>
+            {active && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => onChange({ fromDate: '', toDate: '' })}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="form-control min-w-0">
+              <span className="label-text mb-1 text-xs">From</span>
+              <FilterDateInput
+                value={fromDate}
+                max={toDate || undefined}
+                title="Filters the Date column in expanded outstanding payment plans"
+                inputClassName="input input-bordered input-sm w-full min-w-0 bg-base-100"
+                onChange={(next) => onChange({ fromDate: next, toDate })}
+              />
+            </label>
+            <label className="form-control min-w-0">
+              <span className="label-text mb-1 text-xs">To</span>
+              <FilterDateInput
+                value={toDate}
+                min={fromDate || undefined}
+                title="Filters the Date column in expanded outstanding payment plans"
+                inputClassName="input input-bordered input-sm w-full min-w-0 bg-base-100"
+                onChange={(next) => onChange({ fromDate, toDate: next })}
+              />
+            </label>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type ExpandLeadParam = { kind: 'new'; uuid: string } | { kind: 'legacy'; id: number };
 
-type TagsManagerSortKey = 'total' | 'remaining' | 'applicants' | 'hours' | 'taggedAt';
+type TagsManagerSortKey = 'total' | 'remaining' | 'applicants' | 'taggedAt';
 
 type TagsManagerTableRow = {
   key: string;
   tag: string;
   leadLabel: string;
+  stage: unknown;
   expandLead: ExpandLeadParam | null;
   clientsPath: string | null;
   totalStr: string;
   remainingStr: string;
   applicants: string | number;
-  hours: string;
   taggedBy: string;
   taggedByAvatarUrl: string | null;
   taggedByEmployeeId: number | null;
@@ -551,9 +732,26 @@ type TagsManagerTableRow = {
   /** NIS-equivalent unpaid gross for cross-currency sort */
   sortRemaining: number;
   sortApplicants: number | null;
-  sortHours: number;
   taggedAtMs: number;
 };
+
+function LeadStageBadge({ stage, ready }: { stage: unknown; ready: boolean }) {
+  if (stage == null || String(stage).trim() === '') {
+    return <span className="text-sm text-base-content/40">—</span>;
+  }
+  const stageId = String(stage);
+  const name = (ready ? getStageName : getStageName)(stageId);
+  const soft = getSoftStageBadgeStyle(getStageColour(stageId), stageId);
+  return (
+    <span
+      className="inline-flex max-w-[11rem] truncate rounded-full border px-2.5 py-1 text-xs font-semibold"
+      style={{ backgroundColor: soft.backgroundColor, borderColor: soft.borderColor, color: soft.color }}
+      title={name}
+    >
+      {name}
+    </span>
+  );
+}
 
 function compareTagsManagerRows(
   a: TagsManagerTableRow,
@@ -581,10 +779,6 @@ function compareTagsManagerRows(
       const d = va - vb;
       return d !== 0 ? d * mul : tie;
     }
-    case 'hours': {
-      const d = a.sortHours - b.sortHours;
-      return d !== 0 ? d * mul : tie;
-    }
     case 'taggedAt': {
       const d = a.taggedAtMs - b.taggedAtMs;
       return d !== 0 ? d * mul : tie;
@@ -599,7 +793,7 @@ function compareTagsManagerRows(
  * Do not wrap this table in `overflow-x-auto`; that creates a nested scrollport and breaks sticky.
  */
 const TAGS_MANAGER_TH_STICKY =
-  'sticky top-0 z-[31] bg-base-200 border-b border-base-300 align-middle shadow-sm';
+  'sticky top-0 z-[31] bg-white border-b border-gray-200 align-middle';
 
 function TagsManagerSortTh({
   label,
@@ -624,7 +818,7 @@ function TagsManagerSortTh({
   return (
     <th
       scope="col"
-      className={`text-base ${TAGS_MANAGER_TH_STICKY} ${end ? 'text-right' : ''}`}
+      className={`text-sm ${TAGS_MANAGER_TH_STICKY} ${end ? 'text-right' : ''}`}
     >
       <div className={`flex min-w-0 flex-col gap-1 py-0.5 ${end ? 'items-end' : 'items-start'}`}>
         <button
@@ -718,7 +912,7 @@ function TagsManagerPaymentPlanSubtable({
         Avoid DaisyUI `table` class here: nested inside the main `.table` it matches global
         tbody/tr hover rules so every nested row highlights together.
       */}
-      <table className="w-full border-collapse text-sm md:text-base">
+      <table className="w-full border-collapse text-sm">
         <thead>
           <tr className="border-b border-base-300 bg-base-200">
             <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Lead Name</th>
@@ -792,19 +986,41 @@ function TagsManagerPaymentPlanSubtable({
   );
 }
 
-export default function TagsManagerReport() {
+type MineRequest = { nonce: number; include: boolean };
+
+function employeeIdsWithMine(ids: number[], employeeId: number, include: boolean): number[] {
+  if (include) return ids.includes(employeeId) ? ids : [...ids, employeeId].sort((a, b) => a - b);
+  return ids.filter((id) => id !== employeeId);
+}
+
+type ManagerMineProps = {
+  dateSlot?: HTMLElement | null;
+  loggedInEmployeeId?: number | null;
+  employeeResolved?: boolean;
+  /** Toggle the signed-in employee in the employee filter. */
+  mineRequest?: MineRequest | null;
+  onEmployeeIds?: (ids: number[]) => void;
+};
+
+export default function TagsManagerReport({
+  dateSlot = null,
+  loggedInEmployeeId = null,
+  employeeResolved = false,
+  mineRequest = null,
+  onEmployeeIds,
+}: ManagerMineProps) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const today = todayYmdLocal();
-  const [filters, setFilters] = usePersistedFilters<TagsManagerFilterState>('tagsManager_filters', {
-    taggedFromDate: today,
-    taggedToDate: today,
+  const [filters, setFilters] = usePersistedFilters<TagsManagerFilterState>('tagsManager_filters_v2', {
+    taggedFromDate: '',
+    taggedToDate: '',
     paymentPlanFromDate: '',
     paymentPlanToDate: '',
     filterTagIds: [],
     filterEmployeeIds: [],
+    mineDefaultPending: true,
   }, { storage: 'sessionStorage' });
 
   const {
@@ -814,7 +1030,31 @@ export default function TagsManagerReport() {
     paymentPlanToDate = '',
     filterTagIds,
     filterEmployeeIds,
+    mineDefaultPending = false,
   } = filters;
+
+  useEffect(() => {
+    onEmployeeIds?.(filterEmployeeIds);
+  }, [filterEmployeeIds, onEmployeeIds]);
+
+  useEffect(() => {
+    if (!mineDefaultPending || !employeeResolved) return;
+    setFilters((current) => ({
+      ...current,
+      mineDefaultPending: false,
+      filterEmployeeIds: loggedInEmployeeId != null ? [loggedInEmployeeId] : current.filterEmployeeIds,
+    }));
+  }, [mineDefaultPending, employeeResolved, loggedInEmployeeId, setFilters]);
+
+  useEffect(() => {
+    if (!mineRequest?.nonce || loggedInEmployeeId == null) return;
+    const include = mineRequest.include;
+    setFilters((current) => ({
+      ...current,
+      mineDefaultPending: false,
+      filterEmployeeIds: employeeIdsWithMine(current.filterEmployeeIds || [], loggedInEmployeeId, include),
+    }));
+  }, [mineRequest, loggedInEmployeeId, setFilters]);
 
   const [reportData, setReportData] = usePersistedState<TagsManagerPersistedReport | null>(
     'tagsManager_report',
@@ -1029,61 +1269,20 @@ export default function TagsManagerReport() {
       const uniqNew = [...new Set(newUuids)];
       const uniqLegacy = [...new Set(legacyIds)];
 
-      const [newLeadsRes, legacyRes, unpaidBatch] = await Promise.all([
-        uniqNew.length
-          ? supabase
-              .from('leads')
-              .select(
-                `
-              id,
-              name,
-              lead_number,
-              manual_id,
-              balance,
-              proposal_total,
-              subcontractor_fee,
-              currency_id,
-              vat,
-              vat_value,
-              number_of_applicants_meeting,
-              balance_currency,
-              accounting_currencies ( name )
-            `
-              )
-              .in('id', uniqNew)
-          : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+      const [newLeads, legacyLeads, unpaidBatch] = await Promise.all([
+        uniqNew.length ? fetchRowsById('leads', NEW_LEAD_FIELDS, uniqNew) : Promise.resolve([] as Record<string, unknown>[]),
         uniqLegacy.length
-          ? supabase
-              .from('leads_lead')
-              .select(
-                `
-              id,
-              name,
-              lead_number,
-              manual_id,
-              total,
-              total_base,
-              subcontractor_fee,
-              currency_id,
-              vat,
-              no_of_applicants,
-              accounting_currencies ( name )
-            `
-              )
-              .in('id', uniqLegacy)
-          : Promise.resolve({ data: [] as Record<string, unknown>[], error: null }),
+          ? fetchRowsById('leads_lead', LEGACY_LEAD_FIELDS, uniqLegacy)
+          : Promise.resolve([] as Record<string, unknown>[]),
         fetchUnpaidTotalsBatchByLeadKey(uniqNew, uniqLegacy),
       ]);
 
-      if (newLeadsRes.error) console.warn('TagsManagerReport: leads fetch', newLeadsRes.error);
-      if (legacyRes.error) console.warn('TagsManagerReport: leads_lead fetch', legacyRes.error);
-
       const nm = new Map<string, Record<string, unknown>>();
-      for (const L of (newLeadsRes.data || []) as Record<string, unknown>[]) {
+      for (const L of newLeads) {
         if (L.id != null) nm.set(String(L.id), L);
       }
       const lm = new Map<number, Record<string, unknown>>();
-      for (const L of (legacyRes.data || []) as Record<string, unknown>[]) {
+      for (const L of legacyLeads) {
         const id = Number(L.id);
         if (Number.isFinite(id)) lm.set(id, L);
       }
@@ -1136,9 +1335,11 @@ export default function TagsManagerReport() {
     });
   }, [expandedRowKey]);
 
+  const [stageNamesReady, setStageNamesReady] = useState(false);
   useEffect(() => {
     void loadFilterOptions();
     void loadCurrencies();
+    void fetchStageNames().finally(() => setStageNamesReady(true));
   }, [loadFilterOptions, loadCurrencies]);
 
   const reportDataRef = useRef(reportData);
@@ -1191,7 +1392,7 @@ export default function TagsManagerReport() {
         lead != null
           ? `${isLegacy ? legacyLeadDisplayNumber(lead) : newLeadDisplayNumber(lead)} · ${String(lead.name ?? '—')}`
           : nu
-            ? `(missing lead ${nu.slice(0, 8)}…)`
+            ? 'Lead not found'
             : isLegacy
               ? `(missing legacy ${row.lead_id})`
               : '—';
@@ -1255,12 +1456,12 @@ export default function TagsManagerReport() {
         key: `${row.id ?? row.leadtag_id}-${leadKey}-${row.tagged_at}`,
         tag: tagNameFromRow(row),
         leadLabel,
+        stage: lead?.stage ?? null,
         expandLead,
         clientsPath,
         totalStr,
         remainingStr,
         applicants: applicantsDisplay,
-        hours: '',
         taggedBy,
         taggedByAvatarUrl,
         taggedByEmployeeId,
@@ -1269,7 +1470,6 @@ export default function TagsManagerReport() {
         sortTotal,
         sortRemaining,
         sortApplicants,
-        sortHours: 0,
         taggedAtMs,
       } satisfies TagsManagerTableRow;
     });
@@ -1302,84 +1502,38 @@ export default function TagsManagerReport() {
 
   return (
     <div className="space-y-6">
-      <div className="flex w-full min-w-0 flex-row flex-wrap gap-2 sm:gap-3 lg:flex-nowrap lg:gap-4 lg:overflow-x-auto lg:pb-1 items-end [scrollbar-gutter:stable]">
-        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
-          <label className="label py-1">
-            <span className="label-text font-medium">Tagged from</span>
+      {dateSlot
+        ? createPortal(
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <span className="shrink-0">Tagged from</span>
+            <FilterDateInput
+              className="w-40 shrink-0"
+              value={taggedFromDate}
+              max={taggedToDate || undefined}
+              onChange={(value) => setFilters((f) => ({ ...f, taggedFromDate: value }))}
+            />
           </label>
-          <input
-            type="date"
-            className="input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100"
-            value={taggedFromDate}
-            onChange={(e) => setFilters((f) => ({ ...f, taggedFromDate: e.target.value }))}
-            max={taggedToDate || undefined}
-          />
-        </div>
-        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
-          <label className="label py-1">
-            <span className="label-text font-medium">Tagged to</span>
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="date"
-              className="input input-bordered input-sm md:input-md min-w-0 flex-1 bg-base-100"
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <span className="shrink-0">Tagged to</span>
+            <FilterDateInput
+              className="w-40 shrink-0"
               value={taggedToDate}
-              onChange={(e) => setFilters((f) => ({ ...f, taggedToDate: e.target.value }))}
               min={taggedFromDate || undefined}
+              onChange={(value) => setFilters((f) => ({ ...f, taggedToDate: value }))}
             />
-            {(taggedFromDate || taggedToDate) && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm shrink-0"
-                onClick={() => {
-                  setFilters((f) => ({ ...f, taggedFromDate: '', taggedToDate: '' }));
-                }}
-              >
-                Clear dates
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
-          <label className="label py-1">
-            <span className="label-text font-medium">Plan payment date from</span>
           </label>
-          <input
-            type="date"
-            className="input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100"
-            value={paymentPlanFromDate}
-            onChange={(e) => setFilters((f) => ({ ...f, paymentPlanFromDate: e.target.value }))}
-            max={paymentPlanToDate || undefined}
-            title="Filters the Date column in expanded outstanding payment plans (due / plan date)"
+          <PlanPaymentDateFilter
+            fromDate={paymentPlanFromDate}
+            toDate={paymentPlanToDate}
+            onChange={({ fromDate, toDate }) =>
+              setFilters((f) => ({ ...f, paymentPlanFromDate: fromDate, paymentPlanToDate: toDate }))
+            }
           />
-        </div>
-        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
-          <label className="label py-1">
-            <span className="label-text font-medium">Plan payment date to</span>
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="date"
-              className="input input-bordered input-sm md:input-md min-w-0 flex-1 bg-base-100"
-              value={paymentPlanToDate}
-              onChange={(e) => setFilters((f) => ({ ...f, paymentPlanToDate: e.target.value }))}
-              min={paymentPlanFromDate || undefined}
-              title="Filters the Date column in expanded outstanding payment plans (due / plan date)"
-            />
-            {hasPaymentPlanDateFilter && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm shrink-0"
-                onClick={() => {
-                  setFilters((f) => ({ ...f, paymentPlanFromDate: '', paymentPlanToDate: '' }));
-                }}
-              >
-                Clear plan dates
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+        </div>,
+        dateSlot
+      )
+        : null}
 
       <div className="flex flex-col lg:flex-row lg:items-end gap-4 flex-wrap">
         <MultiIdPicker
@@ -1432,15 +1586,6 @@ export default function TagsManagerReport() {
               </>
             )}
           </output>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm md:btn-md gap-2"
-            onClick={() => void runFetchReport()}
-            disabled={loading}
-          >
-            {loading ? <span className="loading loading-spinner loading-sm" /> : <ArrowPathIcon className="w-5 h-5" />}
-            Refresh
-          </button>
         </div>
       </div>
 
@@ -1450,13 +1595,14 @@ export default function TagsManagerReport() {
         </div>
       )}
 
-      <div className="relative w-full min-w-0 rounded-xl border border-base-300 bg-base-100">
-        <table className="table table-md text-base w-full min-w-max">
+      <div className="relative w-full min-w-0 overflow-x-auto rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
+        <table className="table table-sm w-full min-w-max text-sm">
           <thead>
             <tr>
-              <th className={`text-base w-10 px-2 ${TAGS_MANAGER_TH_STICKY}`} aria-label="Expand" />
-              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Tag</th>
-              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Lead</th>
+              <th className={`text-sm w-7 px-1 ${TAGS_MANAGER_TH_STICKY}`} aria-label="Expand" />
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Tag</th>
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Lead</th>
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Stage</th>
               <TagsManagerSortTh
                 label="Total value (lead)"
                 column="total"
@@ -1483,15 +1629,7 @@ export default function TagsManagerReport() {
                 sortDir={sortDir}
                 onSort={handleSort}
               />
-              <TagsManagerSortTh
-                label="Hours"
-                column="hours"
-                align="right"
-                activeKey={sortKey}
-                sortDir={sortDir}
-                onSort={handleSort}
-              />
-              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Tagged by</th>
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Tagged by</th>
               <TagsManagerSortTh
                 label="Tagged at"
                 column="taggedAt"
@@ -1511,7 +1649,7 @@ export default function TagsManagerReport() {
               </tr>
             ) : tableRows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="text-center py-8 text-base text-base-content/60 max-w-lg mx-auto">
+                <td colSpan={9} className="text-center py-8 text-sm text-base-content/60 max-w-lg mx-auto">
                   No tag assignments match the selected dates
                   {hasTagOrEmployeeFilter ? ' and filters' : ''}. Try another date range or clear filters.
                 </td>
@@ -1525,7 +1663,7 @@ export default function TagsManagerReport() {
                       if (r.expandLead) void togglePaymentExpand(r.key, r.expandLead);
                     }}
                   >
-                    <td className="w-10 px-2 align-middle">
+                    <td className="w-7 px-1 align-middle">
                       {r.expandLead ? (
                         <ChevronRightIcon
                           className={`w-5 h-5 text-base-content/60 transition-transform shrink-0 ${
@@ -1537,12 +1675,12 @@ export default function TagsManagerReport() {
                         <span className="inline-block w-5" />
                       )}
                     </td>
-                    <td className="font-medium whitespace-nowrap text-base">{r.tag}</td>
+                    <td className="font-medium whitespace-nowrap text-sm">{r.tag}</td>
                     <td className="max-w-[220px] p-0">
                       {r.clientsPath ? (
                         <button
                           type="button"
-                          className="link link-primary hover:underline text-left text-base w-full truncate block px-4 py-3 max-w-[220px]"
+                          className="link link-primary hover:underline text-left text-sm w-full truncate block pl-1 pr-2 py-2 max-w-[220px]"
                           title={r.leadLabel}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1553,25 +1691,1099 @@ export default function TagsManagerReport() {
                           {r.leadLabel}
                         </button>
                       ) : (
-                        <span className="text-sm block px-4 py-3 truncate text-base-content/60" title={r.leadLabel}>
+                        <span className="text-sm block pl-1 pr-2 py-2 truncate text-base-content/60" title={r.leadLabel}>
                           {r.leadLabel}
                         </span>
                       )}
                     </td>
-                    <td className="text-right text-base whitespace-nowrap">{r.totalStr}</td>
-                    <td className="text-right text-base whitespace-nowrap text-amber-800 dark:text-amber-200">
+                    <td className="align-middle whitespace-nowrap">
+                      <LeadStageBadge stage={r.stage} ready={stageNamesReady} />
+                    </td>
+                    <td className="text-right text-sm whitespace-nowrap">{r.totalStr}</td>
+                    <td className="text-right text-sm whitespace-nowrap text-amber-800 dark:text-amber-200">
                       {r.remainingStr}
                     </td>
-                    <td className="text-right text-base">{r.applicants}</td>
-                    <td className="text-right text-base text-base-content/50">{r.hours || '—'}</td>
-                    <td className="text-base max-w-[200px]" onClick={(e) => e.stopPropagation()}>
+                    <td className="text-right text-sm">{r.applicants}</td>
+                    <td className="text-sm max-w-[200px]" onClick={(e) => e.stopPropagation()}>
                       <EmployeeTagCell
                         name={r.taggedBy}
                         avatarUrl={r.taggedByAvatarUrl}
                         employeeId={r.taggedByEmployeeId}
                       />
                     </td>
-                    <td className="text-base whitespace-nowrap">{r.taggedAt}</td>
+                    <td className="text-sm whitespace-nowrap">{r.taggedAt}</td>
+                  </tr>
+                  {expandedRowKey === r.key && r.expandLead && (
+                    <tr className="bg-base-200/20 hover:!bg-base-200/20">
+                      <td colSpan={9} className="p-0 align-top">
+                        <div className="px-2 py-1 border-b border-base-300 bg-base-200/50 text-xs font-semibold text-base-content/70">
+                          Outstanding payment plans (unpaid)
+                        </div>
+                        <TagsManagerPaymentPlanSubtable
+                          rows={filteredPaymentRowsByRowKey.get(r.key) ?? []}
+                          loading={paymentLoadingKey === r.key}
+                          loadError={paymentErrorKey === r.key}
+                          planDateFilterActive={hasPaymentPlanDateFilter}
+                          fetchedRowCount={(paymentRowsByRowKey.get(r.key) ?? []).length}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+type FlagAssignmentRow = {
+  id: string;
+  userId: string | null;
+  flagTypeId: number;
+  createdAt: string | null;
+  newLeadId: string | null;
+  legacyLeadId: number | null;
+  whereLabel: string;
+};
+
+type FlagAssignmentDraft = FlagAssignmentRow & {
+  channel: ConversationChannel | null;
+  externalId: string | null;
+  flagKind: string | null;
+};
+
+type FlagUserProfile = {
+  name: string;
+  avatarUrl: string | null;
+  employeeId: number | null;
+};
+
+type ProbabilityChannel = ConversationChannel;
+
+const PROBABILITY_CHANNEL_OPTIONS: { id: number; channel: ProbabilityChannel; label: string }[] = [
+  { id: 1, channel: 'email', label: 'Email' },
+  { id: 2, channel: 'whatsapp', label: 'WhatsApp' },
+  { id: 3, channel: 'phone', label: 'Phone call' },
+  { id: 4, channel: 'manual', label: 'Manual' },
+  { id: 5, channel: 'legacy_interaction', label: 'Legacy' },
+];
+
+function OutlookChannelIcon({ className }: { className: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#0078D4" d="M22 6.5v11c0 .83-.67 1.5-1.5 1.5H17V5h3.5c.83 0 1.5.67 1.5 1.5z" />
+      <path fill="#0078D4" d="M16 5H4.5C3.67 5 3 5.67 3 6.5v11c0 .83.67 1.5 1.5 1.5H16V5z" />
+      <path fill="#28A8EA" d="M15 12.5 8.5 7.25v10.5L15 12.5z" />
+      <ellipse fill="#0078D4" cx="9.5" cy="12.5" rx="3.5" ry="4" />
+    </svg>
+  );
+}
+
+function ProbabilityChannelMark({ channel }: { channel: ProbabilityChannel }) {
+  const className = 'h-6 w-6 shrink-0';
+  if (channel === 'email') return <OutlookChannelIcon className={className} />;
+  if (channel === 'whatsapp') return <FaWhatsapp className={`${className} text-[#25D366]`} aria-hidden />;
+  const Icon = channel === 'phone' ? PhoneIcon : channel === 'manual' ? PencilSquareIcon : ArchiveBoxIcon;
+  const color = channel === 'phone' ? 'text-violet-600' : channel === 'manual' ? 'text-amber-600' : 'text-slate-600';
+  return <Icon className={`${className} ${color}`} aria-hidden />;
+}
+
+type FlagsManagerFilterState = {
+  flaggedFromDate: string;
+  flaggedToDate: string;
+  paymentPlanFromDate: string;
+  paymentPlanToDate: string;
+  filterFlagTypeIds: number[];
+  filterEmployeeIds: number[];
+  /** Empty means every channel. Any selection narrows Probability flags to those channels. */
+  probabilityChannels: ProbabilityChannel[];
+  /** First visit selects the signed-in employee, then stays as the user left it. */
+  mineDefaultPending?: boolean;
+};
+
+type FlagsPersistedReport = {
+  signature: string;
+  rows: FlagAssignmentRow[];
+  newLeadEntries: [string, Record<string, unknown>][];
+  legacyEntries: [number, Record<string, unknown>][];
+  unpaidEntries: [string, UnpaidByCurrencyMap][];
+  currencyEntries: [number, string][];
+  userEntries: [string, FlagUserProfile][];
+  truncated: boolean;
+};
+
+type FlagsTableRow = TagsManagerTableRow & { whereLabel: string };
+
+const FLAG_PAGE = 1000;
+const FLAG_MAX_ROWS = 5000;
+
+function chunkList<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+const NEW_LEAD_FIELDS =
+  'id, name, lead_number, manual_id, stage, balance, proposal_total, subcontractor_fee, currency_id, vat, vat_value, number_of_applicants_meeting, balance_currency';
+const LEGACY_LEAD_FIELDS =
+  'id, name, lead_number, manual_id, stage, total, total_base, subcontractor_fee, currency_id, vat, no_of_applicants';
+
+async function fetchRowsById(
+  table: 'leads' | 'leads_lead',
+  fields: string,
+  ids: (string | number)[]
+): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  for (const batch of chunkList(ids, 60)) {
+    const { data, error } = await supabase.from(table).select(fields).in('id', batch);
+    if (error) {
+      console.warn(`Tags manager ${table} fetch`, error);
+      continue;
+    }
+    out.push(...((data || []) as Record<string, unknown>[]));
+  }
+  return out;
+}
+
+function flagsReportSignature(f: FlagsManagerFilterState): string {
+  return JSON.stringify({
+    v: 3,
+    from: f.flaggedFromDate,
+    to: f.flaggedToDate,
+    types: [...f.filterFlagTypeIds].sort((a, b) => a - b),
+    emps: [...f.filterEmployeeIds].sort((a, b) => a - b),
+    channels: [...(f.probabilityChannels || [])].sort(),
+  });
+}
+
+function contentFlagFilter(query: any, typeIds: number[], channels: ProbabilityChannel[]) {
+  if (channels.length === 0) return typeIds.length > 0 ? query.in('flag_type', typeIds) : query;
+  const others = typeIds.filter((id) => id !== FLAG_TYPE_PROBABILITY);
+  const includeProbability = typeIds.length === 0 || typeIds.includes(FLAG_TYPE_PROBABILITY);
+  if (!includeProbability) return query.in('flag_type', typeIds);
+  if (others.length === 0 && typeIds.length > 0) {
+    return query.eq('flag_type', FLAG_TYPE_PROBABILITY).in('conversation_channel', channels);
+  }
+  const channelList = channels.join(',');
+  const probability = `and(flag_type.eq.${FLAG_TYPE_PROBABILITY},conversation_channel.in.(${channelList}))`;
+  if (typeIds.length === 0) {
+    return query.or(`flag_type.neq.${FLAG_TYPE_PROBABILITY},${probability}`);
+  }
+  return query.or(`flag_type.in.(${others.join(',')}),${probability}`);
+}
+
+function rmqFlagFilter(query: any, typeIds: number[], channels: ProbabilityChannel[]): any | null {
+  if (channels.length === 0) return typeIds.length > 0 ? query.in('flag_type', typeIds) : query;
+  const others = typeIds.filter((id) => id !== FLAG_TYPE_PROBABILITY);
+  if (typeIds.length > 0 && others.length === 0) return null;
+  if (others.length > 0) return query.in('flag_type', others);
+  return query.neq('flag_type', FLAG_TYPE_PROBABILITY);
+}
+
+function flagWhereLabel(row: {
+  source: 'content' | 'rmq';
+  flag_kind?: string | null;
+  conversation_channel?: string | null;
+  lead_field_key?: string | null;
+}): string {
+  if (row.source === 'rmq') return 'RMQ chat';
+  if (row.flag_kind === 'lead_field') {
+    const key = String(row.lead_field_key || '').replace(/_/g, ' ').trim();
+    return key ? `Lead field · ${key}` : 'Lead field';
+  }
+  const ch = String(row.conversation_channel || '');
+  if (ch === 'email' || ch === 'whatsapp' || ch === 'phone' || ch === 'manual' || ch === 'legacy_interaction') {
+    return conversationChannelLabel(ch);
+  }
+  return 'Conversation';
+}
+
+function leadHit(newId: unknown, legacyId: unknown): { newLeadId: string | null; legacyLeadId: number | null } | null {
+  const nextNew = newId != null && String(newId).trim() ? String(newId).trim() : null;
+  const nextLegacy = legacyId != null && Number.isFinite(Number(legacyId)) ? Number(legacyId) : null;
+  if (nextNew) return { newLeadId: nextNew, legacyLeadId: null };
+  if (nextLegacy != null) return { newLeadId: null, legacyLeadId: nextLegacy };
+  return null;
+}
+
+async function readFlagPages(query: any): Promise<any[]> {
+  const rows: any[] = [];
+  let from = 0;
+  while (rows.length < FLAG_MAX_ROWS) {
+    const { data, error } = await query.range(from, from + FLAG_PAGE - 1);
+    if (error) throw new Error(error.message || 'Failed to load flags');
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < FLAG_PAGE) break;
+    from += FLAG_PAGE;
+  }
+  return rows;
+}
+
+async function loadEmployeeUserMap(): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, employee_id')
+      .not('employee_id', 'is', null)
+      .range(from, from + FLAG_PAGE - 1);
+    if (error) throw new Error(error.message || 'Failed to load employees');
+    const page = data || [];
+    for (const row of page as { id?: string; employee_id?: number | string | null }[]) {
+      const emp = Number(row.employee_id);
+      const id = row.id != null ? String(row.id) : '';
+      if (!id || !Number.isFinite(emp)) continue;
+      const list = map.get(emp) || [];
+      list.push(id);
+      map.set(emp, list);
+    }
+    if (page.length < FLAG_PAGE) break;
+    from += FLAG_PAGE;
+  }
+  return map;
+}
+
+async function resolveConversationLeads(
+  pending: { channel: ConversationChannel; externalId: string }[]
+): Promise<Map<string, { newLeadId: string | null; legacyLeadId: number | null }>> {
+  const found = new Map<string, { newLeadId: string | null; legacyLeadId: number | null }>();
+  const pairKey = (channel: string, externalId: string) => `${channel}\t${externalId}`;
+  const byChannel: Record<ConversationChannel, string[]> = {
+    email: [],
+    whatsapp: [],
+    phone: [],
+    manual: [],
+    legacy_interaction: [],
+  };
+  for (const row of pending) {
+    if (!byChannel[row.channel]) continue;
+    byChannel[row.channel].push(row.externalId);
+  }
+  const contactWait: { mapKey: string; contactId: number }[] = [];
+
+  const emailIds = [...new Set(byChannel.email)].slice(0, 250);
+  let emailCursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(8, emailIds.length) }, async () => {
+      while (emailCursor < emailIds.length) {
+        const externalId = emailIds[emailCursor++];
+        const { data } = await supabase
+          .from('emails')
+          .select('client_id, legacy_id, contact_id')
+          .eq('message_id', externalId)
+          .limit(1);
+        let row = (data || [])[0] as { client_id?: string | null; legacy_id?: number | null; contact_id?: number | null } | undefined;
+        if (!row && /^\d+$/.test(externalId)) {
+          const byId = await supabase
+            .from('emails')
+            .select('client_id, legacy_id, contact_id')
+            .eq('id', Number(externalId))
+            .maybeSingle();
+          row = (byId.data || undefined) as typeof row;
+        }
+        const hit = row ? leadHit(row.client_id, row.legacy_id) : null;
+        if (hit) found.set(pairKey('email', externalId), hit);
+        else if (row?.contact_id != null && Number.isFinite(Number(row.contact_id))) {
+          contactWait.push({ mapKey: pairKey('email', externalId), contactId: Number(row.contact_id) });
+        }
+      }
+    })
+  );
+
+  for (const batch of chunkList([...new Set(byChannel.whatsapp)], 150)) {
+    const { data, error } = await supabase
+      .from('whatsapp_messages')
+      .select('id, lead_id, legacy_id, contact_id')
+      .in('id', batch);
+    if (error) continue;
+    for (const row of (data || []) as { id?: string | number; lead_id?: string | null; legacy_id?: number | null; contact_id?: number | null }[]) {
+      const id = row.id != null ? String(row.id) : '';
+      if (!id) continue;
+      const hit = leadHit(row.lead_id, row.legacy_id);
+      if (hit) found.set(pairKey('whatsapp', id), hit);
+      else if (row.contact_id != null) contactWait.push({ mapKey: pairKey('whatsapp', id), contactId: Number(row.contact_id) });
+    }
+  }
+
+  const callIds = [...new Set(byChannel.phone.map((id) => String(id).replace(/^call_/, '').trim()))].filter((id) => /^\d+$/.test(id));
+  for (const batch of chunkList(callIds, 150)) {
+    const { data, error } = await supabase.from('call_logs').select('id, client_id, lead_id').in('id', batch);
+    if (error) continue;
+    for (const row of (data || []) as { id?: string | number; client_id?: string | null; lead_id?: number | null }[]) {
+      const id = row.id != null ? String(row.id) : '';
+      const hit = leadHit(row.client_id, row.lead_id);
+      if (id && hit) found.set(pairKey('phone', id), hit);
+    }
+  }
+
+  for (const batch of chunkList([...new Set(byChannel.manual)], 150)) {
+    const { data, error } = await supabase.from('lead_manual_interactions').select('id, lead_id').in('id', batch);
+    if (error) continue;
+    for (const row of (data || []) as { id?: string | number; lead_id?: string | null }[]) {
+      const id = row.id != null ? String(row.id) : '';
+      const hit = leadHit(row.lead_id, null);
+      if (id && hit) found.set(pairKey('manual', id), hit);
+    }
+  }
+
+  const legacyIds = [...new Set(byChannel.legacy_interaction.map((id) => Number(String(id).replace(/^legacy_/, ''))))].filter((id) =>
+    Number.isFinite(id)
+  );
+  for (const batch of chunkList(legacyIds, 150)) {
+    const { data, error } = await supabase.from('leads_leadinteractions').select('id, lead_id').in('id', batch);
+    if (error) continue;
+    for (const row of (data || []) as { id?: number; lead_id?: number | null }[]) {
+      const hit = leadHit(null, row.lead_id);
+      if (row.id != null && hit) found.set(pairKey('legacy_interaction', String(row.id)), hit);
+    }
+  }
+
+  if (contactWait.length > 0) {
+    const contactLead = new Map<number, { newLeadId: string | null; legacyLeadId: number | null }>();
+    for (const batch of chunkList([...new Set(contactWait.map((item) => item.contactId))], 150)) {
+      const { data, error } = await supabase
+        .from('lead_leadcontact')
+        .select('contact_id, newlead_id, lead_id')
+        .in('contact_id', batch);
+      if (error) continue;
+      for (const row of (data || []) as { contact_id?: number; newlead_id?: string | null; lead_id?: number | null }[]) {
+        const cid = Number(row.contact_id);
+        if (!Number.isFinite(cid) || contactLead.has(cid)) continue;
+        const hit = leadHit(row.newlead_id, row.lead_id);
+        if (hit) contactLead.set(cid, hit);
+      }
+    }
+    for (const item of contactWait) {
+      if (found.has(item.mapKey)) continue;
+      const hit = contactLead.get(item.contactId);
+      if (hit) found.set(item.mapKey, hit);
+    }
+  }
+
+  return found;
+}
+
+async function loadFlagUserProfiles(userIds: string[]): Promise<Map<string, FlagUserProfile>> {
+  const map = new Map<string, FlagUserProfile>();
+  const nameOf = (row: {
+    full_name?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    tenants_employee?: { display_name?: string | null; photo_url?: string | null; photo?: string | null; id?: number } | { display_name?: string | null; photo_url?: string | null; photo?: string | null; id?: number }[] | null;
+    employee_id?: number | string | null;
+  }): FlagUserProfile => {
+    const rel = row.tenants_employee;
+    const emp = Array.isArray(rel) ? rel[0] : rel;
+    const display = emp?.display_name != null ? String(emp.display_name).trim() : '';
+    const full = row.full_name != null ? String(row.full_name).trim() : '';
+    const both = [row.first_name, row.last_name].map((part) => (part != null ? String(part).trim() : '')).filter(Boolean).join(' ');
+    const employeeId =
+      emp?.id != null && Number.isFinite(Number(emp.id))
+        ? Number(emp.id)
+        : row.employee_id != null && Number.isFinite(Number(row.employee_id))
+          ? Number(row.employee_id)
+          : null;
+    return {
+      name: display || full || both || '—',
+      avatarUrl: employeePhotoFromEmp(emp),
+      employeeId,
+    };
+  };
+
+  for (const batch of chunkList(userIds, 80)) {
+    const embedded = await supabase
+      .from('users')
+      .select('id, full_name, first_name, last_name, employee_id, tenants_employee!employee_id(id, display_name, photo_url, photo)')
+      .in('id', batch);
+    if (!embedded.error) {
+      for (const row of (embedded.data || []) as { id?: string }[]) {
+        if (row.id) map.set(String(row.id), nameOf(row as any));
+      }
+      continue;
+    }
+    const plain = await supabase.from('users').select('id, full_name, first_name, last_name, employee_id').in('id', batch);
+    if (plain.error) continue;
+    const empIds = [
+      ...new Set(
+        ((plain.data || []) as { employee_id?: number | string | null }[])
+          .map((row) => Number(row.employee_id))
+          .filter((id) => Number.isFinite(id))
+      ),
+    ];
+    const empById = new Map<number, { id: number; display_name: string | null; photo_url: string | null; photo: string | null }>();
+    if (empIds.length) {
+      const emps = await supabase.from('tenants_employee').select('id, display_name, photo_url, photo').in('id', empIds);
+      for (const emp of (emps.data || []) as { id: number; display_name: string | null; photo_url?: string | null; photo?: string | null }[]) {
+        empById.set(Number(emp.id), {
+          id: Number(emp.id),
+          display_name: emp.display_name,
+          photo_url: emp.photo_url ?? null,
+          photo: emp.photo ?? null,
+        });
+      }
+    }
+    for (const row of (plain.data || []) as { id?: string; employee_id?: number | string | null }[]) {
+      if (!row.id) continue;
+      const emp = empById.get(Number(row.employee_id));
+      map.set(String(row.id), nameOf({ ...row, tenants_employee: emp || null }));
+    }
+  }
+  return map;
+}
+
+export function FlagsManagerReport({
+  dateSlot = null,
+  loggedInEmployeeId = null,
+  employeeResolved = false,
+  mineRequest = null,
+  onEmployeeIds,
+}: ManagerMineProps) {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = usePersistedFilters<FlagsManagerFilterState>(
+    'flagsManager_filters_v2',
+    {
+      flaggedFromDate: '',
+      flaggedToDate: '',
+      paymentPlanFromDate: '',
+      paymentPlanToDate: '',
+      filterFlagTypeIds: [],
+      filterEmployeeIds: [],
+      probabilityChannels: [],
+      mineDefaultPending: true,
+    },
+    { storage: 'sessionStorage' }
+  );
+  const {
+    flaggedFromDate,
+    flaggedToDate,
+    paymentPlanFromDate = '',
+    paymentPlanToDate = '',
+    filterFlagTypeIds,
+    filterEmployeeIds,
+    probabilityChannels = [],
+    mineDefaultPending = false,
+  } = filters;
+
+  useEffect(() => {
+    onEmployeeIds?.(filterEmployeeIds);
+  }, [filterEmployeeIds, onEmployeeIds]);
+
+  useEffect(() => {
+    if (!mineDefaultPending || !employeeResolved) return;
+    setFilters((current) => ({
+      ...current,
+      mineDefaultPending: false,
+      filterEmployeeIds: loggedInEmployeeId != null ? [loggedInEmployeeId] : current.filterEmployeeIds,
+    }));
+  }, [mineDefaultPending, employeeResolved, loggedInEmployeeId, setFilters]);
+
+  useEffect(() => {
+    if (!mineRequest?.nonce || loggedInEmployeeId == null) return;
+    const include = mineRequest.include;
+    setFilters((current) => ({
+      ...current,
+      mineDefaultPending: false,
+      filterEmployeeIds: employeeIdsWithMine(current.filterEmployeeIds || [], loggedInEmployeeId, include),
+    }));
+  }, [mineRequest, loggedInEmployeeId, setFilters]);
+
+  const [reportData, setReportData] = usePersistedState<FlagsPersistedReport | null>('flagsManager_report', null, {
+    storage: 'sessionStorage',
+  });
+  const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
+  const [employeeOptions, setEmployeeOptions] = useState<EmployeeOption[]>([]);
+  const employeeUsersRef = useRef<Map<number, string[]> | null>(null);
+
+  const filterSig = useMemo(
+    () =>
+      flagsReportSignature({
+        flaggedFromDate,
+        flaggedToDate,
+        paymentPlanFromDate,
+        paymentPlanToDate,
+        filterFlagTypeIds,
+        filterEmployeeIds,
+        probabilityChannels,
+      }),
+    [flaggedFromDate, flaggedToDate, paymentPlanFromDate, paymentPlanToDate, filterFlagTypeIds, filterEmployeeIds, probabilityChannels]
+  );
+
+  const rows = reportData?.rows ?? [];
+  const newLeadMap = useMemo(() => new Map(reportData?.newLeadEntries ?? []), [reportData]);
+  const legacyLeadMap = useMemo(() => new Map(reportData?.legacyEntries ?? []), [reportData]);
+  const unpaidMap = useMemo(() => new Map(reportData?.unpaidEntries ?? []), [reportData]);
+  const userMap = useMemo(() => new Map(reportData?.userEntries ?? []), [reportData]);
+  const truncated = reportData?.truncated === true;
+
+  const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+  const [paymentRowsByRowKey, setPaymentRowsByRowKey] = useState<Map<string, PaymentRow[]>>(new Map());
+  const [paymentLoadingKey, setPaymentLoadingKey] = useState<string | null>(null);
+  const [paymentErrorKey, setPaymentErrorKey] = useState<string | null>(null);
+  const hasPaymentPlanDateFilter = Boolean(paymentPlanFromDate.trim() || paymentPlanToDate.trim());
+  const filteredPaymentRowsByRowKey = useMemo(() => {
+    if (!hasPaymentPlanDateFilter) return paymentRowsByRowKey;
+    const out = new Map<string, PaymentRow[]>();
+    for (const [k, arr] of paymentRowsByRowKey.entries()) {
+      out.set(k, filterPaymentPlanRowsByPlanDate(arr, paymentPlanFromDate, paymentPlanToDate));
+    }
+    return out;
+  }, [paymentRowsByRowKey, hasPaymentPlanDateFilter, paymentPlanFromDate, paymentPlanToDate]);
+
+  const [currencyBootstrap, setCurrencyBootstrap] = useState<Map<number, string>>(new Map());
+  const currencyMap = useMemo(() => {
+    const fromReport = reportData?.currencyEntries;
+    if (fromReport && fromReport.length > 0) return new Map(fromReport);
+    return currencyBootstrap;
+  }, [reportData?.currencyEntries, currencyBootstrap]);
+
+  const loadCurrencies = useCallback(async (): Promise<Map<number, string>> => {
+    const m = new Map<number, string>();
+    const { data, error: err } = await supabase.from('accounting_currencies').select('id, name');
+    if (err || !data) {
+      setCurrencyBootstrap(m);
+      return m;
+    }
+    for (const c of data as { id?: number; name?: string }[]) {
+      const id = Number(c.id);
+      if (Number.isFinite(id) && c.name) m.set(id, String(c.name).trim());
+    }
+    setCurrencyBootstrap(m);
+    return m;
+  }, []);
+
+  const [stageNamesReady, setStageNamesReady] = useState(false);
+  useEffect(() => {
+    void (async () => {
+      const [types, emps] = await Promise.all([
+        fetchFlagTypes(supabase),
+        supabase.from('tenants_employee').select('id, display_name, photo_url, photo').order('display_name', { ascending: true }),
+        fetchStageNames().finally(() => setStageNamesReady(true)),
+      ]);
+      setFlagTypes(types);
+      if (!emps.error && emps.data) setEmployeeOptions(emps.data as EmployeeOption[]);
+    })();
+    void loadCurrencies();
+  }, [loadCurrencies]);
+
+  const runFetchReport = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setExpandedRowKey(null);
+    setPaymentRowsByRowKey(new Map());
+    setPaymentLoadingKey(null);
+    setPaymentErrorKey(null);
+    const sig = flagsReportSignature({
+      flaggedFromDate,
+      flaggedToDate,
+      paymentPlanFromDate,
+      paymentPlanToDate,
+      filterFlagTypeIds,
+      filterEmployeeIds,
+      probabilityChannels,
+    });
+    try {
+      let userIdFilter: string[] | null = null;
+      if (filterEmployeeIds.length > 0) {
+        if (!employeeUsersRef.current) employeeUsersRef.current = await loadEmployeeUserMap();
+        const ids = new Set<string>();
+        for (const empId of filterEmployeeIds) {
+          for (const userId of employeeUsersRef.current.get(Number(empId)) || []) ids.add(userId);
+        }
+        userIdFilter = [...ids];
+        if (userIdFilter.length === 0) {
+          const curMap = await loadCurrencies();
+          setReportData({
+            signature: sig,
+            rows: [],
+            newLeadEntries: [],
+            legacyEntries: [],
+            unpaidEntries: [],
+            currencyEntries: Array.from(curMap.entries()),
+            userEntries: [],
+            truncated: false,
+          });
+          return;
+        }
+      }
+
+      const typeIds = filterFlagTypeIds.map(Number).filter((id) => Number.isFinite(id));
+      const userChunks = userIdFilter ? chunkList(userIdFilter, 40) : [null];
+      const contentRaw: any[] = [];
+      const rmqRaw: any[] = [];
+      for (const users of userChunks) {
+        let contentQuery: any = supabase
+          .from('user_content_flags')
+          .select('id, user_id, flag_kind, conversation_channel, external_id, lead_field_key, new_lead_id, legacy_lead_id, flag_type, created_at')
+          .order('created_at', { ascending: false });
+        let rmqQuery: any = supabase
+          .from('rmq_message_lead_flags')
+          .select('id, user_id, new_lead_id, legacy_lead_id, flag_type, created_at')
+          .order('created_at', { ascending: false });
+        contentQuery = contentFlagFilter(contentQuery, typeIds, probabilityChannels);
+        const rmqFiltered = rmqFlagFilter(rmqQuery, typeIds, probabilityChannels);
+        if (users) {
+          contentQuery = contentQuery.in('user_id', users);
+          if (rmqFiltered) rmqQuery = rmqFiltered.in('user_id', users);
+        } else if (rmqFiltered) {
+          rmqQuery = rmqFiltered;
+        }
+        contentQuery = applyTaggedAtRange(contentQuery, flaggedFromDate, flaggedToDate, 'created_at');
+        if (rmqFiltered) rmqQuery = applyTaggedAtRange(rmqQuery, flaggedFromDate, flaggedToDate, 'created_at');
+        const [contentPage, rmqPage] = await Promise.all([
+          readFlagPages(contentQuery),
+          rmqFiltered ? readFlagPages(rmqQuery) : Promise.resolve([]),
+        ]);
+        contentRaw.push(...contentPage);
+        rmqRaw.push(...rmqPage);
+      }
+
+      let assignments: FlagAssignmentDraft[] = [
+        ...contentRaw.map((row) => ({
+          id: `content:${row.id}`,
+          userId: row.user_id != null ? String(row.user_id) : null,
+          flagTypeId: Number(row.flag_type),
+          createdAt: row.created_at != null ? String(row.created_at) : null,
+          newLeadId: row.new_lead_id != null ? String(row.new_lead_id) : null,
+          legacyLeadId: row.legacy_lead_id != null && Number.isFinite(Number(row.legacy_lead_id)) ? Number(row.legacy_lead_id) : null,
+          whereLabel: flagWhereLabel({
+            source: 'content',
+            flag_kind: row.flag_kind,
+            conversation_channel: row.conversation_channel,
+            lead_field_key: row.lead_field_key,
+          }),
+          channel: row.conversation_channel as ConversationChannel | null,
+          externalId: row.external_id != null ? String(row.external_id) : null,
+          flagKind: row.flag_kind as string | null,
+        })),
+        ...rmqRaw.map((row) => ({
+          id: `rmq:${row.id}`,
+          userId: row.user_id != null ? String(row.user_id) : null,
+          flagTypeId: Number(row.flag_type),
+          createdAt: row.created_at != null ? String(row.created_at) : null,
+          newLeadId: row.new_lead_id != null ? String(row.new_lead_id) : null,
+          legacyLeadId: row.legacy_lead_id != null && Number.isFinite(Number(row.legacy_lead_id)) ? Number(row.legacy_lead_id) : null,
+          whereLabel: 'RMQ chat',
+          channel: null,
+          externalId: null,
+          flagKind: null,
+        })),
+      ];
+
+      const pending = assignments.filter(
+        (row) =>
+          !row.newLeadId &&
+          row.legacyLeadId == null &&
+          row.channel &&
+          row.externalId &&
+          (row.channel === 'email' ||
+            row.channel === 'whatsapp' ||
+            row.channel === 'phone' ||
+            row.channel === 'manual' ||
+            row.channel === 'legacy_interaction')
+      );
+      if (pending.length > 0) {
+        const resolved = await resolveConversationLeads(
+          pending.map((row) => ({ channel: row.channel as ConversationChannel, externalId: row.externalId as string }))
+        );
+        assignments = assignments.map((row) => {
+          if (row.newLeadId || row.legacyLeadId != null || !row.channel || !row.externalId) return row;
+          const hit = resolved.get(`${row.channel}\t${row.externalId}`);
+          if (!hit) return row;
+          return { ...row, newLeadId: hit.newLeadId, legacyLeadId: hit.legacyLeadId };
+        });
+      }
+
+      assignments.sort((a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || ''));
+      const truncatedRows = assignments.length > FLAG_MAX_ROWS;
+      const visibleRows: FlagAssignmentRow[] = assignments.slice(0, FLAG_MAX_ROWS).map(
+        ({ channel: _channel, externalId: _externalId, flagKind: _flagKind, ...row }) => row
+      );
+
+      const uniqNew = [...new Set(visibleRows.map((row) => row.newLeadId).filter((id): id is string => Boolean(id)))];
+      const uniqLegacy = [...new Set(visibleRows.map((row) => row.legacyLeadId).filter((id): id is number => id != null))];
+      const userIds = [...new Set(visibleRows.map((row) => row.userId).filter((id): id is string => Boolean(id)))];
+
+      const loadLeads = (table: 'leads' | 'leads_lead', fields: string, ids: (string | number)[]) =>
+        fetchRowsById(table, fields, ids);
+
+      const [newLeads, legacyLeads, unpaidBatch, profiles, curMap] = await Promise.all([
+        uniqNew.length ? loadLeads('leads', NEW_LEAD_FIELDS, uniqNew) : Promise.resolve([] as Record<string, unknown>[]),
+        uniqLegacy.length
+          ? loadLeads('leads_lead', LEGACY_LEAD_FIELDS, uniqLegacy)
+          : Promise.resolve([] as Record<string, unknown>[]),
+        fetchUnpaidTotalsBatchByLeadKey(uniqNew, uniqLegacy),
+        loadFlagUserProfiles(userIds),
+        loadCurrencies(),
+      ]);
+
+      const nm = new Map<string, Record<string, unknown>>();
+      for (const lead of newLeads) if (lead.id != null) nm.set(String(lead.id), lead);
+      const lm = new Map<number, Record<string, unknown>>();
+      for (const lead of legacyLeads) {
+        const id = Number(lead.id);
+        if (Number.isFinite(id)) lm.set(id, lead);
+      }
+
+      setReportData({
+        signature: sig,
+        rows: visibleRows,
+        newLeadEntries: Array.from(nm.entries()),
+        legacyEntries: Array.from(lm.entries()),
+        unpaidEntries: Array.from(unpaidBatch.entries()),
+        currencyEntries: Array.from(curMap.entries()),
+        userEntries: Array.from(profiles.entries()),
+        truncated: truncatedRows,
+      });
+    } catch (e) {
+      console.error(e);
+      setError(e instanceof Error ? e.message : 'Failed to load flags');
+      setReportData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [flaggedFromDate, flaggedToDate, paymentPlanFromDate, paymentPlanToDate, filterFlagTypeIds, filterEmployeeIds, probabilityChannels, loadCurrencies]);
+
+  const togglePaymentExpand = useCallback(async (rowKey: string, expandLead: ExpandLeadParam | null) => {
+    if (!expandLead) return;
+    if (expandedRowKey === rowKey) {
+      setExpandedRowKey(null);
+      return;
+    }
+    setExpandedRowKey(rowKey);
+    setPaymentRowsByRowKey((prev) => {
+      if (prev.has(rowKey)) return prev;
+      void (async () => {
+        setPaymentLoadingKey(rowKey);
+        setPaymentErrorKey(null);
+        try {
+          const pr =
+            expandLead.kind === 'new'
+              ? await fetchOutstandingPaymentPlanRowsForTagsManager({ kind: 'new', leadUuid: expandLead.uuid })
+              : await fetchOutstandingPaymentPlanRowsForTagsManager({ kind: 'legacy', legacyId: expandLead.id });
+          setPaymentRowsByRowKey((p) => new Map(p).set(rowKey, pr));
+        } catch (e) {
+          console.error(e);
+          setPaymentErrorKey(rowKey);
+          setPaymentRowsByRowKey((p) => new Map(p).set(rowKey, []));
+        } finally {
+          setPaymentLoadingKey((k) => (k === rowKey ? null : k));
+        }
+      })();
+      return prev;
+    });
+  }, [expandedRowKey]);
+
+  const reportDataRef = useRef(reportData);
+  reportDataRef.current = reportData;
+  useEffect(() => {
+    if (reportDataRef.current?.signature === filterSig) return;
+    void runFetchReport();
+  }, [filterSig, runFetchReport]);
+
+  const [sortState, setSortState] = useState<{ key: TagsManagerSortKey; dir: 'asc' | 'desc' } | null>(null);
+  const sortKey = sortState?.key ?? null;
+  const sortDir = sortState?.dir ?? 'desc';
+  const handleSort = useCallback((k: TagsManagerSortKey) => {
+    setSortState((prev) => {
+      if (!prev || prev.key !== k) return { key: k, dir: 'desc' };
+      return { key: k, dir: prev.dir === 'desc' ? 'asc' : 'desc' };
+    });
+  }, []);
+
+  const flagLabel = useCallback(
+    (id: number) => flagTypes.find((row) => Number(row.id) === Number(id))?.label || `Flag ${id}`,
+    [flagTypes]
+  );
+
+  const tableRows = useMemo(() => {
+    return rows.map((row, stableIndex) => {
+      const isLegacy = !row.newLeadId && row.legacyLeadId != null;
+      const leadKey = row.newLeadId ? `new:${row.newLeadId}` : isLegacy ? `legacy:${row.legacyLeadId}` : '';
+      const lead = row.newLeadId ? newLeadMap.get(row.newLeadId) : isLegacy ? legacyLeadMap.get(Number(row.legacyLeadId)) : null;
+      const currencyLabel = currencyLabelFromLead(
+        lead?.currency_id,
+        lead?.accounting_currencies,
+        currencyMap,
+        (lead?.balance_currency as string) || null
+      );
+      const { main, vat, showVat } = computeTotalDisplayParts(lead, isLegacy);
+      const unpaidBy = leadKey ? unpaidMap.get(leadKey) ?? null : null;
+      const remainingGross = pickUnpaidAmountForCurrency(unpaidBy, currencyLabel);
+      const applicants = isLegacy
+        ? lead?.no_of_applicants != null
+          ? Number(lead.no_of_applicants)
+          : null
+        : lead?.number_of_applicants_meeting != null
+          ? Number(lead.number_of_applicants_meeting)
+          : null;
+      const leadLabel =
+        lead != null
+          ? `${isLegacy ? legacyLeadDisplayNumber(lead) : newLeadDisplayNumber(lead)} · ${String(lead.name ?? '—')}`
+          : row.newLeadId
+            ? 'Lead not found'
+            : isLegacy
+              ? `(missing legacy ${row.legacyLeadId})`
+              : 'Lead not linked';
+      const totalStr =
+        showVat && vat > 0
+          ? `${formatMoney(currencyLabel, main)} + ${formatMoney(currencyLabel, vat)} VAT`
+          : formatMoney(currencyLabel, main);
+      const grossTotal = main + (showVat && vat > 0 ? vat : 0);
+      const currencyIdForSort =
+        lead?.currency_id != null && Number.isFinite(Number(lead.currency_id)) ? Number(lead.currency_id) : 1;
+      const sortTotal = convertToNIS(grossTotal, currencyIdForSort);
+      const sortRemaining = remainingGross > 0 ? convertToNIS(remainingGross, currencyIdForSort) : 0;
+      const remainingStr = remainingGross > 0 ? formatMoney(currencyLabel, remainingGross) : '—';
+      let clientsPath = clientsPathForTagsRow(isLegacy, lead ?? null, isLegacy ? Number(row.legacyLeadId) : null);
+      if (!clientsPath && row.newLeadId && !isLegacy) clientsPath = `/clients/${encodeURIComponent(row.newLeadId)}`;
+      const taggedAt =
+        row.createdAt && String(row.createdAt).trim() ? new Date(row.createdAt).toLocaleString() : '—';
+      const taggedAtMs = row.createdAt ? Date.parse(String(row.createdAt)) : 0;
+      const applicantsDisplay = applicants != null && Number.isFinite(applicants) && applicants > 0 ? applicants : '—';
+      const profile = row.userId ? userMap.get(row.userId) : undefined;
+      const expandLead: ExpandLeadParam | null = row.newLeadId
+        ? { kind: 'new', uuid: row.newLeadId }
+        : isLegacy && row.legacyLeadId != null
+          ? { kind: 'legacy', id: Number(row.legacyLeadId) }
+          : null;
+      return {
+        key: row.id,
+        tag: flagLabel(row.flagTypeId),
+        whereLabel: row.whereLabel,
+        leadLabel,
+        stage: lead?.stage ?? null,
+        expandLead,
+        clientsPath,
+        totalStr: lead ? totalStr : '—',
+        remainingStr: lead ? remainingStr : '—',
+        applicants: lead ? applicantsDisplay : '—',
+        taggedBy: profile?.name || '—',
+        taggedByAvatarUrl: profile?.avatarUrl || null,
+        taggedByEmployeeId: profile?.employeeId ?? null,
+        taggedAt,
+        stableIndex,
+        sortTotal: lead ? sortTotal : 0,
+        sortRemaining: lead ? sortRemaining : 0,
+        sortApplicants: lead && applicants != null && Number.isFinite(applicants) && applicants > 0 ? applicants : null,
+        taggedAtMs: Number.isFinite(taggedAtMs) ? taggedAtMs : 0,
+      } satisfies FlagsTableRow;
+    });
+  }, [rows, newLeadMap, legacyLeadMap, unpaidMap, currencyMap, userMap, flagLabel]);
+
+  const totalValueSumNisFooter = useMemo(() => {
+    if (tableRows.length === 0) return '—';
+    let s = 0;
+    for (const r of tableRows) s += r.sortTotal;
+    return `Σ ${formatMoney('₪', s)}`;
+  }, [tableRows]);
+  const remainingValueSumNisFooter = useMemo(() => {
+    if (tableRows.length === 0) return '—';
+    let s = 0;
+    for (const r of tableRows) s += r.sortRemaining;
+    return `Σ ${formatMoney('₪', s)}`;
+  }, [tableRows]);
+  const sortedTableRows = useMemo(() => {
+    if (!sortKey) return tableRows;
+    const copy = [...tableRows];
+    copy.sort((a, b) => compareTagsManagerRows(a, b, sortKey, sortDir));
+    return copy;
+  }, [tableRows, sortKey, sortDir]);
+
+  const assignmentCount = tableRows.length;
+  const hasTypeOrEmployeeFilter =
+    filterFlagTypeIds.length > 0 || filterEmployeeIds.length > 0 || probabilityChannels.length > 0;
+
+  return (
+    <div className="space-y-6">
+      {dateSlot
+        ? createPortal(
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <span className="shrink-0">Flagged from</span>
+            <FilterDateInput
+              className="w-40 shrink-0"
+              value={flaggedFromDate}
+              max={flaggedToDate || undefined}
+              onChange={(value) => setFilters((f) => ({ ...f, flaggedFromDate: value }))}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <span className="shrink-0">Flagged to</span>
+            <FilterDateInput
+              className="w-40 shrink-0"
+              value={flaggedToDate}
+              min={flaggedFromDate || undefined}
+              onChange={(value) => setFilters((f) => ({ ...f, flaggedToDate: value }))}
+            />
+          </label>
+          <PlanPaymentDateFilter
+            fromDate={paymentPlanFromDate}
+            toDate={paymentPlanToDate}
+            onChange={({ fromDate, toDate }) =>
+              setFilters((f) => ({ ...f, paymentPlanFromDate: fromDate, paymentPlanToDate: toDate }))
+            }
+          />
+        </div>,
+        dateSlot
+      )
+        : null}
+
+      <div className="flex flex-col lg:flex-row lg:items-end gap-4 flex-wrap">
+        <MultiIdPicker
+          label="Filter by flag type"
+          placeholder="Type to search flag types…"
+          options={flagTypes.map((row) => ({ id: Number(row.id), label: row.label || row.code }))}
+          selectedIds={filterFlagTypeIds}
+          onChange={(ids) => setFilters((f) => ({ ...f, filterFlagTypeIds: ids }))}
+        />
+        <MultiIdPicker
+          label="Probability channel"
+          placeholder="All channels"
+          options={PROBABILITY_CHANNEL_OPTIONS.map((row) => ({
+            id: row.id,
+            label: row.label,
+            icon: <ProbabilityChannelMark channel={row.channel} />,
+          }))}
+          selectedIds={PROBABILITY_CHANNEL_OPTIONS.filter((row) => probabilityChannels.includes(row.channel)).map((row) => row.id)}
+          onChange={(ids) =>
+            setFilters((f) => ({
+              ...f,
+              probabilityChannels: PROBABILITY_CHANNEL_OPTIONS.filter((row) => ids.includes(row.id)).map((row) => row.channel),
+            }))
+          }
+        />
+        <MultiIdPicker
+          label="Filter by employee"
+          placeholder="Type to search employees…"
+          options={employeeOptions.map((e) => ({
+            id: Number(e.id),
+            label: e.display_name?.trim() || `Employee #${e.id}`,
+            avatarUrl: employeePhotoFromEmp(e),
+          }))}
+          selectedIds={filterEmployeeIds}
+          onChange={(ids) => setFilters((f) => ({ ...f, filterEmployeeIds: ids }))}
+          showOptionAvatars
+        />
+        <div className="flex flex-wrap items-center gap-3 lg:ml-auto">
+          <output className="inline-flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-2 text-sm tabular-nums" aria-live="polite">
+            {loading && rows.length === 0 ? (
+              <span className="flex items-center gap-2 text-base-content/70">
+                <span className="loading loading-spinner loading-sm" />
+                Loading…
+              </span>
+            ) : (
+              <>
+                <span className="font-semibold text-base-content">{assignmentCount.toLocaleString()}</span>
+                <span className="text-base-content/70">{assignmentCount === 1 ? 'flag' : 'flags'}</span>
+                {!hasTypeOrEmployeeFilter && (
+                  <span className="text-xs text-base-content/50 hidden sm:inline">All flag types · all employees</span>
+                )}
+                {loading && <span className="loading loading-spinner loading-xs" />}
+              </>
+            )}
+          </output>
+        </div>
+      </div>
+
+      {truncated && (
+        <div className="alert alert-warning text-sm">
+          <span>Showing the latest {FLAG_MAX_ROWS.toLocaleString()} flags. Narrow the dates or filters to see the rest.</span>
+        </div>
+      )}
+      {error && (
+        <div className="alert alert-error text-sm">
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="relative w-full min-w-0 overflow-x-auto rounded-2xl bg-white shadow-sm ring-1 ring-gray-100">
+        <table className="table table-sm w-full min-w-max text-sm">
+          <thead>
+            <tr>
+              <th className={`text-sm w-7 px-1 ${TAGS_MANAGER_TH_STICKY}`} aria-label="Expand" />
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Flag</th>
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Lead</th>
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Stage</th>
+              <TagsManagerSortTh label="Total value (lead)" column="total" align="right" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} summaryFooter={totalValueSumNisFooter} />
+              <TagsManagerSortTh label="Remaining lead value" column="remaining" align="right" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} summaryFooter={remainingValueSumNisFooter} />
+              <TagsManagerSortTh label="Applicants" column="applicants" align="right" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+              <th className={`text-sm ${TAGS_MANAGER_TH_STICKY}`}>Flagged by</th>
+              <TagsManagerSortTh label="Flagged at" column="taggedAt" align="left" activeKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+            </tr>
+          </thead>
+          <tbody>
+            {loading && rows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="text-center py-10"><span className="loading loading-spinner loading-lg" /></td>
+              </tr>
+            ) : tableRows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="text-center py-8 text-sm text-base-content/60">
+                  No flags match the selected dates{hasTypeOrEmployeeFilter ? ' and filters' : ''}. Try another date range or clear filters.
+                </td>
+              </tr>
+            ) : (
+              sortedTableRows.map((r) => (
+                <React.Fragment key={r.key}>
+                  <tr
+                    className={`hover ${r.expandLead ? 'cursor-pointer' : ''}`}
+                    onClick={() => {
+                      if (r.expandLead) void togglePaymentExpand(r.key, r.expandLead);
+                    }}
+                  >
+                    <td className="w-7 px-1 align-middle">
+                      {r.expandLead ? (
+                        <ChevronRightIcon className={`w-5 h-5 text-base-content/60 transition-transform shrink-0 ${expandedRowKey === r.key ? 'rotate-90' : ''}`} />
+                      ) : (
+                        <span className="inline-block w-5" />
+                      )}
+                    </td>
+                    <td className="align-middle">
+                      <div className="font-medium whitespace-nowrap text-sm">{r.tag}</div>
+                      <div className="text-sm text-base-content/60">{r.whereLabel}</div>
+                    </td>
+                    <td className="max-w-[220px] p-0">
+                      {r.clientsPath ? (
+                        <button
+                          type="button"
+                          className="link link-primary hover:underline text-left text-sm w-full truncate block pl-1 pr-2 py-2 max-w-[220px]"
+                          title={r.leadLabel}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (e.metaKey || e.ctrlKey) window.open(r.clientsPath!, '_blank');
+                            else navigate(r.clientsPath!);
+                          }}
+                        >
+                          {r.leadLabel}
+                        </button>
+                      ) : (
+                        <span className="text-sm block pl-1 pr-2 py-2 truncate text-base-content/60" title={r.leadLabel}>{r.leadLabel}</span>
+                      )}
+                    </td>
+                    <td className="align-middle whitespace-nowrap">
+                      <LeadStageBadge stage={r.stage} ready={stageNamesReady} />
+                    </td>
+                    <td className="text-right text-sm whitespace-nowrap">{r.totalStr}</td>
+                    <td className="text-right text-sm whitespace-nowrap text-amber-800 dark:text-amber-200">{r.remainingStr}</td>
+                    <td className="text-right text-sm">{r.applicants}</td>
+                    <td className="text-sm max-w-[200px]" onClick={(e) => e.stopPropagation()}>
+                      {r.taggedByEmployeeId == null && r.taggedBy === '—' ? (
+                        <span className="text-sm text-base-content/60">—</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-2 min-w-0 text-sm">
+                          <EmployeeAvatarCircle label={r.taggedBy} photoUrl={r.taggedByAvatarUrl} employeeId={r.taggedByEmployeeId} size="md" />
+                          <span className="truncate">{r.taggedBy}</span>
+                        </span>
+                      )}
+                    </td>
+                    <td className="text-sm whitespace-nowrap">{r.taggedAt}</td>
                   </tr>
                   {expandedRowKey === r.key && r.expandLead && (
                     <tr className="bg-base-200/20 hover:!bg-base-200/20">

@@ -19,9 +19,18 @@ import {
   formatMeetingSummariesForAi,
   improveContractWithMeetingSummaries,
   sendContractAiChatMessage,
+  checkFeeAgreementPolicy,
   aiTextToTiptapDoc,
   tiptapJsonToAiText,
 } from '../lib/contractImprovementApi';
+import {
+  FEE_AGREEMENT_PRINCIPLES,
+  feeAgreementInsertPrompt,
+  proveFeeAgreementQuotes,
+  displayContractExcerpt,
+  type FeeAgreementProof,
+} from '../lib/feeAgreementPolicy';
+import { loadContractAiContext, type ContractAiPolicy } from '../lib/contractAiDirectives';
 import { formatAiChangeReviewContent } from '../lib/aiChangeReview';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
@@ -37,6 +46,7 @@ import {
   sendContractViaTemplates,
 } from '../lib/contractSend';
 import { canUseNativeWebShare, shareOrCopyUrl } from '../lib/webShare';
+import { useAdminRole } from '../hooks/useAdminRole';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import CallOptionsModal from './CallOptionsModal';
@@ -997,7 +1007,7 @@ function ContractEditorToolbar({ editor }: { editor: Editor }) {
   const fontSize = editor.getAttributes('fontSize').fontSize || '16px';
 
   return (
-    <div className="contract-word-ribbon print-hide">
+    <div className="contract-word-ribbon print-hide w-full max-w-full">
       <div className="flex flex-nowrap items-center gap-1 overflow-x-auto px-3 py-1.5 sm:px-4">
         <button
           type="button"
@@ -1184,6 +1194,7 @@ const ContractPage: React.FC<{
   }>();
   const location = useLocation();
   const navigate = useNavigate();
+  const { isSuperUser } = useAdminRole();
 
   const isHrEmployeePath = location.pathname.includes('/hr/employees/') && location.pathname.includes('/contract/');
   const isRecruitmentPath =
@@ -1578,8 +1589,36 @@ const ContractPage: React.FC<{
   const [aiThinkingText, setAiThinkingText] = useState<string | null>(null);
   const [aiReviewNotes, setAiReviewNotes] = useState<string | null>(null);
   const [aiReviewChatMessages, setAiReviewChatMessages] = useState<ContractAiReviewMessage[]>([]);
-  const [showAiReviewPanel, setShowAiReviewPanel] = useState(false);
+  const [showAiReviewPanel, setShowAiReviewPanel] = useState(true);
   const [aiRemarksInput, setAiRemarksInput] = useState('');
+  const [feePolicyProof, setFeePolicyProof] = useState<FeeAgreementProof | null>(null);
+  const [feePolicies, setFeePolicies] = useState<ContractAiPolicy[]>(() =>
+    FEE_AGREEMENT_PRINCIPLES.map((principle) => ({
+      id: principle.id,
+      title: principle.title,
+      summary: principle.summary,
+      line: principle.line,
+    })),
+  );
+  const [feePolicyChecking, setFeePolicyChecking] = useState(false);
+  const [feePolicyError, setFeePolicyError] = useState<string | null>(null);
+  const [feePolicyModalOpen, setFeePolicyModalOpen] = useState(false);
+  const [feePolicyShareChecking, setFeePolicyShareChecking] = useState(false);
+  const feePolicyRequestRef = useRef(0);
+  const feeAiWaivedRef = useRef(false);
+  const feeGateRetryRef = useRef<null | (() => void)>(null);
+
+  useEffect(() => {
+    if (isNonClientContractMode) return;
+    let cancelled = false;
+    void loadContractAiContext().then((context) => {
+      if (!cancelled) setFeePolicies(context.policies);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isNonClientContractMode]);
+  const shareCheckTokenRef = useRef(0);
   const lastMeetingSummariesRef = useRef('');
   const aiContentPendingRef = useRef<{
     doc: { type: 'doc'; content: Array<Record<string, unknown>> };
@@ -1677,6 +1716,50 @@ const ContractPage: React.FC<{
       },
     },
   });
+
+  const refreshFeePolicy = useCallback(async (text: string): Promise<FeeAgreementProof> => {
+    const seq = ++feePolicyRequestRef.current;
+    setFeePolicyChecking(true);
+    setFeePolicyError(null);
+    try {
+      const { policies } = await loadContractAiContext();
+      if (seq === feePolicyRequestRef.current) setFeePolicies(policies);
+      const proof = await checkFeeAgreementPolicy(text, policies);
+      if (seq === feePolicyRequestRef.current) setFeePolicyProof(proof);
+      return proof;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'The fee-agreement check could not be completed.';
+      if (seq === feePolicyRequestRef.current) {
+        setFeePolicyError(message);
+        setFeePolicyProof(null);
+      }
+      throw err;
+    } finally {
+      if (seq === feePolicyRequestRef.current) setFeePolicyChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isNonClientContractMode || !editor) return;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (!editing && !editor.isEditable) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const text = tiptapJsonToAiText(editor.getJSON());
+        if (!text.trim()) {
+          setFeePolicyProof(proveFeeAgreementQuotes('', [], feePolicies));
+          return;
+        }
+        void refreshFeePolicy(text).catch(() => {});
+      }, 1600);
+    };
+    editor.on('update', schedule);
+    return () => {
+      editor.off('update', schedule);
+      window.clearTimeout(timer);
+    };
+  }, [editor, editing, feePolicies, isNonClientContractMode, refreshFeePolicy]);
 
   // Field insertion constants (similar to ContractTemplatesManager)
   const DYNAMIC_FIELDS = [
@@ -2947,10 +3030,6 @@ const ContractPage: React.FC<{
   };
 
   const handleDiscardEdit = async () => {
-    setAiReviewNotes(null);
-    setAiReviewChatMessages([]);
-    setShowAiReviewPanel(false);
-    setAiRemarksInput('');
     setEditing(false);
     if (contract?.id && editor) {
       const { data: contractData } = await supabase
@@ -3010,6 +3089,7 @@ const ContractPage: React.FC<{
           leadNumber: renderLeadNumber(),
           currentContractText,
           meetingSummaries,
+          feeAgreementInstruction: isNonClientContractMode ? null : (await loadContractAiContext()).instruction,
         },
         setAiThinkingText,
       );
@@ -3047,15 +3127,22 @@ const ContractPage: React.FC<{
     }
   };
 
-  const handleApplyAiRemarks = async () => {
+  const handleApplyAiRemarks = async (remarksOverride?: string, visibleMessage?: string) => {
     if (!editor || !client || !contract || aiChatLoading || improvingContract) return;
-    const remarks = aiRemarksInput.trim();
+    const remarks = (remarksOverride ?? aiRemarksInput).trim();
     if (!remarks) {
       toast.error('Please enter a question or change request');
       return;
     }
 
-    const userMessage: ContractAiReviewMessage = { role: 'user', content: remarks };
+    if (!editing) {
+      setEditing(true);
+      editor.setEditable(true);
+    }
+    const userMessage: ContractAiReviewMessage = {
+      role: 'user',
+      content: visibleMessage?.trim() || remarks,
+    };
     setAiReviewChatMessages((prev) => [...prev, userMessage]);
     setAiRemarksInput('');
 
@@ -3078,6 +3165,7 @@ const ContractPage: React.FC<{
           meetingSummaries: lastMeetingSummariesRef.current,
           userRemarks: remarks,
           chatHistory: [...aiReviewChatMessages, userMessage],
+          feeAgreementInstruction: isNonClientContractMode ? null : (await loadContractAiContext()).instruction,
         },
         setAiThinkingText,
       );
@@ -3123,6 +3211,10 @@ const ContractPage: React.FC<{
       setEditing(true);
     }
     setShowAiReviewPanel(true);
+    if (!isNonClientContractMode && editor) {
+      const text = tiptapJsonToAiText(editor.getJSON());
+      if (text.trim()) void refreshFeePolicy(text).catch(() => {});
+    }
     if (!lastMeetingSummariesRef.current) {
       try {
         const summaries = await fetchLeadMeetingSummaries(client);
@@ -5167,25 +5259,170 @@ const ContractPage: React.FC<{
     return content;
   }
 
-  const handleShareContractLink = async () => {
-    if (!contract) return;
+  const ensureFeeAgreementReady = async (): Promise<boolean> => {
+    if (isNonClientContractMode || feeAiWaivedRef.current) return true;
+    const token = shareCheckTokenRef.current;
+    const stillThisCheck = () => shareCheckTokenRef.current === token && !feeAiWaivedRef.current;
+    const text = tiptapJsonToAiText(getCurrentContractSource());
+    if (!text.trim()) {
+      if (!stillThisCheck()) return feeAiWaivedRef.current;
+      setFeePolicyError(null);
+      setFeePolicyProof(proveFeeAgreementQuotes('', [], feePolicies));
+      setFeePolicyModalOpen(true);
+      return false;
+    }
+    try {
+      const proof = await refreshFeePolicy(text);
+      if (!stillThisCheck()) return feeAiWaivedRef.current;
+      if (proof.ok) return true;
+      setFeePolicyModalOpen(true);
+      return false;
+    } catch {
+      if (!stillThisCheck()) return feeAiWaivedRef.current;
+      setFeePolicyModalOpen(true);
+      return false;
+    }
+  };
+
+  const dismissFeePolicyModal = () => {
+    shareCheckTokenRef.current += 1;
+    setFeePolicyShareChecking(false);
+    setFeePolicyModalOpen(false);
+  };
+
+  const continueWithoutAi = () => {
+    if (!isSuperUser) return;
+    feeAiWaivedRef.current = true;
+    const retry = feeGateRetryRef.current;
+    feeGateRetryRef.current = null;
+    dismissFeePolicyModal();
+    retry?.();
+  };
+
+  const runFeeAgreementCheck = async (): Promise<boolean> => {
+    if (isNonClientContractMode || feeAiWaivedRef.current) return true;
+    const token = shareCheckTokenRef.current;
+    setFeePolicyError(null);
+    setFeePolicyProof(null);
+    setFeePolicyShareChecking(true);
+    setFeePolicyModalOpen(true);
+    const ready = await ensureFeeAgreementReady();
+    if (shareCheckTokenRef.current !== token) return false;
+    setFeePolicyShareChecking(false);
+    return ready;
+  };
+
+  const confirmFeeAgreementForShare = async (): Promise<boolean> => {
+    const token = shareCheckTokenRef.current;
+    const ready = await runFeeAgreementCheck();
+    if (shareCheckTokenRef.current !== token) return false;
+    if (!ready) return false;
+    setFeePolicyModalOpen(false);
+    return true;
+  };
+
+  const openFeeAgreementCheck = async () => {
+    const token = shareCheckTokenRef.current;
+    await runFeeAgreementCheck();
+    if (shareCheckTokenRef.current !== token) return;
+    setFeePolicyShareChecking(false);
+    setFeePolicyModalOpen(true);
+  };
+
+  const ensureContractPublicLink = async (): Promise<string | null> => {
+    if (!contract) return null;
     let publicToken = contract.public_token;
     if (!publicToken) {
       publicToken = uuidv4();
       await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
       setContract((prev: any) => ({ ...prev, public_token: publicToken }));
     }
-    // Always use production domain for public contract links
-    const publicUrl =
-      isRecruitmentMode || contract.user_id
-        ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
-        : isEmployeeMode || contract.employee_id
-          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-          : isFirmMode || contract.external_firm_id
-            ? buildFirmContractPublicUrl(contract.id, publicToken)
-            : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
-    await navigator.clipboard.writeText(publicUrl);
-    toast.success('Contract link copied to clipboard');
+    return isRecruitmentMode || contract.user_id
+      ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
+      : isEmployeeMode || contract.employee_id
+        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+        : isFirmMode || contract.external_firm_id
+          ? buildFirmContractPublicUrl(contract.id, publicToken)
+          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+  };
+
+  const contractPublicUrlForToken = (publicToken: string) =>
+    isRecruitmentMode || contract.user_id
+      ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
+      : isEmployeeMode || contract.employee_id
+        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
+        : isFirmMode || contract.external_firm_id
+          ? buildFirmContractPublicUrl(contract.id, publicToken)
+          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+
+  const rememberContractPublicToken = (publicToken: string) => {
+    if (!contract || contract.public_token) return;
+    setContract((prev: any) => (prev ? { ...prev, public_token: publicToken } : prev));
+    void supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
+  };
+
+  const copyPlainTextFallback = (text: string) => {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.left = '0';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(area);
+    return ok;
+  };
+
+  const handleShareContractLink = () => {
+    if (!contract) return;
+    feeGateRetryRef.current = () => handleShareContractLink();
+    const publicToken = contract.public_token || uuidv4();
+    const publicUrl = contractPublicUrlForToken(publicToken);
+    const readyPromise = confirmFeeAgreementForShare();
+    const blocked = (error: unknown) => String((error as Error)?.message || error).includes('fee-check-blocked');
+    const finish = () => {
+      toast.success('Contract link copied to clipboard');
+      rememberContractPublicToken(publicToken);
+    };
+    const copyNow = () => {
+      if (copyPlainTextFallback(publicUrl)) finish();
+      else toast.error('Could not copy the link');
+    };
+
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      void navigator.clipboard
+        .write([
+          new ClipboardItem({
+            'text/plain': readyPromise.then((ready) => {
+              if (!ready) throw new Error('fee-check-blocked');
+              return new Blob([publicUrl], { type: 'text/plain' });
+            }),
+          }),
+        ])
+        .then(finish)
+        .catch((error) => {
+          if (blocked(error)) return;
+          void readyPromise.then((ready) => {
+            if (!ready) return;
+            copyNow();
+          });
+        });
+      return;
+    }
+
+    void readyPromise.then((ready) => {
+      if (!ready) return;
+      copyNow();
+    });
   };
 
   const seedContractContact = (): ContactInfo[] => {
@@ -5207,6 +5444,10 @@ const ContractPage: React.FC<{
   };
 
   const openSendDrawer = async () => {
+    feeGateRetryRef.current = () => {
+      void openSendDrawer();
+    };
+    if (!(await ensureFeeAgreementReady())) return;
     setShowSendDrawer(true);
     if (!client || isNonClientContractMode) {
       setAvailableContacts(seedContractContact());
@@ -5240,6 +5481,10 @@ const ContractPage: React.FC<{
     }>;
   }) => {
     if (!contract) return;
+    feeGateRetryRef.current = () => {
+      void handleContractTemplateSend(opts);
+    };
+    if (!(await ensureFeeAgreementReady())) return;
     setSendingContract(true);
     try {
       const mode =
@@ -5322,28 +5567,27 @@ const ContractPage: React.FC<{
     }
   };
 
+  const openKioskAfterFeeCheck = () => {
+    feeGateRetryRef.current = () => openKioskAfterFeeCheck();
+    void (async () => {
+      if (!(await confirmFeeAgreementForShare())) return;
+      setShowKioskModal(true);
+    })();
+  };
+
   const handleMobileShare = async () => {
     if (!contract) return;
-
-    let publicToken = contract.public_token;
-    if (!publicToken) {
-      publicToken = uuidv4();
-      await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
-      setContract((prev: any) => ({ ...prev, public_token: publicToken }));
-    }
-    const publicUrl =
-      isRecruitmentMode || contract.user_id
-        ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
-        : isEmployeeMode || contract.employee_id
-          ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-          : isFirmMode || contract.external_firm_id
-            ? buildFirmContractPublicUrl(contract.id, publicToken)
-            : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
-
+    feeGateRetryRef.current = () => {
+      void handleMobileShare();
+    };
     if (!canUseNativeWebShare()) {
-      await handleShareContractLink();
+      handleShareContractLink();
       return;
     }
+    if (!(await confirmFeeAgreementForShare())) return;
+
+    const publicUrl = await ensureContractPublicLink();
+    if (!publicUrl) return;
 
     const clientName = contract?.contact_name || client?.name || 'Client';
     const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
@@ -6189,7 +6433,7 @@ const ContractPage: React.FC<{
 
 
   const status = contract ? (contractStatuses[contract.id]?.status || contract.status) : 'draft';
-  const aiReviewOpen = showAiReviewPanel && editing;
+  const aiReviewOpen = showAiReviewPanel && status !== 'signed';
 
   // Before the return statement in ContractPage, define VAT logic
   const archivalFee = customPricing?.archival_research_fee || 0;
@@ -6292,7 +6536,7 @@ const ContractPage: React.FC<{
   return (
     <div className="contract-studio min-h-screen print:bg-white">
       {editing && editor ? (
-        <div className="print-hide sticky top-0 z-[45] px-3 pt-2 sm:px-4 sm:pt-3">
+        <div className={`print-hide sticky top-0 z-[45] px-3 pt-2 sm:px-4 sm:pt-3 ${aiReviewOpen ? 'md:pr-[28rem]' : ''}`}>
           <ContractEditorToolbar editor={editor} />
         </div>
       ) : (
@@ -6660,7 +6904,7 @@ const ContractPage: React.FC<{
       ) : null}
 
       <ContractAiReviewPanel
-        isOpen={showAiReviewPanel && editing}
+        isOpen={aiReviewOpen}
         onClose={() => {
           setShowAiReviewPanel(false);
           setAiRemarksInput('');
@@ -6672,7 +6916,206 @@ const ContractPage: React.FC<{
         onApplyRemarks={() => void handleApplyAiRemarks()}
         isApplying={aiChatLoading || improvingContract}
         thinkingText={aiThinkingText}
+        onSummary={
+          status === 'draft' && contract && client
+            ? () => void handleImproveContractWithAi()
+            : undefined
+        }
+        summaryBusy={improvingContract || aiChatLoading}
+        headerExtra={
+          isNonClientContractMode ? null : (
+            <ul className="space-y-1.5">
+              {feePolicies.map((principle) => {
+                const item = feePolicyProof?.items.find((row) => row.id === principle.id);
+                const present = item?.present === true;
+                const missing = item?.present === false;
+                return (
+                  <li key={principle.id} className="flex items-center gap-2 text-xs leading-snug text-gray-700">
+                    <span
+                      className={`shrink-0 text-lg font-bold leading-none ${present ? 'text-emerald-600' : missing ? 'text-red-600' : 'text-gray-400'}`}
+                      aria-hidden
+                    >
+                      {present ? '✓' : missing ? '!' : '·'}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="font-semibold">{principle.title}</span>
+                      <span className="text-gray-500">
+                        {feePolicyChecking && !feePolicyProof
+                          ? ' — checking…'
+                          : present
+                            ? ' — in the contract'
+                            : missing
+                              ? ' — missing'
+                              : ' — not checked yet'}
+                      </span>
+                    </span>
+                    {principle.id === 'no_refunds' ? (
+                      <button
+                        type="button"
+                        className="btn ml-auto h-8 min-h-8 shrink-0 rounded-full border-0 bg-gray-200 px-3 text-xs font-semibold text-gray-700 hover:bg-gray-300"
+                        disabled={feePolicyChecking || feePolicyShareChecking}
+                        onClick={() => {
+                          void openFeeAgreementCheck();
+                        }}
+                      >
+                        {feePolicyChecking || feePolicyShareChecking ? 'Checking' : 'Check'}
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )
+        }
       />
+
+      {feePolicyModalOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="modal modal-open z-[400] !grid !place-items-center" role="dialog" aria-modal="true" aria-labelledby="fee-policy-title">
+              <button
+                type="button"
+                className="modal-backdrop"
+                aria-label="Close"
+                onClick={dismissFeePolicyModal}
+              />
+              <div className="modal-box my-auto flex max-h-[min(85vh,40rem)] w-full max-w-md flex-col overflow-hidden !p-0">
+                {feePolicyShareChecking ? (
+                  <div
+                    className="flex flex-col items-center justify-center gap-6 px-6 py-14"
+                    aria-busy="true"
+                    aria-live="polite"
+                  >
+                    <div className="relative flex h-28 w-28 items-center justify-center">
+                      <span className="absolute inset-0 animate-ping rounded-full bg-primary opacity-30" aria-hidden />
+                      <span
+                        className="absolute inset-2 animate-spin rounded-full border-[3px] border-transparent border-r-primary/40 border-t-primary"
+                        aria-hidden
+                      />
+                      <span
+                        className="absolute inset-5 animate-spin rounded-full border-2 border-transparent border-b-primary/70 [animation-direction:reverse] [animation-duration:1.1s]"
+                        aria-hidden
+                      />
+                      <DocumentTextIcon className="relative h-9 w-9 text-primary" aria-hidden />
+                    </div>
+                    <div className="space-y-1.5 text-center">
+                      <h3 id="fee-policy-title" className="text-xl font-semibold tracking-tight text-base-content">
+                        Checking contract
+                      </h3>
+                      <p className="text-sm text-base-content/55">Reading the fee agreement…</p>
+                    </div>
+                    {isSuperUser ? (
+                      <button type="button" className="btn btn-outline rounded-full" onClick={continueWithoutAi}>
+                        Continue without AI
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    <img
+                      src="/fee-agreement-check.jpg"
+                      alt=""
+                      className="h-36 w-full shrink-0 object-cover object-center"
+                    />
+                    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                      {feePolicyError ? (
+                        <>
+                          <h3 id="fee-policy-title" className="text-lg font-semibold text-gray-900">
+                            Check didn't finish
+                          </h3>
+                          <p className="mt-1 text-sm text-gray-500">Nothing was copied. Share again in a moment.</p>
+                        </>
+                      ) : feePolicyProof?.ok ? (
+                        <>
+                          <h3 id="fee-policy-title" className="text-lg font-semibold text-gray-900">
+                            Ready to share
+                          </h3>
+                          <p className="mt-1 text-sm text-gray-500">
+                            {feePolicyProof.items.length === 0
+                              ? 'No active policies to check.'
+                              : `All ${feePolicyProof.items.length} policies are in the contract.`}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h3 id="fee-policy-title" className="text-lg font-semibold text-gray-900">
+                            Can't share yet
+                          </h3>
+                          <p className="mt-1 text-sm text-gray-500">
+                            Nothing was copied. Add the missing lines, then share again.
+                          </p>
+                          <ul className="mt-4 space-y-2">
+                            {(feePolicyProof?.items || [])
+                              .filter((item) => (feePolicyProof?.ok ? item.present : !item.present))
+                              .map((item) => (
+                                <li
+                                  key={item.id}
+                                  className="flex items-start gap-2.5 rounded-xl bg-[#f6f4f1] px-3 py-2.5"
+                                >
+                                  <span className={`mt-0.5 text-lg font-bold leading-none ${item.present ? 'text-emerald-600' : 'text-red-600'}`} aria-hidden>
+                                    {item.present ? '✓' : '!'}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block text-sm font-medium text-gray-900">{item.title}</span>
+                                    {item.partial ? (
+                                      <>
+                                        {item.note ? (
+                                          <span className="mt-0.5 block text-xs leading-snug text-gray-600">{displayContractExcerpt(item.note)}</span>
+                                        ) : null}
+                                        {displayContractExcerpt(item.excerpt) ? (
+                                          <span className="mt-1.5 block border-l-2 border-[#3b28c7]/40 pl-2 text-xs leading-snug text-gray-500">
+                                            {displayContractExcerpt(item.excerpt)}
+                                          </span>
+                                        ) : null}
+                                      </>
+                                    ) : (
+                                      <span className="mt-0.5 block text-xs leading-snug text-gray-500">
+                                        {feePolicies.find((principle) => principle.id === item.id)?.line}
+                                      </span>
+                                    )}
+                                  </span>
+                                </li>
+                              ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center justify-end gap-2 border-t border-gray-100 bg-white px-6 py-4">
+                        <button type="button" className="btn btn-ghost" onClick={dismissFeePolicyModal}>
+                          Close
+                        </button>
+                        {isSuperUser && !feePolicyProof?.ok ? (
+                          <button type="button" className="btn btn-outline rounded-full" onClick={continueWithoutAi}>
+                            Continue without AI
+                          </button>
+                        ) : null}
+                        {!feePolicyError && !feePolicyProof?.ok ? (
+                          <button
+                            type="button"
+                            className="btn !rounded-full border-0 bg-[#3b28c7] px-5 text-white hover:bg-[#3224b0]"
+                            disabled={aiChatLoading || improvingContract}
+                            onClick={() => {
+                              const missing = (feePolicyProof?.items || []).filter((item) => !item.present);
+                              setFeePolicyModalOpen(false);
+                              setEditing(true);
+                              setShowAiReviewPanel(true);
+                              void handleApplyAiRemarks(
+                                feeAgreementInsertPrompt(missing),
+                                'Add the missing fee-agreement clauses.',
+                              );
+                            }}
+                          >
+                            <PlusIcon className="h-6 w-6" />
+                            Add
+                          </button>
+                        ) : null}
+                      </div>
+                  </>
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {showCallContactModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -7260,7 +7703,7 @@ const ContractPage: React.FC<{
                     <button
                       type="button"
                       className={CONTRACT_BAR_ICON_BTN}
-                      onClick={() => setShowKioskModal(true)}
+                      onClick={openKioskAfterFeeCheck}
                       aria-label="Share on screen"
                     >
                       <ComputerDesktopIcon className="h-5 w-5" />
@@ -7289,7 +7732,7 @@ const ContractPage: React.FC<{
                 </ContractBarTip>
               </>
             )}
-            {status === 'draft' && contract && client ? (
+            {status === 'draft' && contract && client && !aiReviewOpen ? (
               <>
                 <button
                   type="button"
@@ -7383,6 +7826,18 @@ const ContractPage: React.FC<{
                   <ShareIcon className="h-5 w-5" />
                 </button>
               </ContractBarTip>
+              {contract?.id ? (
+                <ContractBarTip label="Share on screen">
+                  <button
+                    type="button"
+                    className={CONTRACT_BAR_ICON_BTN}
+                    onClick={openKioskAfterFeeCheck}
+                    aria-label="Share on screen"
+                  >
+                    <ComputerDesktopIcon className="h-5 w-5" />
+                  </button>
+                </ContractBarTip>
+              ) : null}
               {/* <ContractBarTip label="Send">
                 <button
                   type="button"
@@ -7407,27 +7862,10 @@ const ContractPage: React.FC<{
           </div>
         )}
 
-        {/* Desktop: share-adjacent tools + AI on the right */}
-        <div
-          className={`pointer-events-none fixed bottom-0 z-[60] hidden justify-end px-4 print-hide pb-safe sm:px-6 left-0 md:flex ${
-            aiReviewOpen ? 'md:right-[28rem]' : 'right-0'
-          }`}
-        >
-          <div className="contract-command-bar pointer-events-auto">
-            {!showDetailsAndPricingModal && contract?.id ? (
-              <ContractBarTip label="Share on screen">
-                <button
-                  type="button"
-                  className={CONTRACT_BAR_ICON_BTN}
-                  onClick={() => setShowKioskModal(true)}
-                  aria-label="Share on screen"
-                >
-                  <ComputerDesktopIcon className="h-5 w-5" />
-                </button>
-              </ContractBarTip>
-            ) : null}
-
-            {status === 'draft' && contract && client ? (
+        {/* Desktop: reopen the AI chat when it is closed */}
+        {!aiReviewOpen && status === 'draft' && contract && client ? (
+          <div className="pointer-events-none fixed bottom-0 right-0 z-[60] hidden justify-end px-4 print-hide pb-safe sm:px-6 md:flex">
+            <div className="contract-command-bar pointer-events-auto">
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -7452,9 +7890,9 @@ const ContractPage: React.FC<{
                   <span className="text-sm font-semibold tracking-wide">Review</span>
                 </button>
               </div>
-            ) : null}
+            </div>
           </div>
-        </div>
+        ) : null}
         </>
       )}
     </div>
