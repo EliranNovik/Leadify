@@ -9,7 +9,6 @@
  * Map WhatsApp params in Admin: Name, Lead #, Contract signing link.
  * Email placeholders: {{contract_link}} / {{link}}, {{client_name}}, {{lead_number}}.
  */
-import { v4 as uuidv4 } from 'uuid';
 import { supabase } from './supabase';
 import { buildApiUrl, getFrontendBaseUrl } from './api';
 import { fetchLeadContacts, type ContactInfo } from './contactHelpers';
@@ -27,6 +26,7 @@ import {
   toWhatsAppApiLanguageCode,
 } from './whatsappPhone';
 import { replaceEmailTemplateParams } from './emailTemplateParams';
+import { persistContractPublicToken } from './contractPublicToken';
 import { buildEmployeeContractPublicUrl } from './employeeDigitalContracts';
 import { buildFirmContractPublicUrl } from './firmDigitalContracts';
 import { buildRecruitmentContractPublicUrl } from './recruitmentDigitalContracts';
@@ -103,15 +103,7 @@ export async function ensureContractPublicUrl(opts: {
   publicToken?: string | null;
   mode?: 'client' | 'employee' | 'firm' | 'recruitment';
 }): Promise<{ publicToken: string; publicUrl: string }> {
-  let publicToken = opts.publicToken || '';
-  if (!publicToken) {
-    publicToken = uuidv4();
-    const { error } = await supabase
-      .from('contracts')
-      .update({ public_token: publicToken })
-      .eq('id', opts.contractId);
-    if (error) throw new Error(error.message || 'Failed to create public contract link');
-  }
+  const publicToken = await persistContractPublicToken(opts.contractId, opts.publicToken);
 
   const mode = opts.mode || 'client';
   const publicUrl =

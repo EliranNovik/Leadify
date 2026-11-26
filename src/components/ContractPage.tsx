@@ -34,12 +34,10 @@ import { loadContractAiContext, type ContractAiPolicy } from '../lib/contractAiD
 import { formatAiChangeReviewContent } from '../lib/aiChangeReview';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
-import { v4 as uuidv4 } from 'uuid';
 // Import Heroicons for plus/minus
 import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 // @ts-ignore - html2pdf.js doesn't have TypeScript definitions
 import html2pdf from 'html2pdf.js';
-import { getFrontendBaseUrl } from '../lib/api';
 import { getMailboxLoginUrl } from '../lib/mailboxApi';
 import {
   ensureContractPublicUrl,
@@ -58,9 +56,6 @@ import {
   fetchRecruitmentUserById,
   recruitmentUserDisplayName,
 } from '../lib/recruitmentDigitalContracts';
-import { buildEmployeeContractPublicUrl } from '../lib/employeeDigitalContracts';
-import { buildFirmContractPublicUrl } from '../lib/firmDigitalContracts';
-import { buildRecruitmentContractPublicUrl } from '../lib/recruitmentDigitalContracts';
 import {
   cloneContractContent,
   ensurePerEntityContractContentSnapshot,
@@ -5325,36 +5320,26 @@ const ContractPage: React.FC<{
     setFeePolicyModalOpen(true);
   };
 
+  const contractShareMode = (): 'client' | 'employee' | 'firm' | 'recruitment' =>
+    isRecruitmentMode || contract?.user_id
+      ? 'recruitment'
+      : isEmployeeMode || contract?.employee_id
+        ? 'employee'
+        : isFirmMode || contract?.external_firm_id
+          ? 'firm'
+          : 'client';
+
   const ensureContractPublicLink = async (): Promise<string | null> => {
     if (!contract) return null;
-    let publicToken = contract.public_token;
-    if (!publicToken) {
-      publicToken = uuidv4();
-      await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
-      setContract((prev: any) => ({ ...prev, public_token: publicToken }));
+    const { publicToken, publicUrl } = await ensureContractPublicUrl({
+      contractId: contract.id,
+      publicToken: contract.public_token,
+      mode: contractShareMode(),
+    });
+    if (contract.public_token !== publicToken) {
+      setContract((prev: any) => (prev ? { ...prev, public_token: publicToken } : prev));
     }
-    return isRecruitmentMode || contract.user_id
-      ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
-      : isEmployeeMode || contract.employee_id
-        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-        : isFirmMode || contract.external_firm_id
-          ? buildFirmContractPublicUrl(contract.id, publicToken)
-          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
-  };
-
-  const contractPublicUrlForToken = (publicToken: string) =>
-    isRecruitmentMode || contract.user_id
-      ? buildRecruitmentContractPublicUrl(contract.id, publicToken)
-      : isEmployeeMode || contract.employee_id
-        ? buildEmployeeContractPublicUrl(contract.id, publicToken)
-        : isFirmMode || contract.external_firm_id
-          ? buildFirmContractPublicUrl(contract.id, publicToken)
-          : `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
-
-  const rememberContractPublicToken = (publicToken: string) => {
-    if (!contract || contract.public_token) return;
-    setContract((prev: any) => (prev ? { ...prev, public_token: publicToken } : prev));
-    void supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
+    return publicUrl;
   };
 
   const copyPlainTextFallback = (text: string) => {
@@ -5381,44 +5366,74 @@ const ContractPage: React.FC<{
   const handleShareContractLink = () => {
     if (!contract) return;
     feeGateRetryRef.current = () => handleShareContractLink();
-    const publicToken = contract.public_token || uuidv4();
-    const publicUrl = contractPublicUrlForToken(publicToken);
     const readyPromise = confirmFeeAgreementForShare();
     const blocked = (error: unknown) => String((error as Error)?.message || error).includes('fee-check-blocked');
-    const finish = () => {
-      toast.success('Contract link copied to clipboard');
-      rememberContractPublicToken(publicToken);
+
+    const persistAndBuildUrl = async (): Promise<string> => {
+      const { publicToken, publicUrl } = await ensureContractPublicUrl({
+        contractId: contract.id,
+        publicToken: contract.public_token,
+        mode: contractShareMode(),
+      });
+      if (contract.public_token !== publicToken) {
+        setContract((prev: any) => (prev ? { ...prev, public_token: publicToken } : prev));
+      }
+      return publicUrl;
     };
-    const copyNow = () => {
-      if (copyPlainTextFallback(publicUrl)) finish();
+
+    const copyUrl = async (publicUrl: string) => {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(publicUrl);
+          toast.success('Contract link copied to clipboard');
+          return;
+        } catch {
+          // fall through to execCommand
+        }
+      }
+      if (copyPlainTextFallback(publicUrl)) toast.success('Contract link copied to clipboard');
       else toast.error('Could not copy the link');
     };
 
+    // ClipboardItem keeps the user-gesture alive across the fee-check modal.
+    // Persist+verify runs inside that promise so we never copy a token that
+    // only exists in local React state.
     if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
       void navigator.clipboard
         .write([
           new ClipboardItem({
-            'text/plain': readyPromise.then((ready) => {
-              if (!ready) throw new Error('fee-check-blocked');
+            'text/plain': (async () => {
+              if (!(await readyPromise)) throw new Error('fee-check-blocked');
+              const publicUrl = await persistAndBuildUrl();
               return new Blob([publicUrl], { type: 'text/plain' });
-            }),
+            })(),
           }),
         ])
-        .then(finish)
+        .then(() => {
+          toast.success('Contract link copied to clipboard');
+        })
         .catch((error) => {
           if (blocked(error)) return;
-          void readyPromise.then((ready) => {
-            if (!ready) return;
-            copyNow();
-          });
+          void (async () => {
+            try {
+              if (!(await readyPromise)) return;
+              await copyUrl(await persistAndBuildUrl());
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : 'Could not create contract link');
+            }
+          })();
         });
       return;
     }
 
-    void readyPromise.then((ready) => {
-      if (!ready) return;
-      copyNow();
-    });
+    void (async () => {
+      try {
+        if (!(await readyPromise)) return;
+        await copyUrl(await persistAndBuildUrl());
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Could not create contract link');
+      }
+    })();
   };
 
   const seedContractContact = (): ContactInfo[] => {
@@ -6999,6 +7014,9 @@ const ContractPage: React.FC<{
                       </h3>
                       <p className="text-sm text-base-content/55">Reading the fee agreement…</p>
                     </div>
+                    <button type="button" className="btn btn-outline rounded-full" onClick={continueWithoutAi}>
+                      Continue without AI
+                    </button>
                   </div>
                 ) : (
                   <>

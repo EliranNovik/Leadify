@@ -1044,8 +1044,12 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
     const signed = Boolean(row.signed_at) || String(row.status || '').toLowerCase() === 'signed';
     let token = String(row.public_token || '').trim();
     if (!token && row.id) {
-      token = crypto.randomUUID();
-      await supabase.from('contracts').update({ public_token: token }).eq('id', row.id);
+      try {
+        const { persistContractPublicToken } = await import('./contractPublicToken');
+        token = await persistContractPublicToken(String(row.id));
+      } catch {
+        token = '';
+      }
     }
     const link = token ? `${getFrontendBaseUrl()}/public-contract/${row.id}/${token}` : '';
     contractLines.push(
@@ -1057,14 +1061,22 @@ async function assembleLeadCaseFileFromDb(leadId: string, isLegacy: boolean): Pr
   for (const row of legacyContactContractRes.data || []) {
     if (!row.contract_html && !row.signed_contract_html && !row.public_token) continue;
     const signed = Boolean(row.signed_contract_html);
-    let token = String(row.public_token || '');
-    if (!token) {
-      token = crypto.randomUUID();
-      await supabase.from('lead_leadcontact').update({ public_token: token }).eq('id', row.id);
+    let token = String(row.public_token || '').trim();
+    if (!token && row.id != null) {
+      const next = crypto.randomUUID();
+      const { data: updated } = await supabase
+        .from('lead_leadcontact')
+        .update({ public_token: next })
+        .eq('id', row.id)
+        .select('public_token')
+        .maybeSingle();
+      token = String(updated?.public_token || '').trim();
     }
-    const link = `${getFrontendBaseUrl()}/public-legacy-contract/${row.id}/${token}`;
+    const link = token
+      ? `${getFrontendBaseUrl()}/public-legacy-contract/${row.id}/${token}`
+      : '';
     contractLines.push(
-      `- ${signed ? 'SIGNED' : 'NOT SIGNED'} | status=${signed ? 'signed' : 'draft'} | source=legacy_contact | signing_link=${link}`,
+      `- ${signed ? 'SIGNED' : 'NOT SIGNED'} | status=${signed ? 'signed' : 'draft'} | source=legacy_contact | signing_link=${link || '(none)'}`,
     );
   }
 

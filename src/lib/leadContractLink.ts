@@ -43,12 +43,36 @@ async function ensurePublicToken(
   id: unknown,
   existing: unknown,
 ): Promise<string> {
-  const token = String(existing || '').trim();
-  if (token) return token;
   if (id == null || id === '') return '';
-  const next = crypto.randomUUID();
-  const { error } = await supabase.from(table).update({ public_token: next }).eq('id', id);
-  return error ? '' : next;
+  if (table === 'contracts') {
+    try {
+      const { persistContractPublicToken } = await import('./contractPublicToken');
+      return await persistContractPublicToken(String(id), existing == null ? null : String(existing));
+    } catch {
+      return '';
+    }
+  }
+
+  const existingToken = String(existing || '').trim();
+  if (existingToken) {
+    const { data: row } = await supabase
+      .from(table)
+      .select('public_token')
+      .eq('id', id)
+      .maybeSingle();
+    const onRow = String(row?.public_token || '').trim();
+    if (onRow) return onRow;
+  }
+
+  const next = existingToken || crypto.randomUUID();
+  const { data: updated, error } = await supabase
+    .from(table)
+    .update({ public_token: next })
+    .eq('id', id)
+    .select('public_token')
+    .maybeSingle();
+  if (error) return '';
+  return String(updated?.public_token || '').trim();
 }
 
 function buildContractPublicUrl(opts: { id: unknown; token: string; legacyContact?: boolean }): string {

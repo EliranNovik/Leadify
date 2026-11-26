@@ -140,24 +140,8 @@ export async function createEmployeeDigitalContract(params: {
 export async function ensureEmployeeContractPublicToken(
   contractId: string,
 ): Promise<string> {
-  const { data, error } = await supabase
-    .from('contracts')
-    .select('public_token')
-    .eq('id', contractId)
-    .maybeSingle();
-
-  if (error) throw error;
-
-  if (data?.public_token) return String(data.public_token);
-
-  const token = uuidv4();
-  const { error: updateError } = await supabase
-    .from('contracts')
-    .update({ public_token: token })
-    .eq('id', contractId);
-
-  if (updateError) throw updateError;
-  return token;
+  const { persistContractPublicToken } = await import('./contractPublicToken');
+  return persistContractPublicToken(contractId);
 }
 
 export function buildEmployeeContractEditorPath(
