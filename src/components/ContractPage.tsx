@@ -46,7 +46,6 @@ import {
   sendContractViaTemplates,
 } from '../lib/contractSend';
 import { canUseNativeWebShare, shareOrCopyUrl } from '../lib/webShare';
-import { useAdminRole } from '../hooks/useAdminRole';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
 import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import CallOptionsModal from './CallOptionsModal';
@@ -1194,8 +1193,6 @@ const ContractPage: React.FC<{
   }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isSuperUser } = useAdminRole();
-
   const isHrEmployeePath = location.pathname.includes('/hr/employees/') && location.pathname.includes('/contract/');
   const isRecruitmentPath =
     location.pathname.includes('/hr/recruitment/') && location.pathname.includes('/contract/');
@@ -5291,7 +5288,6 @@ const ContractPage: React.FC<{
   };
 
   const continueWithoutAi = () => {
-    if (!isSuperUser) return;
     feeAiWaivedRef.current = true;
     const retry = feeGateRetryRef.current;
     feeGateRetryRef.current = null;
@@ -7003,11 +6999,6 @@ const ContractPage: React.FC<{
                       </h3>
                       <p className="text-sm text-base-content/55">Reading the fee agreement…</p>
                     </div>
-                    {isSuperUser ? (
-                      <button type="button" className="btn btn-outline rounded-full" onClick={continueWithoutAi}>
-                        Continue without AI
-                      </button>
-                    ) : null}
                   </div>
                 ) : (
                   <>
@@ -7022,7 +7013,9 @@ const ContractPage: React.FC<{
                           <h3 id="fee-policy-title" className="text-lg font-semibold text-gray-900">
                             Check didn't finish
                           </h3>
-                          <p className="mt-1 text-sm text-gray-500">Nothing was copied. Share again in a moment.</p>
+                          <p className="mt-1 text-sm text-gray-500">
+                            You can retry later, or continue and share without the AI check.
+                          </p>
                         </>
                       ) : feePolicyProof?.ok ? (
                         <>
@@ -7038,10 +7031,10 @@ const ContractPage: React.FC<{
                       ) : (
                         <>
                           <h3 id="fee-policy-title" className="text-lg font-semibold text-gray-900">
-                            Can't share yet
+                            AI recommendations
                           </h3>
                           <p className="mt-1 text-sm text-gray-500">
-                            Nothing was copied. Add the missing lines, then share again.
+                            Suggested updates before sharing. You can add them, or continue without applying them.
                           </p>
                           <ul className="mt-4 space-y-2">
                             {(feePolicyProof?.items || [])
@@ -7051,7 +7044,7 @@ const ContractPage: React.FC<{
                                   key={item.id}
                                   className="flex items-start gap-2.5 rounded-xl bg-[#f6f4f1] px-3 py-2.5"
                                 >
-                                  <span className={`mt-0.5 text-lg font-bold leading-none ${item.present ? 'text-emerald-600' : 'text-red-600'}`} aria-hidden>
+                                  <span className={`mt-0.5 text-lg font-bold leading-none ${item.present ? 'text-emerald-600' : 'text-amber-600'}`} aria-hidden>
                                     {item.present ? '✓' : '!'}
                                   </span>
                                   <span className="min-w-0">
@@ -7083,7 +7076,7 @@ const ContractPage: React.FC<{
                         <button type="button" className="btn btn-ghost" onClick={dismissFeePolicyModal}>
                           Close
                         </button>
-                        {isSuperUser && !feePolicyProof?.ok ? (
+                        {!feePolicyProof?.ok ? (
                           <button type="button" className="btn btn-outline rounded-full" onClick={continueWithoutAi}>
                             Continue without AI
                           </button>
